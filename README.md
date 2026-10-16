@@ -24,7 +24,7 @@ My goal with this port is to preserve everything that makes the original slot. s
 
 ## Features
 
-**Everything you love about the original slot., now on the KONKR Pocket Advance — with a few extra features that stay true to its original philosophy.**
+Everything you love about the original slot., now on the KONKR Pocket Advance — with a few extra features that stay true to its original philosophy.
 
 ### The original slot. experience
 
@@ -39,7 +39,7 @@ My goal with this port is to preserve everything that makes the original slot. s
 
 ### What's added in this Android port?
 
-**Built specifically for the KONKR Pocket Advance**
+Built specifically for the KONKR Pocket Advance
 
 - **Native Android experience** — Designed for the KONKR's 3:2 display, physical controls and ARM64 hardware.
 - **Physical cartridge controls** — Use the KONKR's round top button to insert a cartridge, or hold it while playing to eject it. It feels right at home on this handheld.
@@ -169,7 +169,7 @@ Once saved, your customized cartridges will appear in the slot. carousel.
 
 ## Saves, RetroArch & Syncthing
 
-**Your saves, wherever you play.**
+Your saves, wherever you play.
 
 slot. is compatible with RetroArch's save files and save states, so you can pick up right where you left off.
 
@@ -181,7 +181,7 @@ slot. is compatible with RetroArch's save files and save states, so you can pick
 
 ## RetroAchievements
 
-**Earn achievements online or offline — even with Wi-Fi turned off!**
+Earn achievements online or offline — even with Wi-Fi turned off!
 
 slot. supports [RetroAchievements](https://retroachievements.org/) for **GBA, GB and GBC** games.
 
@@ -196,7 +196,7 @@ slot. supports [RetroAchievements](https://retroachievements.org/) for **GBA, GB
 
 ## Multiplayer
 
-**Link up with another KONKR Pocket Advance, just like the good old days!**
+Link up with another KONKR Pocket Advance, just like the good old days!
 
 slot. supports multiplayer over local Wi-Fi, with two emulation cores:
 
@@ -215,7 +215,7 @@ slot. supports multiplayer over local Wi-Fi, with two emulation cores:
 
 ## Credits & License
 
-**slot. for KONKR Pocket Advance wouldn't exist without the incredible work of the original creators.**
+slot. for KONKR Pocket Advance wouldn't exist without the incredible work of the original creators.
 
 Special thanks to:
 
