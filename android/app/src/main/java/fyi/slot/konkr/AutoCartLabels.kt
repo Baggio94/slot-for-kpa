@@ -3,6 +3,10 @@ package fyi.slot.konkr
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.util.AtomicFile
 import android.util.Log
 import org.json.JSONObject
@@ -30,7 +34,7 @@ internal object AutoCartLabels {
     // batch must not repeatedly get stuck on the same unmatched first games.
     // Seen identities are never persisted across app restarts or library resets.
     private val examinedThisSession = HashSet<String>()
-    private var savedThisSession = 0
+    private var savedTotal = 0
 
     /** Returns true if another small, foreground-only batch is worthwhile. */
     fun fill(context: Context, shouldContinue: () -> Boolean, onSaved: (String) -> Unit): Boolean {
@@ -42,13 +46,13 @@ internal object AutoCartLabels {
         }
         val missing = games.filter { !CartLabelPaths.file(context.filesDir, it.uri).exists() }
         val pending = missing.filter { it.uri !in examinedThisSession }
-        if (pending.isEmpty() || savedThisSession >= MAX_SAVED) {
+        if (pending.isEmpty()) {
             Log.i(TAG, "No pending artwork: games=${games.size}, missing=${missing.size}, " +
-                "examined=${examinedThisSession.size}, savedThisSession=$savedThisSession")
+                "examined=${examinedThisSession.size}, savedTotal=$savedTotal")
             return false
         }
         Log.i(TAG, "Starting automatic labels: games=${games.size}, missing=${missing.size}, " +
-            "pending=${pending.size}, savedThisSession=$savedThisSession")
+            "pending=${pending.size}, savedTotal=$savedTotal")
 
         // Original Studio's HTTPS allowlist, disk cache and bounded response.
         // An unavailable index remains retryable when connectivity returns.
@@ -88,7 +92,7 @@ internal object AutoCartLabels {
         var saved = 0
         for (rom in pending) {
             if (!shouldContinue() || attempted >= MAX_ATTEMPTS ||
-                savedThisSession >= MAX_SAVED) break
+                saved >= MAX_SAVED) break
             val target = CartLabelPaths.file(context.filesDir, rom.uri)
             if (target.exists()) continue
             attempted++
@@ -149,7 +153,7 @@ internal object AutoCartLabels {
                     throw error
                 }
                 saved++
-                savedThisSession++
+                savedTotal++
                 onSaved(rom.uri)
                 Thread.sleep(120L)
             } catch (error: Exception) {
@@ -164,10 +168,10 @@ internal object AutoCartLabels {
             !CartLabelPaths.file(context.filesDir, it.uri).exists() }
         Log.i(TAG, "Art pass complete: checked=$attempted, indexedMatches=$matched, " +
             "downloaded=$fetched, rejected=$unsuitable, failed=$failed, saved=$saved, " +
-            "remaining=$remaining, sessionSaved=$savedThisSession")
+            "remaining=$remaining, totalSaved=$savedTotal")
         // Try the next 16 candidates while foregrounded, never hammering the
         // first 16 ROMs or exceeding eight saved labels in this session.
-        return shouldContinue() && remaining > 0 && savedThisSession < MAX_SAVED
+        return shouldContinue() && remaining > 0
     }
 
     internal fun validArtworkPath(path: String, platform: String): Boolean =
@@ -177,37 +181,55 @@ internal object AutoCartLabels {
             path.startsWith("$platform/")
 
     /**
-     * The official Cart Studio real-scan layout. Unknown box art and angled
-     * photos are refused rather than cropped into an invented cartridge label.
-     * Coordinates follow the upstream fork's straight-on cart layout.
+     * Mirror the original Cart Studio Label.full: center-cover the *complete*
+     * official support-texture onto the platform's label well, and composite
+     * transparency over black. The source is already the label media: the
+     * earlier hard-coded "physical cartridge scan" aspect checks and 137..865
+     * percent crop rejected valid images and cut off real label artwork.
+     *
+     * Retain the low-resolution Android output sizes and the bounded decode
+     * budget: no custom/Studio label or ROM bytes are changed.
      */
     private fun cropPhysicalCartLabel(bytes: ByteArray, platform: String): ByteArray? {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
         val w = opts.outWidth
         val h = opts.outHeight
-        if (w !in 300..3000 || h !in 280..3000) return null
-        val aspect = w.toDouble() / h
-        val gba = platform == "GBA"
-        if (gba && aspect !in 1.65..1.80) return null
-        if (!gba && aspect !in 0.84..0.93) return null
-        val source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+        if (w !in 64..4096 || h !in 64..4096 ||
+            w.toLong() * h.toLong() > 12_000_000L) {
+            Log.i(TAG, "Unsupported official source dimensions: ${w}x${h} for $platform")
+            return null
+        }
+        val source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: run {
+            Log.i(TAG, "Official source PNG could not be decoded: ${w}x${h}")
+            return null
+        }
         return try {
-            val x0 = if (gba) w * 137 / 1000 else w * 135 / 1000
-            val y0 = if (gba) h * 226 / 1000 else h * 285 / 1000
-            val x1 = if (gba) w * 865 / 1000 else w * 865 / 1000
-            val y1 = if (gba) h * 866 / 1000 else h * 858 / 1000
-            val (tw, th) = if (gba) 264 to 136
-                else if (platform == "GB") 220 to 195 else 223 to 199
-            val crop = Bitmap.createBitmap(source, x0, y0, x1 - x0, y1 - y0)
+            val (tw, th) = when (platform) {
+                "GBA" -> 264 to 136
+                "GB" -> 220 to 195
+                "GBC" -> 223 to 199
+                else -> return null
+            }
+            val coverScale = maxOf(tw.toFloat() / w, th.toFloat() / h)
+            val dw = w * coverScale
+            val dh = h * coverScale
+            val left = (tw - dw) / 2f
+            val top = (th - dh) / 2f
+            val result = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
             try {
-                val result = Bitmap.createScaledBitmap(crop, tw, th, true)
-                try {
-                    val out = ByteArrayOutputStream()
-                    if (!result.compress(Bitmap.CompressFormat.PNG, 100, out)) null
-                    else out.toByteArray()
-                } finally { result.recycle() }
-            } finally { crop.recycle() }
-        } finally { source.recycle() }
+                val canvas = Canvas(result)
+                canvas.drawColor(Color.BLACK)
+                canvas.drawBitmap(source, null, RectF(left, top, left + dw, top + dh),
+                    Paint(Paint.FILTER_BITMAP_FLAG))
+                val out = ByteArrayOutputStream()
+                if (!result.compress(Bitmap.CompressFormat.PNG, 100, out)) null
+                else out.toByteArray()
+            } finally {
+                result.recycle()
+            }
+        } finally {
+            source.recycle()
+        }
     }
 }
