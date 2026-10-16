@@ -1,4 +1,4 @@
-<p align="center"><img src=".github/resources/slot-for-konkr-hero.webp" alt="slot. for KONKR Pocket Advance — Android port running on a blue KONKR Pocket Advance" width="100%"></p>
+<p align="center"><img src=".github/resources/slot-for-konkr-hero.png" alt="slot. for KONKR Pocket Advance — Android port running on a blue KONKR Pocket Advance" width="100%"></p>
 
 # slot. for KONKR Pocket Advance
 
