@@ -1,9 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="304" height="120" viewBox="0 0 304 120" role="img" aria-labelledby="title">
-  <title id="title">SLOT button</title>
-  <rect x="3" y="3" width="298" height="114" rx="22" fill="#30363d" stroke="#565d66" stroke-width="3.5"/>
-  <g fill="none" stroke="#f0f6fc" stroke-width="4.5">
-    <circle cx="75" cy="60" r="21"/>
-    <circle cx="75" cy="60" r="13.3"/>
-  </g>
-  <text x="126" y="76" fill="#f0f6fc" font-family="Arial, Helvetica, sans-serif" font-size="47" font-weight="500">SLOT</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="100" viewBox="0 0 240 100" role="img" aria-labelledby="title">
+  <title id="title">slot. cartridge button</title>
+  <rect x="2" y="2" width="236" height="96" rx="17" fill="#161b22" stroke="#30363d" stroke-width="3.6"/>
+  <circle cx="50" cy="50" r="19" fill="none" stroke="#e6edf3" stroke-width="4.8"/>
+  <circle cx="50" cy="50" r="11.3" fill="#e6edf3"/>
+  <text x="84" y="65.5" font-family="Arial, Helvetica, sans-serif" font-size="48" font-weight="500" fill="#e6edf3">slot.</text>
 </svg>
