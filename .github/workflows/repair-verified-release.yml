@@ -1,0 +1,96 @@
+name: Repair Verified v1.1.0 Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/repair-verified-release.yml
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-republish:
+    if: github.event.head_commit.message == 'chore: prepare v1.1.0 verified re-release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Back up and validate the existing public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=konkr-v1.1.0
+          ORIGINAL=c5ea463a0102dca3b3bac55f8a5e284cdacf383f
+          test "$(git rev-parse "$TAG^{commit}")" = "$ORIGINAL"
+          # New workflow file is the only source change since the tested APK.
+          changed="$(git diff --name-only "$TAG" HEAD)"
+          test "$changed" = '.github/workflows/repair-verified-release.yml' || {
+            echo "::error::Source changed since original signed release"; exit 1;
+          }
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          mkdir -p "$RUNNER_TEMP/verified-release-assets"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --dir "$RUNNER_TEMP/verified-release-assets"
+          (
+            cd "$RUNNER_TEMP/verified-release-assets"
+            test -s slot-for-konkr-1.1.0-arm64.apk
+            test -s SHA256SUMS.txt
+            sha256sum -c SHA256SUMS.txt
+          )
+
+      - name: Create and verify GitHub-signed release commit
+        id: signed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          test "$current" = "$GITHUB_SHA"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          jq -nc --arg tree "$tree" --arg parent "$GITHUB_SHA" \
+            --arg message "chore: signed v1.1.0 release reference" \
+            '{message:$message,tree:$tree,parents:[$parent]}' \
+            | gh api --method POST "repos/$GITHUB_REPOSITORY/git/commits" --input - \
+            > "$RUNNER_TEMP/signed-commit.json"
+          cat "$RUNNER_TEMP/signed-commit.json" | jq '{sha,verification}'
+          sha="$(jq -r '.sha' "$RUNNER_TEMP/signed-commit.json")"
+          test "$(jq -r '.verification.verified' "$RUNNER_TEMP/signed-commit.json")" = true || {
+            echo "::error::GitHub did not automatically verify its own commit. Original release has not been touched."; exit 1;
+          }
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$sha" --jq '.verification.verified')" = true
+          # This advances main by a zero-diff, GitHub-verified commit.
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/main" \
+            -f sha="$sha" -F force=false >/dev/null
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Replace the release with the verified commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFIED_SHA: ${{ steps.signed.outputs.sha }}
+        run: |
+          set -euo pipefail
+          TAG=konkr-v1.1.0
+          ASSETS="$RUNNER_TEMP/verified-release-assets"
+          # This destructive step only executes after the artifact checksum,
+          # GitHub signature and new branch ref were all verified.
+          gh release delete "$TAG" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" -f sha="$VERIFIED_SHA" >/dev/null
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)" = "$VERIFIED_SHA"
+          gh release create "$TAG" \
+            "$ASSETS/slot-for-konkr-1.1.0-arm64.apk" \
+            "$ASSETS/SHA256SUMS.txt" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
+            --title "slot. for KONKR Pocket Advance v1.1.0" \
+            --notes-file RELEASE-NOTES.md
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$VERIFIED_SHA" --jq '.verification.verified')" = true
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json name,isDraft,isPrerelease,tagName,assets,url \
+            | jq '{name,isDraft,isPrerelease,tagName,assets:[.assets[].name],url}'
+          echo "Verified release commit: $VERIFIED_SHA"
