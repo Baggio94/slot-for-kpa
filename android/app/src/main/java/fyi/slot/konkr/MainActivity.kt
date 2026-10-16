@@ -890,7 +890,40 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    // Mac Android AVD convenience only. Keep the production KONKR's physical
+    // controller mapping completely unchanged, including its round slot. cap.
+    private val slotEmulatorKeyboard by lazy {
+        val fingerprint = android.os.Build.FINGERPRINT.lowercase()
+        val hardware = android.os.Build.HARDWARE.lowercase()
+        fingerprint.startsWith("generic") || fingerprint.contains("sdk_gphone") ||
+            hardware.contains("ranchu") || hardware.contains("goldfish")
+    }
+
+    private fun emulatorButton(key: Int): Int? =
+        if (!slotEmulatorKeyboard) null else when (key) {
+            KeyEvent.KEYCODE_Z -> KeyEvent.KEYCODE_BUTTON_A
+            KeyEvent.KEYCODE_X -> KeyEvent.KEYCODE_BUTTON_B
+            KeyEvent.KEYCODE_A -> KeyEvent.KEYCODE_BUTTON_X
+            KeyEvent.KEYCODE_S -> KeyEvent.KEYCODE_BUTTON_Y
+            KeyEvent.KEYCODE_Q -> KeyEvent.KEYCODE_BUTTON_L1
+            KeyEvent.KEYCODE_E -> KeyEvent.KEYCODE_BUTTON_R1
+            KeyEvent.KEYCODE_1 -> KeyEvent.KEYCODE_BUTTON_L2
+            KeyEvent.KEYCODE_2 -> KeyEvent.KEYCODE_BUTTON_R2
+            KeyEvent.KEYCODE_ENTER -> KeyEvent.KEYCODE_BUTTON_START
+            KeyEvent.KEYCODE_SPACE -> KeyEvent.KEYCODE_BUTTON_SELECT
+            KeyEvent.KEYCODE_TAB -> KeyEvent.KEYCODE_BUTTON_MODE
+            else -> null // Android already handles arrows as D-pad events
+        }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        emulatorButton(keyCode)?.let { button ->
+            if (event.repeatCount == 0) {
+                warmedCandidate.set(null)
+                wakeCarouselRender()
+                nativeKey(button, true)
+            }
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             onBackPressed()
             return true
@@ -919,6 +952,12 @@ class MainActivity : Activity() {
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        emulatorButton(keyCode)?.let { button ->
+            warmedCandidate.set(null)
+            wakeCarouselRender()
+            nativeKey(button, false)
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) return true
         if (keyCode == KeyEvent.KEYCODE_BUTTON_MODE) {
             Log.i(TAG, "KONKR MENU BTN_MODE up: Android code=" + keyCode)
