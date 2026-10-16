@@ -95,7 +95,7 @@ Simply install the newer APK over your existing installation. **Do not uninstall
 
 ## Controls & Hotkeys
 
-The KONKR Pocket Advance's round top button acts as **HOME** (<img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20" style="vertical-align:middle"/> **HOME**). It makes inserting and ejecting cartridges feel surprisingly natural, and gives slot. a control scheme that feels right at home on this handheld.
+The KONKR Pocket Advance's round top button acts as **HOME** (<img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME**). It makes inserting and ejecting cartridges feel surprisingly natural, and gives slot. a control scheme that feels right at home on this handheld.
 
 ### Carousel
 
@@ -104,8 +104,8 @@ The KONKR Pocket Advance's round top button acts as **HOME** (<img src=".github/
 | <kbd>←</kbd> / <kbd>→</kbd> | Browse cartridges |
 | <kbd>↑</kbd> / <kbd>↓</kbd> | Jump to the next or previous letter |
 | <kbd>L1</kbd> / <kbd>R1</kbd> | Switch between GBA, GB and GBC shelves |
-| <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20" style="vertical-align:middle"/> **HOME** / <kbd>A</kbd> | Insert a cartridge and resume |
-| Hold <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20" style="vertical-align:middle"/> **HOME** / <kbd>A</kbd> | Start a game fresh |
+| <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** / <kbd>A</kbd> | Insert a cartridge and resume |
+| Hold <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** / <kbd>A</kbd> | Start a game fresh |
 | <kbd>Y</kbd> | Add or remove a favorite |
 | <kbd>X</kbd> | Open the selected cartridge in Cart Studio |
 | <kbd>SELECT</kbd> | Choose between mGBA and gpSP (GBA only) |
@@ -115,10 +115,10 @@ The KONKR Pocket Advance's round top button acts as **HOME** (<img src=".github/
 
 | Button | Action |
 |---|---|
-| Tap <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20" style="vertical-align:middle"/> **HOME** | Open or close the in-game menu |
-| Double-tap <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20" style="vertical-align:middle"/> **HOME** | Open the Save State Switcher |
-| Hold <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20" style="vertical-align:middle"/> **HOME** | Save and eject the cartridge |
-| <kbd>SELECT</kbd> + <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20" style="vertical-align:middle"/> **HOME** | Open Multiplayer |
+| Tap <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** | Open or close the in-game menu |
+| Double-tap <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** | Open the Save State Switcher |
+| Hold <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** | Save and eject the cartridge |
+| <kbd>SELECT</kbd> + <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** | Open Multiplayer |
 | <kbd>SELECT</kbd> + <kbd>R1</kbd> | Create a save state |
 | <kbd>SELECT</kbd> + <kbd>L1</kbd> | Load the latest save state |
 | Hold <kbd>R2</kbd> | Fast-forward |
