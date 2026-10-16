@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="240" height="100" viewBox="0 0 240 100" role="img" aria-labelledby="title">
+<svg xmlns="http://www.w3.org/2000/svg" width="204" height="100" viewBox="0 0 204 100" role="img" aria-labelledby="title">
   <title id="title">slot. cartridge button</title>
-  <rect x="2" y="2" width="236" height="96" rx="17" fill="#161b22" stroke="#30363d" stroke-width="3.6"/>
+  <rect x="2" y="2" width="200" height="96" rx="17" fill="#161b22" stroke="#30363d" stroke-width="3.6"/>
   <circle cx="50" cy="50" r="19" fill="none" stroke="#e6edf3" stroke-width="4.8"/>
   <circle cx="50" cy="50" r="11.3" fill="#e6edf3"/>
   <text x="84" y="65.5" font-family="Arial, Helvetica, sans-serif" font-size="48" font-weight="500" fill="#e6edf3">slot.</text>
