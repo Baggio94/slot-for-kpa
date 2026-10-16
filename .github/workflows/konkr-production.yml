@@ -217,7 +217,7 @@ jobs:
       github.event.head_commit.message == 'chore: finalize internal beta policy'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Confirm beta2 is draft and stable release still published
         env:
@@ -226,8 +226,10 @@ jobs:
           set -euo pipefail
           drafts="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             --jq '[.[] | select(.tag_name == "konkr-v1.2.0-beta2") | .draft] | any')"
+          echo "beta2 draft visibility: $drafts"
           test "$drafts" = true
           stable="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             --jq '[.[] | select(.tag_name == "konkr-v1.1.0") | (.draft == false)] | any')"
+          echo "stable release published: $stable"
           test "$stable" = true
           echo "Beta2 remains an unpublished draft. v1.1.0 remains the public stable release."
