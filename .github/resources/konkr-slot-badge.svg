@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="304" height="120" viewBox="0 0 304 120" role="img" aria-labelledby="title">
+  <title id="title">SLOT button</title>
+  <rect x="3" y="3" width="298" height="114" rx="22" fill="#30363d" stroke="#565d66" stroke-width="3.5"/>
+  <g fill="none" stroke="#f0f6fc" stroke-width="4.5">
+    <circle cx="75" cy="60" r="21"/>
+    <circle cx="75" cy="60" r="13.3"/>
+  </g>
+  <text x="126" y="76" fill="#f0f6fc" font-family="Arial, Helvetica, sans-serif" font-size="47" font-weight="500">SLOT</text>
+</svg>
