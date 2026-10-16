@@ -17,7 +17,7 @@ import java.io.ByteArrayOutputStream
  * Cart Studio checksum-indexed scans, so ambiguous filename matches never
  * put the wrong label on a game. Manual and Studio labels always win.
  *
- * Low priority and bounded: at most eight new labels per session, 16 attempts,
+ * Low priority and bounded: at most eight new labels per batch, 16 attempts,
  * no work during gameplay or Android background sleep, and no ROM/BIOS writes.
  */
 internal object AutoCartLabels {
@@ -32,7 +32,7 @@ internal object AutoCartLabels {
 
     // Exactly one serial worker owns these process-local budgets. A 16-ROM
     // batch must not repeatedly get stuck on the same unmatched first games.
-    // Seen identities are never persisted across app restarts or library resets.
+    // Seen identities are not persisted across app restarts or library resets.
     private val examinedThisSession = HashSet<String>()
     private var savedTotal = 0
 
@@ -170,7 +170,7 @@ internal object AutoCartLabels {
             "downloaded=$fetched, rejected=$unsuitable, failed=$failed, saved=$saved, " +
             "remaining=$remaining, totalSaved=$savedTotal")
         // Try the next 16 candidates while foregrounded, never hammering the
-        // first 16 ROMs or exceeding eight saved labels in this session.
+        // first 16 ROMs or exceeding eight saved labels per batch.
         return shouldContinue() && remaining > 0
     }
 

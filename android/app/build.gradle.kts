@@ -14,9 +14,9 @@ android {
         // Public Android candidate built from the consolidated Multiplayer Lab.
         // Same package ID and signing key: install -r must preserve user data.
         // Dedicated KONKR ARM64 production release; preserves existing data.
-        // 109 upgrades signed public v1.1.0 (108) in place.
-        versionCode = 109
-        versionName = "1.2.0-beta1"
+        // Signed KONKR beta2 updates both v1.1.0 (108) and beta1 (109).
+        versionCode = 110
+        versionName = "1.2.0-beta2"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 

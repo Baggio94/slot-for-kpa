@@ -150,8 +150,8 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "package: name='fyi.slot.konkr' versionCode='109'" "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "versionName='1.2.0-beta1'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='110'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "versionName='1.2.0-beta2'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
           for core in slot_android mgba_libretro gpsp_libretro; do
@@ -164,7 +164,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.2.0-beta1-arm64-signed
+          name: slot-for-konkr-1.2.0-beta2-arm64-signed
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
   publish:
@@ -182,7 +182,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: slot-for-konkr-1.2.0-beta1-arm64-signed
+          name: slot-for-konkr-1.2.0-beta2-arm64-signed
           path: release-assets
       - name: Publish verified v1.1.0 APK
         env:
@@ -205,3 +205,40 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
             --title "slot. for KONKR Pocket Advance v1.1.0" \
             --notes-file RELEASE-NOTES.md
+  publish-beta2:
+    # Publish only the explicitly versioned beta commit, never ordinary
+    # feature pushes or workflow_dispatch builds. Stable main stays untouched.
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/beta/1.2.0' &&
+      github.event.head_commit.message == 'release: slot. for KONKR Pocket Advance v1.2.0-beta2'
+    needs: arm64-apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: slot-for-konkr-1.2.0-beta2-arm64-signed
+          path: release-assets
+      - name: Publish signed beta2 prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=konkr-v1.2.0-beta2
+          test "$GITHUB_REF" = "refs/heads/beta/1.2.0"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -s release-assets/app-release.apk
+          apk=release-assets/slot-for-konkr-1.2.0-beta2-arm64.apk
+          mv release-assets/app-release.apk "$apk"
+          (cd release-assets && sha256sum "$(basename "$apk")" > SHA256SUMS.txt)
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Beta2 release already exists; refusing to overwrite"
+            exit 1
+          fi
+          gh release create "$tag" "$apk" release-assets/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "slot. for KONKR Pocket Advance v1.2.0-beta2" \
+            --notes-file RELEASE-NOTES-1.2.0-beta2.md
