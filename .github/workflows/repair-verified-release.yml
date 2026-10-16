@@ -11,7 +11,8 @@ permissions:
 
 jobs:
   verify-and-republish:
-    if: github.event.head_commit.message == 'chore: prepare v1.1.0 verified re-release'
+    if: >-
+      github.event.head_commit.message == 'chore: prepare v1.1.0 verified re-release'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
