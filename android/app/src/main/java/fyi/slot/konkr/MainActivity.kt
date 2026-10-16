@@ -106,6 +106,7 @@ class MainActivity : Activity() {
     external fun nativeSuspend()
     external fun nativeIsPlaying(): Boolean
     external fun nativeCarouselQuiet(): Boolean
+    external fun nativeWarmRomCandidate(): String?
     external fun nativeCanRefreshLibrary(): Boolean
     external fun nativeAudioSampleRate(): Int
     external fun nativeAudioQueuedShorts(): Int
@@ -157,6 +158,15 @@ class MainActivity : Activity() {
     }
     private val raSmartRunning = AtomicBoolean(false)
     private val gameLoader = Executors.newSingleThreadExecutor()
+    // Optional I/O must never delay a real ROM launch or pending save exports.
+    private val romWarmWorker = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "slot-kpa-rom-warm").apply { priority = Thread.MIN_PRIORITY }
+    }
+    private val warmedCandidate = java.util.concurrent.atomic.AtomicReference<String?>(null)
+    private val autoLabelsWorker = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "slot-kpa-auto-labels").apply { priority = Thread.MIN_PRIORITY }
+    }
+    private val autoLabelsRunning = AtomicBoolean(false)
     // Independent physical QA package. It may read the same ROM and BIOS
     // folders, but MUST NOT import from or write to a selected RetroArch
     // Saves/States SAF folder belonging to the user's daily Slot installation.
@@ -240,6 +250,18 @@ class MainActivity : Activity() {
             lastCarouselHeartbeat = now
             view.requestRender()
         }
+    }
+
+    private fun updateRomWarmCandidate() {
+        val next = if (nativeIsPlaying()) null else nativeWarmRomCandidate()
+        if (warmedCandidate.getAndSet(next) == next || next == null) return
+        try {
+            romWarmWorker.execute {
+                RomWarmCache.prepare(applicationContext, next) {
+                    resumed && !nativeIsPlaying() && warmedCandidate.get() == next
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) { /* shutting down */ }
     }
 
     private var audioThread: Thread? = null
@@ -350,6 +372,7 @@ class MainActivity : Activity() {
             if (!isDestroyed) {
                 nativeRaNetworkAvailable()
                 startRaSmartCache()
+                startAutoCartLabels()
                 refreshRaConnectivityOnScreen()
             }
         }
@@ -357,6 +380,7 @@ class MainActivity : Activity() {
             if (!isDestroyed) {
                 if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
                     startRaSmartCache()
+                    startAutoCartLabels()
                 }
                 refreshRaConnectivityOnScreen()
             }
@@ -382,6 +406,7 @@ class MainActivity : Activity() {
             pollRumble()
             updateDisplaySyncMode()
             updateCarouselPacing()
+            updateRomWarmCandidate()
             if (resumed && nativeIsPlaying()) {
                 if (!audioRunning.get()) startAudio()
             } else if (audioRunning.get()) {
@@ -874,6 +899,7 @@ class MainActivity : Activity() {
             return super.onKeyDown(keyCode, event)
         }
         if (event.repeatCount == 0) {
+            warmedCandidate.set(null)
             wakeCarouselRender()
             nativeKey(keyCode, true)
         }
@@ -886,6 +912,7 @@ class MainActivity : Activity() {
             Log.i(TAG, "KONKR MENU BTN_MODE up: Android code=" + keyCode)
         }
         if (keyCode !in BUTTONS) return super.onKeyUp(keyCode, event)
+        warmedCandidate.set(null)
         wakeCarouselRender()
         nativeKey(keyCode, false)
         return true
@@ -893,6 +920,7 @@ class MainActivity : Activity() {
 
     @Deprecated("Android 12 back key")
     override fun onBackPressed() {
+        warmedCandidate.set(null)
         wakeCarouselRender()
         if (nativeIsPlaying()) {
             nativeExitGame()
@@ -1351,6 +1379,30 @@ class MainActivity : Activity() {
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
             raSmartRunning.set(false)
+        }
+    }
+
+    private fun startAutoCartLabels() {
+        if (!resumed || isDestroyed || nativeIsPlaying()) return
+        if (!autoLabelsRunning.compareAndSet(false, true)) return
+        try {
+            autoLabelsWorker.execute {
+                try {
+                    val manager = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
+                    val caps = manager?.getNetworkCapabilities(manager.activeNetwork)
+                    if (caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) != true)
+                        return@execute
+                    AutoCartLabels.fill(applicationContext,
+                        shouldContinue = { resumed && !isDestroyed && !nativeIsPlaying() },
+                        onSaved = { uri -> nativeReloadCartLabel(uri) })
+                } catch (error: Exception) {
+                    Log.w(TAG, "Automatic artwork deferred", error)
+                } finally {
+                    autoLabelsRunning.set(false)
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            autoLabelsRunning.set(false)
         }
     }
 
@@ -1830,16 +1882,8 @@ class MainActivity : Activity() {
         }
     }
 
-    // Match the Rust core_selection::key FNV-1a exactly. Cartridge
-    // labels belong to opaque SAF URIs, not their non-unique filenames.
-    private fun cartLabelFile(romUri: String): File {
-        var hash = -3750763034362895579L // unsigned 0xcbf29ce484222325
-        for (byte in romUri.toByteArray(Charsets.UTF_8)) {
-            hash = (hash xor (byte.toInt() and 0xff).toLong()) * 0x100000001b3L
-        }
-        val name = java.lang.Long.toUnsignedString(hash, 16).padStart(16, '0')
-        return File(File(filesDir, "Labels"), "$name.png")
-    }
+    private fun cartLabelFile(romUri: String): File =
+        CartLabelPaths.file(filesDir, romUri)
 
     private fun openCartStudio(selected: String?) {
         pendingCartStudioUri = selected
@@ -2103,6 +2147,7 @@ class MainActivity : Activity() {
             try {
                 storeCachedLibrary(next.root, next.json)
                 startRaSmartCache()
+                startAutoCartLabels()
             } catch (error: Exception) {
                 Log.w(TAG, "ROM cache write failed; displayed shelf is intact", error)
             }
@@ -2189,6 +2234,8 @@ class MainActivity : Activity() {
         raLoginWorker.shutdownNow()
         raSmartWorker.shutdownNow()
         gameLoader.shutdownNow()
+        romWarmWorker.shutdownNow()
+        autoLabelsWorker.shutdownNow()
         uiHandler.removeCallbacks(pulse)
         synchronized(raSmartForeground) { raSmartForeground.notifyAll() }
         if (::raAchievementOverlay.isInitialized) raAchievementOverlay.destroy()
@@ -2200,6 +2247,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         resumed = false
+        warmedCandidate.set(null)
         uiHandler.removeCallbacks(pulse)
         carouselDozing = false
         // Rust nativeSuspend aborts discovery/linked play; never keep a
@@ -2250,6 +2298,7 @@ class MainActivity : Activity() {
             nativeRaAccountConfigured()
             startRaSmartCache()
         }
+        startAutoCartLabels()
         lastStatusPoll = -15000L
         cartSounds.resume()
         view.onResume()

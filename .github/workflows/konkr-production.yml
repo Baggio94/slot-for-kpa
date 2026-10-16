@@ -3,7 +3,7 @@ name: slot. for KONKR ARM64
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'extract/**']
+    branches: [main, 'extract/**', 'beta/**']
     tags: ['konkr-v*']
 
 permissions:
@@ -150,8 +150,8 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "package: name='fyi.slot.konkr' versionCode='108'" "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "versionName='1.1.0'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='109'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "versionName='1.2.0-beta1'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
           for core in slot_android mgba_libretro gpsp_libretro; do
@@ -164,7 +164,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.1.0-arm64-signed
+          name: slot-for-konkr-1.2.0-beta1-arm64-signed
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
   publish:
@@ -182,7 +182,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: slot-for-konkr-1.1.0-arm64-signed
+          name: slot-for-konkr-1.2.0-beta1-arm64-signed
           path: release-assets
       - name: Publish verified v1.1.0 APK
         env:

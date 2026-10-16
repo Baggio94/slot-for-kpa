@@ -173,6 +173,8 @@ static DISPLAY_SYNC: AtomicBool = AtomicBool::new(false);
 // Updated by the GL owner after an entirely settled, fully preloaded shelf frame.
 // Kotlin may switch the idle carousel to requestRender without affecting games.
 static CAROUSEL_QUIET: AtomicBool = AtomicBool::new(false);
+// The GLES owner reports a stable selection, never dereferencing SAF URIs itself.
+static WARM_ROM_URI: Mutex<Option<String>> = Mutex::new(None);
 // Read-only GL-owned library swap gate for Kotlin's background scanner.
 static LIBRARY_UPDATE_SAFE: AtomicBool = AtomicBool::new(false);
 // A12 diagnostic A/B. Default keeps A11 recovery; flag file selects legacy.
@@ -4633,6 +4635,22 @@ impl Engine {
         if repeated_letter { self.show_selected_letter(); }
         self.shelves[self.active].update(dt);
         self.prepare_visible();
+        // Only warm a settled carousel selection. Actual ROM I/O takes place
+        // on an independently cancelable Android background executor.
+        let warming = !self.inserted && self.game.is_none()
+            && self.pending_game.is_none() && !self.awaiting_game
+            && self.progress <= 0.0
+            && matches!(self.overlay, ShelfOverlay::None)
+            && !self.shelves[self.active].is_scrolling()
+            && self.last_cart_navigation.elapsed() >= Duration::from_millis(900);
+        let candidate = if warming {
+            self.shelves[self.active].carts
+                .get(self.shelves[self.active].index)
+                .map(|cart|cart.rom.to_string_lossy().into_owned())
+        } else { None };
+        let mut last = WARM_ROM_URI.lock().unwrap_or_else(|e|e.into_inner());
+        if *last != candidate { *last = candidate; }
+        drop(last);
         self.refresh_selected_title();
         self.persist_focus_if_idle();
         // Resolve the optional transparent material before mutably borrowing
@@ -5559,6 +5577,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSurfaceCreated(
         RA_NOTICES.lock().unwrap_or_else(|e| e.into_inner()).clear();
         PLAYING.store(false, Ordering::Release);
         CAROUSEL_QUIET.store(false, Ordering::Release);
+        *WARM_ROM_URI.lock().unwrap_or_else(|e|e.into_inner()) = None;
         SAMPLE_RATE.store(0, Ordering::Release);
         let (version, snapshot) = {
             let state = LIBRARY.lock().unwrap_or_else(|err| err.into_inner());
@@ -5853,6 +5872,16 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeExternalReturn(
 
 /// Choreographer pacing experiment: this is only a render-request policy.
 /// The underlying libretro emulation budget remains RESPONSIVE (one frame).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeWarmRomCandidate(
+    mut env: JNIEnv<'_>, _this: JObject<'_>,
+) -> jstring {
+    WARM_ROM_URI.lock().unwrap_or_else(|e|e.into_inner())
+        .clone()
+        .and_then(|path|env.new_string(path).ok())
+        .map_or(std::ptr::null_mut(),|value|value.into_raw())
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeCarouselQuiet(
     _env: *mut c_void, _activity: *mut c_void,
