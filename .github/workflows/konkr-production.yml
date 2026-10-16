@@ -11,9 +11,9 @@ permissions:
 
 jobs:
   arm64-apk:
-    # Avoid a redundant native build for the one-shot release-visibility fix.
+    # Skip recompilation for this one-time release visibility verification.
     if: >-
-      github.event_name != 'push' || github.event.head_commit.message != 'chore: hide internal beta2 release'
+      github.event_name != 'push' || github.event.head_commit.message != 'chore: finalize internal beta policy'
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
@@ -208,24 +208,26 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
             --title "slot. for KONKR Pocket Advance v1.1.0" \
             --notes-file RELEASE-NOTES.md
-  hide-internal-beta2:
-    # One-shot correction: this beta is an internal work-in-progress. A
-    # public repository's prerelease is NOT private. Draft hides download
-    # links and assets from public Releases; the public source remains public.
+  verify-internal-beta2:
+    # Verify that the beta remains a draft. Never auto-publish in-progress
+    # versions from this public repository.
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/beta/1.2.0' &&
-      github.event.head_commit.message == 'chore: hide internal beta2 release'
+      github.event.head_commit.message == 'chore: finalize internal beta policy'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
-      - name: Hide published beta2 release as draft
+      - name: Confirm beta2 is draft and stable release still published
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release edit konkr-v1.2.0-beta2 --repo "$GITHUB_REPOSITORY" --draft
-          draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/konkr-v1.2.0-beta2" --jq '.draft')"
-          test "$draft" = true
-          echo "Internal beta2 is now a draft, not publicly downloadable."
+          drafts="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.tag_name == "konkr-v1.2.0-beta2") | .draft] | any')"
+          test "$drafts" = true
+          stable="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.tag_name == "konkr-v1.1.0") | (.draft == false)] | any')"
+          test "$stable" = true
+          echo "Beta2 remains an unpublished draft. v1.1.0 remains the public stable release."
