@@ -97,7 +97,7 @@ Simply install the newer APK over your existing installation. **Do not uninstall
 
 <p align="center"><img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="54" /></p>
 
-The KONKR's round top button is called **slot.** in this port. Since it controls the cartridge experience rather than Android's Home screen, **slot.** felt like the most fitting name. Press it to insert a cartridge, or hold it while playing to save and eject it.
+The KONKR's round top button is called **slot. cap** in this port. Since it controls the cartridge experience, **slot. cap** felt like the most fitting name. Press it to insert a cartridge, or hold it while playing to save and eject it.
 
 ### Carousel
 
