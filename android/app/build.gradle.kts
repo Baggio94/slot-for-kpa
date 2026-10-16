@@ -11,9 +11,8 @@ android {
         applicationId = "fyi.slot.konkr"
         minSdk = 31
         targetSdk = 32
-        // Public Android candidate built from the consolidated Multiplayer Lab.
-        // Same package ID and signing key: install -r must preserve user data.
-        // Dedicated KONKR ARM64 production release; preserves existing data.
+        // Dedicated KONKR ARM64 build; retain the stable package and signing
+        // identity so adb install -r preserves existing data and SAF grants.
         // Signed KONKR beta2 updates both v1.1.0 (108) and beta1 (109).
         versionCode = 110
         versionName = "1.2.0-beta2"
