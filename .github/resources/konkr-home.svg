@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="HOME button">
-  <title>HOME button</title>
-  <!-- Lower the artwork relative to GitHub's inline-image baseline. -->
-  <circle cx="16" cy="19" r="11.5" fill="none" stroke="#737880" stroke-width="2.3"/>
-  <circle cx="16" cy="19" r="7.6" fill="none" stroke="#737880" stroke-width="2.3"/>
-</svg>

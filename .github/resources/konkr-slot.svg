@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="SLOT button icon">
+  <title>SLOT button icon</title>
+  <!-- Two concentric rings reproduce the KONKR's round top button. -->
+  <circle cx="16" cy="19" r="11.5" fill="none" stroke="#737880" stroke-width="2.3"/>
+  <circle cx="16" cy="19" r="7.6" fill="none" stroke="#737880" stroke-width="2.3"/>
+</svg>

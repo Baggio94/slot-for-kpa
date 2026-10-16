@@ -42,7 +42,7 @@ Everything you love about the original slot., now on the KONKR Pocket Advance �
 Built specifically for the KONKR Pocket Advance
 
 - **Native Android experience** — Designed for the KONKR's 3:2 display, physical controls and ARM64 hardware.
-- **Physical cartridge controls** — Use the KONKR's round top button to insert a cartridge, or hold it while playing to eject it. It feels right at home on this handheld.
+- **SLOT button** — Use the KONKR's round top button to insert a cartridge, or hold it while playing to save and eject it. It feels right at home on this handheld.
 - **Easy library setup** — Choose your ROM folder directly from Android, with optional BIOS, saves and save states folders.
 - **RetroArch save compatibility** — Share SRAM saves, RTC data and compatible save states with RetroArch, using the same folders and matching emulation cores.
 - **Syncthing-friendly** — Keep your saves synchronized across devices by sharing your RetroArch save and state folders.
@@ -95,7 +95,7 @@ Simply install the newer APK over your existing installation. **Do not uninstall
 
 ## Controls & Hotkeys
 
-The KONKR Pocket Advance's round top button acts as **HOME** (<img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME**). It makes inserting and ejecting cartridges feel surprisingly natural, and gives slot. a control scheme that feels right at home on this handheld.
+I mapped the KONKR's round top button as <kbd><img src=".github/resources/konkr-slot.svg" alt="" width="16" height="16" /> SLOT</kbd>. Since it controls slot.'s cartridges rather than Android's Home screen, **SLOT** felt like a more fitting name. Press it to insert a cartridge, or hold it while playing to save and eject it.
 
 ### Carousel
 
@@ -104,8 +104,8 @@ The KONKR Pocket Advance's round top button acts as **HOME** (<img src=".github/
 | <kbd>←</kbd> / <kbd>→</kbd> | Browse cartridges |
 | <kbd>↑</kbd> / <kbd>↓</kbd> | Jump to the next or previous letter |
 | <kbd>L1</kbd> / <kbd>R1</kbd> | Switch between GBA, GB and GBC shelves |
-| <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** / <kbd>A</kbd> | Insert a cartridge and resume |
-| Hold <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** / <kbd>A</kbd> | Start a game fresh |
+| <kbd><img src=".github/resources/konkr-slot.svg" alt="" width="16" height="16" /> SLOT</kbd> / <kbd>A</kbd> | Insert a cartridge and resume |
+| Hold <kbd><img src=".github/resources/konkr-slot.svg" alt="" width="16" height="16" /> SLOT</kbd> / <kbd>A</kbd> | Start a game fresh |
 | <kbd>Y</kbd> | Add or remove a favorite |
 | <kbd>X</kbd> | Open the selected cartridge in Cart Studio |
 | <kbd>SELECT</kbd> | Choose between mGBA and gpSP (GBA only) |
@@ -115,10 +115,10 @@ The KONKR Pocket Advance's round top button acts as **HOME** (<img src=".github/
 
 | Button | Action |
 |---|---|
-| Tap <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** | Open or close the in-game menu |
-| Double-tap <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** | Open the Save State Switcher |
-| Hold <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** | Save and eject the cartridge |
-| <kbd>SELECT</kbd> + <img src=".github/resources/konkr-home.svg" alt="HOME" width="20" height="20"/> **HOME** | Open Multiplayer |
+| Tap <kbd><img src=".github/resources/konkr-slot.svg" alt="" width="16" height="16" /> SLOT</kbd> | Open or close the in-game menu |
+| Double-tap <kbd><img src=".github/resources/konkr-slot.svg" alt="" width="16" height="16" /> SLOT</kbd> | Open the Save State Switcher |
+| Hold <kbd><img src=".github/resources/konkr-slot.svg" alt="" width="16" height="16" /> SLOT</kbd> | Save and eject the cartridge |
+| <kbd>SELECT</kbd> + <kbd><img src=".github/resources/konkr-slot.svg" alt="" width="16" height="16" /> SLOT</kbd> | Open Multiplayer |
 | <kbd>SELECT</kbd> + <kbd>R1</kbd> | Create a save state |
 | <kbd>SELECT</kbd> + <kbd>L1</kbd> | Load the latest save state |
 | Hold <kbd>R2</kbd> | Fast-forward |
@@ -140,7 +140,7 @@ The KONKR Pocket Advance's round top button acts as **HOME** (<img src=".github/
 | <kbd>X</kbd> | Undo the last save or load (within 30 seconds) |
 | <kbd>B</kbd> | Return to the game |
 
-**Note:** Unlike the original slot., this Android port uses **START** to open the main menu and **SELECT** to choose the emulator core on the carousel. It also uses the KONKR's round top button as **HOME**.
+**Note:** Unlike the original slot., this Android port uses **START** to open the main menu and **SELECT** to choose the emulator core on the carousel.
 
 ## Cart Studio
 
@@ -207,7 +207,7 @@ slot. supports multiplayer over local Wi-Fi, with two emulation cores:
 
 1. Connect both devices to the same Wi-Fi network.
 2. Launch compatible games using the same emulator core.
-3. Press **SELECT + HOME** or open **Pause → Multiplayer**.
+3. Press <kbd>SELECT</kbd> + <kbd><img src=".github/resources/konkr-slot.svg" alt="" width="16" height="16" /> SLOT</kbd> or open **Pause → Multiplayer**.
 4. Choose **Host** on one device and **Join** on the other.
 5. Once connected, enjoy multiplayer!
 
