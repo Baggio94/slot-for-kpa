@@ -170,12 +170,6 @@ class MainActivity : Activity() {
     // Paint fresh labels only when all moving carts and pending GPU uploads
     // have settled. The renderer's manual reload path is synchronous.
     private val autoLabelUpdates = java.util.concurrent.ConcurrentLinkedQueue<String>()
-    // Independent physical QA package. It may read the same ROM and BIOS
-    // folders, but MUST NOT import from or write to a selected RetroArch
-    // Saves/States SAF folder belonging to the user's daily Slot installation.
-    private val isIsolatedMultiplayerLab: Boolean
-        get() = packageName == "fyi.slot.konkr.lab"
-
     private val activeTargets = ConcurrentHashMap<String, RetroArchStorage.Target>()
     private val uiHandler = Handler(Looper.getMainLooper())
     private val audioRunning = AtomicBoolean(false)
@@ -890,33 +884,8 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    // Mac Android AVD convenience only. Keep the production KONKR's physical
-    // controller mapping completely unchanged, including its round slot. cap.
-    private val slotEmulatorKeyboard by lazy {
-        val fingerprint = android.os.Build.FINGERPRINT.lowercase()
-        val hardware = android.os.Build.HARDWARE.lowercase()
-        fingerprint.startsWith("generic") || fingerprint.contains("sdk_gphone") ||
-            hardware.contains("ranchu") || hardware.contains("goldfish")
-    }
-
-    private fun emulatorButton(key: Int): Int? =
-        if (!slotEmulatorKeyboard) null else when (key) {
-            KeyEvent.KEYCODE_Z -> KeyEvent.KEYCODE_BUTTON_A
-            KeyEvent.KEYCODE_X -> KeyEvent.KEYCODE_BUTTON_B
-            KeyEvent.KEYCODE_A -> KeyEvent.KEYCODE_BUTTON_X
-            KeyEvent.KEYCODE_S -> KeyEvent.KEYCODE_BUTTON_Y
-            KeyEvent.KEYCODE_Q -> KeyEvent.KEYCODE_BUTTON_L1
-            KeyEvent.KEYCODE_E -> KeyEvent.KEYCODE_BUTTON_R1
-            KeyEvent.KEYCODE_1 -> KeyEvent.KEYCODE_BUTTON_L2
-            KeyEvent.KEYCODE_2 -> KeyEvent.KEYCODE_BUTTON_R2
-            KeyEvent.KEYCODE_ENTER -> KeyEvent.KEYCODE_BUTTON_START
-            KeyEvent.KEYCODE_SPACE -> KeyEvent.KEYCODE_BUTTON_SELECT
-            KeyEvent.KEYCODE_TAB -> KeyEvent.KEYCODE_BUTTON_MODE
-            else -> null // Android already handles arrows as D-pad events
-        }
-
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        emulatorButton(keyCode)?.let { button ->
+        SlotBuildBehavior.emulatorButton(keyCode)?.let { button ->
             if (event.repeatCount == 0) {
                 warmedCandidate.set(null)
                 wakeCarouselRender()
@@ -952,7 +921,7 @@ class MainActivity : Activity() {
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        emulatorButton(keyCode)?.let { button ->
+        SlotBuildBehavior.emulatorButton(keyCode)?.let { button ->
             warmedCandidate.set(null)
             wakeCarouselRender()
             nativeKey(button, false)
@@ -1101,16 +1070,16 @@ class MainActivity : Activity() {
                 val savedCore = nativeCoreForUri(rawUri)
                 val core = if (savedCore == "gpsp" && ext == "gba") "gpSP" else "mGBA"
                 val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-                // Side-by-side Multiplayer QA always uses its private
-                // fyi.slot.konkr.lab/files/Saves and States. Never mirror,
-                // overwrite or import the production RetroArch SAF folders.
-                val saves = if (isIsolatedMultiplayerLab) null
-                    else prefs.getString(SAVE_ROOT, null)?.let(Uri::parse)
-                val states = if (isIsolatedMultiplayerLab) null
-                    else prefs.getString(STATE_ROOT, null)?.let(Uri::parse)
+                val storage = SlotBuildBehavior.storagePolicy(
+                    packageName,
+                    prefs.getString(SAVE_ROOT, null),
+                    prefs.getString(STATE_ROOT, null),
+                    prefs.getBoolean(SHARE_GBA_SAVES, false)
+                )
+                val saves = storage.savesRoot?.let(Uri::parse)
+                val states = storage.statesRoot?.let(Uri::parse)
                 val shared = RetroArchStorage.target(this, rawUri, core, saves, states,
-                    shareGbaSaves = !isIsolatedMultiplayerLab &&
-                        prefs.getBoolean(SHARE_GBA_SAVES, false))
+                    shareGbaSaves = storage.shareGbaSaves)
                 try {
                     RetroArchStorage.importBeforeLaunch(this@MainActivity, shared)
                 } catch (error: RetroArchStorage.SaveConflict) {
@@ -1782,10 +1751,8 @@ class MainActivity : Activity() {
 
     private fun openSharedFolderPicker(requestCode: Int) {
         check(requestCode == SAVE_REQUEST || requestCode == STATE_REQUEST)
-        if (isIsolatedMultiplayerLab) {
-            SlotToast.makeText(this,
-                "Multiplayer Lab: external save folders disabled to protect Slot saves.",
-                Toast.LENGTH_LONG).show()
+        SlotBuildBehavior.externalFolderRestrictionMessage(packageName)?.let { restriction ->
+            SlotToast.makeText(this, restriction, Toast.LENGTH_LONG).show()
             return
         }
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
