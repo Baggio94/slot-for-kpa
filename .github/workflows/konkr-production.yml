@@ -11,6 +11,8 @@ permissions:
 
 jobs:
   arm64-apk:
+    # Avoid a redundant native build for the one-shot release-visibility fix.
+    if: ${{ github.event_name != 'push' || github.event.head_commit.message != 'chore: hide internal beta2 release' }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
@@ -205,40 +207,24 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
             --title "slot. for KONKR Pocket Advance v1.1.0" \
             --notes-file RELEASE-NOTES.md
-  publish-beta2:
-    # Publish only the explicitly versioned beta commit, never ordinary
-    # feature pushes or workflow_dispatch builds. Stable main stays untouched.
+  hide-internal-beta2:
+    # One-shot correction: this beta is an internal work-in-progress. A
+    # public repository's prerelease is NOT private. Draft hides download
+    # links and assets from public Releases; the public source remains public.
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/beta/1.2.0' &&
-      github.event.head_commit.message == 'release: slot. for KONKR Pocket Advance v1.2.0-beta2'
-    needs: arm64-apk
+      github.event.head_commit.message == 'chore: hide internal beta2 release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: slot-for-konkr-1.2.0-beta2-arm64-signed
-          path: release-assets
-      - name: Publish signed beta2 prerelease
+      - name: Hide published beta2 release as draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag=konkr-v1.2.0-beta2
-          test "$GITHUB_REF" = "refs/heads/beta/1.2.0"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test -s release-assets/app-release.apk
-          apk=release-assets/slot-for-konkr-1.2.0-beta2-arm64.apk
-          mv release-assets/app-release.apk "$apk"
-          (cd release-assets && sha256sum "$(basename "$apk")" > SHA256SUMS.txt)
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::Beta2 release already exists; refusing to overwrite"
-            exit 1
-          fi
-          gh release create "$tag" "$apk" release-assets/SHA256SUMS.txt \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "slot. for KONKR Pocket Advance v1.2.0-beta2" \
-            --notes-file RELEASE-NOTES-1.2.0-beta2.md
+          gh release edit konkr-v1.2.0-beta2 --repo "$GITHUB_REPOSITORY" --draft
+          draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/konkr-v1.2.0-beta2" --jq '.draft')"
+          test "$draft" = true
+          echo "Internal beta2 is now a draft, not publicly downloadable."
