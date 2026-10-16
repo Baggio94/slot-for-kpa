@@ -1438,18 +1438,26 @@ class MainActivity : Activity() {
         if (!autoLabelsRunning.compareAndSet(false, true)) return
         try {
             autoLabelsWorker.execute {
+                var anotherBatch = false
                 try {
                     val manager = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
                     val caps = manager?.getNetworkCapabilities(manager.activeNetwork)
-                    if (caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) != true)
+                    if (caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) != true) {
+                        Log.i("SlotAutoLabels", "Deferred: Android default Internet network is not validated")
                         return@execute
-                    AutoCartLabels.fill(applicationContext,
+                    }
+                    anotherBatch = AutoCartLabels.fill(applicationContext,
                         shouldContinue = { resumed && !isDestroyed && !nativeIsPlaying() },
                         onSaved = { uri -> autoLabelUpdates.add(uri) })
                 } catch (error: Exception) {
-                    Log.w(TAG, "Automatic artwork deferred", error)
+                    Log.w("SlotAutoLabels", "Automatic artwork deferred", error)
                 } finally {
                     autoLabelsRunning.set(false)
+                    if (anotherBatch && resumed && !isDestroyed) {
+                        // A pause between bounded batches prevents continuous
+                        // ROM reads and leaves the carousel's render thread free.
+                        uiHandler.postDelayed({ startAutoCartLabels() }, 4_000L)
+                    }
                 }
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
