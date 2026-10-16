@@ -1,8 +1,8 @@
 # slot. for KONKR Pocket Advance — v1.2.0-beta2
 
-**Android 12 / ARM64 (KONKR Pocket Advance)** — signed pre-release.
+**Android 12 / ARM64 (KONKR Pocket Advance)** — internal signed test candidate; **not a published GitHub release**.
 
-This is a **beta**, not a replacement for the current stable v1.1.0 release.
+This is a **beta**, not a replacement for the current stable v1.1.0 release. Builds are delivered as GitHub Actions artifacts only while hardware testing continues.
 
 ## What's new
 
@@ -19,10 +19,14 @@ This is a **beta**, not a replacement for the current stable v1.1.0 release.
 - A full battery-life/standby and performance validation on a physical KONKR Pocket Advance is **still required**.
 - Official artwork coverage depends on matching CRC32 entries in the upstream catalog; no approximate filename matching is performed.
 
-## Installation
+## Internal testing and installation
 
-Download `slot-for-konkr-1.2.0-beta2-arm64.apk`. Install it **over** an existing signed release (do not uninstall) to preserve app data and selected folders. Package: `fyi.slot.konkr`. Version code: **110**. Architecture: **arm64-v8a only**.
+On the `beta/1.2.0-production-cleanup` branch, download the GitHub Actions artifact `slot-for-kpa-1.2.0-beta2-arm64-signed` from a successful `slot. for KONKR ARM64` run. Extract `app-release.apk` from the artifact ZIP. **There is no publicly published beta release.**
 
-A `SHA256SUMS.txt` file is attached. The CI verifies the persistent app-signing certificate and ARM64 libretro/native libraries.
+Install the signed APK **over** the installed version (never uninstall or clear data) to preserve data and selected folders. Package: `fyi.slot.konkr`. Version code: **110**. Architecture: **arm64-v8a only**.
+
+CI checks the persistent signing certificate, ARM64 native libraries, both Android build variants, and the absence of Mac AVD/Multiplayer Lab-only markers in the release DEX. The APK SHA-256 is printed in the build verification log.
+
+The development branch is still publicly readable because the repository itself is public; keeping the release unpublished does not conceal source commits.
 
 Source: branch [`beta/1.2.0`](https://github.com/Baggio94/slot-for-kpa/tree/beta/1.2.0). Stable `main` remains at v1.1.0.
