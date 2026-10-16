@@ -167,6 +167,9 @@ class MainActivity : Activity() {
         Thread(task, "slot-kpa-auto-labels").apply { priority = Thread.MIN_PRIORITY }
     }
     private val autoLabelsRunning = AtomicBoolean(false)
+    // Paint fresh labels only when all moving carts and pending GPU uploads
+    // have settled. The renderer's manual reload path is synchronous.
+    private val autoLabelUpdates = java.util.concurrent.ConcurrentLinkedQueue<String>()
     // Independent physical QA package. It may read the same ROM and BIOS
     // folders, but MUST NOT import from or write to a selected RetroArch
     // Saves/States SAF folder belonging to the user's daily Slot installation.
@@ -250,6 +253,14 @@ class MainActivity : Activity() {
             lastCarouselHeartbeat = now
             view.requestRender()
         }
+    }
+
+    private fun publishAutoLabelsWhenIdle() {
+        if (nativeIsPlaying() || !nativeCarouselQuiet()) return
+        // One face per UI pulse, never a burst on the GL owner.
+        val uri = autoLabelUpdates.poll() ?: return
+        nativeReloadCartLabel(uri)
+        wakeCarouselRender()
     }
 
     private fun updateRomWarmCandidate() {
@@ -406,6 +417,7 @@ class MainActivity : Activity() {
             pollRumble()
             updateDisplaySyncMode()
             updateCarouselPacing()
+            publishAutoLabelsWhenIdle()
             updateRomWarmCandidate()
             if (resumed && nativeIsPlaying()) {
                 if (!audioRunning.get()) startAudio()
@@ -1394,7 +1406,7 @@ class MainActivity : Activity() {
                         return@execute
                     AutoCartLabels.fill(applicationContext,
                         shouldContinue = { resumed && !isDestroyed && !nativeIsPlaying() },
-                        onSaved = { uri -> nativeReloadCartLabel(uri) })
+                        onSaved = { uri -> autoLabelUpdates.add(uri) })
                 } catch (error: Exception) {
                     Log.w(TAG, "Automatic artwork deferred", error)
                 } finally {
