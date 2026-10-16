@@ -170,6 +170,9 @@ static AUDIO: Mutex<VecDeque<i16>> = Mutex::new(VecDeque::new());
 static PLAYING: AtomicBool = AtomicBool::new(false);
 static SAMPLE_RATE: AtomicI32 = AtomicI32::new(0);
 static DISPLAY_SYNC: AtomicBool = AtomicBool::new(false);
+// Updated by the GL owner after an entirely settled, fully preloaded shelf frame.
+// Kotlin may switch the idle carousel to requestRender without affecting games.
+static CAROUSEL_QUIET: AtomicBool = AtomicBool::new(false);
 // Read-only GL-owned library swap gate for Kotlin's background scanner.
 static LIBRARY_UPDATE_SAFE: AtomicBool = AtomicBool::new(false);
 // A12 diagnostic A/B. Default keeps A11 recovery; flag file selects legacy.
@@ -4811,6 +4814,19 @@ impl Engine {
         self.gpu.begin_frame();
         self.gpu.draw_list(&commands);
         self.gpu.end_frame(self.size);
+        // Idle throttle is an output-only pacing hint; never change upstream
+        // animation timings, input handling, or cartridge prefetch priorities.
+        let quiet = !self.inserted
+            && self.game.is_none() && self.pending_game.is_none()
+            && !self.awaiting_game && !self.external_pending
+            && self.progress <= 0.0
+            && matches!(self.overlay, ShelfOverlay::None)
+            && self.shelf_status != 1 // library scanner progress remains animated
+            && self.last_cart_navigation.elapsed() >= Duration::from_millis(3200)
+            && self.menu_opened.elapsed() >= Duration::from_millis(1200)
+            && !self.shelves[self.active].is_scrolling()
+            && self.cart_render.is_idle();
+        CAROUSEL_QUIET.store(quiet, Ordering::Release);
     }
 }
 
@@ -5542,6 +5558,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSurfaceCreated(
         *RA_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = None;
         RA_NOTICES.lock().unwrap_or_else(|e| e.into_inner()).clear();
         PLAYING.store(false, Ordering::Release);
+        CAROUSEL_QUIET.store(false, Ordering::Release);
         SAMPLE_RATE.store(0, Ordering::Release);
         let (version, snapshot) = {
             let state = LIBRARY.lock().unwrap_or_else(|err| err.into_inner());
@@ -5836,6 +5853,13 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeExternalReturn(
 
 /// Choreographer pacing experiment: this is only a render-request policy.
 /// The underlying libretro emulation budget remains RESPONSIVE (one frame).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeCarouselQuiet(
+    _env: *mut c_void, _activity: *mut c_void,
+) -> u8 {
+    u8::from(CAROUSEL_QUIET.load(Ordering::Acquire))
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDisplaySyncEnabled(
     _env: JNIEnv<'_>, _this: JObject<'_>,

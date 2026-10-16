@@ -548,7 +548,11 @@ fn run(
                 warned_gap: false,
             });
         }
-        match frames.recv_timeout(Duration::from_millis(5)) {
+        // No frame evaluation exists on the empty shelf. Sleep longer instead
+        // of waking the evaluator 200 times/s. Gameplay retains its 5ms path;
+        // the independent HTTP/cache worker remains untouched.
+        let wait = if playing.is_some() { 5 } else { 100 };
+        match frames.recv_timeout(Duration::from_millis(wait)) {
             Ok(frame) => {
                 evaluate(frame, &mut playing, &store, &notices, &mut unsaved);
             }

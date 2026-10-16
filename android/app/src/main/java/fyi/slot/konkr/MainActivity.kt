@@ -105,6 +105,7 @@ class MainActivity : Activity() {
     external fun nativeExitGame()
     external fun nativeSuspend()
     external fun nativeIsPlaying(): Boolean
+    external fun nativeCarouselQuiet(): Boolean
     external fun nativeCanRefreshLibrary(): Boolean
     external fun nativeAudioSampleRate(): Int
     external fun nativeAudioQueuedShorts(): Int
@@ -171,6 +172,9 @@ class MainActivity : Activity() {
     private val vibrator by lazy { getSystemService(VIBRATOR_SERVICE) as? Vibrator }
     private var lastRumbleAt = 0L
     @Volatile private var resumed = false
+    private val raSmartForeground = java.lang.Object()
+    private var carouselDozing = false
+    private var lastCarouselHeartbeat = 0L
     private var returnFromSlotChild = false
     private lateinit var performanceHud: TextView
     private lateinit var shelfStatus: SlotStatusIndicators
@@ -204,6 +208,37 @@ class MainActivity : Activity() {
         } else {
             Choreographer.getInstance().removeFrameCallback(vsyncCallback)
             view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+        }
+    }
+
+    // The engine still runs every frame while animating, scrolling, playing,
+    // or preparing cartridge art. A settled shelf is refreshed at 4 Hz for
+    // clocks, library scans and asynchronous UI changes.
+    private fun wakeCarouselRender() {
+        if (!::view.isInitialized || !resumed) return
+        if (carouselDozing) {
+            carouselDozing = false
+            view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+        }
+        view.requestRender()
+    }
+
+    private fun updateCarouselPacing() {
+        if (!::view.isInitialized || !resumed) return
+        val canDoze = !displaySyncApplied && !nativeIsPlaying() && nativeCarouselQuiet()
+        if (!canDoze) {
+            if (carouselDozing) wakeCarouselRender()
+            return
+        }
+        if (!carouselDozing) {
+            carouselDozing = true
+            lastCarouselHeartbeat = SystemClock.uptimeMillis()
+            view.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+        }
+        val now = SystemClock.uptimeMillis()
+        if (now - lastCarouselHeartbeat >= 250L) {
+            lastCarouselHeartbeat = now
+            view.requestRender()
         }
     }
 
@@ -332,6 +367,8 @@ class MainActivity : Activity() {
     }
     private val pulse = object : Runnable {
         override fun run() {
+            // No 100ms UI supervision after the Activity loses foreground.
+            if (!resumed || isDestroyed) return
             // Changed ROM indexes are applied only when the GL engine is
             // back on its idle carousel, never during a game or its launch.
             publishPendingLibraryIfIdle()
@@ -344,52 +381,13 @@ class MainActivity : Activity() {
             }
             pollRumble()
             updateDisplaySyncMode()
+            updateCarouselPacing()
             if (resumed && nativeIsPlaying()) {
                 if (!audioRunning.get()) startAudio()
             } else if (audioRunning.get()) {
                 stopAudio()
             }
-            // Flush requests before accepting a new ROM launch to preserve
-            // save-before-load ordering on the single storage worker.
-            var completed = nativePollSaveFlush()
-            while (completed != null) {
-                try {
-                    val payload = JSONObject(completed)
-                    val uri = payload.getString("uri")
-                    val core = when (payload.getString("core")) {
-                        "gpsp" -> "gpSP"
-                        else -> "mGBA"
-                    }
-                    val target = activeTargets[uri]
-                    if (target != null && target.core == core) {
-                        gameLoader.execute {
-                            val stamp = payload.optString("manual_stamp", "")
-                            val failures = if (stamp.isNotEmpty()) {
-                                RetroArchStorage.exportManualState(this@MainActivity, target, stamp)
-                            } else {
-                                RetroArchStorage.exportAfterSave(this@MainActivity, target)
-                            }
-                            if (failures.isNotEmpty()) {
-                                runOnUiThread {
-                                    if (!isDestroyed) {
-                                        Log.w(TAG, "Save export warnings: " + failures.joinToString(" | "))
-                                        val onlyMirrors = failures.all {
-                                            it.startsWith("Shared GBA save sync deferred")
-                                        }
-                                        val notice = if (onlyMirrors)
-                                            "Game saved locally. mGBA/gpSP copy deferred."
-                                        else "Game saved locally; some external/state exports need attention."
-                                        SlotToast.makeText(this@MainActivity, notice, Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch (error: Exception) {
-                    Log.e(TAG, "Invalid save sync notification", error)
-                }
-                completed = nativePollSaveFlush()
-            }
+            drainPendingSaveFlush()
             val request = nativePollLaunchUri()
             if (request != null) {
                 raLaunchPending = true
@@ -529,9 +527,56 @@ class MainActivity : Activity() {
                 // Ejection cleanup is edge-triggered above, not performed
                 // every idle/loading poll (which suppressed RA in Beta19).
             }
-            if (!isDestroyed) uiHandler.postDelayed(this, 100L)
+            if (!isDestroyed && resumed) uiHandler.postDelayed(this, 100L)
         }
     }
+    // Runs on the main thread, queueing real storage I/O on gameLoader.
+    // Called at the 100ms foreground pulse AND after the final suspend save,
+    // so stopping the UI timer cannot strand an export until next resume.
+    private fun drainPendingSaveFlush() {
+        // Flush requests before accepting a new ROM launch to preserve
+        // save-before-load ordering on the single storage worker.
+        var completed = nativePollSaveFlush()
+        while (completed != null) {
+            try {
+                val payload = JSONObject(completed)
+                val uri = payload.getString("uri")
+                val core = when (payload.getString("core")) {
+                    "gpsp" -> "gpSP"
+                    else -> "mGBA"
+                }
+                val target = activeTargets[uri]
+                if (target != null && target.core == core) {
+                    gameLoader.execute {
+                        val stamp = payload.optString("manual_stamp", "")
+                        val failures = if (stamp.isNotEmpty()) {
+                            RetroArchStorage.exportManualState(this@MainActivity, target, stamp)
+                        } else {
+                            RetroArchStorage.exportAfterSave(this@MainActivity, target)
+                        }
+                        if (failures.isNotEmpty()) {
+                            runOnUiThread {
+                                if (!isDestroyed) {
+                                    Log.w(TAG, "Save export warnings: " + failures.joinToString(" | "))
+                                    val onlyMirrors = failures.all {
+                                        it.startsWith("Shared GBA save sync deferred")
+                                    }
+                                    val notice = if (onlyMirrors)
+                                        "Game saved locally. mGBA/gpSP copy deferred."
+                                    else "Game saved locally; some external/state exports need attention."
+                                    SlotToast.makeText(this@MainActivity, notice, Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "Invalid save sync notification", error)
+            }
+            completed = nativePollSaveFlush()
+        }
+    }
+
     private val scanSerial = AtomicInteger()
     private var lastStatusPoll: Long = -15000L
     // Fixed native shelf states mirror SHELF_STATUS_TEXT in runtime.rs.
@@ -828,7 +873,10 @@ class MainActivity : Activity() {
             }
             return super.onKeyDown(keyCode, event)
         }
-        if (event.repeatCount == 0) nativeKey(keyCode, true)
+        if (event.repeatCount == 0) {
+            wakeCarouselRender()
+            nativeKey(keyCode, true)
+        }
         return true
     }
 
@@ -838,12 +886,14 @@ class MainActivity : Activity() {
             Log.i(TAG, "KONKR MENU BTN_MODE up: Android code=" + keyCode)
         }
         if (keyCode !in BUTTONS) return super.onKeyUp(keyCode, event)
+        wakeCarouselRender()
         nativeKey(keyCode, false)
         return true
     }
 
     @Deprecated("Android 12 back key")
     override fun onBackPressed() {
+        wakeCarouselRender()
         if (nativeIsPlaying()) {
             nativeExitGame()
         } else {
@@ -1280,7 +1330,18 @@ class MainActivity : Activity() {
                     if (caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) != true)
                         return@execute
                     RaSmartCache.indexAndPrefetch(applicationContext, filesDir,
-                        isPlaying = { nativeIsPlaying() || !resumed },
+                        isPlaying = { nativeIsPlaying() },
+                        awaitForeground = {
+                            // While Android is asleep, keep already submitted HTTP
+                            // cache downloads going, but park the SAF indexer.
+                            synchronized(raSmartForeground) {
+                                while (!resumed && !Thread.currentThread().isInterrupted) {
+                                    raSmartForeground.wait()
+                                }
+                            }
+                            if (Thread.currentThread().isInterrupted)
+                                throw InterruptedException()
+                        },
                         submit = { hash, console -> nativeRaPrefetchHash(hash, console) })
                 } catch (_: Exception) {
                     Log.w(TAG, "RA Smart Cache indexing postponed")
@@ -2129,6 +2190,7 @@ class MainActivity : Activity() {
         raSmartWorker.shutdownNow()
         gameLoader.shutdownNow()
         uiHandler.removeCallbacks(pulse)
+        synchronized(raSmartForeground) { raSmartForeground.notifyAll() }
         if (::raAchievementOverlay.isInitialized) raAchievementOverlay.destroy()
         if (::shelfStatus.isInitialized) shelfStatus.close()
         stopAudio()
@@ -2138,6 +2200,8 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         resumed = false
+        uiHandler.removeCallbacks(pulse)
+        carouselDozing = false
         // Rust nativeSuspend aborts discovery/linked play; never keep a
         // multicast lock across Android background sleep.
         releaseLinkMulticast()
@@ -2158,6 +2222,8 @@ class MainActivity : Activity() {
             Thread.currentThread().interrupt()
         }
         view.onPause()
+        // The final SRAM write above can enqueue a RetroArch/Sync export.
+        drainPendingSaveFlush()
         nativeResetInput()
         super.onPause()
     }
@@ -2171,6 +2237,11 @@ class MainActivity : Activity() {
             nativeExternalReturn()
         }
         resumed = true
+        synchronized(raSmartForeground) { raSmartForeground.notifyAll() }
+        carouselDozing = false
+        view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+        uiHandler.removeCallbacks(pulse)
+        uiHandler.post(pulse)
         if (::shelfStatus.isInitialized) shelfStatus.onResume()
         // Android's quick settings may return without a fresh onAvailable().
         // Waking a retry is safe even when no network is present.

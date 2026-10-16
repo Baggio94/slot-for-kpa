@@ -127,6 +127,10 @@ impl CartRender {
         })
     }
 
+    /// The shelf may reduce its display rate only after every requested face
+    /// was consumed on the GL thread. Workers never depend on a running GL loop.
+    pub(crate) fn is_idle(&self) -> bool { self.pending.is_empty() }
+
     pub(crate) fn queued(&self, key: Key) -> bool {
         self.epochs.get(key.0).is_some_and(|epoch| self.pending.contains(&(key, *epoch)))
     }

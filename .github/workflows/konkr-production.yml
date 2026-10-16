@@ -150,8 +150,8 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "package: name='fyi.slot.konkr' versionCode='106'" "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "versionName='0.2.1'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='107'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "versionName='0.2.2'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
           for core in slot_android mgba_libretro gpsp_libretro; do
@@ -164,7 +164,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-0.2.1-arm64-signed
+          name: slot-for-konkr-0.2.2-arm64-signed
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
   publish:
@@ -184,11 +184,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_NAME" = 'konkr-v0.2.1'
-          apk=release-assets/slot-for-konkr-0.2.1-arm64.apk
+          test "$GITHUB_REF_NAME" = 'konkr-v0.2.2'
+          apk=release-assets/slot-for-konkr-0.2.2-arm64.apk
           mv release-assets/app-release.apk "$apk"
           (cd release-assets && sha256sum "$(basename "$apk")" > SHA256SUMS.txt)
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::Refusing to overwrite an existing release"; exit 1
           fi
-          gh release create "$GITHUB_REF_NAME" "$apk" release-assets/SHA256SUMS.txt             --repo "$GITHUB_REPOSITORY" --verify-tag --latest             --title "slot. for KONKR Pocket Advance 0.2.1"             --notes-file RELEASE-NOTES.md
+          gh release create "$GITHUB_REF_NAME" "$apk" release-assets/SHA256SUMS.txt             --repo "$GITHUB_REPOSITORY" --verify-tag --latest             --title "slot. for KONKR Pocket Advance 0.2.2"             --notes-file RELEASE-NOTES.md

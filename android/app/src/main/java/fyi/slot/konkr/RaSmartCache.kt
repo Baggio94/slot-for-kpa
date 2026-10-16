@@ -97,6 +97,7 @@ internal object RaSmartCache {
         context: Context,
         root: File,
         isPlaying: () -> Boolean,
+        awaitForeground: () -> Unit,
         submit: (String, Int) -> Unit,
     ) {
         val shelf = File(root, "rom-library-cache-v1.json")
@@ -111,6 +112,8 @@ internal object RaSmartCache {
         var fresh = 0
         for (i in 0 until entries.length().coerceAtMost(MAX_ROMS)) {
             if (Thread.currentThread().isInterrupted) break
+            // Suspend SAF fingerprinting without polling once the screen is off.
+            awaitForeground()
             val item = entries.optJSONObject(i) ?: continue
             val console = when (item.optString("platform")) {
                 "GB" -> 4
@@ -133,9 +136,11 @@ internal object RaSmartCache {
                     // Never block emulation startup or enqueue messages while
                     // the Activity's GLSurfaceView is paused in the background.
                     while (isPlaying()) {
+                        awaitForeground()
                         if (Thread.currentThread().isInterrupted) return
                         Thread.sleep(1200)
                     }
+                    awaitForeground()
                     submit(hash, console)
                     Thread.sleep(60) // prevent filling GL input during a 5k-game scan
                 }
