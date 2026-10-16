@@ -95,7 +95,7 @@ Simply install the newer APK over your existing installation. **Do not uninstall
 
 ## Controls & Hotkeys
 
-<p align="center"><img src=".github/resources/konkr-slot-keycap-v2.svg" alt="slot. button" height="54" /></p>
+<p align="center"><img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="54" /></p>
 
 The KONKR's round top button is called **slot.** in this port. Since it controls the cartridge experience rather than Android's Home screen, **slot.** felt like the most fitting name. Press it to insert a cartridge, or hold it while playing to save and eject it.
 
@@ -106,8 +106,8 @@ The KONKR's round top button is called **slot.** in this port. Since it controls
 | <kbd>←</kbd> / <kbd>→</kbd> | Browse cartridges |
 | <kbd>↑</kbd> / <kbd>↓</kbd> | Jump to the next or previous letter |
 | <kbd>L1</kbd> / <kbd>R1</kbd> | Switch between GBA, GB and GBC shelves |
-| <img src=".github/resources/konkr-slot-keycap-v2.svg" alt="slot. button" height="22" align="middle" /> / <kbd>A</kbd> | Insert a cartridge and resume |
-| Hold <img src=".github/resources/konkr-slot-keycap-v2.svg" alt="slot. button" height="22" align="middle" /> / <kbd>A</kbd> | Start a game fresh |
+| <img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="18" align="top" /> / <kbd>A</kbd> | Insert a cartridge and resume |
+| Hold <img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="18" align="top" /> / <kbd>A</kbd> | Start a game fresh |
 | <kbd>Y</kbd> | Add or remove a favorite |
 | <kbd>X</kbd> | Open the selected cartridge in Cart Studio |
 | <kbd>SELECT</kbd> | Choose between mGBA and gpSP (GBA only) |
@@ -117,10 +117,10 @@ The KONKR's round top button is called **slot.** in this port. Since it controls
 
 | Button | Action |
 |---|---|
-| Tap <img src=".github/resources/konkr-slot-keycap-v2.svg" alt="slot. button" height="22" align="middle" /> | Open or close the in-game menu |
-| Double-tap <img src=".github/resources/konkr-slot-keycap-v2.svg" alt="slot. button" height="22" align="middle" /> | Open the Save State Switcher |
-| Hold <img src=".github/resources/konkr-slot-keycap-v2.svg" alt="slot. button" height="22" align="middle" /> | Save and eject the cartridge |
-| <kbd>SELECT</kbd> + <img src=".github/resources/konkr-slot-keycap-v2.svg" alt="slot. button" height="22" align="middle" /> | Open Multiplayer |
+| Tap <img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="18" align="top" /> | Open or close the in-game menu |
+| Double-tap <img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="18" align="top" /> | Open the Save State Switcher |
+| Hold <img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="18" align="top" /> | Save and eject the cartridge |
+| <kbd>SELECT</kbd> + <img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="18" align="top" /> | Open Multiplayer |
 | <kbd>SELECT</kbd> + <kbd>R1</kbd> | Create a save state |
 | <kbd>SELECT</kbd> + <kbd>L1</kbd> | Load the latest save state |
 | Hold <kbd>R2</kbd> | Fast-forward |
@@ -209,7 +209,7 @@ slot. supports multiplayer over local Wi-Fi, with two emulation cores:
 
 1. Connect both devices to the same Wi-Fi network.
 2. Launch compatible games using the same emulator core.
-3. Press <kbd>SELECT</kbd> + <img src=".github/resources/konkr-slot-keycap-v2.svg" alt="slot. button" height="22" align="middle" /> or open **Pause → Multiplayer**.
+3. Press <kbd>SELECT</kbd> + <img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="18" align="top" /> or open **Pause → Multiplayer**.
 4. Choose **Host** on one device and **Join** on the other.
 5. Once connected, enjoy multiplayer!
 
