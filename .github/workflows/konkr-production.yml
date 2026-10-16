@@ -12,7 +12,8 @@ permissions:
 jobs:
   arm64-apk:
     # Avoid a redundant native build for the one-shot release-visibility fix.
-    if: ${{ github.event_name != 'push' || github.event.head_commit.message != 'chore: hide internal beta2 release' }}
+    if: >-
+      github.event_name != 'push' || github.event.head_commit.message != 'chore: hide internal beta2 release'
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
