@@ -378,6 +378,7 @@ fn run(
     let mut unsaved = BTreeMap::new();
     let mut retried = Instant::now();
     let mut presence_updated = Instant::now();
+    let mut last_frame_received = Instant::now();
     loop {
         if retried.elapsed() >= Duration::from_secs(1) {
             retry_unsaved(&mut unsaved, &store, &notices);
@@ -548,12 +549,17 @@ fn run(
                 warned_gap: false,
             });
         }
-        // No frame evaluation exists on the empty shelf. Sleep longer instead
-        // of waking the evaluator 200 times/s. Gameplay retains its 5ms path;
-        // the independent HTTP/cache worker remains untouched.
-        let wait = if playing.is_some() { 5 } else { 100 };
+        // Keep normal 5ms responsiveness during gameplay. When Android
+        // suspends the GL thread and no frames arrive, park for up to 40ms
+        // (still below the 8-frame queue at 120Hz). On the empty shelf the
+        // evaluator only needs a 100ms control wakeup. HTTP prefetch proceeds
+        // independently while the device is awake.
+        let wait = if playing.is_none() { 100 }
+            else if last_frame_received.elapsed() > Duration::from_millis(250) { 40 }
+            else { 5 };
         match frames.recv_timeout(Duration::from_millis(wait)) {
             Ok(frame) => {
+                last_frame_received = Instant::now();
                 evaluate(frame, &mut playing, &store, &notices, &mut unsaved);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => return,

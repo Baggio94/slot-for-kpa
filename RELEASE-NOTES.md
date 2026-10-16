@@ -1,20 +1,22 @@
-# slot. for KONKR Pocket Advance — 0.2.1
+# slot. for KONKR Pocket Advance — 0.2.2
 
-First independent KONKR ARM64-only production release candidate, promoted from the tested `slot-konkr` QA105 feature set.
+Battery and resource-efficiency candidate for the dedicated KONKR ARM64 build.
 
-## Included
+## Changes since 0.2.1
 
-- New-user onboarding in original Slot keycap style: press START, select Library, add unzipped ROMs only
-- First-install preferences: Dark / no wallpaper, LCD3x GBA/GB/GBC, Display Sync, one-frame Run-Ahead and opt-in system indicators
-- Persistent compressed cartridge artwork cache, 160 GPU faces and smooth scrolling prioritization
-- Ten GBA screen shader presets plus Off, including Dot defaults and LCD3x
-- Cart Studio, RetroAchievements online/offline, per-game profiles, mGBA/gpSP, compatible save states, Link/RFU where supported
-- **ARM64-v8a APK only**, no Mac AVD keyboard code or x86_64 binaries
+- Adaptive idle carousel rendering: the original smooth, continuous Slot animation and full-speed scrolling stay unchanged. Only a stationary, menu-free shelf with no queued cartridge artwork uses a lightweight 4 Hz refresh; every controller input immediately restores continuous rendering.
+- Unchanged cartridge-face priority, two raster workers, prefetch radius and compressed LZ4 disk cache. Games and Display Sync never use the idle-carousel throttle.
+- Android foreground-only 100ms UI pulse: Android suspends this monitoring when backgrounded, resuming immediately with the activity.
+- Preserve suspend-time SRAM, RTC and RetroArch exports by draining queued save notifications after the final native suspend.
+- RetroAchievements online/offline cache fetching continues through its existing independent network worker; background SAF fingerprinting parks without repeated wakeups while the activity is paused and resumes promptly.
+- The achievement evaluator reduces idle timer wakeups on the shelf and when Android stops supplying game frames, while retaining its 5 ms gameplay path and the 8-frame queue.
+- Run-Ahead remains exactly as before; default 1 frame and all existing game/core guards are unchanged.
 
-## Upgrade
+## Upgrade and verification
 
-Android package `fyi.slot.konkr`; `versionName 0.2.1`, `versionCode 106`. The APK is signed with the established permanent certificate. Install over 0.2.0 / QA105 to preserve data, never uninstall to update.
+Package: `fyi.slot.konkr` · Version: `0.2.2` · Android `versionCode 107` · ARM64-v8a only.
+The established persistent signing certificate must remain unchanged; use `adb -d install -r` over 0.2.1. Never uninstall to upgrade.
 
-The GPL-3.0 corresponding source, original Slot credits, core and shader attributions are included in this repository. No ROMs or BIOS are bundled.
+Before publishing a public release, verify the GitHub Actions build and certificate, test a physical KONKR (scrolling, fast system changes, artwork availability, RA background caching, game audio, save/export on suspend, deep sleep and immediate D-pad wake), and compare battery/CPU measurements to 0.2.1. This candidate is not a claim of measured battery improvement.
 
-**Before public publishing:** validate this exact ARM64 build on a physical KONKR, confirm the signing certificate, and review the changelog and GitHub release assets. Work-in-progress code in the development lab is not a public release.
+No ROMs or BIOS are bundled. Credits and GPL-3.0 corresponding sources remain in the repository.
