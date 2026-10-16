@@ -1,0 +1,36 @@
+/target
+**/*.rs.bk
+*.pdb
+
+/CLAUDE.md
+/.ralph/
+/.superpowers/
+
+/vendor
+/sdcard
+/dist
+*.dylib
+*.so
+
+.DS_Store
+/.idea/
+/target-device
+/target-verify
+/dist-device
+
+# Parallel implementation worktrees, never content.
+/.worktrees
+.superpowers/
+
+# Android bootstrap build outputs
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/local.properties
+/android/app/src/main/jniLibs/
+
+# Local Android core build products and temporary pinned Studio checkout.
+# The signed APK bundles only the selected packaged assets and native libs.
+/.build/
+/studio-upstream/

@@ -1,0 +1,29 @@
+[package]
+name = "slot-cart-studio"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+crc32fast = "1"
+fontdue = "0.9"
+png = "0.17"
+resvg = { version = "0.48", default-features = false }
+unicode-normalization = "0.1"
+usvg = { version = "0.48", default-features = false }
+wasm-bindgen = "0.2"
+# From the slot checkout beside this one, through a shim that answers `gb::class` from memory.
+# `Cart` is what slot's `cart_face` takes.
+slot_store = { package = "slot-store-shim", path = "shim/slot-store" }
+slot_gfx = { package = "slot-gfx-shim", path = "shim/slot-gfx" }
+
+# Native only. slot-ui cannot build for wasm32; it is here so the tests can hold every face
+# the studio draws to the one slot draws.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+slot-ui = { path = "../slot/crates/slot-ui" }
+tempfile = "3"

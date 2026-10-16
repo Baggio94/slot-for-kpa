@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Retain Slot's original Material NoActionBar activity behavior. -->
+    <style name="Theme.SlotKonkr" parent="@android:style/Theme.Material.NoActionBar" />
+</resources>

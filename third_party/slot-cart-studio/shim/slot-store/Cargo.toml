@@ -1,0 +1,11 @@
+[package]
+name = "slot-store-shim"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "slot_store"
+
+[dependencies]
+slot_store_real = { package = "slot-store", path = "../../../slot/crates/slot-store" }

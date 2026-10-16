@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Approximation of slot_ui::ease quintic smoothstep for Android windows.
+     The native Rust menus remain the canonical 160 ms easing reference. -->
+<pathInterpolator xmlns:android="http://schemas.android.com/apk/res/android"
+    android:controlX1="0.77" android:controlY1="0.0"
+    android:controlX2="0.23" android:controlY2="1.0" />

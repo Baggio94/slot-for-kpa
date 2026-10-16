@@ -1,0 +1,28 @@
+slot's screen shaders are ports of shaders from the libretro shader collection
+https://github.com/libretro/glsl-shaders
+
+LCD3x by Gigaherz. Public domain.
+
+Dot by Themaister. Public domain.
+Changes: sharper dots (falloff 4.0) and a 0.85 blend.
+
+zfast_lcd_standard by Greg Hogan (SoltanGris42), copyright (C) 2017.
+GNU General Public License version 2 or later.
+
+simpletex_lcd by jdgleaver, using the line weighting of zfast_lcd_standard.
+GNU General Public License version 2 or later.
+The paper texture (assets/paper.png, a 1024x1024 crop of textured_paper.png) is from the same shader.
+Changes: the grid bias is 1.0, so black pixels carry no grid.
+
+Additional GBA shader presets (QA code101):
+LCD Grid V2 by cgwg (libretro GPL-compatible shaders).
+GBA Color by hunterk, modified by Pokefan531. Public domain.
+LCD1x and Simpletex LCD + GBA Color by jdgleaver. GPLv2-or-later.
+zfast-lcd by Greg Hogan (SoltanGris42). GPLv2-or-later.
+AGB-001 and AGS-001 by endrift. Mozilla Public License 2.0.
+Sharp Bilinear by Themaister. Public domain.
+Slot GLES2 ports of multi-pass shaders are approximations until pixel parity
+is validated on KONKR. Preset parameter values are preserved.
+Source: https://github.com/libretro/glsl-shaders/tree/master/handheld
+
+slot itself is GNU General Public License version 3 or later, which these licenses permit.

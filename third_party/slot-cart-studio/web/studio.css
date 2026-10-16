@@ -1,0 +1,320 @@
+/* slot's palette and masthead, from slot's site/style.css, so the studio reads as one of its pages.
+   The --shell-* tones are slot's silver RG SP: the current shelf tab, and what is picked or outlined. */
+:root{
+  --housing:#242429;
+  --recess:#1a1a1d;
+  --opening:#050508;
+  --page:#1b1b21;
+  --edge:#4d4d57;
+  --ink:#f4f5f9;
+  --muted:#bcbdc9;
+  --rule:#3a3a46;
+  --shell-light:#e2e5e9;
+  --shell-base:#b8bcc2;
+  --shell-accent:#b8bcc2;
+  --shell-ink:#2b2e33;
+  --error:#ff4d4d;
+  --error-ground:#3a1416;
+  --mast-h:60px;
+  --panel:380px;
+  /* The platform tabs and the write button beside them stand this tall on the shelf's edge. */
+  --shelf-row:42px;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+
+*{box-sizing:border-box}
+/* A key sets display, which would otherwise beat the hidden attribute. */
+[hidden]{display:none !important}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  background:var(--page);
+  color:var(--ink);
+  font:400 17px/1.6 "Open Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--ink)}
+.visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+
+/* ------------------------------------------------------------ masthead --- */
+
+.mast{
+  position:sticky;
+  top:0;
+  z-index:40;
+  display:grid;
+  grid-template-columns:1fr minmax(0,auto) 1fr;
+  align-items:center;
+  gap:clamp(12px,3vw,32px);
+  min-height:var(--mast-h);
+  padding:0 clamp(16px,3vw,32px);
+  background:color-mix(in srgb,var(--page) 88%,transparent);
+  backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--rule);
+}
+.mast-mark{font-weight:700;font-size:22px;color:var(--ink);text-decoration:none;letter-spacing:-.02em;justify-self:start}
+.mast-links{display:flex;gap:2px;justify-content:center}
+.mast-links a{padding:9px 14px;font-size:16px;font-weight:600;color:var(--muted);text-decoration:none;white-space:nowrap;border-radius:8px;transition:color .2s ease,background .2s ease}
+.mast-links a:hover{color:var(--ink)}
+/* The studio is the page you are on, lit as slot's site lights its selected section. */
+.mast-links a[aria-current="page"]{color:var(--ink);background:var(--rule)}
+.mast-links a:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.menu-btn{display:none;appearance:none;background:none;border:1px solid var(--rule);border-radius:8px;width:40px;height:36px;place-items:center;color:var(--ink);cursor:pointer;justify-self:end}
+.menu-btn:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.menu-bars,.menu-bars::before,.menu-bars::after{display:block;width:17px;height:2px;border-radius:2px;background:currentColor}
+.menu-bars{position:relative}
+.menu-bars::before,.menu-bars::after{content:"";position:absolute;left:0}
+.menu-bars::before{top:-6px}
+.menu-bars::after{top:6px}
+@media (max-width:880px){
+  .mast{padding:0 14px;gap:12px;grid-template-columns:1fr auto}
+  .mast-mark{font-size:19px}
+  .menu-btn{display:grid}
+  .mast-links{position:absolute;top:100%;left:0;right:0;display:none;flex-direction:column;gap:2px;padding:8px;background:var(--page);border-bottom:1px solid var(--rule);box-shadow:0 18px 34px rgba(0,0,0,.55)}
+  .mast-links.is-open{display:flex}
+  .mast-links a{padding:13px 14px}
+}
+
+/* ----------------------------------------------------------------- keys --- */
+
+/* The page's own action is slot's hero button, from slot's site/style.css. */
+.btn{
+  display:inline-block;
+  padding:13px 22px;
+  border-radius:8px;
+  font-family:inherit;
+  font-weight:600;
+  font-size:16px;
+  line-height:1.2;
+  text-decoration:none;
+  background:var(--ink);
+  color:var(--opening);
+  border:1px solid var(--ink);
+  cursor:pointer;
+  transition:transform .12s ease,background .12s ease;
+}
+.btn:hover{transform:translateY(-1px)}
+.btn:disabled{opacity:.45;cursor:default;transform:none}
+.btn.busy{position:relative;overflow:hidden}
+.btn.busy:disabled{opacity:1}
+.btn.busy::before,.btn.busy::after{content:"";position:absolute;left:10px;bottom:6px;height:3px;border-radius:2px}
+.btn.busy::before{right:10px;background:color-mix(in srgb,var(--opening) 15%,transparent)}
+.btn.busy::after{width:calc((100% - 20px) * var(--done));background:var(--opening);transition:width .35s ease-out}
+.btn:focus-visible,label.btn:focus-within{outline:2px solid var(--ink);outline-offset:3px}
+
+/* The editor's buttons are keys moulded in dark housing: lit along the top, shaded beneath. */
+.key{
+  display:inline-block;
+  padding:8px 14px 9px;
+  border:0;
+  border-radius:5px;
+  font:inherit;
+  font-weight:600;
+  font-size:14px;
+  line-height:1.2;
+  text-decoration:none;
+  color:var(--ink);
+  text-shadow:0 -1px 0 rgba(0,0,0,.6);
+  background:linear-gradient(180deg,#3d3d45,#2c2c32);
+  box-shadow:0 2px 0 #131316,inset 0 1px 0 #4b4b54;
+  cursor:pointer;
+  transition:transform .08s ease,box-shadow .08s ease;
+}
+.key:active,.key[aria-pressed="true"]{transform:translateY(2px);background:#1d1d22;color:var(--shell-accent);box-shadow:inset 0 2px 4px rgba(0,0,0,.75)}
+.key:disabled{opacity:.45;cursor:default;transform:none}
+.key:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+
+/* ---------------------------------------------------------------- page --- */
+
+.wrap{max-width:1180px;margin:0 auto;padding:clamp(28px,5vh,48px) 24px}
+.title{font-size:clamp(40px,7vw,64px);font-weight:700;letter-spacing:-.045em;line-height:1.05;margin:0}
+.intro{text-align:center}
+.actions{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;margin-top:22px}
+.banner{margin:24px 0 0;padding:14px 16px;border:1px solid var(--error);border-radius:6px;background:var(--error-ground);box-shadow:inset 0 1px 3px rgba(0,0,0,.7)}
+.banner:not([hidden]){display:flex;align-items:center;gap:10px}
+.banner .message{position:relative;padding-left:30px}
+.banner .message::before{content:"";position:absolute;left:0;top:calc((1lh - 20px) / 2);width:20px;height:20px;background:var(--error);-webkit-mask:var(--warn) center/contain no-repeat;mask:var(--warn) center/contain no-repeat;--warn:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2 1 21h22L12 2zm-1 7h2v6h-2V9zm0 8h2v2h-2v-2z'/%3E%3C/svg%3E")}
+.banner .copy-log{margin-left:auto;flex:none}
+.progress{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:24px 0 0;color:var(--muted);font-size:15px}
+.progress progress{width:min(320px,100%);accent-color:var(--shell-accent)}
+.loader{display:flex;flex-direction:column;align-items:center;gap:16px;margin:64px 0;color:var(--muted);font-size:15px;text-align:center;overflow-wrap:anywhere}
+.spinner{width:40px;height:40px;border:3px solid var(--housing);border-top-color:var(--shell-accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+body.loading #grid,body.loading .shelf-bar,body.loading #progress{display:none}
+/* The platform tabs and the write button share one row, pinned under the masthead so the button
+   stays with the choices you just made while the carts scroll beneath. The shelf's edge runs
+   under both. */
+.shelf-bar{position:sticky;top:var(--mast-h);z-index:10;display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin-top:24px;padding-top:12px;background:var(--page);border-bottom:3px solid var(--housing)}
+.shelf-bar:not(:has(> :not([hidden]))){display:none}
+.write-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:14px;margin-left:auto}
+.write-bar .eject{color:var(--muted);font-size:15px}
+.write-bar .btn{display:inline-flex;align-items:center;height:var(--shelf-row);padding-top:0;padding-bottom:0}
+.fill-open{margin:0 0 6px auto}
+.fill-open:not([hidden])+.write-bar{margin-left:0}
+.fill{max-width:min(520px,calc(100vw - 32px));padding:22px;border:0;border-radius:12px;background:var(--housing);color:var(--ink);box-shadow:0 24px 60px rgba(0,0,0,.6)}
+.fill::backdrop{background:rgba(10,10,14,.72)}
+.fill h2{margin:0 0 6px;font-size:19px}
+.fill p{margin:0 0 16px;color:var(--muted);font-size:14px;line-height:1.5}
+.fill p.fill-question{color:var(--ink);font-size:15px}
+.fill-choices{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.fill-choice{display:flex;flex-direction:column;gap:4px;padding:10px;border:2px solid transparent;border-radius:9px;background:var(--recess);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.fill:focus{outline:0}
+.fill-choice:hover{border-color:var(--shell-accent)}
+.fill-choice:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.fill-choice canvas{width:100%;height:auto;margin-bottom:6px;image-rendering:pixelated}
+.fill-choice b{font-size:15px}
+.fill-choice small{color:var(--muted);font-size:12px;line-height:1.4}
+
+/* One tab per platform on the card, each the top edge of a cart standing on the shelf. */
+.shelf-tabs{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.shelf-tab{
+  padding:11px 18px 8px;
+  border:0;
+  border-radius:9px 9px 0 0;
+  font:inherit;
+  font-size:15px;
+  font-weight:600;
+  color:var(--muted);
+  background:linear-gradient(180deg,#34343c,var(--housing));
+  box-shadow:inset 0 1px 0 #45454e;
+  cursor:pointer;
+  height:var(--shelf-row);
+}
+.shelf-tab .n{margin-left:8px;font-weight:400;opacity:.7}
+.shelf-tab:hover{color:var(--ink)}
+.shelf-tab[aria-pressed="true"]{color:var(--shell-ink);background:linear-gradient(180deg,var(--shell-light),var(--shell-base));text-shadow:0 1px 0 color-mix(in srgb,var(--shell-light) 55%,transparent)}
+.shelf-tab:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+
+/* ---------------------------------------------------------------- shelf --- */
+
+/* One slot pixel is one CSS pixel, at every width and never a fraction: a cart is the size the
+   SP draws it, 240x135 of the 720x480 the device composites, and a blurred cart is no judge. */
+/* Every card the same height, whatever its title runs to, so the grid reads as rows of carts
+   rather than a ragged edge. */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,268px),1fr));grid-auto-rows:1fr;gap:18px;margin-top:22px}
+/* Each cart sits in a bay moulded into the housing. */
+.cart{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  min-width:0;
+  padding:12px 12px 14px;
+  border-radius:10px;
+  background:var(--housing);
+  box-shadow:inset 0 1px 0 #34343c,inset 0 -1px 0 #121216,0 1px 2px rgba(0,0,0,.4);
+}
+.cart[data-state="has-label"]{opacity:.72}
+.cart{cursor:pointer}
+.cart:hover{box-shadow:inset 0 1px 0 #34343c,inset 0 -1px 0 #121216,0 1px 2px rgba(0,0,0,.4),0 0 0 2px var(--rule)}
+.cart:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.face{display:grid;place-items:center;position:relative;min-height:151px;padding:8px 0;border-radius:6px;background:var(--recess);box-shadow:inset 0 2px 7px rgba(0,0,0,.8),inset 0 -1px 0 #2a2a31}
+.face.over{outline:2px dashed var(--shell-accent);outline-offset:-4px}
+/* Every cart is 240 wide, whatever it is: a Game Boy Game Pak is the same width as a GBA cart and
+   taller, so the height follows the canvas rather than being pinned to the GBA one. */
+.face canvas{width:240px;height:auto;image-rendering:pixelated}
+.stem{font-size:15px;font-weight:600;line-height:1.35;margin:8px 0 0;text-align:center;text-wrap:balance;overflow-wrap:anywhere}
+/* The fine print under a real label: product code and region. */
+.print{margin:0;text-align:center;font:12px/1.3 var(--mono);color:var(--muted)}
+.print:empty{display:none}
+/* Only while a cart has no face to show: being read, being looked up, or an error. */
+.game{margin:0;color:var(--muted);font-size:13px;text-align:center;overflow-wrap:anywhere}
+.game:empty{display:none}
+
+/* As wide as the shelf above it, rule and all, so the page ends on the same edges it runs on. */
+.credits{margin-top:56px;padding-top:20px;border-top:1px solid var(--rule);color:var(--muted);font-size:14px;line-height:1.6;text-align:center}
+.credits p{margin:0 0 10px}
+.credits a{color:var(--muted)}
+.credits a:hover{color:var(--ink)}
+
+/* --------------------------------------------------------------- editor --- */
+
+/* The editor sits beside the shelf, under the masthead, with the shelf dimmed and the cart being
+   edited outlined in silver. */
+body.editing{padding-right:var(--panel)}
+/* The masthead is the site's, not the shelf's, so it keeps the full width. */
+body.editing .mast{margin-right:calc(-1 * var(--panel))}
+body.editing .cart{cursor:pointer}
+body.editing .cart:not(.current){opacity:.45}
+.cart.current{opacity:1;outline:2px solid var(--shell-accent);outline-offset:2px}
+.editor{
+  position:fixed;
+  top:var(--mast-h);
+  right:0;
+  bottom:0;
+  z-index:30;
+  width:var(--panel);
+  overflow:auto;
+  padding:18px;
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+  background:linear-gradient(90deg,#27272d,var(--housing));
+  box-shadow:inset 1px 0 0 #3c3c45,-10px 0 28px rgba(0,0,0,.35);
+}
+.editor:focus{outline:none}
+.ed-head{display:flex;align-items:center;gap:8px}
+.ed-head h2{flex:1;min-width:0;margin:0;font-size:16px;font-weight:600;line-height:1.3;text-align:center;overflow-wrap:anywhere}
+.ed-icon{width:36px;height:36px;padding:0;display:grid;place-items:center;flex:none}
+/* The large cart sits in a deeper bay, like the SP's own cart slot. */
+.ed-face{display:block;width:100%;max-width:360px;height:auto;margin:0 auto;padding:10px;border-radius:8px;background:var(--recess);box-shadow:inset 0 3px 9px rgba(0,0,0,.85),inset 0 -1px 0 #2d2d34;image-rendering:pixelated}
+.props{display:flex;flex-direction:column;gap:12px}
+.props hr{width:100%;margin:2px 0;border:0;border-top:1px solid #1a1a1e;box-shadow:0 1px 0 #34343c}
+.prop{display:grid;grid-template-columns:96px 1fr;align-items:center;column-gap:12px}
+.prop>.k{color:var(--muted);font-size:14px}
+.prop>.v{min-width:0}
+/* Fields are wells set into the housing, the way the SP's screen is. */
+.field{width:100%;display:flex;align-items:center;gap:8px;padding:7px 10px;border:0;border-radius:5px;background:var(--recess);box-shadow:inset 0 1px 3px rgba(0,0,0,.85),inset 0 -1px 0 #2d2d34;color:var(--ink);font:inherit;font-size:14px;text-align:left;cursor:pointer}
+.field>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.field>i{flex:none;width:20px;height:20px;border-radius:4px;box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 1px 0 rgba(0,0,0,.6)}
+.field::after{content:"";flex:none;width:8px;height:8px;margin:-4px 4px 0 2px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg)}
+.field:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.field:disabled,.seg button:disabled{opacity:.45;cursor:default}
+/* A switch is a row of keys; the chosen one stays pressed in. */
+.seg{display:flex;flex-wrap:wrap;gap:5px}
+.seg button{padding:7px 12px 8px;border:0;border-radius:4px;font:inherit;font-size:14px;font-weight:600;color:var(--ink);text-shadow:0 -1px 0 rgba(0,0,0,.6);background:linear-gradient(180deg,#3d3d45,#2c2c32);box-shadow:0 2px 0 #131316,inset 0 1px 0 #4b4b54;cursor:pointer}
+.seg button[aria-pressed="true"]{transform:translateY(2px);background:#1d1d22;color:var(--shell-accent);box-shadow:inset 0 2px 4px rgba(0,0,0,.75)}
+.seg button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.pop{margin-top:8px;padding:10px;border-radius:6px;background:var(--recess);box-shadow:inset 0 1px 4px rgba(0,0,0,.8)}
+.pop input[type="search"]{width:100%;padding:8px 10px;border:0;border-radius:4px;background:var(--opening);box-shadow:inset 0 1px 3px rgba(0,0,0,.9);color:var(--ink);font:inherit;font-size:14px}
+.hits{list-style:none;margin:8px 0 0;padding:0;max-height:240px;overflow:auto}
+.hits:empty{display:none}
+.hits button{display:block;width:100%;padding:7px 9px;border:0;border-radius:4px;background:transparent;color:var(--ink);font:inherit;font-size:14px;text-align:left;cursor:pointer;overflow-wrap:anywhere}
+.hits button:hover,.hits button:focus-visible{background:var(--housing);outline:none}
+.hits .none{color:var(--muted)}
+/* Swatches are chips of the plastic itself. */
+.pal-grid{display:grid;grid-template-columns:repeat(auto-fill,26px);gap:7px}
+.pal-grid button{width:26px;height:26px;padding:0;border:0;border-radius:5px;box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -1px 0 rgba(0,0,0,.35),0 1px 2px rgba(0,0,0,.6);cursor:pointer}
+.pal-grid button[aria-pressed="true"]{outline:2px solid var(--shell-accent);outline-offset:2px}
+.pal-grid button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.pal-grid button[data-finish="clear"],.pal-grid button[data-finish="glitter"]{background-image:linear-gradient(135deg,rgba(255,255,255,.45) 0 22%,transparent 22% 100%)}
+.pal-break{grid-column:1/-1;height:1px;margin:2px 0;background:var(--rule)}
+.pal-grid+.pal-foot{margin-top:10px}
+.pal-foot{display:flex;flex-wrap:wrap;gap:8px}
+.pick{position:relative}
+.pick input[type="color"]{position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;border:0;opacity:0;cursor:pointer;-webkit-appearance:none;appearance:none}
+.pick:focus-within{outline:2px solid var(--ink);outline-offset:3px}
+.ed-foot{display:flex;justify-content:space-between;gap:8px;margin-top:auto;padding-top:14px;border-top:1px solid #1a1a1e;box-shadow:inset 0 1px 0 #34343c}
+.ed-history{display:flex;gap:8px}
+.tip{position:fixed;z-index:50;padding:4px 8px;border-radius:4px;background:var(--ink);color:var(--opening);font-size:13px;font-weight:600;white-space:nowrap;pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.5)}
+@media (min-width:721px){
+  .ed-face{display:none}
+}
+@media (max-width:720px){
+  body.editing{padding-right:0}
+  body.editing .mast{margin-right:0}
+  .editor{left:0;width:auto;box-shadow:none}
+}
+.ed-label>.k{display:block;margin-bottom:8px;color:var(--muted);font-size:14px}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.tile{position:relative;display:flex;flex-direction:column;gap:5px;padding:6px;border:2px solid transparent;border-radius:7px;background:var(--recess);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.tile.wide{grid-column:1/-1}
+.tile[aria-pressed="true"]{border-color:var(--shell-accent)}
+.tile:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.tile:disabled{opacity:.45;cursor:default}
+.tile canvas{width:100%;height:auto;image-rendering:pixelated}
+.tile .t{font-size:13px;font-weight:600}
+.tile small{display:block;color:var(--muted);font-size:11px;font-weight:400}
+.tile .badge{position:absolute;top:3px;right:3px;padding:1px 5px;border-radius:3px;background:#3b5;color:#031;font-size:10px;font-weight:700}
+.tile .badge.on-card{background:var(--shell-accent);color:var(--opening)}
+.tile .add{display:grid;place-items:center;aspect-ratio:1.6;border:2px dashed #55555f;border-radius:4px;color:var(--muted);font-size:24px}
+.tile.has-file .add{display:none}

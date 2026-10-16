@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ system splash: render the approved v1 vector rather than
+         letting the OS upscale legacy launcher bitmaps. -->
+    <style name="Theme.SlotKonkr" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowSplashScreenBackground">@color/slot_launcher_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground_vector</item>
+    </style>
+</resources>

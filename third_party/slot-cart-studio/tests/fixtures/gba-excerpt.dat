@@ -1,0 +1,27 @@
+clrmamepro (
+	name "Nintendo - Game Boy Advance"
+	description "Nintendo - Game Boy Advance"
+	version "2026.08.01"
+	homepage "http://github.com/robloach/libretro-dats"
+)
+
+game (
+	name "2 Disney Games - Lilo & Stitch 2 + Peter Pan - Return to Neverland (Europe) (En,Fr,De,Es+En,Fr,De,Es,It,Nl)"
+	region "Europe"
+	serial "BLQP"
+	rom ( name "2 Disney Games - Lilo & Stitch 2 + Peter Pan - Return to Neverland (Europe) (En,Fr,De,Es+En,Fr,De,Es,It,Nl).gba" size 16777216 crc 75703943 md5 596DF9A6F24ED99FE5E064FFD9382726 sha1 4B0455173B592407DB9460B7E38FB209FD549772 serial "BLQP" )
+)
+
+game (
+	name "Metroid Fusion (USA)"
+	region "USA"
+	serial "AMTE"
+	rom ( name "Metroid Fusion (USA).gba" size 8388608 crc 6C75479C md5 AF5040FC0F579800151EE2A683E2E5B5 sha1 CA33F4348C2C05DD330D37B97E2C5A69531DFE87 serial "AMTE" )
+)
+
+game (
+	name "Pokemon - Emerald Version (USA, Europe)"
+	region "USA"
+	serial "BPEE"
+	rom ( name "Pokemon - Emerald Version (USA, Europe).gba" size 16777216 crc 1F1C08FB md5 605B89B67018ABCEA91E693A4DD25BE3 sha1 F3AE088181BF583E55DAF962A92BB46F4F1D07B7 serial "BPEE" )
+)

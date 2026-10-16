@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="SlotWindowAnimation">
+        <item name="android:windowEnterAnimation">@anim/slot_enter</item>
+        <item name="android:windowExitAnimation">@anim/slot_exit</item>
+    </style>
+</resources>

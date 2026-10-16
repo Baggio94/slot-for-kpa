@@ -1,0 +1,29 @@
+[package]
+name = "slot-android"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "slot_android"
+crate-type = ["cdylib"]
+
+[dependencies]
+slot-gfx = { path = "../slot-gfx", default-features = false }
+slot-store = { path = "../slot-store" }
+slot-power = { path = "../slot-power" }
+slot-ui = { path = "../slot-ui" }
+slot-retro = { path = "../slot-retro" }
+slot-achievements = { path = "../slot-achievements" }
+png = { workspace = true }
+lz4_flex = { workspace = true }
+
+jni = "0.21"
+# Android LAN mDNS: IP_ADD_MEMBERSHIP / SO_REUSEPORT on the selected Wi-Fi interface.
+libc = "0.2"
+# SHA-256 streaming fingerprints for fail-closed Multiplayer Lab handshake.
+ring = "0.17.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

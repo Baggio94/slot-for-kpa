@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:glEsVersion="0x00020000" android:required="true" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Required for the short-lived mDNS discovery lock during Host / Join. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <queries>
+        <!-- Only the explicitly supported optional status integrations. -->
+        <package android:name="com.med.sleepmanager" />
+        <package android:name="com.chiller3.basicsync" />
+        <package android:name="com.github.catfriend1.syncthingfork" />
+        <package android:name="com.github.catfriend1.syncthingfork.debug" />
+        <package android:name="com.github.catfriend1.syncthingandroid" />
+        <package android:name="com.github.catfriend1.syncthingandroid.debug" />
+        <provider android:authorities="com.raofflineproxy.config" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+    <application
+        android:allowBackup="false"
+        android:networkSecurityConfig="@xml/ra_network_security_config"
+        android:label="slot. for KONKR"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.SlotKonkr">
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="true"
+            android:screenOrientation="landscape">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Never changes the home app silently; user explicitly grants
+                 Home role via Apps -> Set as Home. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".AppsActivity"
+            android:exported="false"
+            android:screenOrientation="landscape" />
+        <activity android:name=".CartStudioActivity"
+            android:exported="false"
+            android:screenOrientation="landscape" />
+    </application>
+</manifest>

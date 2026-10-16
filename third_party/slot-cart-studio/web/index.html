@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cart Studio · slot</title>
+<meta name="description" content="Cart labels for a slot SD card, made from libretro's logos and checked on the cart before they are written.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="studio.css">
+<script type="module" src="studio.js"></script>
+</head>
+<body>
+<header class="mast">
+  <a class="mast-mark" href="https://slot-cfw.fyi/">slot.</a>
+  <button class="menu-btn" type="button" id="menu-btn" aria-expanded="false" aria-controls="mast-links" aria-label="Sections">
+    <span class="menu-bars" aria-hidden="true"></span>
+  </button>
+  <nav class="mast-links" id="mast-links" aria-label="slot">
+    <a href="https://slot-cfw.fyi/#install">Installing</a>
+    <a href="https://slot-cfw.fyi/#guide">Guide</a>
+    <a href="https://slot-cfw.fyi/#buttons">Buttons</a>
+    <a href="https://slot-cfw.fyi/#questions">Questions</a>
+    <a href="https://slot-cfw.fyi/#credits">Credits</a>
+    <a href="https://slot-cfw.fyi/#disclosure">AI</a>
+    <a href="./" aria-current="page">Studio</a>
+  </nav>
+</header>
+<main class="wrap">
+  <header class="intro">
+    <h1 class="title">Cart Studio</h1>
+    <div class="actions">
+      <button class="btn" id="pick" type="button" hidden>Choose SD Card</button>
+      <label class="btn" id="pick-files-label" hidden>Choose SD Card<input id="pick-files" class="visually-hidden" type="file" webkitdirectory></label>
+    </div>
+  </header>
+
+  <p class="banner" id="banner" role="alert" hidden></p>
+
+  <div class="progress" id="progress" hidden>
+    <progress id="bar" value="0" max="1"></progress>
+    <span id="progress-text"></span>
+  </div>
+
+  <div class="loader" id="loader" role="status" hidden>
+    <span class="spinner" aria-hidden="true"></span>
+    <span id="loader-text"></span>
+  </div>
+
+  <div class="shelf-bar">
+    <nav class="shelf-tabs" id="tabs" aria-label="Platforms" hidden></nav>
+    <button class="key dark fill-open" id="fill-open" type="button" hidden>Fill unlabelled carts…</button>
+    <div class="write-bar" id="write-bar" hidden>
+      <span class="eject" id="eject" role="status" hidden>Eject the card before you take it out, or slot may not find your games.</span>
+      <button class="btn" id="write" type="button" disabled>Write to card</button>
+    </div>
+  </div>
+
+  <section class="grid" id="grid" aria-label="Carts"></section>
+
+  <footer class="credits">
+    <p>Game names and CRCs from <a href="https://github.com/libretro/libretro-database">libretro-database</a> (<a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>).</p>
+    <p>Game logos from <a href="https://www.screenscraper.fr/">ScreenScraper</a> (<a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a>).</p>
+    <p>Game Boy is a trademark of Nintendo. Not affiliated with Nintendo.</p>
+    <p id="build"></p>
+  </footer>
+</main>
+
+<dialog id="fill" class="fill" aria-labelledby="fill-title" tabindex="-1">
+  <h2 id="fill-title"></h2>
+  <p class="fill-question" id="fill-question"></p>
+  <div class="fill-choices">
+    <button type="button" class="fill-choice" id="fill-real" value="real"><canvas></canvas><b>Real Label</b><small>The printed label, scanned from a real cart</small></button>
+    <button type="button" class="fill-choice" id="fill-logo" value="logo"><canvas></canvas><b>Logo Only</b><small>The game’s logo on a colour that suits it</small></button>
+  </div>
+</dialog>
+
+<aside id="editor" class="editor" aria-label="Cart editor" tabindex="-1" hidden>
+  <div class="ed-head">
+    <h2 id="ed-name"></h2>
+    <button class="key dark ed-icon" id="ed-close" type="button" aria-label="Close">✕</button>
+  </div>
+  <canvas id="ed-face" class="ed-face" aria-label="The cart"></canvas>
+  <div class="props">
+    <div class="prop">
+      <span class="k">Game</span>
+      <div class="v">
+        <button class="field" id="ed-game" type="button" aria-expanded="false"><span></span></button>
+        <div class="pop" id="ed-games" hidden>
+          <input id="ed-query" type="search" autocomplete="off" aria-label="Search the game database">
+          <ul class="hits" id="ed-hits"></ul>
+        </div>
+      </div>
+    </div>
+    <hr>
+    <div class="ed-label" id="ed-label-section">
+      <span class="k">Label</span>
+      <div class="tiles" id="ed-tiles" role="group" aria-label="Label">
+        <button type="button" class="tile wide" data-kind="card" aria-label="On the card"><span class="badge on-card">ON CARD</span><canvas></canvas></button>
+        <button type="button" class="tile" data-kind="real"><span class="badge default">DEFAULT</span><canvas></canvas><span class="t">Real Label<small></small></span></button>
+        <button type="button" class="tile" data-kind="logo"><span class="badge default">DEFAULT</span><canvas></canvas><span class="t">Logo Only<small></small></span></button>
+        <button type="button" class="tile" data-kind="customLogo"><canvas></canvas><span class="add">+</span><span class="t">Custom logo<small></small></span></button>
+        <button type="button" class="tile" data-kind="customLabel"><canvas></canvas><span class="add">+</span><span class="t">Custom label<small></small></span></button>
+      </div>
+    </div>
+    <input id="ed-file" class="visually-hidden" type="file" accept="image/png,.png" tabindex="-1">
+    <div class="prop">
+      <span class="k">Background</span>
+      <div class="v">
+        <button class="field" id="ed-bg" type="button" aria-expanded="false"><i></i><span></span></button>
+        <div class="pop" id="ed-bg-pal" hidden>
+          <div class="pal-grid" id="ed-bg-presets" role="group" aria-label="Colours"></div>
+          <div class="pal-foot">
+            <button class="key dark" id="ed-bg-auto" type="button">Automatic</button>
+            <span class="key dark pick">Custom…<input id="ed-bg-custom" type="color" aria-label="Custom background"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <hr>
+    <div class="prop">
+      <span class="k">Shell</span>
+      <div class="v">
+        <button class="field" id="ed-shell" type="button" aria-expanded="false"><i></i><span></span></button>
+        <div class="pop" id="ed-shell-pal" hidden>
+          <div class="pal-grid" id="ed-shell-presets" role="group" aria-label="Plastics"></div>
+          <div class="pal-foot">
+            <button class="key dark" id="ed-shell-auto" type="button">Automatic</button>
+            <span class="key dark pick">Custom…<input id="ed-shell-custom" type="color" aria-label="Custom shell"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="prop">
+      <span class="k">Finish</span>
+      <div class="v">
+        <div class="seg" id="ed-finish" role="group" aria-label="Finish">
+          <button type="button" data-value="solid">Solid</button>
+          <button type="button" data-value="clear">Clear</button>
+          <button type="button" data-value="glitter">Glitter</button>
+        </div>
+      </div>
+    </div>
+    <div class="prop" id="ed-outline-row">
+      <span class="k">Outline</span>
+      <div class="v">
+        <div class="seg" id="ed-outline" role="group" aria-label="Outline">
+          <button type="button" data-value="auto">Auto</button>
+          <button type="button" data-value="notched">Notched</button>
+          <button type="button" data-value="rounded">Rounded</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="ed-foot">
+    <div class="ed-history">
+      <button class="key dark" id="ed-undo" type="button" title="Undo (⌘Z)">Undo</button>
+      <button class="key dark" id="ed-redo" type="button" title="Redo (⇧⌘Z)">Redo</button>
+    </div>
+    <button class="key dark" id="ed-revert" type="button">Revert</button>
+  </div>
+</aside>
+<div id="ed-tip" class="tip" role="tooltip" hidden></div>
+
+<template id="card-tpl">
+  <article class="cart" tabindex="0" role="button">
+    <div class="face">
+      <canvas hidden></canvas>
+    </div>
+    <h2 class="stem"></h2>
+    <p class="print"></p>
+    <p class="game"></p>
+  </article>
+</template>
+</body>
+</html>

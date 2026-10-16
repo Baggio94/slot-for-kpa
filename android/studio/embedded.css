@@ -1,0 +1,74 @@
+/* KONKR WebView only. Original Cart Studio files stay untouched.
+   Native Android supplies a slim Back / Cart Studio toolbar above this page.
+   Keep the official renderer, editor controls, shell options and label picker. */
+:root {
+  --mast-h: 0px;
+  --panel: 380px;
+}
+html, body { min-height: 100%; }
+body { background: var(--page); }
+.mast, .intro, .credits { display: none !important; }
+.wrap {
+  max-width: none;
+  margin: 0;
+  padding: 12px 16px 20px;
+}
+.shelf-bar {
+  top: 0;
+  margin-top: 0;
+  padding-top: 4px;
+}
+.grid {
+  /* Match original Cart Studio's multi-cart shelf when opened from START. */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%,268px),1fr));
+  margin-top: 12px;
+  gap: 12px;
+}
+.grid .cart {
+  width: 100%;
+}
+.editor {
+  top: 0;
+  padding: 12px 16px;
+  gap: 12px;
+}
+.editor .props { gap: 9px; }
+body.editing .mast { margin-right: 0; }
+body.editing { padding-right: var(--panel); }
+@media (max-width: 760px) {
+  :root { --panel: 100vw; }
+  body.editing { padding-right: 0; }
+  .editor { left: 0; width: 100%; }
+  /* With no side-by-side shelf, keep the original editor's cart preview. */
+  .ed-face { display: block; }
+}
+
+/* Three-platform Studio: keep GB/GBC/GBA tabs usable with the editor open. */
+.shelf-bar { align-items: center; padding-bottom: 6px; }
+.shelf-tabs { flex-wrap: wrap; gap: 6px; }
+.shelf-tab { padding: 9px 12px 7px; }
+.write-bar .btn { font-size: 14px; padding-inline: 14px; }
+@media (max-width: 760px) {
+  .wrap { padding: 10px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(min(100%,250px),1fr)); }
+}
+
+/* On a large ROM collection, render the shelf while the official scraper is
+   matching CRCs. Each card already exposes its own loading/error state. */
+body.loading #grid { display: grid; }
+body.loading .shelf-bar { display: flex; }
+body.loading #progress { display: flex; }
+.loader { margin: 16px auto; }
+
+/* Header controls are rendered natively alongside Cart Studio's title on
+   KONKR. Keep official DOM buttons for their click handlers/state, but never
+   let their CSS consume another entire shelf row. */
+body #fill-open, body #write-bar { display: none !important; }
+.shelf-bar { flex-wrap: nowrap; min-height: var(--shelf-row); }
+.shelf-tabs { flex-wrap: nowrap; }
+.grid .cart {
+  /* Large indexed libraries: let WebView cull offscreen card layout/paint.
+     Preserve each card's intrinsic size for stable scroll positions. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 300px;
+}

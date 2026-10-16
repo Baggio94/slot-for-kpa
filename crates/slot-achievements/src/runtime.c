@@ -1,0 +1,63 @@
+/* Small C ABI around the unmodified rcheevos runtime. Only the RA worker calls it. */
+#include "rc_runtime.h"
+#include <stdint.h>
+#include <stddef.h>
+
+typedef struct {
+    const uint8_t *ram;
+    const size_t *valid;
+    const uint8_t *coverage;
+    uint32_t console;
+    uint32_t *earned;
+    size_t capacity, count;
+    int invalid;
+} slot_frame;
+
+/* The runtime's event/validation callbacks have no userdata argument. */
+static _Thread_local slot_frame *current;
+
+static int valid_address(uint32_t address) {
+    if (current->console == 4 || current->console == 6) {
+        return address < 0x17000 && current->coverage != NULL &&
+            current->coverage[address] != 0;
+    }
+    size_t start;
+    unsigned region;
+    if (address < 0x8000) { start = 0; region = 0; }
+    else if (address < 0x48000) { start = 0x8000; region = 1; }
+    else { start = 0x48000; region = 2; }
+    return address - start < current->valid[region];
+}
+
+static uint32_t peek(uint32_t address, uint32_t bytes, void *unused) {
+    uint32_t value = 0, i;
+    (void)unused;
+    for (i = 0; i < bytes; ++i) {
+        if (address > UINT32_MAX - i || !valid_address(address + i)) {
+            current->invalid = 1;
+            return 0;
+        }
+        value |= ((uint32_t)current->ram[address + i]) << (8 * i);
+    }
+    return value;
+}
+
+static void event(const rc_runtime_event_t *ev) {
+    if (ev->type == RC_RUNTIME_EVENT_ACHIEVEMENT_TRIGGERED && current->count < current->capacity)
+        current->earned[current->count++] = ev->id;
+}
+
+size_t slot_ra_frame(rc_runtime_t *runtime, const uint8_t *ram, const size_t *valid,
+                     const uint8_t *coverage, uint32_t console,
+                     uint32_t *earned, size_t capacity, char *presence, size_t presence_size) {
+    slot_frame frame = { ram, valid, coverage, console, earned, capacity, 0, 0 };
+    current = &frame;
+    rc_runtime_validate_addresses(runtime, event, valid_address);
+    rc_runtime_do_frame(runtime, event, peek, NULL, NULL);
+    rc_runtime_get_richpresence(runtime, presence, presence_size, peek, NULL, NULL);
+    presence[presence_size - 1] = 0;
+    current = NULL;
+    /* An invalid indirect read cannot count as an observed zero or satisfy a trigger. */
+    if (frame.invalid) { presence[0] = 0; rc_runtime_reset(runtime); return 0; }
+    return frame.count;
+}
