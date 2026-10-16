@@ -26,49 +26,87 @@ internal object AutoCartLabels {
     private val safeArtPath = Regex("[a-zA-Z0-9_./-]+")
     private val pngSignature = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
 
-    fun fill(context: Context, shouldContinue: () -> Boolean, onSaved: (String) -> Unit) {
-        if (!shouldContinue()) return
-        val games = CartStudioCatalog.games(context)
-        if (games.isEmpty()) return
-        val missing = games.filter { !CartLabelPaths.file(context.filesDir, it.uri).exists() }
-        if (missing.isEmpty()) return
+    // Exactly one serial worker owns these process-local budgets. A 16-ROM
+    // batch must not repeatedly get stuck on the same unmatched first games.
+    // Seen identities are never persisted across app restarts or library resets.
+    private val examinedThisSession = HashSet<String>()
+    private var savedThisSession = 0
 
-        // Original Studio's existing HTTPS allowlist, disk cache and bounded
-        // response handling. Avoid another artwork source or extra permissions.
+    /** Returns true if another small, foreground-only batch is worthwhile. */
+    fun fill(context: Context, shouldContinue: () -> Boolean, onSaved: (String) -> Unit): Boolean {
+        if (!shouldContinue()) return false
+        val games = CartStudioCatalog.games(context)
+        if (games.isEmpty()) {
+            Log.i(TAG, "Deferred: cached ROM library not ready (zero indexed games)")
+            return false
+        }
+        val missing = games.filter { !CartLabelPaths.file(context.filesDir, it.uri).exists() }
+        val pending = missing.filter { it.uri !in examinedThisSession }
+        if (pending.isEmpty() || savedThisSession >= MAX_SAVED) {
+            Log.i(TAG, "No pending artwork: games=${games.size}, missing=${missing.size}, " +
+                "examined=${examinedThisSession.size}, savedThisSession=$savedThisSession")
+            return false
+        }
+        Log.i(TAG, "Starting automatic labels: games=${games.size}, missing=${missing.size}, " +
+            "pending=${pending.size}, savedThisSession=$savedThisSession")
+
+        // Original Studio's HTTPS allowlist, disk cache and bounded response.
+        // An unavailable index remains retryable when connectivity returns.
         val indexResponse = CartStudioArtProxy(context).intercept("index.json")
-        if (indexResponse.statusCode != 200) return
+        if (indexResponse.statusCode != 200) {
+            Log.w(TAG, "Official art index unavailable: HTTP ${indexResponse.statusCode}")
+            return false
+        }
         val indexBytes = indexResponse.data.use { input ->
-            val stream = ByteArrayOutputStream()
+            val output = ByteArrayOutputStream()
             val buffer = ByteArray(16 * 1024)
             while (true) {
-                if (!shouldContinue()) return
+                if (!shouldContinue()) return false
                 val n = input.read(buffer)
                 if (n < 0) break
-                if (stream.size() + n > MAX_INDEX) return
-                stream.write(buffer, 0, n)
+                if (output.size() + n > MAX_INDEX) {
+                    Log.w(TAG, "Official art index exceeds the ${MAX_INDEX} byte limit")
+                    return false
+                }
+                output.write(buffer, 0, n)
             }
-            stream.toByteArray()
+            output.toByteArray()
         }
         val index = try { JSONObject(String(indexBytes, Charsets.UTF_8)) }
-            catch (_: Exception) { return }
+            catch (error: Exception) {
+                Log.w(TAG, "Official art index could not be parsed", error)
+                return false
+            }
+        Log.i(TAG, "Official art index ready: bytes=${indexBytes.size}, CRC entries=${index.length()}")
+
         val art = CartStudioArtProxy(context)
         var attempted = 0
+        var matched = 0
+        var fetched = 0
+        var unsuitable = 0
+        var failed = 0
         var saved = 0
-        for (rom in missing) {
-            if (!shouldContinue() || attempted >= MAX_ATTEMPTS || saved >= MAX_SAVED) break
+        for (rom in pending) {
+            if (!shouldContinue() || attempted >= MAX_ATTEMPTS ||
+                savedThisSession >= MAX_SAVED) break
             val target = CartLabelPaths.file(context.filesDir, rom.uri)
             if (target.exists()) continue
             attempted++
+            examinedThisSession.add(rom.uri)
             try {
-                // Exact ROM checksum, never an unreliable filename-only match.
+                // Exact ROM checksum, never a guessed filename match.
                 val crc = CartStudioCatalog.cached(context, rom)
                     ?: CartStudioCatalog.identify(context, rom)
                 if (!shouldContinue()) break
                 val path = index.optJSONObject(crc.hex)
                     ?.optString("support-texture").orEmpty()
                 if (!validArtworkPath(path, rom.platform)) continue
+                matched++
                 val response = art.intercept(path)
-                if (response.statusCode != 200) continue
+                if (response.statusCode != 200) {
+                    failed++
+                    continue
+                }
                 val bytes = response.data.use { input ->
                     val out = ByteArrayOutputStream()
                     val buffer = ByteArray(16 * 1024)
@@ -81,32 +119,55 @@ internal object AutoCartLabels {
                     }
                     out.toByteArray()
                 }
-                if (!shouldContinue() || bytes.size !in 8..MAX_SOURCE ||
-                    !bytes.copyOfRange(0, 8).contentEquals(pngSignature)) continue
-                val label = cropPhysicalCartLabel(bytes, rom.platform) ?: continue
-                if (label.size > MAX_LABEL || target.exists() || !shouldContinue()) continue
+                if (!shouldContinue()) break
+                fetched++
+                if (bytes.size !in 8..MAX_SOURCE ||
+                    !bytes.copyOfRange(0, 8).contentEquals(pngSignature)) {
+                    unsuitable++
+                    continue
+                }
+                val label = cropPhysicalCartLabel(bytes, rom.platform)
+                if (label == null) {
+                    unsuitable++
+                    continue
+                }
+                if (label.size > MAX_LABEL || target.exists()) {
+                    unsuitable++
+                    continue
+                }
+                if (!shouldContinue()) break
                 target.parentFile?.mkdirs()
-                // Re-check immediately before atomic publication. Existing
-                // custom artwork is never intentionally replaced.
+                // Atomic, never replace a manual or Cart Studio label.
                 if (target.exists()) continue
                 val atomic = AtomicFile(target)
                 val stream = atomic.startWrite()
                 try {
                     stream.write(label)
                     atomic.finishWrite(stream)
-                } catch (e: Exception) {
+                } catch (error: Exception) {
                     atomic.failWrite(stream)
-                    throw e
+                    throw error
                 }
                 saved++
+                savedThisSession++
                 onSaved(rom.uri)
                 Thread.sleep(120L)
             } catch (error: Exception) {
+                failed++
                 Log.w(TAG, "Skipping unsupported/failed cart art", error)
             }
         }
-        CartStudioCatalog.flush(context)
-        if (saved > 0) Log.i(TAG, "Prepared $saved official cartridge labels")
+        try { CartStudioCatalog.flush(context) }
+        catch (error: Exception) { Log.w(TAG, "Could not persist cartridge checksums", error) }
+
+        val remaining = missing.count { it.uri !in examinedThisSession &&
+            !CartLabelPaths.file(context.filesDir, it.uri).exists() }
+        Log.i(TAG, "Art pass complete: checked=$attempted, indexedMatches=$matched, " +
+            "downloaded=$fetched, rejected=$unsuitable, failed=$failed, saved=$saved, " +
+            "remaining=$remaining, sessionSaved=$savedThisSession")
+        // Try the next 16 candidates while foregrounded, never hammering the
+        // first 16 ROMs or exceeding eight saved labels in this session.
+        return shouldContinue() && remaining > 0 && savedThisSession < MAX_SAVED
     }
 
     internal fun validArtworkPath(path: String, platform: String): Boolean =
