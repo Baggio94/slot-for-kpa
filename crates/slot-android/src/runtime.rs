@@ -74,7 +74,7 @@ enum Input {
     Key(i32, bool),
     // Predefined shelf UI states from Android: no untrusted or long text on GL.
     ShelfStatus(u8),
-    UpdateStatus(u8, String, bool),
+    UpdateStatus(u8, String, String, bool),
     Reset,
     GameReady { uri: String, path: String },
     GameError { uri: String, message: String },
@@ -356,7 +356,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 107] = [
+const MENU_TEXT: [&str; 110] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -464,6 +464,9 @@ const MENU_TEXT: [&str; 107] = [
     "OFF",                              // 104
     "ON",                               // 105
     "Update available",                 // 106
+    "SOFTWARE UPDATE  >",              // 107, actionable About row
+    "INSTALLED VERSION",                // 108
+    "AVAILABLE VERSION",                // 109
 ];
 
 #[derive(Clone, Copy)]
@@ -575,6 +578,7 @@ struct Engine {
     about_texture: Option<slot_gfx::TexId>,
     update_status: u8,
     update_auto: bool,
+    update_installed_face: Option<(slot_gfx::TexId,u32,u32)>,
     update_version_face: Option<(slot_gfx::TexId,u32,u32)>,
     menu_seen: u8,
     menu_opened: Instant,
@@ -1080,6 +1084,7 @@ impl Engine {
             about_texture,
             update_status: 0,
             update_auto: true,
+            update_installed_face: None,
             update_version_face: None,
             menu_seen: 0,
             menu_opened: now,
@@ -1976,19 +1981,34 @@ impl Engine {
                 self.game_emulation = None;
                 *REQUEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
-            Input::UpdateStatus(status, version, automatic) => {
+            Input::UpdateStatus(status, installed, available, automatic) => {
                 self.update_status = status.min(5);
                 self.update_auto = automatic;
-                if !version.is_empty() && version.is_ascii() && version.len() <= 48 {
-                    let face = quick_value_face(&version, true);
-                    let tex = match self.update_version_face {
+                // An update check may reduce the menu from four to two rows.
+                // Clamp focus so no hidden action is ever selectable.
+                if let ShelfOverlay::Updates { row } = self.overlay {
+                    let count = update_rows(self.update_status).len();
+                    self.overlay = ShelfOverlay::Updates { row: row.min(count - 1) };
+                }
+                for (label, is_installed) in [(installed, true), (available, false)] {
+                    if label.is_empty() || !label.is_ascii() || label.len() > 48 {
+                        continue;
+                    }
+                    let face = quick_value_face(&label, true);
+                    let existing = if is_installed { self.update_installed_face }
+                        else { self.update_version_face };
+                    let tex = match existing {
                         Some((tex,_,_)) => {
                             self.gpu.update_texture(tex, face.w, face.h, &face.rgba);
                             tex
                         }
                         None => self.gpu.create_texture(face.w, face.h, &face.rgba),
                     };
-                    self.update_version_face = Some((tex,face.w,face.h));
+                    if is_installed {
+                        self.update_installed_face = Some((tex,face.w,face.h));
+                    } else {
+                        self.update_version_face = Some((tex,face.w,face.h));
+                    }
                 }
             }
             Input::ShelfStatus(code) => {
@@ -6126,12 +6146,15 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRaStatus(
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeUpdateStatus(
     mut env: JNIEnv<'_>, _this: JObject<'_>,
-    status: jint, version: JString<'_>, automatic: jboolean,
+    status: jint, installed: JString<'_>, available: JString<'_>, automatic: jboolean,
 ) {
-    let Ok(value) = env.get_string(&version) else {return;};
-    let label = value.to_string_lossy().into_owned();
-    if label.len() > 48 || !label.is_ascii() {return;}
-    push(Input::UpdateStatus(status.clamp(0,5) as u8,label,automatic != 0));
+    let Ok(current) = env.get_string(&installed) else {return;};
+    let Ok(candidate) = env.get_string(&available) else {return;};
+    let current = current.to_string_lossy().into_owned();
+    let candidate = candidate.to_string_lossy().into_owned();
+    if current.is_empty() || current.len() > 48 || !current.is_ascii() ||
+        candidate.len() > 48 || !candidate.is_ascii() {return;}
+    push(Input::UpdateStatus(status.clamp(0,5) as u8,current,candidate,automatic != 0));
 }
 
 #[unsafe(no_mangle)]
