@@ -24,6 +24,8 @@ class SlotUpdatePolicyTest {
         assertTrue(SlotUpdatePolicy.eligible("1.2.0-beta2", "1.2.0", false))
         assertFalse(SlotUpdatePolicy.eligible("1.2.0-beta2", "1.1.0", false))
         assertFalse(SlotUpdatePolicy.newer("1.2.0-beta1", "1.2.0-beta2"))
+        assertTrue(SlotUpdatePolicy.newer("1.2.0-beta10", "1.2.0-beta2"))
+        assertFalse(SlotUpdatePolicy.newer("1.2.0-beta2", "1.2.0-beta10"))
     }
 
     @Test fun invalidOrForgedVersionCannotBeAnUpgrade() {
