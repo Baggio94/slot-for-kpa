@@ -143,7 +143,7 @@ jobs:
           (umask 077; printf '%s' "$SLOT_KEYSTORE_BASE64" | base64 -d > "$SLOT_SIGNING_STORE_FILE")
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
           bash scripts/build-konkr-android.sh
-          gradle --no-daemon -p android :app:assembleRelease
+          gradle --no-daemon -p android :app:assembleRelease :app:assembleDebug
       - name: Verify signed ARM64 APK and upgrade compatibility
         run: |
           set -euo pipefail
@@ -172,6 +172,27 @@ jobs:
             fi
           done < <(unzip -Z -1 "$APK" | grep -E '^classes([0-9]+)?[.]dex$')
           sha256sum "$APK"
+      - name: Verify Mac AVD debug APK, signed and emulator keyboard-enabled
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/mac-avd-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='110'" "$RUNNER_TEMP/mac-avd-badging.txt"
+          grep -F "versionName='1.2.0-beta2'" "$RUNNER_TEMP/mac-avd-badging.txt"
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
+            grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
+          unzip -Z -1 "$APK" | grep -Fx 'lib/arm64-v8a/libslot_android.so'
+          unzip -Z -1 "$APK" | grep -Fx 'lib/arm64-v8a/libmgba_libretro.so'
+          unzip -Z -1 "$APK" | grep -Fx 'lib/arm64-v8a/libgpsp_libretro.so'
+          unzip -Z -1 "$APK" | grep -Fx 'assets/studio/pkg/slot_cart_studio_bg.wasm'
+          unzip -p "$APK" 'classes*.dex' | strings -a | grep -E 'sdk_gphone|ranchu|goldfish'
+          sha256sum "$APK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slot-for-kpa-1.2.0-beta2-mac-avd-debug-arm64-signed
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: slot-for-kpa-1.2.0-beta2-arm64-signed
