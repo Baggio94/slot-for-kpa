@@ -30,19 +30,22 @@ internal object SlotUpdatePolicy {
         }
         if (a.pre == null) return b.pre != null
         if (b.pre == null) return false
-        val n = maxOf(a.pre.size, b.pre.size)
-        for (i in 0 until n) {
-            val left = a.pre.getOrNull(i) ?: return true.not()
-            val right = b.pre.getOrNull(i) ?: return true
-            val ln = left.toIntOrNull()
-            val rn = right.toIntOrNull()
-            val comparison = when {
+        // beta10 must sort AFTER beta2, not before it lexicographically.
+        val pieces = Regex("""(?<=\D)(?=\d)|(?<=\d)(?=\D)""")
+        val left = a.pre.flatMap { it.split(pieces) }
+        val right = b.pre.flatMap { it.split(pieces) }
+        for (i in 0 until maxOf(left.size, right.size)) {
+            val l = left.getOrNull(i) ?: return false
+            val r = right.getOrNull(i) ?: return true
+            val ln = l.toIntOrNull()
+            val rn = r.toIntOrNull()
+            val result = when {
                 ln != null && rn != null -> ln.compareTo(rn)
                 ln != null -> -1
                 rn != null -> 1
-                else -> left.compareTo(right, ignoreCase = true)
+                else -> l.compareTo(r, ignoreCase = true)
             }
-            if (comparison != 0) return comparison > 0
+            if (result != 0) return result > 0
         }
         return false
     }
