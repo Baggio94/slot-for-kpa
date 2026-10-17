@@ -352,7 +352,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 94] = [
+const MENU_TEXT: [&str; 95] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -447,7 +447,11 @@ const MENU_TEXT: [&str; 94] = [
     "Game Boy Advance",                   // 91
     "Game Boy Color",                     // 92
     "Game Boy",                           // 93
+    "Time Format",                        // 94
 ];
+
+const INTERFACE_ROWS: [usize; 4] = [63, 64, 65, 94];
+const INTERFACE_KEYS: [usize; 4] = [13, 14, 15, 28];
 
 #[derive(Clone, Copy)]
 struct LiveGameOptions {
@@ -891,7 +895,7 @@ impl Engine {
                               "Dark", "Light", "Low", "Medium", "High", "Custom",
                                "LCD Grid V2", "Grid V2 + GBA Color", "zfast LCD",
                                "LCD1x", "Simpletex + GBA", "AGB-001",
-                               "AGS-001", "Sharp Bilinear"]
+                               "AGS-001", "Sharp Bilinear", "12 HR", "24 HR"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
@@ -1140,8 +1144,9 @@ impl Engine {
 
     fn refresh_system_status(&mut self) {
         let status = SYSTEM_STATUS.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        if status.clock != self.clock_text {
-            self.clock_text = status.clock;
+        let clock = self.settings.time_format.format_clock(&status.clock);
+        if clock != self.clock_text {
+            self.clock_text = clock;
             if !self.clock_text.is_empty() {
                 let face = slot_ui::word_ink(&self.clock_text, self.shelf_footer_ink());
                 let tex = match self.clock_texture {
@@ -2549,9 +2554,13 @@ impl Engine {
                             },
                             ShelfOverlay::InterfaceSettings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::InterfaceSettings {
-                                    row: move_menu_row(row, code, 3),
+                                    row: move_menu_row(row, code, INTERFACE_ROWS.len()),
                                 },
-                                21 | 22 if row < 3 => self.change_setting(row + 13, code == 22),
+                                21 | 22 | 96 => {
+                                    if let Some(&key) = INTERFACE_KEYS.get(row) {
+                                        self.change_setting(key, code != 21);
+                                    }
+                                },
                                 97 => self.overlay = ShelfOverlay::Settings { row: 4 },
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
@@ -3685,6 +3694,8 @@ impl Engine {
             25 => if scoped.bezel_gba==crate::settings::Bezel::None {17}else{19},
             26 => if scoped.bezel_gbc==crate::settings::Bezel::None {17}else{19},
             27 => if scoped.bezel_gb==crate::settings::Bezel::None {17}else{19},
+            28 => if self.settings.time_format==crate::settings::TimeFormat::TwelveHour
+                {35}else{36},
             _ => 5,
         }
     }
@@ -3714,7 +3725,7 @@ impl Engine {
     fn draw_setting_values(&self, row: usize, keys: &[usize], out: &mut Vec<Draw>) {
         let top = settings_row_top(keys.len());
         for (index, key) in keys.iter().copied().enumerate() {
-            if key > 27 { continue; } // Action-only rows have no value.
+            if key > 28 { continue; } // Action-only rows have no value.
             let (tex, width, height) =
                 if key == 16 && matches!(self.settings.wallpaper,
                     crate::settings::WallpaperPick::File(_)) {
@@ -3877,8 +3888,8 @@ impl Engine {
                 self.draw_setting_values(row,&keys,out);
             }
             ShelfOverlay::InterfaceSettings { row } => {
-                self.draw_original_style_menu(59, &[63, 64, 65], row, out);
-                self.draw_setting_values(row, &[13, 14, 15], out);
+                self.draw_original_style_menu(59, &INTERFACE_ROWS, row, out);
+                self.draw_setting_values(row, &INTERFACE_KEYS, out);
             }
             ShelfOverlay::EmulationSettings { row } => {
                 self.draw_original_style_menu(50, &[51, 52, 55], row, out);
@@ -4225,7 +4236,7 @@ impl Engine {
             ShelfOverlay::Settings { row } => (4u8, row, 5usize),
             ShelfOverlay::GeneralSettings { row } =>
                 (12u8, row, self.general_rows().len()),
-            ShelfOverlay::InterfaceSettings { row } => (10u8, row, 3usize),
+            ShelfOverlay::InterfaceSettings { row } => (10u8, row, INTERFACE_ROWS.len()),
             ShelfOverlay::EmulationSettings { row } => (8u8, row, 3usize),
             ShelfOverlay::PauseEmulationSettings { row } => (9u8, row, 3usize),
             ShelfOverlay::ScreenSettings { row } => (5u8, row, 3usize),
@@ -5417,7 +5428,7 @@ mod ui_feedback_tests {
 
     #[test]
     fn original_settings_menu_rows_are_on_screen_and_outside_footer() {
-        for rows in [3, 5, 6, 7] {
+        for rows in [3, 4, 5, 6, 7] {
             let top = settings_row_top(rows);
             assert!(top >= 32.0);
             assert!(top + rows as f32 * QUICK_PITCH < 427.0,
