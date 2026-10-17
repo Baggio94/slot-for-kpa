@@ -4018,6 +4018,21 @@ impl Engine {
                         tex, alpha: 1.0,
                     });
                 }
+                self.text_fit(self.update_caption(), 45.0, 373.0, 470.0, 0.82, out);
+                if self.update_status == 1 { self.draw_update_version(525.0, 373.0, out); }
+                for (tex,w,x) in centred_hints(&self.menu_hints, LEGEND_GAP) {
+                    out.push(Draw::Tex {
+                        x,y:427.0,w:w as f32,h:HINT_H as f32,tex,alpha:1.0,
+                    });
+                }
+            }
+            ShelfOverlay::Updates { row } => {
+                self.draw_original_style_menu(94, &[95,96,97,98], row, out);
+                self.text_fit(self.update_caption(), 37.0, 364.0, 465.0, 0.72, out);
+                self.draw_update_version(520.0, 364.0, out);
+                self.text_fit(if self.update_auto {105}else{104},
+                    594.0, settings_row_top(4) + 3.0 * QUICK_PITCH + 8.0,
+                    90.0,1.0,out);
             }
             ShelfOverlay::Scraping | ShelfOverlay::Achievements => {
                 self.modal(110.0, 127.0, 500.0, 227.0, out, 0.78);
