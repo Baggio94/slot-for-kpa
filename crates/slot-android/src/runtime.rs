@@ -2665,23 +2665,28 @@ impl Engine {
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
-                            ShelfOverlay::Updates { row } => match code {
-                                19 | 20 => self.overlay = ShelfOverlay::Updates {
-                                    row: move_menu_row(row, code, 4),
-                                },
-                                96 => match row {
-                                    0 => UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(19),
-                                    1 => UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(20),
-                                    2 if self.update_status == 1 =>
-                                        UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(21),
-                                    3 => UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(22),
+                            ShelfOverlay::Updates { row } => {
+                                let rows = update_rows(self.update_status);
+                                let selected = rows[row.min(rows.len() - 1)];
+                                match code {
+                                    19 | 20 => self.overlay = ShelfOverlay::Updates {
+                                        row: move_menu_row(row, code, rows.len()),
+                                    },
+                                    96 => match selected {
+                                        95 => UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(19),
+                                        96 if self.update_status == 1 =>
+                                            UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(20),
+                                        97 if self.update_status == 1 =>
+                                            UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(21),
+                                        98 => UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(22),
+                                        _ => {}
+                                    },
+                                    21 | 22 if selected == 98 =>
+                                        UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(22),
+                                    97 => self.overlay = ShelfOverlay::About,
+                                    108 => self.overlay = ShelfOverlay::None,
                                     _ => {}
-                                },
-                                21 | 22 if row == 3 =>
-                                    UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(22),
-                                97 => self.overlay = ShelfOverlay::About,
-                                108 => self.overlay = ShelfOverlay::None,
-                                _ => {}
+                                }
                             },
                             ShelfOverlay::Scraping | ShelfOverlay::Achievements => match code {
                                 96 if matches!(self.overlay, ShelfOverlay::Scraping) => {
@@ -3949,11 +3954,12 @@ impl Engine {
         }
     }
 
-    fn draw_update_version(&self, x: f32, y: f32, out: &mut Vec<Draw>) {
-        if let Some((tex,w,h)) = self.update_version_face {
-            let scale = (160.0 / w.max(1) as f32).min(0.79);
+    fn draw_update_value(&self, face: Option<(slot_gfx::TexId,u32,u32)>,
+                         x: f32, y: f32, out: &mut Vec<Draw>) {
+        if let Some((tex,w,h)) = face {
+            let scale = (185.0 / w.max(1) as f32).min(0.79);
             out.push(Draw::Tex {
-                x,y,w:w as f32 * scale,h:h as f32 * scale,tex,alpha:0.84,
+                x,y,w:w as f32 * scale,h:h as f32 * scale,tex,alpha:0.90,
             });
         }
     }
@@ -4038,8 +4044,14 @@ impl Engine {
                         tex, alpha: 1.0,
                     });
                 }
-                self.text_fit(self.update_caption(), 45.0, 373.0, 470.0, 0.82, out);
-                if self.update_status == 1 { self.draw_update_version(525.0, 373.0, out); }
+                // Make A's destination discoverable without modifying the
+                // original barcode sticker or the physical keycap legends.
+                out.push(Draw::Rect {
+                    x: 29.0, y: 361.0, w: 662.0, h: 43.0,
+                    colour: [0.20,0.20,0.22,0.42],
+                });
+                self.text_fit(107, 45.0, 373.0, 400.0, 1.0, out);
+                self.text_fit(self.update_caption(), 514.0, 373.0, 176.0, 0.78, out);
                 for (tex,w,x) in centred_hints(&self.menu_hints, LEGEND_GAP) {
                     out.push(Draw::Tex {
                         x,y:427.0,w:w as f32,h:HINT_H as f32,tex,alpha:1.0,
@@ -4047,11 +4059,19 @@ impl Engine {
                 }
             }
             ShelfOverlay::Updates { row } => {
-                self.draw_original_style_menu(94, &[95,96,97,98], row, out);
-                self.text_fit(self.update_caption(), 37.0, 364.0, 465.0, 0.72, out);
-                self.draw_update_version(520.0, 364.0, out);
+                let rows = update_rows(self.update_status);
+                self.draw_original_style_menu(94, rows, row.min(rows.len() - 1), out);
+                // Always show the installed version, even without a network.
+                self.text_fit(108, 37.0, 78.0, 275.0, 0.74, out);
+                self.draw_update_value(self.update_installed_face, 392.0, 78.0, out);
+                if self.update_status == 1 {
+                    self.text_fit(109, 37.0, 108.0, 275.0, 0.74, out);
+                    self.draw_update_value(self.update_version_face, 392.0, 108.0, out);
+                }
+                self.text_fit(self.update_caption(), 37.0, 364.0, 475.0, 0.72, out);
+                let auto_row = rows.iter().position(|id| *id == 98).unwrap();
                 self.text_fit(if self.update_auto {105}else{104},
-                    594.0, settings_row_top(4) + 3.0 * QUICK_PITCH + 8.0,
+                    594.0, settings_row_top(rows.len()) + auto_row as f32 * QUICK_PITCH + 8.0,
                     90.0,1.0,out);
             }
             ShelfOverlay::Scraping | ShelfOverlay::Achievements => {
@@ -4347,7 +4367,8 @@ impl Engine {
             ShelfOverlay::Settings { row } => (4u8, row, 5usize),
             ShelfOverlay::GeneralSettings { row } =>
                 (12u8, row, self.general_rows().len()),
-            ShelfOverlay::Updates { row } => (17u8,row,4usize),
+            ShelfOverlay::Updates { row } =>
+                (17u8, row, update_rows(self.update_status).len()),
             ShelfOverlay::InterfaceSettings { row } => (10u8, row, 3usize),
             ShelfOverlay::EmulationSettings { row } => (8u8, row, 3usize),
             ShelfOverlay::PauseEmulationSettings { row } => (9u8, row, 3usize),
@@ -5224,6 +5245,11 @@ fn slot_name_alpha(elapsed_ms: u64) -> f32 {
     slot_ui::ease(level)
 }
 
+/// The same visible rows drive drawing, D-pad focus, and click actions.
+fn update_rows(status: u8) -> &'static [usize] {
+    if status == 1 { &[95, 96, 97, 98] } else { &[95, 98] }
+}
+
 /// Physical D-pad UP and DOWN must move the selection in opposite
 /// directions, including wraparound; never leak navigation to libretro.
 fn move_menu_row(row: usize, key: i32, count: usize) -> usize {
@@ -5260,6 +5286,18 @@ fn next_nonempty_shelf(shelves: &[Shelf], current: usize, delta: i32) -> usize {
 #[cfg(test)]
 mod ui_feedback_tests {
     use super::*;
+
+    #[test]
+    fn updater_visible_rows_and_navigation_match_update_state() {
+        assert_eq!(update_rows(0), &[95, 98]);
+        assert_eq!(update_rows(1), &[95, 96, 97, 98]);
+        for status in [2, 3, 4, 5] {
+            assert_eq!(update_rows(status), &[95, 98]);
+        }
+        assert_eq!(move_menu_row(0, 19, 2), 1);
+        assert_eq!(move_menu_row(1, 20, 2), 0);
+        assert_eq!(move_menu_row(3, 20, 4), 0);
+    }
 
     #[test]
     fn gba_three_two_screen_hides_no_op_bezel_but_keeps_gb_gbc() {
