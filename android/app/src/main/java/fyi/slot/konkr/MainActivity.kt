@@ -173,9 +173,13 @@ class MainActivity : Activity() {
     private val autoLabelUpdates = java.util.concurrent.ConcurrentLinkedQueue<String>()
     private val activeTargets = ConcurrentHashMap<String, RetroArchStorage.Target>()
     private val uiHandler = Handler(Looper.getMainLooper())
-    private val slotUpdater by lazy {
+    private val slotUpdater: SlotUpdater by lazy {
         SlotUpdater(this) { status, version ->
-            if (!isDestroyed) nativeUpdateStatus(status, version, slotUpdater.enabled())
+            if (!isDestroyed) {
+                val automatic = getSharedPreferences("slot-updater-v1", MODE_PRIVATE)
+                    .getBoolean("enabled", true)
+                nativeUpdateStatus(status, version, automatic)
+            }
         }
     }
     private val audioRunning = AtomicBoolean(false)
