@@ -52,5 +52,6 @@ internal object SlotUpdatePolicy {
 
     /** Public stable builds never fetch prerelease updates. */
     fun eligible(current: String, candidate: String, prerelease: Boolean): Boolean =
-        (!prerelease || parse(current)?.pre != null) && newer(candidate, current)
+        ((!prerelease && parse(candidate)?.pre == null) || parse(current)?.pre != null) &&
+            newer(candidate, current)
 }
