@@ -52,6 +52,7 @@ Built specifically for the KONKR Pocket Advance
 - **Independent screen settings** — Configure GBA, GB and GBC shaders, color correction and bezels separately.
 - **Optimized cartridge browsing** — Background artwork loading, persistent caching and GPU texture management designed to keep large libraries responsive.
 - **Android app launcher** — Launch your other Android apps directly from Slot, with the option to make Slot your HOME launcher.
+- **Clock format** — Choose 12-hour time with AM/PM or 24-hour time in **START → Settings → Interface → Time Format**. Use Left/Right or A to change it; your choice is saved between launches. The default is 24-hour time.
 
 All of this without losing what makes slot. special: **the simple pleasure of choosing a cartridge, inserting it and playing.**
 
