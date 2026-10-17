@@ -99,6 +99,9 @@ pub struct SlotChrome<'a> {
     pub dim: f32,
     pub screen: f32,
     pub game: bool,
+    /// As in Slot 1.7, insertion overlays the game; an already-playing
+    /// cartridge stays behind the CRT picture while it powers on/off.
+    pub over: bool,
     /// Real v1.7.0 rear/front housing bitmaps, on the same 720x58 panel.
     /// None retains the previous theme.txt custom-palette implementation.
     pub slot_faces: Option<(TexId, TexId)>,
@@ -129,8 +132,12 @@ impl SlotChrome<'_> {
         }
 
         let chrome = 1.0 - self.screen.clamp(0.0, 1.0);
+        let opening = self.screen > 0.0;
+        let held = opening && !self.over;
+        let slot_alpha = if held { 1.0 } else { chrome };
+        if self.game && opening && self.over { out.push(Draw::Game); }
 
-        draw_slot_back_with(self.slot_faces.map(|faces| faces.0), chrome, out);
+        draw_slot_back_with(self.slot_faces.map(|faces| faces.0), slot_alpha, out);
 
         let (cw, ch) = cart_box(self.cart.platform);
         let (cw, ch) = (cw as f32, ch as f32);
@@ -147,7 +154,7 @@ impl SlotChrome<'_> {
         let centre = self.rest + w0 / 2.0;
         let x = centre + (CX - centre) * k - cw / 2.0;
         let y = foot0 + (seated_foot - foot0) * travel - ch;
-        let cart_alpha = if seat >= 1.0 { chrome } else { 1.0 };
+        let cart_alpha = if seat >= 1.0 && !held { chrome } else { 1.0 };
         for tex in behind.into_iter().flatten() {
             out.push(Draw::Tex { x, y, w: cw, h: ch, tex, alpha: cart_alpha });
         }
@@ -190,23 +197,17 @@ impl SlotChrome<'_> {
             });
         }
 
-        if chrome < 1.0 {
+        if self.over && chrome < 1.0 && self.slot_faces.is_none() {
             front_bands(|x, y, w, h, _| {
                 out.push(Draw::Rect {
-                    x,
-                    y,
-                    w,
-                    h,
+                    x, y, w, h,
                     colour: [0.0, 0.0, 0.0, 1.0],
                 });
             });
         }
-
-        if self.game && self.screen > 0.0 {
-            out.push(Draw::Game);
-        }
-
-        draw_slot_front_with(self.slot_faces.map(|faces| faces.1), chrome, out);
+        draw_slot_front_with(self.slot_faces.map(|faces| faces.1),
+            if self.over { chrome } else { slot_alpha }, out);
+        if self.game && opening && !self.over { out.push(Draw::Game); }
     }
 }
 
