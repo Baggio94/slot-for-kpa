@@ -1,5 +1,5 @@
 use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
-use slot_store::Cart;
+use slot_store::{Cart, Platform};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::cart::{cart_box, gb_shell_of, label_colour, label_text, label_panel, gb_label_panel, GBC_LABEL_X, GBC_LABEL_Y, GBC_LABEL_W, CART_H, CART_W};
@@ -8,7 +8,8 @@ use crate::silhouette::GbShell;
 use crate::slot_chrome::{draw_empty_slot, MOUTH_H};
 
 const SIDE_SCALE: f32 = 0.78;
-const SIDE_ALPHA: f32 = 0.55;
+// slot. v1.7 keeps the adjacent cart opaque while browsing.
+const SIDE_ALPHA: f32 = 1.0;
 const STAR_INSET: f32 = 5.0;
 
 static SLACK: AtomicU32 = AtomicU32::new(0);
@@ -362,14 +363,39 @@ impl Shelf {
         Some((self.index as i32 + off).rem_euclid(n) as usize)
     }
 
+    // Upstream slot. v1.7 positions a mixed GBA/GB/GBC rack by pairwise
+    // widths. In particular, the GB/GBC shells are not as wide as GBA carts.
+    fn slot_width(&self, slot: i32) -> (f32, bool) {
+        match self.cart_at_offset(slot).map(|i| self.carts[i].platform) {
+            Some(Platform::Gba) | None => (CART_W as f32, true),
+            Some(platform) => (cart_box(platform).0 as f32, false),
+        }
+    }
+
+    fn pitch(&self, a: i32, u: f32) -> f32 {
+        let ((wa, gba_a), (wb, gba_b)) =
+            (self.slot_width(a), self.slot_width(a + 1));
+        let (sa, sb) = (shrink(a as f32 - u), shrink((a + 1) as f32 - u));
+        let gap_of = if gba_a || gba_b { CART_W as f32 } else { wa };
+        wa * sa / 2.0 + gap_of * (1.0 - (sa + sb) / 2.0) + wb * sb / 2.0
+    }
+
+    fn centre(&self, slot: i32) -> f32 {
+        let u = self.scroll - self.scroll_target();
+        let a = u.floor() as i32;
+        let mut centre = OUT_W as f32 / 2.0 - (u - a as f32) * self.pitch(a, u);
+        if slot >= a {
+            for s in a..slot { centre += self.pitch(s, u); }
+        } else {
+            for s in (slot..a).rev() { centre -= self.pitch(s, u); }
+        }
+        centre
+    }
+
     pub fn selected_at(&self) -> (f32, f32) {
-        let w = self
-            .carts
-            .get(self.index)
-            .map_or(CART_W, |c| cart_box(c.platform).0) as f32;
-        let offset = self.scroll_target() - self.scroll;
-        let scale = shrink(offset);
-        (OUT_W as f32 / 2.0 + offset * w - w * scale / 2.0, scale)
+        let (w, _) = self.slot_width(0);
+        let scale = shrink(self.scroll_target() - self.scroll);
+        (self.centre(0) - w * scale / 2.0, scale)
     }
 
     /// True while spring-driven shelf scrolling is visibly in flight.
@@ -414,7 +440,7 @@ impl Shelf {
             let (cw, ch) = cart_box(cart.platform);
             let (w, h) = (cw as f32 * scale, ch as f32 * scale);
             let away = offset.signum() * (1.0 + offset.abs());
-            let x = OUT_W as f32 / 2.0 + offset * cw as f32 - w / 2.0 + away * PART * recede;
+            let x = self.centre(slot) - w / 2.0 + away * PART * recede;
             if x + w <= 0.0 || x >= OUT_W as f32 || alpha <= 0.0 {
                 continue;
             }
