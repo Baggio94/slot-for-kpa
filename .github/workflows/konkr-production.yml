@@ -63,7 +63,7 @@ jobs:
       - name: Test full-width Slot onboarding prompts
         run: cargo test -p slot-ui --lib onboarding_tests
       - name: Test original Slot v1.7 PNG and cartridge graphics
-        run: cargo test -p slot-ui --test cart_material --test upstream_v17_assets --test native_resolution --test insert_neighbour_motion
+        run: cargo test -p slot-ui --test cart_material --test upstream_v17_assets --test native_resolution --test insert_neighbour_motion --test mixed_shelf_parity --test chrome_crt_parity
       - name: Export authentic Slot keycap graphics for Android Apps
         run: |
           cargo run --locked -p slot-ui --example export_apps_legend -- android/app/src/main/assets/apps_controls
