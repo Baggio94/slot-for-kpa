@@ -2640,7 +2640,26 @@ impl Engine {
                                 _ => {}
                             },
                             ShelfOverlay::About => match code {
-                                97 | 96 => self.overlay = ShelfOverlay::Menu { row: 5 },
+                                96 => self.overlay = ShelfOverlay::Updates { row: 0 },
+                                97 => self.overlay = ShelfOverlay::Menu { row: 5 },
+                                108 => self.overlay = ShelfOverlay::None,
+                                _ => {}
+                            },
+                            ShelfOverlay::Updates { row } => match code {
+                                19 | 20 => self.overlay = ShelfOverlay::Updates {
+                                    row: move_menu_row(row, code, 4),
+                                },
+                                96 => match row {
+                                    0 => UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(19),
+                                    1 => UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(20),
+                                    2 if self.update_status == 1 =>
+                                        UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(21),
+                                    3 => UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(22),
+                                    _ => {}
+                                },
+                                21 | 22 if row == 3 =>
+                                    UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(22),
+                                97 => self.overlay = ShelfOverlay::About,
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
