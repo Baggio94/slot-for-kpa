@@ -487,6 +487,8 @@ struct Engine {
     active: usize,
     inserted: bool,
     progress: f32,
+    // Original slot. 300ms/6px refusal shake; shelf visuals only.
+    refusal: Option<slot_ui::Refusal>,
     insert_started: Option<Instant>,
     screen_power: f32,
     exiting_screen: bool,
@@ -994,6 +996,7 @@ impl Engine {
             active,
             inserted: false,
             progress: 0.0,
+            refusal: None,
             insert_started: None,
             screen_power: 0.0,
             exiting_screen: false,
@@ -2704,6 +2707,8 @@ impl Engine {
                         109 if !self.inserted && !self.shelves[self.active].carts.is_empty() => {
                             let selected = &self.shelves[self.active].carts[self.shelves[self.active].index];
                             if selected.platform != Platform::Gba {
+                                self.refusal = Some(slot_ui::Refusal::started(
+                                    self.born.elapsed().as_millis() as u64));
                                 set_message("mGBA is the only installed GB/GBC core".into());
                                 return;
                             }
@@ -2738,6 +2743,11 @@ impl Engine {
                                 self.platform_shown_at = Some(Instant::now());
                                 self.last_cart_navigation = Instant::now();
                             }
+                            return;
+                        }
+                        96 if !self.inserted && self.shelves[self.active].carts.is_empty() => {
+                            self.refusal = Some(slot_ui::Refusal::started(
+                                self.born.elapsed().as_millis() as u64));
                             return;
                         }
                         96 if !self.inserted && !self.shelves[self.active].carts.is_empty() => {
@@ -4271,7 +4281,7 @@ impl Engine {
                     SlotChrome {
                         cart, face: shelf.face(shelf.index), rest, scale,
                         seat: self.progress, alert: None, dim: 0.0,
-                        screen: self.screen_power, game: true,
+                        screen: self.screen_power, game: true, over: false,
                         slot_faces: self.slot_faces,
                     }.draw_with_material(&mut commands,self.clear_layers().0,self.clear_layers().1);
                 } else {
@@ -4452,6 +4462,9 @@ impl Engine {
         // GL resource ownership ever moves away from the GL render thread.
         DISPLAY_SYNC.store(self.game.is_some() && profile.display_sync_pacing,
             Ordering::Release);
+        // Grab clear-cart textures before borrowing the mutable emulator
+        // session. They are used only for the 220ms CRT start transition.
+        let (transition_back, transition_front) = self.clear_layers();
         let a12_native_started = Instant::now();
         if let Some(session) = self.game.as_mut() {
             // Resume only after the remote has also left its pause menu;
@@ -4594,7 +4607,28 @@ impl Engine {
             }
             self.gpu.fit(self.size);
             self.gpu.begin_frame();
-            let mut commands = vec![Draw::Game];
+            let mut commands = Vec::new();
+            if self.screen_power < 1.0 {
+                // Native Slot v1.7 draws the seated cart and slot behind the
+                // CRT picture while the LCD grows to full width (220ms).
+                // We use the existing GamePass screen-power shader, without
+                // adding a separate full-screen fade or extra libretro frames.
+                let shelf = &self.shelves[self.active];
+                if let Some(cart) = shelf.carts.get(shelf.index) {
+                    let (rest, scale) = shelf.selected_at();
+                    slot_ui::draw_ground_tinted(None, 0.0, &mut commands);
+                    SlotChrome {
+                        cart, face: shelf.face(shelf.index), rest, scale,
+                        seat: self.progress, alert: None, dim: 0.0,
+                        screen: self.screen_power, game: true, over: false,
+                        slot_faces: self.slot_faces,
+                    }.draw_with_material(&mut commands, transition_back, transition_front);
+                } else {
+                    commands.push(Draw::Game);
+                }
+            } else {
+                commands.push(Draw::Game);
+            }
             if let Some(tex)=bezel {
                 commands.push(Draw::Tex {
                     x:0.0,y:0.0,w:OUT_W as f32,h:OUT_H as f32,
@@ -4701,7 +4735,10 @@ impl Engine {
                 shelf.draw_row(selected, 0.0, 0.26 * t, dim, &mut commands);
                 slot_ui::draw_empty_slot_with(self.slot_faces, &mut commands);
             } else {
-                shelf.draw_row(None, 0.0, 0.0, 1.0, &mut commands);
+                // Match upstream Refusal: only the shelf carts shake.
+                // The physical slot stays fixed; no input delay or layout changes.
+                let shake = self.refusal.map_or(0.0, |r| r.offset(ms));
+                shelf.draw_row(None, shake, 0.0, 1.0, &mut commands);
                 slot_ui::draw_empty_slot_with(self.slot_faces, &mut commands);
                 // Official v1.7.0 shelf: system (L1/R1) or letter
                 // (D-pad Up/Down) uses a 200/1200/800 ms full-opacity name.
@@ -4758,6 +4795,7 @@ impl Engine {
                 dim: 0.0,
                 screen: 0.0,
                 game: false,
+                over: true,
                 slot_faces: self.slot_faces,
             }
             .draw_with_material(&mut commands,selected_clear_back,selected_clear_front);
