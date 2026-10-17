@@ -3,122 +3,135 @@ package fyi.slot.konkr
 import org.junit.Assert.*
 import org.junit.Test
 
-/** Patch ROMs confirmed by the user's October 2026 Mac AVD CSV and screenshots. */
+/**
+ * Known game identities from the 247-ROM October 2026 Mac AVD inventory.
+ * The patched CRCs are deliberately NOT provided to the matcher.
+ */
 class OfficialArtMatcherTest {
     private data class Case(
-        val platform: String, val patchedCrc: String,
-        val rom: String, val officialCrc: String,
+        val platform: String, val romName: String,
+        val officialName: String, val artCrc: String, val gameCode: String? = null,
     )
 
-    private val confirmed = listOf(
-        Case("GB", "630193E8",
-            "For the Frog the Bell Tolls (Japan) (En) (ryanbgstl) (v1.0)", "C18CD57A"),
-        Case("GB", "A728D5E5",
-            "Wario Land - Super Mario Land 3 (World) (No Debug) (v1.0) (Searo)", "40BE3889"),
-        Case("GBA", "BD8CFEA7",
-            "Advance Wars (USA) (Rev 1) (No Glitch) (Bartis1989)", "66FB29E9"),
-        Case("GBA", "17E5586A",
-            "Apotris (Ultimate Remix Soundpack) (Tudd) (v1.1) (Aftermarket)", "107F69E0"),
-        Case("GBA", "8A3BC5A8",
-            "Mother 3 (Japan) (En) (Chewy-Jeffman-Tomato) (v1.3)", "42AC9CB9"),
-        Case("GBA", "BAF7FFD2",
-            "Rhythm Tengoku (Japan) (En)", "349D7025"),
-        Case("GBA", "CE860480",
-            "Super Mario Advance 4 - Super Mario Bros. 3 (USA) (Rev 1) (Switches - RetroAchievements Edition)",
-            "37141F32"),
-        Case("GBC", "68B6527F",
-            "Kirby - Tilt 'n' Tumble (USA) (Accelerometer removal) (infinest) (v1.2)", "E541ACF1"),
-        Case("GBC", "19D2FC31",
-            "Star Ocean - Blue Sphere (Japan) (En) (v1.0a) (4l3j4ndr0)", "8C7DDBDA"),
-        Case("GBA", "9898DD59",
-            "WarioWare - Twisted! (USA) (Gyro Fix)", "CB4E844B"),
+    private val examples = listOf(
+        Case("GB", "For the Frog the Bell Tolls (Japan) (En) (ryanbgstl) (v1.0)",
+            "Kaeru no Tame ni Kane wa Naru (Japan)", "C18CD57A"),
+        Case("GB", "Wario Land - Super Mario Land 3 (World) (No Debug) (v1.0) (Searo)",
+            "Wario Land - Super Mario Land 3 (World)", "40BE3889"),
+        Case("GBA", "Advance Wars (USA) (Rev 1) (No Glitch) (Bartis1989)",
+            "Advance Wars (USA) (Rev 1)", "26FD0FC9", "AWRE"),
+        Case("GBA", "Apotris (Ultimate Remix Soundpack) (Tudd) (v1.1) (Aftermarket)",
+            "Apotris (World) (v4.0.2)", "107F69E0"),
+        Case("GBA", "Mother 3 (Japan) (En) (Chewy-Jeffman-Tomato) (v1.3)",
+            "Mother 3 (Japan)", "42AC9CB9", "A3UJ"),
+        Case("GBA", "Rhythm Tengoku (Japan) (En)",
+            "Rhythm Tengoku (Japan)", "349D7025", "BRIJ"),
+        Case("GBA", "Super Mario Advance 4 - Super Mario Bros. 3 (USA) (Rev 1) (Switches - RetroAchievements Edition)",
+            "Super Mario Advance 4 - Super Mario Bros. 3 (USA, Australia) (Rev 1)",
+            "88DAB27F", "AX4E"),
+        Case("GBC", "Kirby - Tilt 'n' Tumble (USA) (Accelerometer removal) (infinest) (v1.2)",
+            "Kirby - Tilt 'n' Tumble (USA)", "E541ACF1"),
+        Case("GBC", "Star Ocean - Blue Sphere (Japan) (En) (v1.0a) (4l3j4ndr0)",
+            "Star Ocean - Blue Sphere (Japan) (SGB Enhanced) (GB Compatible)", "8C7DDBDA"),
+        Case("GBA", "WarioWare - Twisted! (USA) (Gyro Fix)",
+            "WarioWare - Twisted! (USA, Australia)", "CB4E844B", "RZWE"),
     )
 
-    @Test fun tenManuallyConfirmedPatchedRomsResolveToOfficialArtDumps() {
-        for (game in confirmed) {
-            assertEquals(game.rom, game.officialCrc,
-                OfficialArtMatcher.verifiedCrc(game.platform, game.patchedCrc, game.rom))
+    private fun header(code: String? = null): ByteArray = ByteArray(0x150).also { bytes ->
+        code?.toByteArray(Charsets.US_ASCII)?.copyInto(bytes, 0xAC)
+    }
+
+    private fun catalog(entries: List<Case>): OfficialArtMatcher.Catalog {
+        val text = buildString {
+            appendLine("clrmamepro (")
+            appendLine(" name \"Nintendo - Test\"")
+            appendLine(")")
+            for (entry in entries) {
+                appendLine("game (")
+                appendLine(" name \"${entry.officialName}\"")
+                entry.gameCode?.let { appendLine(" serial \"$it\"") }
+                appendLine(" rom ( name \"game.rom\" size 8388608 crc ${entry.artCrc} )")
+                appendLine(")")
+            }
         }
+        return OfficialArtMatcher.Catalog.parse(text)
     }
 
-    @Test fun aliasRequiresBothMatchingChecksumAndSystemAndGameTitle() {
-        for (game in confirmed) {
-            assertNull(OfficialArtMatcher.verifiedCrc(
-                game.platform, "DEADBEEF", game.rom))
-            assertNull(OfficialArtMatcher.verifiedCrc(
-                "SNES", game.patchedCrc, game.rom))
-            assertNull(OfficialArtMatcher.verifiedCrc(
-                game.platform, game.patchedCrc, game.rom.replaceBefore(" (", "Different Title")))
-        }
+    private fun match(example: Case, entries: List<Case> = listOf(example),
+                      available: (String) -> String? = { "GBA/art/$it.png" }): String? =
+        OfficialArtMatcher.fromCatalog(
+            example.platform, example.romName, header(example.gameCode),
+            catalog(entries), available,
+        )
+
+    @Test fun allTenTypesOfPatchedGamesResolveWithoutPatchedCrcTables() {
+        for (example in examples) assertEquals(
+            example.romName, example.artCrc, match(example))
     }
 
-    @Test fun chapterZeroNeverMatchesTheUnrelatedFullEvercadeEdition() {
-        val prologue = "Goodboy Galaxy - Chapter Zero (World) (Fr) (v1.0.6) (Aftermarket)"
-        assertNull(OfficialArtMatcher.verifiedCrc("GBA", "21512022", prologue))
-        val dat = OfficialArtMatcher.Catalog.parse(
-            """clrmamepro (
-                | name "Nintendo - Game Boy Advance"
-                |)
-                |game (
-                | name "Goodboy Galaxy (World) (En,Ja,Fr,De,Es,Pt-BR,Zh,Ar) (Evercade)"
-                | rom ( name "goodboy.gba" size 8388608 crc EBB81069 )
-                |)
-            """.trimMargin().replace(" |", ""))
-        assertNull(OfficialArtMatcher.fromCatalog(prologue, dat) { true })
+    @Test fun entirelyNewTranslationAndPatchVersionsStillResolve() {
+        val mother = examples[4]
+        for (name in listOf(
+            "Mother 3 (Japan) (En) (Totally New Translation) (v9.9)",
+            "Mother 3 (Japan) (En) (Yet Another Patch)",
+        )) assertEquals(mother.artCrc, match(mother.copy(romName = name)))
+
+        val wario = examples.last()
+        assertEquals(wario.artCrc, match(wario.copy(
+            romName = "WarioWare - Twised! (USA) (Unseen Patch)"
+        )))
+        assertNull(match(wario.copy(
+            romName = "WarioWare - Twised! (USA) (Unseen Patch)", gameCode = null
+        )))
     }
 
-    private val dat = OfficialArtMatcher.Catalog.parse(
-        """clrmamepro (
-            |name "Nintendo - Game Boy Advance"
-            |)
-            |game (
-            | name "Advance Wars (Europe) (En,Fr,De,Es)"
-            | region "Europe"
-            | rom ( name "Advance Wars (Europe).gba" size 4194304 crc 66FB29E9 md5 abc )
-            |)
-            |game (
-            | name "Advance Wars (USA)"
-            | region "USA"
-            | rom ( name "Advance Wars (USA).gba" size 4194304 crc DBEF116C md5 def )
-            |)
-            |game (
-            | name "Advance Wars (USA) (Rev 1)"
-            | region "USA"
-            | rom ( name "Advance Wars Rev1.gba" size 4194304 crc 26FD0FC9 md5 ghi )
-            |)
-            |game (
-            | name "WarioWare - Twisted! (USA, Australia)"
-            | region "USA"
-            | rom ( name "WarioWare Twisted.gba" size 8388608 crc CB4E844B )
-            |)
-        """.trimMargin()
-    )
-
-    @Test fun datParsesOriginalNoIntroClrMameProFormat() {
-        assertEquals(3, dat.named("Advance Wars (USA) (No Glitch)").size)
-        assertEquals("CB4E844B",
-            dat.named("WarioWare - Twisted! (USA, Australia)").single().crc)
+    @Test fun chapterZeroIsNotTheFullGoodboyGalaxyEvercadeGame() {
+        val complete = Case("GBA", "Goodboy Galaxy (World)",
+            "Goodboy Galaxy (World) (En,Ja,Fr,De,Es,Pt-BR,Zh,Ar) (Evercade)",
+            "EBB81069", "XXXX")
+        assertNull(match(complete.copy(
+            romName = "Goodboy Galaxy - Chapter Zero (World) (Fr) (Aftermarket)",
+            gameCode = null), listOf(complete)))
     }
 
-    @Test fun onlyAvailableRegionMatchedArtMayBeAppliedAutomatically() {
-        assertEquals("DBEF116C", OfficialArtMatcher.fromCatalog(
-            "Advance Wars (USA) (hack)", dat) { it == "DBEF116C" })
-        assertEquals("66FB29E9", OfficialArtMatcher.fromCatalog(
-            "Advance Wars (Europe) (En,Fr,De,Es)", dat) { it == "66FB29E9" })
-        assertNull(OfficialArtMatcher.fromCatalog(
-            "Advance Wars (Japan)", dat) { it == "DBEF116C" })
+    @Test fun regionCannotSilentlySwitchToOtherMarket() {
+        val europe = examples[2].copy(
+            officialName = "Advance Wars (Europe) (En,Fr,De,Es)",
+            artCrc = "66FB29E9", gameCode = "AWRP")
+        assertNull(match(examples[2], listOf(europe)))
     }
 
-    @Test fun multipleEligibleDumpsAreAmbiguousAndMustNotBeSelected() {
-        assertNull(OfficialArtMatcher.fromCatalog("Advance Wars (USA) (hack)", dat) {
-            it == "DBEF116C" || it == "26FD0FC9"
-        })
-        assertNull(OfficialArtMatcher.fromCatalog("Advance Wars (USA)", dat) { false })
-        assertNull(OfficialArtMatcher.fromCatalog("Advance Wars 2 (USA)", dat) { true })
+    @Test fun internalGbaSerialDisagreementBlocksFalseMatches() {
+        val mother = examples[4]
+        assertNull(match(mother.copy(gameCode = "XXXX")))
     }
 
-    @Test fun oneOfficialRomCandidateCanBeReusedForPatchedGame() {
-        assertEquals("CB4E844B", OfficialArtMatcher.fromCatalog(
-            "WarioWare - Twisted! (USA) (Gyro Fix)", dat) { it == "CB4E844B" })
+    @Test fun ambiguityAcrossDifferentOfficialArtIsRejected() {
+        val wario = examples.last()
+        val second = wario.copy(artCrc = "ABCDEF12")
+        assertNull(match(wario, listOf(wario, second)))
+        assertEquals(wario.artCrc, match(wario, listOf(wario, second)) { "one.png" })
+    }
+
+    @Test fun exactRevisionWinsAmongOfficialRevisions() {
+        val rev = examples[2]
+        val base = rev.copy(officialName = "Advance Wars (USA)", artCrc = "DBEF116C")
+        assertEquals(rev.artCrc, match(rev, listOf(base, rev)))
+    }
+
+    @Test fun unknownOrUnavailableArtIsNotManufactured() {
+        val mother = examples[4]
+        assertNull(match(mother, available = { null }))
+        assertNull(match(mother.copy(romName = "Mother 4 (Japan)")))
+        assertNull(match(mother.copy(platform = "SNES")))
+    }
+
+    @Test fun sourceNoIntroMetadataIsParsedCorrectly() {
+        val entry = catalog(listOf(examples[2])).entries.single()
+        assertEquals("AWRE", entry.serial)
+        assertEquals("USA", entry.region)
+        assertEquals(1, entry.revision)
+        assertEquals("advance wars", entry.titleKey)
+        assertEquals("26FD0FC9", entry.crc)
     }
 }
