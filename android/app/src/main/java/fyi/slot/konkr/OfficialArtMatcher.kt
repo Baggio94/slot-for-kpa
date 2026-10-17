@@ -24,14 +24,17 @@ internal object OfficialArtMatcher {
         val titleKey: String,
     )
 
-    internal class Catalog private constructor(val entries: List<Entry>) {
+    internal class Catalog private constructor(
+        val platform: String, val entries: List<Entry>,
+    ) {
         companion object {
             private val gameStart = Regex("""(?m)^game\s*\(\s*$""")
             private val nameLine = Regex("""(?m)^\s*name\s+"([^"\r\n]+)"""")
             private val crcLine = Regex("""\bcrc\s+([0-9a-fA-F]{8})\b""")
             private val serialLine = Regex("""\bserial\s+"([A-Za-z0-9]{4})"""")
 
-            fun parse(dat: String): Catalog {
+            fun parse(dat: String, platform: String): Catalog {
+                require(platform in setOf("GB", "GBC", "GBA")) { "Unsupported platform" }
                 require(dat.startsWith("clrmamepro (")) { "Not a No-Intro DAT" }
                 val entries = ArrayList<Entry>()
                 for (block in dat.split(gameStart).drop(1)) {
@@ -45,7 +48,7 @@ internal object OfficialArtMatcher {
                     ))
                 }
                 require(entries.isNotEmpty()) { "No games in No-Intro DAT" }
-                return Catalog(entries)
+                return Catalog(platform, entries)
             }
         }
     }
@@ -119,6 +122,7 @@ internal object OfficialArtMatcher {
         catalog: Catalog,
         artworkPath: (String) -> String?,
     ): String? {
+        if (platform != catalog.platform) return null
         val requested = titleKey(romTitle)
         if (requested.isBlank()) return null
         val wanted = alternateTitles[requested] ?: requested
