@@ -85,6 +85,50 @@ class OfficialArtMatcherTest {
         )))
     }
 
+    @Test fun physicalMother3BeatsVirtualConsoleForEnglishTranslation() {
+        val original = examples[4]
+        val virtualConsole = original.copy(
+            officialName = "Mother 3 (Japan) (Virtual Console)",
+            artCrc = "C704A567")
+        assertEquals(original.artCrc, match(original, listOf(original, virtualConsole)))
+        assertEquals(virtualConsole.artCrc, match(original.copy(
+            romName = "Mother 3 (Japan) (Virtual Console)"),
+            listOf(original, virtualConsole)))
+    }
+
+    @Test fun physicalMarioAdvance4Rev1BeatsSwitchAndVirtualConsole() {
+        val physical = examples[6]
+        val switch = physical.copy(
+            officialName = "Super Mario Advance 4 - Super Mario Bros. 3 (USA) (Rev 1) (Switch Online)",
+            artCrc = "22E12D0E")
+        val virtualConsole = physical.copy(
+            officialName = "Super Mario Advance 4 - Super Mario Bros. 3 (USA) (Rev 1) (Virtual Console)",
+            artCrc = "D4C13AC3")
+        assertEquals(physical.artCrc,
+            match(physical, listOf(switch, virtualConsole, physical)))
+    }
+
+    @Test fun apotrisAftermarketSoundpackPrefersNewestAvailableOfficialLabel() {
+        val original = examples[3]
+        val old = original.copy(officialName = "Apotris (World) (v3.4.5)",
+            artCrc = "55AE4312")
+        val middle = original.copy(officialName = "Apotris (World) (v4.0.2)",
+            artCrc = "107F69E0")
+        val newest = original.copy(officialName = "Apotris (World) (v4.1.0)",
+            artCrc = "9B777CBA")
+        assertEquals(newest.artCrc, match(original, listOf(old, middle, newest)))
+        assertEquals(middle.artCrc, match(original.copy(
+            romName = "Apotris (World) (v4.0.2)"), listOf(old, middle, newest)))
+        // A source that only has two versions remains deterministic.
+        assertEquals(middle.artCrc, match(original, listOf(old, middle)))
+    }
+
+    @Test fun differentNonVersionedImagesRemainAmbiguous() {
+        val base = examples[4]
+        val other = base.copy(artCrc = "ABCDEF12")
+        assertNull(match(base, listOf(base, other)))
+    }
+
     @Test fun chapterZeroIsNotTheFullGoodboyGalaxyEvercadeGame() {
         val complete = Case("GBA", "Goodboy Galaxy (World)",
             "Goodboy Galaxy (World) (En,Ja,Fr,De,Es,Pt-BR,Zh,Ar) (Evercade)",
