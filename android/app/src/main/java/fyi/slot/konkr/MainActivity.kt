@@ -1615,7 +1615,8 @@ class MainActivity : Activity() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastStatusPoll < 15000L) return
         lastStatusPoll = now
-        val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        // JNI consumes ASCII HH:mm; the native Interface setting formats the display.
+        val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT)
             .format(java.util.Date())
         val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
