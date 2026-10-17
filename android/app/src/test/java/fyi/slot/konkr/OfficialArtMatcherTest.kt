@@ -123,7 +123,9 @@ class OfficialArtMatcherTest {
         val mother = examples[4]
         assertNull(match(mother, available = { null }))
         assertNull(match(mother.copy(romName = "Mother 4 (Japan)")))
-        assertNull(match(mother.copy(platform = "SNES")))
+        assertNull(OfficialArtMatcher.fromCatalog(
+            "SNES", mother.romName, header(), catalog(listOf(mother)),
+        ) { "SNES/art/other.png" })
     }
 
     @Test fun sourceNoIntroMetadataIsParsedCorrectly() {
