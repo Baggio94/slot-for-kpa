@@ -4745,7 +4745,9 @@ impl Engine {
         } else {
             let cart = &shelf.carts[shelf.index];
             let (rest, scale) = shelf.selected_at();
-            shelf.draw_row(Some(cart.stem.as_str()), 0.0, 0.0, 1.0, &mut commands);
+            // Identical 450ms recede/return as upstream slot. v1.7.
+            // Use the existing seat progress; never alter the ROM or game timing.
+            shelf.draw_row(Some(cart.stem.as_str()), 0.0, self.progress, 1.0, &mut commands);
             SlotChrome {
                 cart,
                 face: shelf.face(shelf.index),
