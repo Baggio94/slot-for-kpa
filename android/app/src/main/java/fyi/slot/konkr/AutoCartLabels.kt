@@ -14,7 +14,7 @@ import java.io.ByteArrayOutputStream
 
 /**
  * Conservative automatic cartridge label acquisition. Exact ROM CRC first,
- * then verified CRC aliases, then strict unique-title No-Intro matches from
+ * then conservative No-Intro title + platform + metadata matches from
  * the SAME DAT used in original Cart Studio. No fuzzy artwork guesses.
  * Manual and Studio labels always win.
  *
@@ -87,7 +87,6 @@ internal object AutoCartLabels {
         val art = CartStudioArtProxy(context)
         val dats = HashMap<String, OfficialArtMatcher.Catalog?>()
         var directMatches = 0
-        var verifiedMatches = 0
         var catalogMatches = 0
         var attempted = 0
         var matched = 0
@@ -114,29 +113,18 @@ internal object AutoCartLabels {
                 var chosen = artPath(crc.hex)
                 if (chosen != null) {
                     directMatches++
-                } else {
-                    // Patched ROM equivalences are both checksum- AND
-                    // title-guarded, hand verified against the official DAT.
-                    val verified = OfficialArtMatcher.verifiedCrc(
-                        rom.platform, crc.hex, rom.title)
-                    if (verified != null) {
-                        chosen = artPath(verified)
-                        if (chosen != null) verifiedMatches++
+                } else if (shouldContinue()) {
+                    // Generic No-Intro identification. No patched CRC keys,
+                    // no name-only fuzzy guess. The fingerprint already has
+                    // the full 0x150 cartridge header from the streaming pass.
+                    val dat = dats.getOrPut(rom.platform) {
+                        OfficialDatSource.load(context, rom.platform, shouldContinue)
                     }
-                    if (chosen == null && shouldContinue()) {
-                        // Load once per platform, only after an actual CRC
-                        // miss; cache on disk for 7 days. No title-based guess
-                        // may override an explicit CRC identification.
-                        val dat = dats.getOrPut(rom.platform) {
-                            OfficialDatSource.load(context, rom.platform, shouldContinue)
-                        }
-                        if (dat != null) {
-                            val key = OfficialArtMatcher.fromCatalog(rom.title, dat) {
-                                artPath(it) != null
-                            }
-                            chosen = key?.let(::artPath)
-                            if (chosen != null) catalogMatches++
-                        }
+                    if (dat != null) {
+                        val candidate = OfficialArtMatcher.fromCatalog(
+                            rom.platform, rom.title, crc.head, dat, ::artPath)
+                        chosen = candidate?.let(::artPath)
+                        if (chosen != null) catalogMatches++
                     }
                 }
                 val path = chosen ?: continue
@@ -202,7 +190,7 @@ internal object AutoCartLabels {
         val remaining = missing.count { it.uri !in examinedThisSession &&
             !CartLabelPaths.file(context.filesDir, it.uri).exists() }
         Log.i(TAG, "Art pass complete: checked=$attempted, indexedMatches=$matched, " +
-            "direct=$directMatches, verified=$verifiedMatches, dat=$catalogMatches, " +
+            "direct=$directMatches, dat=$catalogMatches, " +
             "downloaded=$fetched, rejected=$unsuitable, failed=$failed, saved=$saved, " +
             "remaining=$remaining, totalSaved=$savedTotal")
         // Try the next 16 candidates while foregrounded, never hammering the
