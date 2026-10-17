@@ -495,7 +495,7 @@ class MainActivity : Activity() {
                 }
                 22 -> {
                     val enabled = slotUpdater.toggle()
-                    nativeUpdateStatus(0, "", enabled)
+                    slotUpdater.refreshVisibleStatus()
                     if (enabled) slotUpdater.check(false)
                 }
             }
