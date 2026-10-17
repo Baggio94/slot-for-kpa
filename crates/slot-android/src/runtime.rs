@@ -1979,6 +1979,17 @@ impl Engine {
             Input::UpdateStatus(status, version, automatic) => {
                 self.update_status = status.min(5);
                 self.update_auto = automatic;
+                if !version.is_empty() && version.is_ascii() && version.len() <= 48 {
+                    let face = quick_value_face(&version, true);
+                    let tex = match self.update_version_face {
+                        Some((tex,_,_)) => {
+                            self.gpu.update_texture(tex, face.w, face.h, &face.rgba);
+                            tex
+                        }
+                        None => self.gpu.create_texture(face.w, face.h, &face.rgba),
+                    };
+                    self.update_version_face = Some((tex,face.w,face.h));
+                }
             }
             Input::ShelfStatus(code) => {
                 self.shelf_status = if usize::from(code) < SHELF_STATUS_TEXT.len() {
