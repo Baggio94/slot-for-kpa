@@ -3922,11 +3922,31 @@ impl Engine {
         }
     }
 
+    fn update_caption(&self) -> usize {
+        match self.update_status {
+            1 | 5 => 100, 2 => 101, 3 => 102, 4 => 103,
+            _ => 99,
+        }
+    }
+
+    fn draw_update_version(&self, x: f32, y: f32, out: &mut Vec<Draw>) {
+        if let Some((tex,w,h)) = self.update_version_face {
+            let scale = (160.0 / w.max(1) as f32).min(0.79);
+            out.push(Draw::Tex {
+                x,y,w:w as f32 * scale,h:h as f32 * scale,tex,alpha:0.84,
+            });
+        }
+    }
+
     fn draw_overlay(&self, out: &mut Vec<Draw>) {
         match self.overlay {
             ShelfOverlay::None => {}
             ShelfOverlay::Menu { row } => {
                 self.draw_original_style_menu(0, &[1, 2, 3, 48, 25, 31], row, out);
+                if self.update_status == 1 {
+                    self.text_fit(106, 523.0, settings_row_top(6) +
+                        5.0*QUICK_PITCH+8.0, 175.0, 0.70, out);
+                }
             }
             ShelfOverlay::Library { row } => {
                 self.draw_original_style_menu(5, &[6, 24, 7, 8, 79, 9], row, out);
@@ -4292,6 +4312,7 @@ impl Engine {
             ShelfOverlay::Settings { row } => (4u8, row, 5usize),
             ShelfOverlay::GeneralSettings { row } =>
                 (12u8, row, self.general_rows().len()),
+            ShelfOverlay::Updates { row } => (17u8,row,4usize),
             ShelfOverlay::InterfaceSettings { row } => (10u8, row, 3usize),
             ShelfOverlay::EmulationSettings { row } => (8u8, row, 3usize),
             ShelfOverlay::PauseEmulationSettings { row } => (9u8, row, 3usize),
