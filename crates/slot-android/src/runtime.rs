@@ -4265,7 +4265,9 @@ impl Engine {
             if let Some(shelf) = self.shelves.get(self.active) {
                 if let Some(cart) = shelf.carts.get(shelf.index) {
                     let (rest, scale) = shelf.selected_at();
-                    shelf.draw_row(Some(cart.stem.as_str()), 0.0, 0.0, 1.0, &mut commands);
+                    // Match upstream slot. v1.7: neighbours move out/fade in sync with
+                    // the 450ms seat animation and return on reverse ejection.
+                    shelf.draw_row(Some(cart.stem.as_str()), 0.0, self.progress, 1.0, &mut commands);
                     SlotChrome {
                         cart, face: shelf.face(shelf.index), rest, scale,
                         seat: self.progress, alert: None, dim: 0.0,
