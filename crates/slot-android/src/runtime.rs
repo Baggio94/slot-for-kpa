@@ -1976,6 +1976,10 @@ impl Engine {
                 self.game_emulation = None;
                 *REQUEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
+            Input::UpdateStatus(status, version, automatic) => {
+                self.update_status = status.min(5);
+                self.update_auto = automatic;
+            }
             Input::ShelfStatus(code) => {
                 self.shelf_status = if usize::from(code) < SHELF_STATUS_TEXT.len() {
                     code
