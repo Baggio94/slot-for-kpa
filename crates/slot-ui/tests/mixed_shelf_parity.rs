@@ -72,3 +72,16 @@ fn mixed_neighbours_have_positive_non_overlapping_pitch() {
         s.right();
     }
 }
+
+#[test]
+fn side_cartridges_keep_full_original_slot_opacity_until_insertion() {
+    let shelf = shelf();
+    let mut idle = Vec::new();
+    shelf.draw_row(Some("Game 0"), 0.0, 0.0, 1.0, &mut idle);
+    // Real Slot 1.7 SIDE_ALPHA = 1, not Android's prior 0.55.
+    for draw in idle {
+        if let Draw::Rect { colour, .. } = draw {
+            assert!((colour[3] - 1.0).abs() < 0.001);
+        }
+    }
+}
