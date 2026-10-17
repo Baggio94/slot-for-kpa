@@ -109,10 +109,14 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
                 page.startsWith(RELEASES) && allowedAsset(apk) &&
                 sha.matches(Regex("[0-9a-fA-F]{64}"))) {
                 latest = Release(name, page, apk, sha)
-                publish(AVAILABLE, name)
             }
         }
+        publish(if (latest == null) CURRENT else AVAILABLE, latest?.version ?: version())
         check(false)
+    }
+
+    fun refreshVisibleStatus() {
+        publish(if (latest == null) CURRENT else AVAILABLE, latest?.version ?: version())
     }
 
     fun check(manual: Boolean) {
