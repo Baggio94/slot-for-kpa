@@ -36,7 +36,7 @@ internal object OfficialArtMatcher {
                     val name = nameInGame.find(block)?.groupValues?.get(1) ?: continue
                     val crc = crcInGame.find(block)?.groupValues?.get(1)
                         ?.uppercase(Locale.ROOT) ?: continue
-                    byName.getOrPut(titleKey(name), ::ArrayList)
+                    byName.getOrPut(titleKey(name)) { ArrayList() }
                         .add(Entry(name, crc, region(name)))
                 }
                 return Catalog(byName)
@@ -95,8 +95,9 @@ internal object OfficialArtMatcher {
         val wishedRegion = region(title)
         val inRegion = if (wishedRegion == null) candidates
             else candidates.filter { it.region == wishedRegion }
-        val options = if (inRegion.isNotEmpty()) inRegion else candidates
-        val unique = options.map { it.crc }.distinct()
+        // A different market can have different physical label artwork.
+        // Missing requested region is NOT permission to silently substitute.
+        val unique = inRegion.map { it.crc }.distinct()
         return unique.singleOrNull()
     }
 }
