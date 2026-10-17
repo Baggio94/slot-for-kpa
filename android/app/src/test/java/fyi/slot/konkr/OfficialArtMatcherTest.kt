@@ -103,7 +103,7 @@ class OfficialArtMatcherTest {
 
     @Test fun internalGbaSerialDisagreementBlocksFalseMatches() {
         val mother = examples[4]
-        assertNull(match(mother.copy(gameCode = "XXXX")))
+        assertNull(match(mother.copy(gameCode = "XXXX"), listOf(mother)))
     }
 
     @Test fun ambiguityAcrossDifferentOfficialArtIsRejected() {
