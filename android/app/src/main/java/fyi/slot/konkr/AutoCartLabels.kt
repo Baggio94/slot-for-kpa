@@ -13,9 +13,10 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 
 /**
- * Conservative automatic cartridge label acquisition. Reuses the official
- * Cart Studio checksum-indexed scans, so ambiguous filename matches never
- * put the wrong label on a game. Manual and Studio labels always win.
+ * Conservative automatic cartridge label acquisition. Exact ROM CRC first,
+ * then verified CRC aliases, then strict unique-title No-Intro matches from
+ * the SAME DAT used in original Cart Studio. No fuzzy artwork guesses.
+ * Manual and Studio labels always win.
  *
  * Low priority and bounded: at most eight new labels per batch, 16 attempts,
  * no work during gameplay or Android background sleep, and no ROM/BIOS writes.
@@ -84,6 +85,10 @@ internal object AutoCartLabels {
         Log.i(TAG, "Official art index ready: bytes=${indexBytes.size}, CRC entries=${index.length()}")
 
         val art = CartStudioArtProxy(context)
+        val dats = HashMap<String, OfficialArtMatcher.Catalog?>()
+        var directMatches = 0
+        var verifiedMatches = 0
+        var catalogMatches = 0
         var attempted = 0
         var matched = 0
         var fetched = 0
@@ -98,13 +103,43 @@ internal object AutoCartLabels {
             attempted++
             examinedThisSession.add(rom.uri)
             try {
-                // Exact ROM checksum, never a guessed filename match.
+                // Preserve the exact checksum match as the highest priority.
                 val crc = CartStudioCatalog.cached(context, rom)
                     ?: CartStudioCatalog.identify(context, rom)
                 if (!shouldContinue()) break
-                val path = index.optJSONObject(crc.hex)
-                    ?.optString("support-texture").orEmpty()
-                if (!validArtworkPath(path, rom.platform)) continue
+                fun artPath(hash: String): String? = index.optJSONObject(hash)
+                    ?.optString("support-texture")
+                    ?.takeIf { validArtworkPath(it, rom.platform) }
+
+                var chosen = artPath(crc.hex)
+                if (chosen != null) {
+                    directMatches++
+                } else {
+                    // Patched ROM equivalences are both checksum- AND
+                    // title-guarded, hand verified against the official DAT.
+                    val verified = OfficialArtMatcher.verifiedCrc(
+                        rom.platform, crc.hex, rom.title)
+                    if (verified != null) {
+                        chosen = artPath(verified)
+                        if (chosen != null) verifiedMatches++
+                    }
+                    if (chosen == null && shouldContinue()) {
+                        // Load once per platform, only after an actual CRC
+                        // miss; cache on disk for 7 days. No title-based guess
+                        // may override an explicit CRC identification.
+                        val dat = dats.getOrPut(rom.platform) {
+                            OfficialDatSource.load(context, rom.platform, shouldContinue)
+                        }
+                        if (dat != null) {
+                            val key = OfficialArtMatcher.fromCatalog(rom.title, dat) {
+                                artPath(it) != null
+                            }
+                            chosen = key?.let(::artPath)
+                            if (chosen != null) catalogMatches++
+                        }
+                    }
+                }
+                val path = chosen ?: continue
                 matched++
                 val response = art.intercept(path)
                 if (response.statusCode != 200) {
@@ -167,6 +202,7 @@ internal object AutoCartLabels {
         val remaining = missing.count { it.uri !in examinedThisSession &&
             !CartLabelPaths.file(context.filesDir, it.uri).exists() }
         Log.i(TAG, "Art pass complete: checked=$attempted, indexedMatches=$matched, " +
+            "direct=$directMatches, verified=$verifiedMatches, dat=$catalogMatches, " +
             "downloaded=$fetched, rejected=$unsuitable, failed=$failed, saved=$saved, " +
             "remaining=$remaining, totalSaved=$savedTotal")
         // Try the next 16 candidates while foregrounded, never hammering the
