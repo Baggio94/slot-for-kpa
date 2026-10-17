@@ -74,6 +74,7 @@ enum Input {
     Key(i32, bool),
     // Predefined shelf UI states from Android: no untrusted or long text on GL.
     ShelfStatus(u8),
+    UpdateStatus(u8, String, bool),
     Reset,
     GameReady { uri: String, path: String },
     GameError { uri: String, message: String },
@@ -355,7 +356,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 94] = [
+const MENU_TEXT: [&str; 107] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -450,6 +451,19 @@ const MENU_TEXT: [&str; 94] = [
     "Game Boy Advance",                   // 91
     "Game Boy Color",                     // 92
     "Game Boy",                           // 93
+    "SOFTWARE UPDATE",                  // 94
+    "Check for Updates",                // 95
+    "Release Notes",                    // 96
+    "Download & Install",              // 97
+    "Automatic Checks",                 // 98
+    "Up to date",                       // 99
+    "New update available",             // 100
+    "Checking for updates",             // 101
+    "Downloading update",               // 102
+    "Unable to check",                  // 103
+    "OFF",                              // 104
+    "ON",                               // 105
+    "Update available",                 // 106
 ];
 
 #[derive(Clone, Copy)]
@@ -559,6 +573,9 @@ struct Engine {
     setting_carets: [(slot_gfx::TexId, u32, u32); 2],
     settings_hints: [(slot_gfx::TexId, u32); 2],
     about_texture: Option<slot_gfx::TexId>,
+    update_status: u8,
+    update_auto: bool,
+    update_version_face: Option<(slot_gfx::TexId,u32,u32)>,
     menu_seen: u8,
     menu_opened: Instant,
     menu_cursor_y: f32,
@@ -1061,6 +1078,9 @@ impl Engine {
             setting_carets,
             settings_hints,
             about_texture,
+            update_status: 0,
+            update_auto: true,
+            update_version_face: None,
             menu_seen: 0,
             menu_opened: now,
             menu_cursor_y: 0.0,
