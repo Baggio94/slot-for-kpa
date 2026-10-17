@@ -346,6 +346,7 @@ enum ShelfOverlay {
     PauseGameplaySettings { row: usize },
     PauseEmulationSettings { row: usize },
     About,
+    Updates { row: usize },
     Scraping,
     Achievements,
     Core,
