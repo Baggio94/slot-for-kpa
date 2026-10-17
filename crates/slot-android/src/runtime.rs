@@ -6121,6 +6121,19 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRaStatus(
         .map_or(std::ptr::null_mut(), |s| s.into_raw())
 }
 
+/// Metadata is delivered from Android through the existing render-thread queue.
+/// No JNI thread may create a texture or mutate the GL-owned Engine directly.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeUpdateStatus(
+    mut env: JNIEnv<'_>, _this: JObject<'_>,
+    status: jint, version: JString<'_>, automatic: jboolean,
+) {
+    let Ok(value) = env.get_string(&version) else {return;};
+    let label = value.to_string_lossy().into_owned();
+    if label.len() > 48 || !label.is_ascii() {return;}
+    push(Input::UpdateStatus(status.clamp(0,5) as u8,label,automatic != 0));
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePollUiAction(
     _env: *mut c_void, _this: *mut c_void,
