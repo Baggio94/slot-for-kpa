@@ -2,102 +2,170 @@ package fyi.slot.konkr
 
 import java.text.Normalizer
 import java.util.Locale
+import kotlin.math.max
 
 /**
- * A conservative missing-label fallback, not a replacement for exact CRC matching.
+ * General No-Intro artwork resolver. It NEVER depends on patched-ROM CRCs:
+ * CRC already had its chance in AutoCartLabels. This fallback uses the same
+ * platform-specific No-Intro DAT as original Cart Studio, with the game name,
+ * region, revision and (on GBA) the internal 4-byte cartridge Game Code.
  *
- * Source of truth is the same Libretro No-Intro DAT used by official Cart Studio
- * (see third_party/slot-cart-studio/web/libretro.js). A title is only accepted
- * when it identifies one unambiguous game/art CRC on the SAME platform.
- *
- * Hand-verified patched-ROM equivalences are pinned to both the ROM CRC and
- * its expected title. These are real matches confirmed in Cart Studio, never
- * a fuzzy guess from the game name. A wrong or modified name fails closed.
+ * Fuzzy title matching is allowed ONLY when a matching GBA Game Code is
+ * present. Other consoles need an exact canonical title/verified translation
+ * title; low-confidence matches are not automatically painted.
  */
 internal object OfficialArtMatcher {
-    internal data class Entry(val name: String, val crc: String, val region: String?)
-    internal class Catalog private constructor(
-        private val byTitle: Map<String, List<Entry>>,
-    ) {
-        fun named(title: String): List<Entry> = byTitle[titleKey(title)].orEmpty()
+    internal data class Entry(
+        val name: String,
+        val crc: String,
+        val region: String?,
+        val revision: Int?,
+        val serial: String?,
+        val titleKey: String,
+    )
 
+    internal class Catalog private constructor(val entries: List<Entry>) {
         companion object {
             private val gameStart = Regex("""(?m)^game\s*\(\s*$""")
-            private val nameInGame = Regex("""(?m)^\s*name\s+"([^"\r\n]+)"""")
-            private val crcInGame = Regex("""\bcrc\s+([0-9a-fA-F]{8})\b""")
+            private val nameLine = Regex("""(?m)^\s*name\s+"([^"\r\n]+)"""")
+            private val crcLine = Regex("""\bcrc\s+([0-9a-fA-F]{8})\b""")
+            private val serialLine = Regex("""\bserial\s+"([A-Za-z0-9]{4})"""")
 
             fun parse(dat: String): Catalog {
-                // DAT files have 'game (' records with one ROM description on
-                // the following lines. Match each record separately: the
-                // header's 'name' must never become a candidate.
-                val parts = dat.split(gameStart)
-                val byName = HashMap<String, MutableList<Entry>>()
-                for (block in parts.drop(1)) {
-                    val name = nameInGame.find(block)?.groupValues?.get(1) ?: continue
-                    val crc = crcInGame.find(block)?.groupValues?.get(1)
+                require(dat.startsWith("clrmamepro (")) { "Not a No-Intro DAT" }
+                val entries = ArrayList<Entry>()
+                for (block in dat.split(gameStart).drop(1)) {
+                    val name = nameLine.find(block)?.groupValues?.get(1) ?: continue
+                    val crc = crcLine.find(block)?.groupValues?.get(1)
                         ?.uppercase(Locale.ROOT) ?: continue
-                    byName.getOrPut(titleKey(name)) { ArrayList() }
-                        .add(Entry(name, crc, region(name)))
+                    entries.add(Entry(
+                        name, crc, region(name), revision(name),
+                        serialLine.find(block)?.groupValues?.get(1)?.uppercase(Locale.ROOT),
+                        titleKey(name),
+                    ))
                 }
-                return Catalog(byName)
+                require(entries.isNotEmpty()) { "No games in No-Intro DAT" }
+                return Catalog(entries)
             }
         }
     }
 
-    private data class Verified(val platform: String, val patchedName: String, val artCrc: String)
-
-    // Pinned against the 247-ROM Mac AVD regression corpus (17 Oct 2026).
-    // The left side is the user's patched ROM CRC; the right side is the
-    // actual official No-Intro dump chosen manually in Cart Studio.
-    // Goodboy Galaxy - Chapter Zero is intentionally NOT mapped to the
-    // different full Goodboy Galaxy (Evercade) title.
-    private val verified = mapOf(
-        "GB:630193E8" to Verified("GB", "For the Frog the Bell Tolls", "C18CD57A"),
-        "GB:A728D5E5" to Verified("GB", "Wario Land - Super Mario Land 3", "40BE3889"),
-        "GBA:BD8CFEA7" to Verified("GBA", "Advance Wars", "66FB29E9"),
-        "GBA:17E5586A" to Verified("GBA", "Apotris", "107F69E0"),
-        "GBA:8A3BC5A8" to Verified("GBA", "Mother 3", "42AC9CB9"),
-        "GBA:BAF7FFD2" to Verified("GBA", "Rhythm Tengoku", "349D7025"),
-        "GBA:CE860480" to Verified("GBA", "Super Mario Advance 4 - Super Mario Bros. 3", "37141F32"),
-        "GBC:68B6527F" to Verified("GBC", "Kirby - Tilt 'n' Tumble", "E541ACF1"),
-        "GBC:19D2FC31" to Verified("GBC", "Star Ocean - Blue Sphere", "8C7DDBDA"),
-        "GBA:9898DD59" to Verified("GBA", "WarioWare - Twisted!", "CB4E844B"),
+    private val regionTag = Regex("""\((USA|Europe|Japan|World)(?:[,)])""",
+        RegexOption.IGNORE_CASE)
+    private val revisionTag = Regex("""\(Rev\s+(\d+)\)""", RegexOption.IGNORE_CASE)
+    private val mark = Regex("\\p{M}+")
+    private val separator = Regex("[^a-z0-9]+")
+    private val alternateTitles = mapOf(
+        // International title of the Japanese Game Boy release. This maps a
+        // TITLE, not a particular patched dump's CRC and works for any patch.
+        "for the frog the bell tolls" to "kaeru no tame ni kane wa naru",
     )
 
-    private val gameRegion = Regex("""\((USA|Europe|Japan|World)(?:[,)])""", RegexOption.IGNORE_CASE)
-    private val nonLetters = Regex("[^a-z0-9]+")
-    private val accents = Regex("\\p{M}+")
-
-    private fun baseName(name: String): String = name.substringBefore(" (").trim()
-    private fun titleKey(name: String): String {
-        val flattened = Normalizer.normalize(baseName(name), Normalizer.Form.NFKD)
-            .lowercase(Locale.ROOT).replace(accents, "")
-        return flattened.replace(nonLetters, " ").trim()
-    }
     private fun region(name: String): String? =
-        gameRegion.find(name)?.groupValues?.get(1)?.uppercase(Locale.ROOT)
+        regionTag.find(name)?.groupValues?.get(1)?.uppercase(Locale.ROOT)
 
-    /** Overrides are CRC AND title guarded, never filename-only guesses. */
-    fun verifiedCrc(platform: String, romCrc: String, title: String): String? {
-        val expected = verified["$platform:${romCrc.uppercase(Locale.ROOT)}"] ?: return null
-        return expected.artCrc.takeIf {
-            expected.platform == platform && titleKey(expected.patchedName) == titleKey(title)
-        }
+    private fun revision(name: String): Int? =
+        revisionTag.find(name)?.groupValues?.get(1)?.toIntOrNull()
+
+    internal fun titleKey(name: String): String {
+        val base = name.substringBefore(" (").trim()
+        val flat = Normalizer.normalize(base, Normalizer.Form.NFKD)
+            .lowercase(Locale.ROOT).replace(mark, "")
+        return flat.replace(separator, " ").trim()
     }
 
-    /** Strict title matching: never silently treat a demo/prologue as a full game. */
-    fun fromCatalog(title: String, catalog: Catalog, hasOfficialArt: (String) -> Boolean): String? {
-        if (titleKey(title).isBlank()) return null
-        val candidates = catalog.named(title).filter { hasOfficialArt(it.crc) }
-        if (candidates.isEmpty()) return null
-        // If different No-Intro revisions share a title, choose only when
-        // there's a single art-bearing candidate for the ROM's region.
-        val wishedRegion = region(title)
-        val inRegion = if (wishedRegion == null) candidates
-            else candidates.filter { it.region == wishedRegion }
-        // A different market can have different physical label artwork.
-        // Missing requested region is NOT permission to silently substitute.
-        val unique = inRegion.map { it.crc }.distinct()
-        return unique.singleOrNull()
+    private fun gameCode(platform: String, head: ByteArray): String? {
+        // The GBA game code at 0xAC..0xAF survives most IPS/BPS translation
+        // patches and is also recorded in No-Intro as the 4-char "serial".
+        if (platform != "GBA" || head.size < 0xB0) return null
+        val code = (0xAC..0xAF).map { head[it].toInt() and 0xff }
+        if (!code.all { it in 48..57 || it in 65..90 }) return null
+        return code.map(Int::toChar).joinToString("")
+    }
+
+    private fun similarity(a: String, b: String): Double {
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+        if (a == b) return 1.0
+        // Bounded Levenshtein. The DAT titles are short; no large or
+        // attacker-controlled allocations while the app is foregrounded.
+        if (a.length > 120 || b.length > 120) return 0.0
+        var previous = IntArray(b.length + 1) { it }
+        var current = IntArray(b.length + 1)
+        for (i in a.indices) {
+            current[0] = i + 1
+            for (j in b.indices) {
+                current[j + 1] = minOf(
+                    current[j] + 1,
+                    previous[j + 1] + 1,
+                    previous[j] + if (a[i] == b[j]) 0 else 1,
+                )
+            }
+            val temp = previous
+            previous = current
+            current = temp
+        }
+        return 1.0 - previous[b.length].toDouble() / max(a.length, b.length)
+    }
+
+    /**
+     * @return a real official No-Intro CRC, only when the best evidence is
+     * unique. Identical artwork PATHS on different official revisions count as
+     * one result. An ambiguous or wrong-region game returns null.
+     */
+    fun fromCatalog(
+        platform: String,
+        romTitle: String,
+        header: ByteArray,
+        catalog: Catalog,
+        artworkPath: (String) -> String?,
+    ): String? {
+        val requested = titleKey(romTitle)
+        if (requested.isBlank()) return null
+        val wanted = alternateTitles[requested] ?: requested
+        val expectedRegion = region(romTitle)
+        val expectedRevision = revision(romTitle)
+        val code = gameCode(platform, header)
+
+        data class Candidate(val entry: Entry, val path: String, val score: Int)
+        val candidates = ArrayList<Candidate>()
+        for (entry in catalog.entries) {
+            // DAT is loaded separately for each system by OfficialDatSource.
+            // Never cross system boundaries or silently choose foreign-region
+            // art for a ROM with a known region.
+            if (expectedRegion != null && entry.region != expectedRegion) continue
+
+            val serial = entry.serial
+            val exactCode = code != null && serial == code
+            val familyCode = code != null && serial != null &&
+                serial.take(3) == code.take(3)
+
+            // A recognizable but conflicting GBA serial is a strong signal
+            // the filename does NOT describe the game in the ROM.
+            if (code != null && serial != null && !familyCode) continue
+
+            val exactTitle = entry.titleKey == wanted
+            val fuzzy = !exactTitle && exactCode &&
+                wanted.split(' ').size >= 2 &&
+                similarity(wanted, entry.titleKey) >= 0.88
+            if (!exactTitle && !fuzzy) continue
+
+            val path = artworkPath(entry.crc) ?: continue
+            var score = if (exactTitle) 100 else 60
+            if (exactCode) score += 25
+            else if (familyCode) score += 10
+            if (expectedRevision != null) {
+                if (entry.revision == expectedRevision) score += 12
+                else score -= 12
+            } else if (entry.revision == null) {
+                score += 5
+            }
+            // No title match may override a serial conflict; and fuzzy
+            // matches without an exact full code never qualify.
+            candidates.add(Candidate(entry, path, score))
+        }
+        val best = candidates.maxOfOrNull { it.score } ?: return null
+        val winners = candidates.filter { it.score == best }
+        if (winners.map { it.path }.distinct().size != 1) return null
+        return winners.first().entry.crc
     }
 }
