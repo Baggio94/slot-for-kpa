@@ -16,6 +16,7 @@ class SlotUpdatePolicyTest {
     @Test fun onlyPublishedStableIsEligibleForStableInstallations() {
         assertTrue(SlotUpdatePolicy.eligible("1.1.0", "1.2.0", false))
         assertFalse(SlotUpdatePolicy.eligible("1.1.0", "1.2.0-beta2", true))
+        assertFalse(SlotUpdatePolicy.eligible("1.1.0", "1.2.0-beta2", false))
         assertFalse(SlotUpdatePolicy.eligible("1.2.0", "1.2.0-beta3", true))
     }
 
