@@ -125,6 +125,7 @@ class MainActivity : Activity() {
     external fun nativeRaStopReady(): Boolean
     external fun nativeSystemStatus(clock: String, batteryPercent: Int, charging: Boolean)
     external fun nativePollUiAction(): Int
+    external fun nativeUpdateStatus(status: Int, version: String, automatic: Boolean)
     external fun nativeReloadVisualAssets()
     external fun nativePollCartLabelUri(): String?
     external fun nativeReloadCartLabel(uri: String)
@@ -172,6 +173,11 @@ class MainActivity : Activity() {
     private val autoLabelUpdates = java.util.concurrent.ConcurrentLinkedQueue<String>()
     private val activeTargets = ConcurrentHashMap<String, RetroArchStorage.Target>()
     private val uiHandler = Handler(Looper.getMainLooper())
+    private val slotUpdater by lazy {
+        SlotUpdater(this) { status, version ->
+            if (!isDestroyed) nativeUpdateStatus(status, version, slotUpdater.enabled())
+        }
+    }
     private val audioRunning = AtomicBoolean(false)
     // A single pending wakeup is enough. GLSurfaceView never waits for audio.
     // Prevent an empty-read 8ms sleep from missing a freshly produced frame.
@@ -469,6 +475,29 @@ class MainActivity : Activity() {
                 16 -> requestLinkWifi()
                 17 -> toggleShareGbaSaves()
                 18 -> showPeerCartridgeConsent()
+                19 -> slotUpdater.check(true)
+                20 -> slotUpdater.openNotes()
+                21 -> {
+                    if (!nativeIsPlaying()) {
+                        slotUpdater.downloadAndInstall { apk ->
+                            if (!isDestroyed && resumed && !nativeIsPlaying()) {
+                                try {
+                                    slotUpdater.startInstaller(apk)
+                                } catch (error: Exception) {
+                                    Log.w(TAG, "User-confirmed installer not available", error)
+                                    SlotToast.makeText(this@MainActivity,
+                                        "Allow updates from slot. in Android settings.",
+                                        Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    }
+                }
+                22 -> {
+                    val enabled = slotUpdater.toggle()
+                    nativeUpdateStatus(0, "", enabled)
+                    if (enabled) slotUpdater.check(false)
+                }
             }
             // Multicast is required during discovery, not for ongoing TCP
             // emulation. Release on success, cancellation and timeout.
@@ -2325,6 +2354,7 @@ class MainActivity : Activity() {
             startRaSmartCache()
         }
         startAutoCartLabels()
+        slotUpdater.onForeground()
         lastStatusPoll = -15000L
         cartSounds.resume()
         view.onResume()
