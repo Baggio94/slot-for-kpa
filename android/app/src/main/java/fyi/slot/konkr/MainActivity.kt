@@ -125,7 +125,7 @@ class MainActivity : Activity() {
     external fun nativeRaStopReady(): Boolean
     external fun nativeSystemStatus(clock: String, batteryPercent: Int, charging: Boolean)
     external fun nativePollUiAction(): Int
-    external fun nativeUpdateStatus(status: Int, version: String, automatic: Boolean)
+    external fun nativeUpdateStatus(status: Int, installed: String, available: String, automatic: Boolean)
     external fun nativeReloadVisualAssets()
     external fun nativePollCartLabelUri(): String?
     external fun nativeReloadCartLabel(uri: String)
@@ -178,7 +178,9 @@ class MainActivity : Activity() {
             if (!isDestroyed) {
                 val automatic = getSharedPreferences("slot-updater-v1", MODE_PRIVATE)
                     .getBoolean("enabled", true)
-                nativeUpdateStatus(status, version, automatic)
+                nativeUpdateStatus(status,
+                    packageManager.getPackageInfo(packageName, 0).versionName.orEmpty(),
+                    version, automatic)
             }
         }
     }
