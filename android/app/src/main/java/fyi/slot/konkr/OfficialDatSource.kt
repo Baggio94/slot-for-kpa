@@ -84,7 +84,7 @@ internal object OfficialDatSource {
         }
         // A verified stale local database is still usable offline.
         val text = dat ?: cached() ?: return null
-        return runCatching { OfficialArtMatcher.Catalog.parse(text) }
+        return runCatching { OfficialArtMatcher.Catalog.parse(text, platform) }
             .onFailure { Log.w(TAG, "Invalid No-Intro database $platform", it) }
             .getOrNull()
     }
