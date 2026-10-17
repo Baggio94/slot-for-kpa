@@ -41,7 +41,7 @@ class OfficialArtMatcherTest {
         code?.toByteArray(Charsets.US_ASCII)?.copyInto(bytes, 0xAC)
     }
 
-    private fun catalog(entries: List<Case>): OfficialArtMatcher.Catalog {
+    private fun catalog(entries: List<Case>, platform: String = entries.first().platform): OfficialArtMatcher.Catalog {
         val text = buildString {
             appendLine("clrmamepro (")
             appendLine(" name \"Nintendo - Test\"")
@@ -54,7 +54,7 @@ class OfficialArtMatcherTest {
                 appendLine(")")
             }
         }
-        return OfficialArtMatcher.Catalog.parse(text)
+        return OfficialArtMatcher.Catalog.parse(text, platform)
     }
 
     private fun match(example: Case, entries: List<Case> = listOf(example),
