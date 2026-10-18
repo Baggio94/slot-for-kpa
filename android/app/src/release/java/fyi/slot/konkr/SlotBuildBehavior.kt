@@ -6,6 +6,7 @@ package fyi.slot.konkr
  */
 @Suppress("UNUSED_PARAMETER")
 internal object SlotBuildBehavior {
+    fun verboseEmulationInput(): Boolean = false
     // Android already reports KONKR's controller buttons as native key codes.
     fun emulatorButton(key: Int): Int? = null
 
