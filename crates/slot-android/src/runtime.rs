@@ -4056,7 +4056,7 @@ impl Engine {
                 if let Some(tex) = self.about_texture {
                     out.push(Draw::Tex {
                         x: (OUT_W - STICKER_W) as f32 / 2.0,
-                        y: 42.0, w: STICKER_W as f32, h: STICKER_H as f32,
+                        y: 36.0, w: STICKER_W as f32, h: STICKER_H as f32,
                         tex, alpha: 1.0,
                     });
                 }
@@ -4093,7 +4093,7 @@ impl Engine {
                 }
                 for (tex,w,x) in centred_hints(&self.menu_hints, LEGEND_GAP) {
                     out.push(Draw::Tex {
-                        x, y: 439.0, w: w as f32, h: HINT_H as f32,
+                        x, y: 427.0, w: w as f32, h: HINT_H as f32,
                         tex, alpha: fade,
                     });
                 }
@@ -5270,7 +5270,7 @@ fn slot_name_alpha(elapsed_ms: u64) -> f32 {
 }
 
 /// Native About rows share one cursor. The third status line never receives focus.
-fn about_row_top() -> f32 { 284.0 }
+fn about_row_top() -> f32 { 276.0 }
 
 /// A verified downloaded release (READY=5) remains eligible for installation.
 fn about_primary_action(status: u8) -> i32 {
