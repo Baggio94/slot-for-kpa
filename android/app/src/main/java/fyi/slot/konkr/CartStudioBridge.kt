@@ -22,6 +22,28 @@ internal class CartStudioBridge(
     private val dirty: AtomicBoolean,
 ) {
     private val keyed = roms.associateBy { key(it.uri) }
+    private val officialArt = CartStudioArtProxy(context)
+    private var indexedArtwork: JSONObject? = null
+    private val officialDats = HashMap<String, OfficialArtMatcher.Catalog?>()
+
+    @Synchronized
+    @JavascriptInterface
+    fun officialMatch(id: String): String = runCatching {
+        val rom = known(id)
+        if (label(context, rom.uri).exists()) return@runCatching ""
+        val index = indexedArtwork
+            ?: officialArt.cachedIndex()?.also { indexedArtwork = it }
+            ?: return@runCatching ""
+        val fingerprint = CartStudioCatalog.cached(context, rom)
+            ?: CartStudioCatalog.identify(context, rom)
+        val direct = OfficialArtResolver.artPath(index, rom.platform, fingerprint.hex)
+        val dat = if (direct == null) officialDats.getOrPut(rom.platform) {
+            OfficialDatSource.load(context, rom.platform) { false }
+        } else null
+        OfficialArtResolver.match(rom, fingerprint, index, dat).orEmpty()
+    }.onFailure {
+        android.util.Log.w("SlotStudioMatch", "Official match failed", it)
+    }.getOrDefault("")
 
     // Original Cart Studio writes a label by (platform, stem), not URI.
     // Do not pick the wrong cartridge when two filenames are identical.
