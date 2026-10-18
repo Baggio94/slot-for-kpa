@@ -142,9 +142,15 @@ internal class RaPanelDialog(
         }
         content = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            // Match Menu/Library/Settings: heading at x=32, entries x=37.
-            val inset = SlotUi.menuEntryInset(activity)
-            setPadding(inset, dp(14), inset, dp(10))
+            // Heading's pre-rasterized PNG has a 20px left transparent
+            // gutter, scaled by 0.79 = ~16 native pixels. Native menu
+            // labels have the SAME raster gutter, TextViews do not.
+            // Thus: 16px (visible heading) + 5px (original Slot offset)
+            // places actual RA letters at x=53 vs heading letters x=48.
+            // Keep the previous right padding for value-column width.
+            val visibleHeadingGutter = SlotUi.menuPixel(activity, 16)
+            val inset = visibleHeadingGutter + SlotUi.menuEntryInset(activity)
+            setPadding(inset, dp(14), SlotUi.menuEntryInset(activity), dp(10))
         }
         // Account information must be visible immediately, even while the
         // first cache diagnostics pass is scanning 115+ ROM definitions.
