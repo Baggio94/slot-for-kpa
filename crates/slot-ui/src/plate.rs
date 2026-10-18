@@ -158,7 +158,7 @@ mod onboarding_tests {
             assert!(face.rgba.chunks_exact(4).any(|p|p[3]!=0));
             assert!(onboarding_text_width(after,LABEL_PX)<ONBOARDING_MAX_W);
         }
-        let note=onboarding_note_face("(UNZIPPED ROMS ONLY)");
+        let note=onboarding_note_face("(ZIP ROMS SUPPORTED)");
         assert!(note.w<=ONBOARDING_MAX_W);
         assert!(note.rgba.chunks_exact(4).any(|p|p[3]!=0));
         assert!(hint_width("START","Open Library")<=ONBOARDING_MAX_W);
