@@ -19,6 +19,10 @@ mkdir -p "$dir"
 printf 'scenario=%s\nserial=%s\nabi=%s\nduration_s=%s\n' "$scenario" "$serial" "$abi" "$seconds" >"$dir/metadata.txt"
 # Capture only development performance tags. No ROM bytes, credentials,
 # save-state data, screenshots or audio PCM is gathered.
+# logcat otherwise replays buffered samples from PREVIOUS trials, which
+# would silently corrupt A/B comparisons. Clear only the transient Android
+# log buffers; this does NOT touch APK data, ROMs or saves.
+"$ADB" -s "$serial" logcat -c
 "$ADB" -s "$serial" logcat -v time -s SlotEmuDiag:I SlotKONKR:I SlotKonkr:I '*:S' >"$dir/logcat.txt" &
 recorder=$!
 trap 'kill "$recorder" 2>/dev/null || true' EXIT
