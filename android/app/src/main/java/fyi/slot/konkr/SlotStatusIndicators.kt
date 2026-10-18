@@ -55,6 +55,8 @@ internal class SlotStatusIndicators(
     private val iconSize = (24f * scale).roundToInt()
     private val spacing = (7f * scale).roundToInt()
     private val margin = (24f * scale).roundToInt()
+    // Move only the shelf status row up; preserve its horizontal padding.
+    private val statusTop = (12f * scale).roundToInt()
     private val left = LinearLayout(host).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -135,11 +137,11 @@ internal class SlotStatusIndicators(
         add(right, bluetooth)
         frame.addView(left, FrameLayout.LayoutParams(-2, iconSize, Gravity.TOP or Gravity.START).apply {
             leftMargin = margin
-            topMargin = margin
+            topMargin = statusTop
         })
         frame.addView(right, FrameLayout.LayoutParams(-2, iconSize, Gravity.TOP or Gravity.END).apply {
             rightMargin = margin - spacing
-            topMargin = margin
+            topMargin = statusTop
         })
     }
 
@@ -285,6 +287,9 @@ internal class SlotStatusIndicators(
      * throttled; a hidden indicator never triggers extra health traffic.
      */
     fun refresh(flags: Int) {
+        // Bit 16 mirrors the real native Slot footer (black on Light,
+        // white on Dark) so Wi-Fi uses the same ink as clock and battery.
+        wifi.setLightTheme(flags and 16 != 0)
         val visible = flags and 1 != 0
         if (!visible) {
             left.visibility = View.GONE
@@ -365,30 +370,49 @@ internal class SlotStatusIndicators(
             bluetooth.visibility == View.VISIBLE) View.VISIBLE else View.GONE
     }
 
+    /**
+     * A clean three-arc monochrome indicator with the same dark/light ink,
+     * anti-aliased stroke weight and rounded ends as the native Slot footer.
+     * Partial Wi-Fi signal gently dims missing arcs rather than adding a
+     * modern Android status badge/background.
+     */
     private class WifiSignal(context: Context) : View(context) {
         var level = 0
-            set(value) { if (field != value) { field = value; invalidate() } }
+            set(value) {
+                if (field != value) { field = value; invalidate() }
+            }
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(252, 252, 252)
+            color = Color.WHITE
             style = Paint.Style.STROKE
-            strokeWidth = 2.6f
+            strokeWidth = 2.05f
             strokeCap = Paint.Cap.ROUND
+        }
+        fun setLightTheme(light: Boolean) {
+            val ink = if (light) Color.BLACK else Color.WHITE
+            if (paint.color != ink) {
+                paint.color = ink
+                invalidate()
+            }
         }
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             canvas.save()
             canvas.scale(width / 24f, height / 24f)
-            val centerX = 12f
-            val centerY = 21f
-            for (i in 1..3) {
-                paint.alpha = if (i <= level) 255 else 70
-                val radius = i * 5.7f
-                canvas.drawArc(RectF(centerX - radius, centerY - radius,
-                    centerX + radius, centerY + radius), 226f, 88f, false, paint)
+            val cx = 12f
+            val cy = 19f
+            for (i in 3 downTo 1) {
+                paint.alpha = if (i <= level) 255 else 68
+                val r = when (i) {
+                    3 -> 13.6f
+                    2 -> 9.2f
+                    else -> 4.8f
+                }
+                canvas.drawArc(RectF(cx - r, cy - r, cx + r, cy + r),
+                    229f, 82f, false, paint)
             }
             paint.style = Paint.Style.FILL
-            paint.alpha = if (level > 0) 255 else 70
-            canvas.drawCircle(centerX, centerY - 0.9f, 2f, paint)
+            paint.alpha = if (level > 0) 255 else 68
+            canvas.drawCircle(cx, cy, 1.8f, paint)
             paint.style = Paint.Style.STROKE
             canvas.restore()
         }
