@@ -47,6 +47,6 @@ internal object SlotBuildBehavior {
 
     fun externalFolderRestrictionMessage(packageName: String): String? =
         if (isolatedLab(packageName))
-            "Multiplayer Lab: external save folders disabled to protect Slot saves."
+            "Emulation Lab: external saves/states disabled to protect Slot data."
         else null
 }
