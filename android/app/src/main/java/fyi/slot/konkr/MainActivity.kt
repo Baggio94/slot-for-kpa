@@ -95,6 +95,7 @@ class MainActivity : Activity() {
     external fun nativeResetInput()
     external fun nativeExternalReturn()
     external fun nativePerformanceStats(): String?
+    external fun nativeEmulationDiagnostics(): String?
     external fun nativeShelfIndicatorFlags(): Int
     external fun nativeSetShelfStatus(code: Int)
     external fun nativeSetLibrary(json: String): Int
@@ -190,6 +191,8 @@ class MainActivity : Activity() {
     }
     private val audioRunning = AtomicBoolean(false)
     // A single pending wakeup is enough. GLSurfaceView never waits for audio.
+    private var lastEmulationReportPollAt = 0L
+    @Volatile private var diagnosticAudioUnderruns = 0
     // Prevent an empty-read 8ms sleep from missing a freshly produced frame.
     private val audioFrameSignal = java.util.concurrent.Semaphore(0)
     private val vibrator by lazy { getSystemService(VIBRATOR_SERVICE) as? Vibrator }
@@ -533,6 +536,15 @@ class MainActivity : Activity() {
                 releaseLinkMulticast()
             }
             val nowPerf = android.os.SystemClock.uptimeMillis()
+            if (resumed && nowPerf - lastEmulationReportPollAt >= 1_000L) {
+                lastEmulationReportPollAt = nowPerf
+                val playing = nativeIsPlaying()
+                EmulationDiagnostics.report(playing,
+                    if (playing) nativeEmulationDiagnostics() else null,
+                    if (playing) nativeAudioQueuedShorts() else 0,
+                    if (playing) nativeAudioSampleRate() else 0,
+                    diagnosticAudioUnderruns)
+            }
             if (resumed && nowPerf - lastPerfPoll >= 250) {
                 lastPerfPoll = nowPerf
                 val value = nativePerformanceStats()
@@ -722,6 +734,7 @@ class MainActivity : Activity() {
                     }
                     override fun onDrawFrame(gl: GL10?) {
                         val a12StartedNs = SystemClock.elapsedRealtimeNanos()
+                        if (nativeIsPlaying()) EmulationDiagnostics.frame()
                         var a12NativeUs = 0L
                         if (ready) {
                             val beginNativeNs = SystemClock.elapsedRealtimeNanos()
@@ -945,6 +958,7 @@ class MainActivity : Activity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         SlotBuildBehavior.emulatorButton(keyCode)?.let { button ->
+            EmulationDiagnostics.input(keyCode, true, event, button)
             if (event.repeatCount == 0) {
                 warmedCandidate.set(null)
                 wakeCarouselRender()
@@ -972,6 +986,7 @@ class MainActivity : Activity() {
             return super.onKeyDown(keyCode, event)
         }
         if (event.repeatCount == 0) {
+            EmulationDiagnostics.input(keyCode, true, event, keyCode)
             warmedCandidate.set(null)
             wakeCarouselRender()
             nativeKey(keyCode, true)
@@ -981,6 +996,7 @@ class MainActivity : Activity() {
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         SlotBuildBehavior.emulatorButton(keyCode)?.let { button ->
+            EmulationDiagnostics.input(keyCode, false, event, button)
             warmedCandidate.set(null)
             wakeCarouselRender()
             nativeKey(button, false)
@@ -991,6 +1007,7 @@ class MainActivity : Activity() {
             Log.i(TAG, "KONKR MENU BTN_MODE up: Android code=" + keyCode)
         }
         if (keyCode !in BUTTONS) return super.onKeyUp(keyCode, event)
+        EmulationDiagnostics.input(keyCode, false, event, keyCode)
         warmedCandidate.set(null)
         wakeCarouselRender()
         nativeKey(keyCode, false)
@@ -1332,6 +1349,7 @@ class MainActivity : Activity() {
                         rate = wanted
                         requestedSpeed = 0
                         observedUnderruns = 0
+                        diagnosticAudioUnderruns = 0
                         emptyAudioReads = 0
                         playedShorts = 0L
                         audioProbeAt = SystemClock.elapsedRealtime()
@@ -1366,6 +1384,7 @@ class MainActivity : Activity() {
                         }
                     }
                     val samples = nativeReadAudio()
+                    EmulationDiagnostics.audio(samples)
                     if (samples.isEmpty()) {
                         emptyAudioReads++
                         // Event-driven wakeup instead of sleeping blindly for 8ms:
@@ -1393,6 +1412,7 @@ class MainActivity : Activity() {
                     val probeNow = SystemClock.elapsedRealtime()
                     if (probeNow - audioProbeAt >= 5_000L) {
                         val underflows = player.underrunCount
+                        diagnosticAudioUnderruns = underflows
                         if (underflows > observedUnderruns) {
                             Log.i(TAG, "AudioTrack underruns: +${underflows - observedUnderruns}" +
                                 " over 5s (total=$underflows, rate=$wanted Hz)")
