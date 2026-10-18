@@ -1092,13 +1092,16 @@ class MainActivity : Activity() {
                 Log.i(TAG, "Slot launch queue delay: ${queueWait}ms (waiting for preceding save exports)")
             }
             try {
-                val name = uri.lastPathSegment.orEmpty().lowercase()
-                val ext = when {
-                    name.endsWith(".gba") -> "gba"
-                    name.endsWith(".gbc") -> "gbc"
-                    name.endsWith(".gb") -> "gb"
-                    else -> error("Unsupported ROM type")
-                }
+                val name = uri.lastPathSegment.orEmpty()
+                // SAF ZIPs contain an actual cartridge, not a libretro ZIP
+                // input. Inspect the embedded extension before selecting a
+                // core, a save target or a private cache extension.
+                val ext = if (RomSource.isContainer(name)) {
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        RomSource.inspect(input, name).extension
+                    } ?: error("Cannot inspect cartridge ZIP")
+                } else name.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
+                require(ext in setOf("gba", "gbc", "gb")) { "Unsupported ROM type" }
                 val digest = MessageDigest.getInstance("SHA-256")
                     .digest(rawUri.toByteArray(Charsets.UTF_8))
                     .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
@@ -1109,17 +1112,22 @@ class MainActivity : Activity() {
                     val temp = File(dir, "$digest.tmp")
                     try {
                         contentResolver.openInputStream(uri)?.use { input ->
-                            temp.outputStream().buffered().use { output ->
-                                val buffer = ByteArray(64 * 1024)
-                                var copied = 0L
-                                while (true) {
-                                    val n = input.read(buffer)
-                                    if (n < 0) break
-                                    copied += n
-                                    require(copied <= 64L * 1024 * 1024) { "ROM exceeds 64 MiB" }
-                                    output.write(buffer, 0, n)
+                            RomSource.useRom(input, name) { raw, embeddedExt ->
+                                require(embeddedExt == ext) { "ZIP cartridge type changed" }
+                                temp.outputStream().buffered().use { output ->
+                                    val buffer = ByteArray(64 * 1024)
+                                    var copied = 0L
+                                    while (true) {
+                                        val n = raw.read(buffer)
+                                        if (n < 0) break
+                                        copied += n
+                                        require(copied <= RomSource.MAX_ROM_BYTES) {
+                                            "ROM exceeds 64 MiB"
+                                        }
+                                        output.write(buffer, 0, n)
+                                    }
+                                    require(copied >= RomSource.MIN_ROM_BYTES) { "ROM too small" }
                                 }
-                                require(copied >= 0x150) { "ROM too small" }
                             }
                         } ?: error("Cannot read this ROM")
                         check(temp.renameTo(target)) { "Cannot cache ROM" }
@@ -1138,6 +1146,8 @@ class MainActivity : Activity() {
                 val saves = storage.savesRoot?.let(Uri::parse)
                 val states = storage.statesRoot?.let(Uri::parse)
                 val shared = RetroArchStorage.target(this, rawUri, core, saves, states,
+                    scannedFileName = if (RomSource.isContainer(name))
+                        "${name.substringBeforeLast('.')}.$ext" else null,
                     shareGbaSaves = storage.shareGbaSaves)
                 try {
                     RetroArchStorage.importBeforeLaunch(this@MainActivity, shared)
