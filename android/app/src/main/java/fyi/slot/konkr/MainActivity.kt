@@ -1517,7 +1517,11 @@ class MainActivity : Activity() {
                         !nativeIsPlaying() && !cartStudioOpening) {
                         // A pause between bounded batches prevents continuous
                         // ROM reads and leaves the carousel's render thread free.
-                        uiHandler.postDelayed({ startAutoCartLabels() }, 4_000L)
+                        // Wait until the earliest bounded network/DAT
+                        // retry is due. Fresh unchecked ROMs still use the
+                        // original gentle 4s spacing between small batches.
+                        uiHandler.postDelayed({ startAutoCartLabels() },
+                            AutoCartLabels.nextBatchDelayMs())
                     }
                 }
             }
