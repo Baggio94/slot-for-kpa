@@ -133,9 +133,9 @@ class AppsActivity : Activity() {
             // Pixel units from the same 720x480 Slot canvas as the button's
             // fixed-height slot frame. Insets remain symmetric at any density.
             setPadding(SlotUi.menuPixel(this@AppsActivity, 12),
-                SlotUi.menuPixel(this@AppsActivity, 4),
+                SlotUi.menuPixel(this@AppsActivity, 5),
                 SlotUi.menuPixel(this@AppsActivity, 12),
-                SlotUi.menuPixel(this@AppsActivity, 6))
+                SlotUi.menuPixel(this@AppsActivity, 5))
             isFocusable = true
             isClickable = true
             contentDescription = "Choose the default home launcher"
