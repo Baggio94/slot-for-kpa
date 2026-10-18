@@ -9,10 +9,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -76,7 +78,7 @@ internal class SlotStatusIndicators(
     private val syncthing = sprite()
     private val ra = sprite()
     private val wifi = WifiSignal(host)
-    private val bluetooth = sprite()
+    private val bluetooth = BluetoothSignal(host)
     private val sprites = HashMap<String, android.graphics.Bitmap>()
     private var statusAtlas: android.graphics.Bitmap? = null
     private val spriteSize = 64
@@ -126,9 +128,18 @@ internal class SlotStatusIndicators(
     }
 
     init {
-        // VectorDrawable is an exact unbadged trace from the approved v6
-        // trophy. No online/offline sprite is selected at runtime.
-        ra.setImageResource(R.drawable.ic_slot_ra_trophy)
+        // All shelf icons remain white in both themes. Rasterize the
+        // original unbadged trophy and add the same tiny outline as the
+        // approved integration sprites for visibility on the Light theme.
+        val trophy = host.getDrawable(R.drawable.ic_slot_ra_trophy)
+        if (trophy != null) {
+            val raw = Bitmap.createBitmap(spriteSize, spriteSize,
+                Bitmap.Config.ARGB_8888)
+            trophy.setBounds(0, 0, spriteSize, spriteSize)
+            trophy.draw(Canvas(raw))
+            ra.setImageBitmap(whiteStatusSprite(raw))
+            raw.recycle()
+        } else ra.setImageResource(R.drawable.ic_slot_ra_trophy)
         add(left, sleep)
         add(left, basicsync)
         add(left, syncthing)
@@ -257,6 +268,46 @@ internal class SlotStatusIndicators(
         } catch (_: RuntimeException) { false }
     }
 
+    /**
+     * Normalize the approved colored status artwork to WHITE without altering
+     * its silhouette (running / stopped badges remain distinguishable).
+     * A soft, subpixel black perimeter keeps it legible on a pale wallpaper
+     * without adding an opaque plate or changing the white glyphs.
+     * Only nine 64x64 sprites are processed, each once when first needed.
+     */
+    private fun whiteStatusSprite(raw: Bitmap): Bitmap {
+        val width = raw.width
+        val height = raw.height
+        val src = IntArray(width * height)
+        raw.getPixels(src, 0, width, 0, 0, width, height)
+        val dst = IntArray(src.size)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val i = y * width + x
+                val alpha = Color.alpha(src[i])
+                if (alpha != 0) {
+                    dst[i] = Color.argb(alpha, 255, 255, 255)
+                } else {
+                    var maxNeighborAlpha = 0
+                    for (dy in -2..2) {
+                        val ny = y + dy
+                        if (ny !in 0 until height) continue
+                        for (dx in -2..2) {
+                            val nx = x + dx
+                            if (nx !in 0 until width) continue
+                            val opacity = Color.alpha(src[ny * width + nx])
+                            if (opacity > maxNeighborAlpha) maxNeighborAlpha = opacity
+                        }
+                    }
+                    if (maxNeighborAlpha > 0) {
+                        dst[i] = Color.argb(maxNeighborAlpha * 90 / 255, 0, 0, 0)
+                    }
+                }
+            }
+        }
+        return Bitmap.createBitmap(dst, width, height, Bitmap.Config.ARGB_8888)
+    }
+
     private fun sprite(name: String, view: ImageView) {
         val bitmap = sprites.getOrPut(name) {
             // Approved v6 artwork at native 64x64 instead of upscaled 24px
@@ -266,8 +317,9 @@ internal class SlotStatusIndicators(
                 .also { statusAtlas = it }
             val index = spriteNames.indexOf(name)
             require(index >= 0) { "Unknown status sprite: $name" }
-            android.graphics.Bitmap.createBitmap(atlas,
+            val original = Bitmap.createBitmap(atlas,
                 index * spriteSize, 0, spriteSize, spriteSize)
+            whiteStatusSprite(original).also { original.recycle() }
         }
         view.setImageBitmap(bitmap)
     }
@@ -287,9 +339,8 @@ internal class SlotStatusIndicators(
      * throttled; a hidden indicator never triggers extra health traffic.
      */
     fun refresh(flags: Int) {
-        // Bit 16 mirrors the real native Slot footer (black on Light,
-        // white on Dark) so Wi-Fi uses the same ink as clock and battery.
-        wifi.setLightTheme(flags and 16 != 0)
+        // Radio and integration glyphs stay pure white on ALL themes.
+        // The library/label task captions still follow Slot's native ink.
         val visible = flags and 1 != 0
         if (!visible) {
             left.visibility = View.GONE
@@ -359,7 +410,7 @@ internal class SlotStatusIndicators(
             val btOn = wantBt && btGranted && try {
                 bluetoothManager.adapter?.isEnabled == true
             } catch (_: SecurityException) { false }
-            show(bluetooth, "bluetooth_on", btOn)
+            bluetooth.visibility = if (btOn) View.VISIBLE else View.GONE
         } else {
             wifi.visibility = View.GONE
             bluetooth.visibility = View.GONE
@@ -371,28 +422,26 @@ internal class SlotStatusIndicators(
     }
 
     /**
-     * A clean three-arc monochrome indicator with the same dark/light ink,
-     * anti-aliased stroke weight and rounded ends as the native Slot footer.
-     * Partial Wi-Fi signal gently dims missing arcs rather than adding a
-     * modern Android status badge/background.
+     * Native Slot-style Wi-Fi and Bluetooth are drawn in the same 24px grid,
+     * with a 2.05px white stroke and faint black silhouette underpainting.
+     * Neither glyph changes color when the shelf switches Dark/Light.
      */
     private class WifiSignal(context: Context) : View(context) {
         var level = 0
             set(value) {
                 if (field != value) { field = value; invalidate() }
             }
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             style = Paint.Style.STROKE
             strokeWidth = 2.05f
             strokeCap = Paint.Cap.ROUND
         }
-        fun setLightTheme(light: Boolean) {
-            val ink = if (light) Color.BLACK else Color.WHITE
-            if (paint.color != ink) {
-                paint.color = ink
-                invalidate()
-            }
+        private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            style = Paint.Style.STROKE
+            strokeWidth = 3.65f
+            strokeCap = Paint.Cap.ROUND
         }
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
@@ -401,20 +450,65 @@ internal class SlotStatusIndicators(
             val cx = 12f
             val cy = 19f
             for (i in 3 downTo 1) {
-                paint.alpha = if (i <= level) 255 else 68
-                val r = when (i) {
+                val active = i <= level
+                outline.alpha = if (active) 105 else 30
+                ink.alpha = if (active) 255 else 68
+                val radius = when (i) {
                     3 -> 13.6f
                     2 -> 9.2f
                     else -> 4.8f
                 }
-                canvas.drawArc(RectF(cx - r, cy - r, cx + r, cy + r),
-                    229f, 82f, false, paint)
+                val arc = RectF(cx - radius, cy - radius,
+                    cx + radius, cy + radius)
+                canvas.drawArc(arc, 229f, 82f, false, outline)
+                canvas.drawArc(arc, 229f, 82f, false, ink)
             }
-            paint.style = Paint.Style.FILL
-            paint.alpha = if (level > 0) 255 else 68
-            canvas.drawCircle(cx, cy, 1.8f, paint)
-            paint.style = Paint.Style.STROKE
+            outline.style = Paint.Style.FILL
+            outline.alpha = if (level > 0) 105 else 30
+            ink.style = Paint.Style.FILL
+            ink.alpha = if (level > 0) 255 else 68
+            canvas.drawCircle(cx, cy, 2.6f, outline)
+            canvas.drawCircle(cx, cy, 1.8f, ink)
+            outline.style = Paint.Style.STROKE
+            ink.style = Paint.Style.STROKE
             canvas.restore()
         }
     }
+
+    private class BluetoothSignal(context: Context) : View(context) {
+        private val glyph = Path().apply {
+            // Classical Bluetooth rune; no Android material fill or badge.
+            moveTo(12f, 2.8f)
+            lineTo(12f, 21.2f)
+            moveTo(12f, 2.8f)
+            lineTo(18.1f, 7.6f)
+            lineTo(6.0f, 17.2f)
+            moveTo(12f, 21.2f)
+            lineTo(18.1f, 16.4f)
+            lineTo(6.0f, 6.8f)
+        }
+        private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.STROKE
+            strokeWidth = 2.05f
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(105, 0, 0, 0)
+            style = Paint.Style.STROKE
+            strokeWidth = 3.65f
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            canvas.save()
+            canvas.scale(width / 24f, height / 24f)
+            canvas.drawPath(glyph, outline)
+            canvas.drawPath(glyph, ink)
+            canvas.restore()
+        }
+    }
+
 }
