@@ -168,6 +168,7 @@ class MainActivity : Activity() {
         Thread(task, "slot-kpa-auto-labels").apply { priority = Thread.MIN_PRIORITY }
     }
     private val autoLabelsRunning = AtomicBoolean(false)
+    private val autoLabelsRestartRequested = AtomicBoolean(false)
     @Volatile private var cartStudioOpening = false
     // Paint fresh labels only when all moving carts and pending GPU uploads
     // have settled. The renderer's manual reload path is synchronous.
@@ -1440,7 +1441,12 @@ class MainActivity : Activity() {
 
     private fun startAutoCartLabels() {
         if (!resumed || isDestroyed || nativeIsPlaying() || cartStudioOpening) return
-        if (!autoLabelsRunning.compareAndSet(false, true)) return
+        if (!autoLabelsRunning.compareAndSet(false, true)) {
+            // A short Studio visit may return before the previous worker exits.
+            autoLabelsRestartRequested.set(true)
+            if (!autoLabelsRunning.compareAndSet(false, true)) return
+        }
+        autoLabelsRestartRequested.set(false)
         try {
             autoLabelsWorker.execute {
                 var anotherBatch = false
@@ -1458,7 +1464,9 @@ class MainActivity : Activity() {
                     Log.w("SlotAutoLabels", "Automatic artwork deferred", error)
                 } finally {
                     autoLabelsRunning.set(false)
-                    if (anotherBatch && resumed && !isDestroyed && !cartStudioOpening) {
+                    val recheck = autoLabelsRestartRequested.getAndSet(false)
+                    if ((anotherBatch || recheck) && resumed && !isDestroyed &&
+                        !nativeIsPlaying() && !cartStudioOpening) {
                         // A pause between bounded batches prevents continuous
                         // ROM reads and leaves the carousel's render thread free.
                         uiHandler.postDelayed({ startAutoCartLabels() }, 4_000L)
