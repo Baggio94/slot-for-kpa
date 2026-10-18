@@ -74,6 +74,7 @@ enum Input {
     Key(i32, bool),
     // Predefined shelf UI states from Android: no untrusted or long text on GL.
     ShelfStatus(u8),
+    UpdateStatus(u8, String, String, bool),
     Reset,
     GameReady { uri: String, path: String },
     GameError { uri: String, message: String },
@@ -173,6 +174,8 @@ static DISPLAY_SYNC: AtomicBool = AtomicBool::new(false);
 // Updated by the GL owner after an entirely settled, fully preloaded shelf frame.
 // Kotlin may switch the idle carousel to requestRender without affecting games.
 static CAROUSEL_QUIET: AtomicBool = AtomicBool::new(false);
+// The GLES owner reports a stable selection, never dereferencing SAF URIs itself.
+static WARM_ROM_URI: Mutex<Option<String>> = Mutex::new(None);
 // Read-only GL-owned library swap gate for Kotlin's background scanner.
 static LIBRARY_UPDATE_SAFE: AtomicBool = AtomicBool::new(false);
 // A12 diagnostic A/B. Default keeps A11 recovery; flag file selects legacy.
@@ -343,7 +346,7 @@ enum ShelfOverlay {
     PauseScreenSettings { row: usize },
     PauseGameplaySettings { row: usize },
     PauseEmulationSettings { row: usize },
-    About,
+    About { row: usize },
     Scraping,
     Achievements,
     Core,
@@ -352,7 +355,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 94] = [
+const MENU_TEXT: [&str; 116] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -447,6 +450,28 @@ const MENU_TEXT: [&str; 94] = [
     "Game Boy Advance",                   // 91
     "Game Boy Color",                     // 92
     "Game Boy",                           // 93
+    "SOFTWARE UPDATE",                  // 94
+    "Check for Updates",                // 95
+    "Release Notes",                    // 96
+    "Download & Install",              // 97
+    "Automatic Checks",                 // 98
+    "Up to date",                       // 99
+    "New update available",             // 100
+    "Checking for updates",             // 101
+    "Downloading update",               // 102
+    "Unable to check",                  // 103
+    "OFF",                              // 104
+    "ON",                               // 105
+    "Update available",                 // 106
+    "SOFTWARE UPDATE  >",              // 107, actionable About row
+    "INSTALLED VERSION",                // 108
+    "AVAILABLE VERSION",                // 109
+    "Install Update",                    // 110
+    "UP TO DATE",                        // 111
+    "CHECKING...",                       // 112
+    "CHECK FAILED",                      // 113
+    "DOWNLOADING...",                    // 114
+    "AVAILABLE",                         // 115
 ];
 
 #[derive(Clone, Copy)]
@@ -485,6 +510,8 @@ struct Engine {
     active: usize,
     inserted: bool,
     progress: f32,
+    // Original slot. 300ms/6px refusal shake; shelf visuals only.
+    refusal: Option<slot_ui::Refusal>,
     insert_started: Option<Instant>,
     screen_power: f32,
     exiting_screen: bool,
@@ -554,6 +581,10 @@ struct Engine {
     setting_carets: [(slot_gfx::TexId, u32, u32); 2],
     settings_hints: [(slot_gfx::TexId, u32); 2],
     about_texture: Option<slot_gfx::TexId>,
+    update_status: u8,
+    update_auto: bool,
+    update_installed_face: Option<(slot_gfx::TexId,u32,u32)>,
+    update_version_face: Option<(slot_gfx::TexId,u32,u32)>,
     menu_seen: u8,
     menu_opened: Instant,
     menu_cursor_y: f32,
@@ -992,6 +1023,7 @@ impl Engine {
             active,
             inserted: false,
             progress: 0.0,
+            refusal: None,
             insert_started: None,
             screen_power: 0.0,
             exiting_screen: false,
@@ -1055,6 +1087,10 @@ impl Engine {
             setting_carets,
             settings_hints,
             about_texture,
+            update_status: 0,
+            update_auto: true,
+            update_installed_face: None,
+            update_version_face: None,
             menu_seen: 0,
             menu_opened: now,
             menu_cursor_y: 0.0,
@@ -1950,6 +1986,31 @@ impl Engine {
                 self.game_emulation = None;
                 *REQUEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
+            Input::UpdateStatus(status, installed, available, automatic) => {
+                self.update_status = status.min(5);
+                self.update_auto = automatic;
+                // Two selection rows regardless of update status.
+                for (label, is_installed) in [(installed, true), (available, false)] {
+                    if label.is_empty() || !label.is_ascii() || label.len() > 48 {
+                        continue;
+                    }
+                    let face = quick_value_face(&label, true);
+                    let existing = if is_installed { self.update_installed_face }
+                        else { self.update_version_face };
+                    let tex = match existing {
+                        Some((tex,_,_)) => {
+                            self.gpu.update_texture(tex, face.w, face.h, &face.rgba);
+                            tex
+                        }
+                        None => self.gpu.create_texture(face.w, face.h, &face.rgba),
+                    };
+                    if is_installed {
+                        self.update_installed_face = Some((tex,face.w,face.h));
+                    } else {
+                        self.update_version_face = Some((tex,face.w,face.h));
+                    }
+                }
+            }
             Input::ShelfStatus(code) => {
                 self.shelf_status = if usize::from(code) < SHELF_STATUS_TEXT.len() {
                     code
@@ -2480,7 +2541,7 @@ impl Engine {
                                         4 => ShelfOverlay::Settings { row: 0 },
                                         _ => {
                                             self.prepare_about();
-                                            ShelfOverlay::About
+                                            ShelfOverlay::About { row: 0 }
                                         },
                                     };
                                 }
@@ -2598,8 +2659,20 @@ impl Engine {
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
-                            ShelfOverlay::About => match code {
-                                97 | 96 => self.overlay = ShelfOverlay::Menu { row: 5 },
+                            ShelfOverlay::About { row } => match code {
+                                19 | 20 => self.overlay = ShelfOverlay::About {
+                                    row: move_menu_row(row, code, 2),
+                                },
+                                96 => {
+                                    let action = if row == 0 {
+                                        about_primary_action(self.update_status)
+                                    } else { 22 };
+                                    UI_ACTION.lock().unwrap_or_else(|e| e.into_inner())
+                                        .push_back(action);
+                                },
+                                21 | 22 if row == 1 =>
+                                    UI_ACTION.lock().unwrap_or_else(|e| e.into_inner()).push_back(22),
+                                97 => self.overlay = ShelfOverlay::Menu { row: 5 },
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
@@ -2702,6 +2775,8 @@ impl Engine {
                         109 if !self.inserted && !self.shelves[self.active].carts.is_empty() => {
                             let selected = &self.shelves[self.active].carts[self.shelves[self.active].index];
                             if selected.platform != Platform::Gba {
+                                self.refusal = Some(slot_ui::Refusal::started(
+                                    self.born.elapsed().as_millis() as u64));
                                 set_message("mGBA is the only installed GB/GBC core".into());
                                 return;
                             }
@@ -2736,6 +2811,11 @@ impl Engine {
                                 self.platform_shown_at = Some(Instant::now());
                                 self.last_cart_navigation = Instant::now();
                             }
+                            return;
+                        }
+                        96 if !self.inserted && self.shelves[self.active].carts.is_empty() => {
+                            self.refusal = Some(slot_ui::Refusal::started(
+                                self.born.elapsed().as_millis() as u64));
                             return;
                         }
                         96 if !self.inserted && !self.shelves[self.active].carts.is_empty() => {
@@ -3282,13 +3362,18 @@ impl Engine {
             return;
         }
         if key == 12 && self.game.as_ref().is_some_and(|game|
-            !game.runahead_supported()) {
-            set_message("Run-Ahead unavailable for this core/game (Link, Flash or speculative audio protection)".into());
+            game.sma4_runahead_blocked()) {
+            set_message("Run-Ahead disabled for Super Mario Advance 4 to protect saves (mGBA and gpSP).".into());
             return;
         }
         if key == 12 && self.game.as_ref().is_some_and(|game|
             game.mgba_flash_runahead_blocked()) {
-            set_message("Run-Ahead is disabled for Pokemon Gen III with mGBA to protect Flash saves. gpSP is unchanged.".into());
+            set_message("Run-Ahead disabled for Pokemon Gen III with mGBA to protect Flash saves. gpSP is unchanged.".into());
+            return;
+        }
+        if key == 12 && self.game.as_ref().is_some_and(|game|
+            !game.runahead_supported()) {
+            set_message("Run-Ahead unavailable for this core/game (Link, Flash or speculative audio protection)".into());
             return;
         }
         let Some(uri) = self.selected_rom_uri() else { return; };
@@ -3855,11 +3940,32 @@ impl Engine {
         }
     }
 
+    fn update_caption(&self) -> usize {
+        match self.update_status {
+            1 | 5 => 100, 2 => 101, 3 => 102, 4 => 103,
+            _ => 99,
+        }
+    }
+
+    fn draw_update_value(&self, face: Option<(slot_gfx::TexId,u32,u32)>,
+                         x: f32, y: f32, out: &mut Vec<Draw>) {
+        if let Some((tex,w,h)) = face {
+            let scale = (185.0 / w.max(1) as f32).min(0.79);
+            out.push(Draw::Tex {
+                x,y,w:w as f32 * scale,h:h as f32 * scale,tex,alpha:0.90,
+            });
+        }
+    }
+
     fn draw_overlay(&self, out: &mut Vec<Draw>) {
         match self.overlay {
             ShelfOverlay::None => {}
             ShelfOverlay::Menu { row } => {
                 self.draw_original_style_menu(0, &[1, 2, 3, 48, 25, 31], row, out);
+                if self.update_status == 1 {
+                    self.text_fit(106, 523.0, settings_row_top(6) +
+                        5.0*QUICK_PITCH+8.0, 175.0, 0.70, out);
+                }
             }
             ShelfOverlay::Library { row } => {
                 self.draw_original_style_menu(5, &[6, 24, 7, 8, 79, 9], row, out);
@@ -3918,17 +4024,50 @@ impl Engine {
                 self.draw_original_style_menu(33, &[27, 28, 37, 38, 30, 39], row, out);
                 self.draw_setting_values(row, &[4, 5, 6, 7, 8, 9], out);
             }
-            ShelfOverlay::About => {
+            ShelfOverlay::About { row } => {
+                // The native KONKR sticker stays intact, shifted up to make room
+                // for two transparent menu rows and a non-focusable status line.
                 out.push(Draw::Rect {
                     x: 0.0, y: 0.0, w: OUT_W as f32, h: OUT_H as f32,
-                    colour: [0.055, 0.055, 0.065, 1.0],
+                    colour: opening(),
                 });
                 if let Some(tex) = self.about_texture {
                     out.push(Draw::Tex {
                         x: (OUT_W - STICKER_W) as f32 / 2.0,
-                        y: (OUT_H - STICKER_H) as f32 / 2.0,
-                        w: STICKER_W as f32, h: STICKER_H as f32,
+                        y: 42.0, w: STICKER_W as f32, h: STICKER_H as f32,
                         tex, alpha: 1.0,
+                    });
+                }
+                let fade = slot_ui::ease(
+                    (self.menu_opened.elapsed().as_secs_f32() / 0.16).clamp(0.0, 1.0));
+                let top = about_row_top();
+                let cursor = if self.menu_cursor_y.is_finite() {
+                    self.menu_cursor_y
+                } else { top + row as f32 * QUICK_PITCH };
+                out.push(Draw::Rect {
+                    x: 0.0, y: cursor + 4.0, w: OUT_W as f32,
+                    h: QUICK_PITCH - 8.0,
+                    colour: { let mut c = edge(); c[3] *= fade; c },
+                });
+                self.text_fit(if about_primary_action(self.update_status) == 21 {110} else {95},
+                    37.0, top + 8.0, 590.0, fade, out);
+                self.text_fit(98, 37.0, top + QUICK_PITCH + 8.0, 475.0, fade, out);
+                self.text_fit(if self.update_auto {105}else{104},
+                    592.0, top + QUICK_PITCH + 8.0, 95.0, fade, out);
+                let status_y = top + 2.0 * QUICK_PITCH + 7.0;
+                if matches!(self.update_status, 1 | 5) {
+                    self.draw_update_value(self.update_version_face, 37.0, status_y, out);
+                    self.text_fit(115, 246.0, status_y, 420.0, 0.78 * fade, out);
+                } else {
+                    let status = match self.update_status {
+                        2 => 112, 3 => 114, 4 => 113, _ => 111,
+                    };
+                    self.text_fit(status, 37.0, status_y, 610.0, 0.78 * fade, out);
+                }
+                for (tex,w,x) in centred_hints(&self.menu_hints, LEGEND_GAP) {
+                    out.push(Draw::Tex {
+                        x, y: 427.0, w: w as f32, h: HINT_H as f32,
+                        tex, alpha: fade,
                     });
                 }
             }
@@ -4225,6 +4364,7 @@ impl Engine {
             ShelfOverlay::Settings { row } => (4u8, row, 5usize),
             ShelfOverlay::GeneralSettings { row } =>
                 (12u8, row, self.general_rows().len()),
+            ShelfOverlay::About { row } => (17u8, row, 2usize),
             ShelfOverlay::InterfaceSettings { row } => (10u8, row, 3usize),
             ShelfOverlay::EmulationSettings { row } => (8u8, row, 3usize),
             ShelfOverlay::PauseEmulationSettings { row } => (9u8, row, 3usize),
@@ -4238,11 +4378,12 @@ impl Engine {
             self.menu_seen = kind;
             self.menu_opened = now;
             if count > 0 {
-                self.menu_cursor_y = settings_row_top(count)
-                    + selected as f32 * QUICK_PITCH;
+                self.menu_cursor_y = (if kind == 17 { about_row_top() }
+                    else { settings_row_top(count) }) + selected as f32 * QUICK_PITCH;
             }
         } else if count > 0 {
-            let goal = settings_row_top(count) + selected as f32 * QUICK_PITCH;
+            let goal = (if kind == 17 { about_row_top() }
+                else { settings_row_top(count) }) + selected as f32 * QUICK_PITCH;
             let response = 1.0 - (-dt * 24.0).exp();
             self.menu_cursor_y += (goal - self.menu_cursor_y) * response;
         }
@@ -4263,11 +4404,13 @@ impl Engine {
             if let Some(shelf) = self.shelves.get(self.active) {
                 if let Some(cart) = shelf.carts.get(shelf.index) {
                     let (rest, scale) = shelf.selected_at();
-                    shelf.draw_row(Some(cart.stem.as_str()), 0.0, 0.0, 1.0, &mut commands);
+                    // Match upstream slot. v1.7: neighbours move out/fade in sync with
+                    // the 450ms seat animation and return on reverse ejection.
+                    shelf.draw_row(Some(cart.stem.as_str()), 0.0, self.progress, 1.0, &mut commands);
                     SlotChrome {
                         cart, face: shelf.face(shelf.index), rest, scale,
                         seat: self.progress, alert: None, dim: 0.0,
-                        screen: self.screen_power, game: true,
+                        screen: self.screen_power, game: true, over: false,
                         slot_faces: self.slot_faces,
                     }.draw_with_material(&mut commands,self.clear_layers().0,self.clear_layers().1);
                 } else {
@@ -4448,6 +4591,9 @@ impl Engine {
         // GL resource ownership ever moves away from the GL render thread.
         DISPLAY_SYNC.store(self.game.is_some() && profile.display_sync_pacing,
             Ordering::Release);
+        // Grab clear-cart textures before borrowing the mutable emulator
+        // session. They are used only for the 220ms CRT start transition.
+        let (transition_back, transition_front) = self.clear_layers();
         let a12_native_started = Instant::now();
         if let Some(session) = self.game.as_mut() {
             // Resume only after the remote has also left its pause menu;
@@ -4590,7 +4736,28 @@ impl Engine {
             }
             self.gpu.fit(self.size);
             self.gpu.begin_frame();
-            let mut commands = vec![Draw::Game];
+            let mut commands = Vec::new();
+            if self.screen_power < 1.0 {
+                // Native Slot v1.7 draws the seated cart and slot behind the
+                // CRT picture while the LCD grows to full width (220ms).
+                // We use the existing GamePass screen-power shader, without
+                // adding a separate full-screen fade or extra libretro frames.
+                let shelf = &self.shelves[self.active];
+                if let Some(cart) = shelf.carts.get(shelf.index) {
+                    let (rest, scale) = shelf.selected_at();
+                    slot_ui::draw_ground_tinted(None, 0.0, &mut commands);
+                    SlotChrome {
+                        cart, face: shelf.face(shelf.index), rest, scale,
+                        seat: self.progress, alert: None, dim: 0.0,
+                        screen: self.screen_power, game: true, over: false,
+                        slot_faces: self.slot_faces,
+                    }.draw_with_material(&mut commands, transition_back, transition_front);
+                } else {
+                    commands.push(Draw::Game);
+                }
+            } else {
+                commands.push(Draw::Game);
+            }
             if let Some(tex)=bezel {
                 commands.push(Draw::Tex {
                     x:0.0,y:0.0,w:OUT_W as f32,h:OUT_H as f32,
@@ -4633,6 +4800,22 @@ impl Engine {
         if repeated_letter { self.show_selected_letter(); }
         self.shelves[self.active].update(dt);
         self.prepare_visible();
+        // Only warm a settled carousel selection. Actual ROM I/O takes place
+        // on an independently cancelable Android background executor.
+        let warming = !self.inserted && self.game.is_none()
+            && self.pending_game.is_none() && !self.awaiting_game
+            && self.progress <= 0.0
+            && matches!(self.overlay, ShelfOverlay::None)
+            && !self.shelves[self.active].is_scrolling()
+            && self.last_cart_navigation.elapsed() >= Duration::from_millis(900);
+        let candidate = if warming {
+            self.shelves[self.active].carts
+                .get(self.shelves[self.active].index)
+                .map(|cart|cart.rom.to_string_lossy().into_owned())
+        } else { None };
+        let mut last = WARM_ROM_URI.lock().unwrap_or_else(|e|e.into_inner());
+        if *last != candidate { *last = candidate; }
+        drop(last);
         self.refresh_selected_title();
         self.persist_focus_if_idle();
         // Resolve the optional transparent material before mutably borrowing
@@ -4681,7 +4864,10 @@ impl Engine {
                 shelf.draw_row(selected, 0.0, 0.26 * t, dim, &mut commands);
                 slot_ui::draw_empty_slot_with(self.slot_faces, &mut commands);
             } else {
-                shelf.draw_row(None, 0.0, 0.0, 1.0, &mut commands);
+                // Match upstream Refusal: only the shelf carts shake.
+                // The physical slot stays fixed; no input delay or layout changes.
+                let shake = self.refusal.map_or(0.0, |r| r.offset(ms));
+                shelf.draw_row(None, shake, 0.0, 1.0, &mut commands);
                 slot_ui::draw_empty_slot_with(self.slot_faces, &mut commands);
                 // Official v1.7.0 shelf: system (L1/R1) or letter
                 // (D-pad Up/Down) uses a 200/1200/800 ms full-opacity name.
@@ -4725,7 +4911,9 @@ impl Engine {
         } else {
             let cart = &shelf.carts[shelf.index];
             let (rest, scale) = shelf.selected_at();
-            shelf.draw_row(Some(cart.stem.as_str()), 0.0, 0.0, 1.0, &mut commands);
+            // Identical 450ms recede/return as upstream slot. v1.7.
+            // Use the existing seat progress; never alter the ROM or game timing.
+            shelf.draw_row(Some(cart.stem.as_str()), 0.0, self.progress, 1.0, &mut commands);
             SlotChrome {
                 cart,
                 face: shelf.face(shelf.index),
@@ -4736,6 +4924,7 @@ impl Engine {
                 dim: 0.0,
                 screen: 0.0,
                 game: false,
+                over: true,
                 slot_faces: self.slot_faces,
             }
             .draw_with_material(&mut commands,selected_clear_back,selected_clear_front);
@@ -5053,6 +5242,14 @@ fn slot_name_alpha(elapsed_ms: u64) -> f32 {
     slot_ui::ease(level)
 }
 
+/// Native About rows share one cursor. The third status line never receives focus.
+fn about_row_top() -> f32 { 284.0 }
+
+/// A verified downloaded release (READY=5) remains eligible for installation.
+fn about_primary_action(status: u8) -> i32 {
+    if matches!(status, 1 | 5) { 21 } else { 19 }
+}
+
 /// Physical D-pad UP and DOWN must move the selection in opposite
 /// directions, including wraparound; never leak navigation to libretro.
 fn move_menu_row(row: usize, key: i32, count: usize) -> usize {
@@ -5089,6 +5286,19 @@ fn next_nonempty_shelf(shelves: &[Shelf], current: usize, delta: i32) -> usize {
 #[cfg(test)]
 mod ui_feedback_tests {
     use super::*;
+
+    #[test]
+    fn updater_about_has_two_actions_in_all_statuses() {
+        assert_eq!(about_primary_action(0), 19);
+        assert_eq!(about_primary_action(1), 21);
+        assert_eq!(about_primary_action(5), 21);
+        for status in [2, 3, 4] {
+            assert_eq!(about_primary_action(status), 19);
+        }
+        assert_eq!(move_menu_row(0, 19, 2), 1);
+        assert_eq!(move_menu_row(1, 20, 2), 0);
+        assert_eq!(about_row_top(), 284.0);
+    }
 
     #[test]
     fn gba_three_two_screen_hides_no_op_bezel_but_keeps_gb_gbc() {
@@ -5559,6 +5769,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSurfaceCreated(
         RA_NOTICES.lock().unwrap_or_else(|e| e.into_inner()).clear();
         PLAYING.store(false, Ordering::Release);
         CAROUSEL_QUIET.store(false, Ordering::Release);
+        *WARM_ROM_URI.lock().unwrap_or_else(|e|e.into_inner()) = None;
         SAMPLE_RATE.store(0, Ordering::Release);
         let (version, snapshot) = {
             let state = LIBRARY.lock().unwrap_or_else(|err| err.into_inner());
@@ -5854,6 +6065,16 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeExternalReturn(
 /// Choreographer pacing experiment: this is only a render-request policy.
 /// The underlying libretro emulation budget remains RESPONSIVE (one frame).
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeWarmRomCandidate(
+    mut env: JNIEnv<'_>, _this: JObject<'_>,
+) -> jstring {
+    WARM_ROM_URI.lock().unwrap_or_else(|e|e.into_inner())
+        .clone()
+        .and_then(|path|env.new_string(path).ok())
+        .map_or(std::ptr::null_mut(),|value|value.into_raw())
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeCarouselQuiet(
     _env: *mut c_void, _activity: *mut c_void,
 ) -> u8 {
@@ -5957,6 +6178,22 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRaStatus(
     let state = RA_STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone();
     state.and_then(|s| env.new_string(s).ok())
         .map_or(std::ptr::null_mut(), |s| s.into_raw())
+}
+
+/// Metadata is delivered from Android through the existing render-thread queue.
+/// No JNI thread may create a texture or mutate the GL-owned Engine directly.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeUpdateStatus(
+    mut env: JNIEnv<'_>, _this: JObject<'_>,
+    status: jint, installed: JString<'_>, available: JString<'_>, automatic: jboolean,
+) {
+    let Ok(current) = env.get_string(&installed) else {return;};
+    let Ok(candidate) = env.get_string(&available) else {return;};
+    let current = current.to_string_lossy().into_owned();
+    let candidate = candidate.to_string_lossy().into_owned();
+    if current.is_empty() || current.len() > 48 || !current.is_ascii() ||
+        candidate.len() > 48 || !candidate.is_ascii() {return;}
+    push(Input::UpdateStatus(status.clamp(0,5) as u8,current,candidate,automatic != 0));
 }
 
 #[unsafe(no_mangle)]

@@ -48,6 +48,15 @@ fn pokemon_gen3_flash_code(code: &[u8; 4]) -> bool {
     [b"BPR", b"BPG", b"BPE", b"AXV", b"AXP"]
         .iter().any(|prefix| code.starts_with(*prefix))
 }
+fn sma4_runahead_guard(rom: &Path, platform: Platform) -> bool {
+    if platform != Platform::Gba { return false; }
+    let Ok(mut file) = std::fs::File::open(rom) else { return false; };
+    if file.seek(SeekFrom::Start(0xAC)).is_err() { return false; }
+    let mut code = [0u8; 4];
+    file.read_exact(&mut code).is_ok()
+        && code.starts_with(b"AX4") && code[3].is_ascii_uppercase()
+}
+
 fn mgba_flash_runahead_guard(rom: &Path, which: Core, platform: Platform) -> bool {
     if which != Core::Mgba || platform != Platform::Gba { return false; }
     let Ok(mut file) = std::fs::File::open(rom) else { return false; };
@@ -142,6 +151,7 @@ pub struct GameSession {
     runahead_unavailable: bool,
     // Keep mGBA speculative frames away from Pokémon Gen III FLASH1M.
     mgba_flash_runahead_guard: bool,
+    sma4_runahead_guard: bool,
     palette_live: bool,
     core_kind: Core,
     pending_undo: Option<(Instant, PendingUndo)>,
@@ -569,8 +579,12 @@ impl GameSession {
         let sample_rate = core.av_info().sample_rate.round() as i32;
         let fps = core.av_info().fps.clamp(30.0, 120.0);
         let flash_guard = mgba_flash_runahead_guard(rom, which, platform);
+        let sma4_guard = sma4_runahead_guard(rom, platform);
         if flash_guard && linked_boot.is_none() {
             log_launch_timing("mGBA Flash safety: Run-Ahead OFF for Pokemon Gen III, including after End Link; gpSP unchanged");
+        }
+        if sma4_guard {
+            log_launch_timing("Super Mario Advance 4: Run-Ahead OFF for mGBA/gpSP to protect SRAM");
         }
         Ok(Self {
             core, link: None, link_touched: false, linked_boot, gpsp_serial,
@@ -581,6 +595,7 @@ impl GameSession {
             runahead_video: Vec::new(), runahead_state: Vec::new(),
             runahead_unavailable: false,
             mgba_flash_runahead_guard: flash_guard,
+            sma4_runahead_guard: sma4_guard,
             pending_undo: None, last_sram: Instant::now(),
             sample_rate: sample_rate.clamp(8_000, 96_000),
             fps,
@@ -908,9 +923,11 @@ impl GameSession {
     }
 
     pub fn mgba_flash_runahead_blocked(&self) -> bool { self.mgba_flash_runahead_guard }
+    pub fn sma4_runahead_blocked(&self) -> bool { self.sma4_runahead_guard }
 
     pub fn runahead_supported(&self) -> bool {
-        !self.mgba_flash_runahead_guard && self.linked_boot.is_none() && !self.link_touched
+        !self.mgba_flash_runahead_guard && !self.sma4_runahead_guard
+            && self.linked_boot.is_none() && !self.link_touched
             && self.link.is_none() && !self.runahead_unavailable
             && self.core.speculative_audio_supported()
     }
@@ -920,6 +937,7 @@ impl GameSession {
     pub fn prepare_runahead(&mut self, buttons: u16, turbo: bool, frames: u8) {
         self.runahead_video.clear();
         if frames == 0 || frames > 2 || self.mgba_flash_runahead_guard ||
+            self.sma4_runahead_guard ||
             self.runahead_unavailable || self.link_touched || self.linked_boot.is_some() { return; }
         if !self.core.speculative_audio_supported() {
             self.runahead_unavailable = true;
@@ -1191,6 +1209,28 @@ mod pokemon_flash_guard_tests {
         assert_eq!(pokemon_flash_complete_bank_count(&image), 0);
         image.truncate(65536);
         assert_eq!(pokemon_flash_complete_bank_count(&image), 0);
+    }
+
+    #[test]
+    fn mario_advance_four_blocks_speculative_frames_for_both_gba_cores() {
+        let dir = std::env::temp_dir().join(format!("slot-sma4-guard-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("patched-e-reader-rom.gba");
+        for code in [*b"AX4E",*b"AX4P",*b"AX4J"] {
+            let mut rom = vec![0u8; 192];
+            rom[0xAC..0xB0].copy_from_slice(&code);
+            std::fs::write(&path, &rom).unwrap();
+            assert!(sma4_runahead_guard(&path, Platform::Gba));
+            assert!(!sma4_runahead_guard(&path, Platform::Gb));
+        }
+        for code in [*b"AMAE",*b"AXVE",*b"AXPE",*b"    "] {
+            let mut rom = vec![0u8; 192];
+            rom[0xAC..0xB0].copy_from_slice(&code);
+            std::fs::write(&path, &rom).unwrap();
+            assert!(!sma4_runahead_guard(&path, Platform::Gba));
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

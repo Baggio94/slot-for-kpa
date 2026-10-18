@@ -106,6 +106,7 @@ class MainActivity : Activity() {
     external fun nativeSuspend()
     external fun nativeIsPlaying(): Boolean
     external fun nativeCarouselQuiet(): Boolean
+    external fun nativeWarmRomCandidate(): String?
     external fun nativeCanRefreshLibrary(): Boolean
     external fun nativeAudioSampleRate(): Int
     external fun nativeAudioQueuedShorts(): Int
@@ -124,6 +125,7 @@ class MainActivity : Activity() {
     external fun nativeRaStopReady(): Boolean
     external fun nativeSystemStatus(clock: String, batteryPercent: Int, charging: Boolean)
     external fun nativePollUiAction(): Int
+    external fun nativeUpdateStatus(status: Int, installed: String, available: String, automatic: Boolean)
     external fun nativeReloadVisualAssets()
     external fun nativePollCartLabelUri(): String?
     external fun nativeReloadCartLabel(uri: String)
@@ -157,14 +159,33 @@ class MainActivity : Activity() {
     }
     private val raSmartRunning = AtomicBoolean(false)
     private val gameLoader = Executors.newSingleThreadExecutor()
-    // Independent physical QA package. It may read the same ROM and BIOS
-    // folders, but MUST NOT import from or write to a selected RetroArch
-    // Saves/States SAF folder belonging to the user's daily Slot installation.
-    private val isIsolatedMultiplayerLab: Boolean
-        get() = packageName == "fyi.slot.konkr.lab"
-
+    // Optional I/O must never delay a real ROM launch or pending save exports.
+    private val romWarmWorker = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "slot-kpa-rom-warm").apply { priority = Thread.MIN_PRIORITY }
+    }
+    private val warmedCandidate = java.util.concurrent.atomic.AtomicReference<String?>(null)
+    private val autoLabelsWorker = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "slot-kpa-auto-labels").apply { priority = Thread.MIN_PRIORITY }
+    }
+    private val autoLabelsRunning = AtomicBoolean(false)
+    private val autoLabelsRestartRequested = AtomicBoolean(false)
+    @Volatile private var cartStudioOpening = false
+    // Paint fresh labels only when all moving carts and pending GPU uploads
+    // have settled. The renderer's manual reload path is synchronous.
+    private val autoLabelUpdates = java.util.concurrent.ConcurrentLinkedQueue<String>()
     private val activeTargets = ConcurrentHashMap<String, RetroArchStorage.Target>()
     private val uiHandler = Handler(Looper.getMainLooper())
+    private val slotUpdater: SlotUpdater by lazy {
+        SlotUpdater(this) { status, version ->
+            if (!isDestroyed) {
+                val automatic = getSharedPreferences("slot-updater-v1", MODE_PRIVATE)
+                    .getBoolean("enabled", true)
+                nativeUpdateStatus(status,
+                    packageManager.getPackageInfo(packageName, 0).versionName.orEmpty(),
+                    version, automatic)
+            }
+        }
+    }
     private val audioRunning = AtomicBoolean(false)
     // A single pending wakeup is enough. GLSurfaceView never waits for audio.
     // Prevent an empty-read 8ms sleep from missing a freshly produced frame.
@@ -240,6 +261,26 @@ class MainActivity : Activity() {
             lastCarouselHeartbeat = now
             view.requestRender()
         }
+    }
+
+    private fun publishAutoLabelsWhenIdle() {
+        if (nativeIsPlaying() || !nativeCarouselQuiet()) return
+        // One face per UI pulse, never a burst on the GL owner.
+        val uri = autoLabelUpdates.poll() ?: return
+        nativeReloadCartLabel(uri)
+        wakeCarouselRender()
+    }
+
+    private fun updateRomWarmCandidate() {
+        val next = if (nativeIsPlaying()) null else nativeWarmRomCandidate()
+        if (warmedCandidate.getAndSet(next) == next || next == null) return
+        try {
+            romWarmWorker.execute {
+                RomWarmCache.prepare(applicationContext, next) {
+                    resumed && !nativeIsPlaying() && warmedCandidate.get() == next
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) { /* shutting down */ }
     }
 
     private var audioThread: Thread? = null
@@ -350,6 +391,7 @@ class MainActivity : Activity() {
             if (!isDestroyed) {
                 nativeRaNetworkAvailable()
                 startRaSmartCache()
+                startAutoCartLabels()
                 refreshRaConnectivityOnScreen()
             }
         }
@@ -357,6 +399,7 @@ class MainActivity : Activity() {
             if (!isDestroyed) {
                 if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
                     startRaSmartCache()
+                    startAutoCartLabels()
                 }
                 refreshRaConnectivityOnScreen()
             }
@@ -382,6 +425,8 @@ class MainActivity : Activity() {
             pollRumble()
             updateDisplaySyncMode()
             updateCarouselPacing()
+            publishAutoLabelsWhenIdle()
+            updateRomWarmCandidate()
             if (resumed && nativeIsPlaying()) {
                 if (!audioRunning.get()) startAudio()
             } else if (audioRunning.get()) {
@@ -438,6 +483,29 @@ class MainActivity : Activity() {
                 16 -> requestLinkWifi()
                 17 -> toggleShareGbaSaves()
                 18 -> showPeerCartridgeConsent()
+                19 -> slotUpdater.check(true)
+                20 -> slotUpdater.openNotes()
+                21 -> {
+                    if (!nativeIsPlaying()) {
+                        slotUpdater.downloadAndInstall { apk ->
+                            if (!isDestroyed && resumed && !nativeIsPlaying()) {
+                                try {
+                                    slotUpdater.startInstaller(apk)
+                                } catch (error: Exception) {
+                                    Log.w(TAG, "User-confirmed installer not available", error)
+                                    SlotToast.makeText(this@MainActivity,
+                                        "Allow updates from slot. in Android settings.",
+                                        Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    }
+                }
+                22 -> {
+                    val enabled = slotUpdater.toggle()
+                    slotUpdater.refreshVisibleStatus()
+                    if (enabled) slotUpdater.check(false)
+                }
             }
             // Multicast is required during discovery, not for ongoing TCP
             // emulation. Release on success, cancellation and timeout.
@@ -854,6 +922,14 @@ class MainActivity : Activity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        SlotBuildBehavior.emulatorButton(keyCode)?.let { button ->
+            if (event.repeatCount == 0) {
+                warmedCandidate.set(null)
+                wakeCarouselRender()
+                nativeKey(button, true)
+            }
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             onBackPressed()
             return true
@@ -874,6 +950,7 @@ class MainActivity : Activity() {
             return super.onKeyDown(keyCode, event)
         }
         if (event.repeatCount == 0) {
+            warmedCandidate.set(null)
             wakeCarouselRender()
             nativeKey(keyCode, true)
         }
@@ -881,11 +958,18 @@ class MainActivity : Activity() {
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        SlotBuildBehavior.emulatorButton(keyCode)?.let { button ->
+            warmedCandidate.set(null)
+            wakeCarouselRender()
+            nativeKey(button, false)
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) return true
         if (keyCode == KeyEvent.KEYCODE_BUTTON_MODE) {
             Log.i(TAG, "KONKR MENU BTN_MODE up: Android code=" + keyCode)
         }
         if (keyCode !in BUTTONS) return super.onKeyUp(keyCode, event)
+        warmedCandidate.set(null)
         wakeCarouselRender()
         nativeKey(keyCode, false)
         return true
@@ -893,6 +977,7 @@ class MainActivity : Activity() {
 
     @Deprecated("Android 12 back key")
     override fun onBackPressed() {
+        warmedCandidate.set(null)
         wakeCarouselRender()
         if (nativeIsPlaying()) {
             nativeExitGame()
@@ -1022,16 +1107,16 @@ class MainActivity : Activity() {
                 val savedCore = nativeCoreForUri(rawUri)
                 val core = if (savedCore == "gpsp" && ext == "gba") "gpSP" else "mGBA"
                 val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-                // Side-by-side Multiplayer QA always uses its private
-                // fyi.slot.konkr.lab/files/Saves and States. Never mirror,
-                // overwrite or import the production RetroArch SAF folders.
-                val saves = if (isIsolatedMultiplayerLab) null
-                    else prefs.getString(SAVE_ROOT, null)?.let(Uri::parse)
-                val states = if (isIsolatedMultiplayerLab) null
-                    else prefs.getString(STATE_ROOT, null)?.let(Uri::parse)
+                val storage = SlotBuildBehavior.storagePolicy(
+                    packageName,
+                    prefs.getString(SAVE_ROOT, null),
+                    prefs.getString(STATE_ROOT, null),
+                    prefs.getBoolean(SHARE_GBA_SAVES, false)
+                )
+                val saves = storage.savesRoot?.let(Uri::parse)
+                val states = storage.statesRoot?.let(Uri::parse)
                 val shared = RetroArchStorage.target(this, rawUri, core, saves, states,
-                    shareGbaSaves = !isIsolatedMultiplayerLab &&
-                        prefs.getBoolean(SHARE_GBA_SAVES, false))
+                    shareGbaSaves = storage.shareGbaSaves)
                 try {
                     RetroArchStorage.importBeforeLaunch(this@MainActivity, shared)
                 } catch (error: RetroArchStorage.SaveConflict) {
@@ -1354,6 +1439,45 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun startAutoCartLabels() {
+        if (!resumed || isDestroyed || nativeIsPlaying() || cartStudioOpening) return
+        if (!autoLabelsRunning.compareAndSet(false, true)) {
+            // A short Studio visit may return before the previous worker exits.
+            autoLabelsRestartRequested.set(true)
+            if (!autoLabelsRunning.compareAndSet(false, true)) return
+        }
+        autoLabelsRestartRequested.set(false)
+        try {
+            autoLabelsWorker.execute {
+                var anotherBatch = false
+                try {
+                    val manager = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
+                    val caps = manager?.getNetworkCapabilities(manager.activeNetwork)
+                    if (caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) != true) {
+                        Log.i("SlotAutoLabels", "Deferred: Android default Internet network is not validated")
+                        return@execute
+                    }
+                    anotherBatch = AutoCartLabels.fill(applicationContext,
+                        shouldContinue = { resumed && !isDestroyed && !nativeIsPlaying() && !cartStudioOpening },
+                        onSaved = { uri -> autoLabelUpdates.add(uri) })
+                } catch (error: Exception) {
+                    Log.w("SlotAutoLabels", "Automatic artwork deferred", error)
+                } finally {
+                    autoLabelsRunning.set(false)
+                    val recheck = autoLabelsRestartRequested.getAndSet(false)
+                    if ((anotherBatch || recheck) && resumed && !isDestroyed &&
+                        !nativeIsPlaying() && !cartStudioOpening) {
+                        // A pause between bounded batches prevents continuous
+                        // ROM reads and leaves the carousel's render thread free.
+                        uiHandler.postDelayed({ startAutoCartLabels() }, 4_000L)
+                    }
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            autoLabelsRunning.set(false)
+        }
+    }
+
     /** Android-confirmed internet access, not Wi-Fi enabled or cached RA metadata.
      * Snapshotted when the game-ready notice is queued; no HTTP request on UI.
      */
@@ -1560,11 +1684,13 @@ class MainActivity : Activity() {
             return
         }
 
+        // A successful login transitions directly to the RA dashboard.
+        var openingDashboard = false
         val login = SlotModalDialog(
             this,
             "RETROACHIEVEMENTS",
             "Sign in securely. Achievements use Casual mode.",
-            onDismiss = { nativeExternalReturn() }
+            onDismiss = { if (!openingDashboard) nativeExternalReturn() }
         )
         val username = login.addInput("USERNAME", "RetroAchievements username")
         val password = login.addInput("PASSWORD", "Password (not saved)", password = true)
@@ -1584,9 +1710,11 @@ class MainActivity : Activity() {
                         if (isDestroyed) return@runOnUiThread
                         when (result) {
                             is RaAccount.Result.Connected -> {
+                                openingDashboard = true
                                 login.dismiss()
                                 nativeRaAccountConfigured()
                                 startRaSmartCache()
+                                openRetroAchievementsAccount()
                                 SlotToast.makeText(this,
                                     "RA connected as " + result.username +
                                         ". Preparing GB/GBC/GBA achievements in background.",
@@ -1671,10 +1799,8 @@ class MainActivity : Activity() {
 
     private fun openSharedFolderPicker(requestCode: Int) {
         check(requestCode == SAVE_REQUEST || requestCode == STATE_REQUEST)
-        if (isIsolatedMultiplayerLab) {
-            SlotToast.makeText(this,
-                "Multiplayer Lab: external save folders disabled to protect Slot saves.",
-                Toast.LENGTH_LONG).show()
+        SlotBuildBehavior.externalFolderRestrictionMessage(packageName)?.let { restriction ->
+            SlotToast.makeText(this, restriction, Toast.LENGTH_LONG).show()
             return
         }
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
@@ -1830,18 +1956,11 @@ class MainActivity : Activity() {
         }
     }
 
-    // Match the Rust core_selection::key FNV-1a exactly. Cartridge
-    // labels belong to opaque SAF URIs, not their non-unique filenames.
-    private fun cartLabelFile(romUri: String): File {
-        var hash = -3750763034362895579L // unsigned 0xcbf29ce484222325
-        for (byte in romUri.toByteArray(Charsets.UTF_8)) {
-            hash = (hash xor (byte.toInt() and 0xff).toLong()) * 0x100000001b3L
-        }
-        val name = java.lang.Long.toUnsignedString(hash, 16).padStart(16, '0')
-        return File(File(filesDir, "Labels"), "$name.png")
-    }
+    private fun cartLabelFile(romUri: String): File =
+        CartLabelPaths.file(filesDir, romUri)
 
     private fun openCartStudio(selected: String?) {
+        cartStudioOpening = true
         pendingCartStudioUri = selected
         val intent = Intent(this, CartStudioActivity::class.java).apply {
             if (selected != null) putExtra(CartStudioActivity.EXTRA_ROM, selected)
@@ -1852,6 +1971,7 @@ class MainActivity : Activity() {
             startActivityForResult(intent, CART_STUDIO_REQUEST)
             SlotTransitions.open(this)
         } catch (error: Exception) {
+            cartStudioOpening = false
             returnFromSlotChild = false
             nativeExternalReturn()
             Log.w(TAG, "Cannot open Cart Studio", error)
@@ -2103,6 +2223,7 @@ class MainActivity : Activity() {
             try {
                 storeCachedLibrary(next.root, next.json)
                 startRaSmartCache()
+                startAutoCartLabels()
             } catch (error: Exception) {
                 Log.w(TAG, "ROM cache write failed; displayed shelf is intact", error)
             }
@@ -2189,6 +2310,8 @@ class MainActivity : Activity() {
         raLoginWorker.shutdownNow()
         raSmartWorker.shutdownNow()
         gameLoader.shutdownNow()
+        romWarmWorker.shutdownNow()
+        autoLabelsWorker.shutdownNow()
         uiHandler.removeCallbacks(pulse)
         synchronized(raSmartForeground) { raSmartForeground.notifyAll() }
         if (::raAchievementOverlay.isInitialized) raAchievementOverlay.destroy()
@@ -2200,6 +2323,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         resumed = false
+        warmedCandidate.set(null)
         uiHandler.removeCallbacks(pulse)
         carouselDozing = false
         // Rust nativeSuspend aborts discovery/linked play; never keep a
@@ -2230,6 +2354,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        cartStudioOpening = false
         if (returnFromSlotChild) {
             // Clear the preserved native menu ONLY after Apps/Studio has
             // finished and the shelf itself is about to be visible again.
@@ -2250,6 +2375,8 @@ class MainActivity : Activity() {
             nativeRaAccountConfigured()
             startRaSmartCache()
         }
+        startAutoCartLabels()
+        slotUpdater.onForeground()
         lastStatusPoll = -15000L
         cartSounds.resume()
         view.onResume()

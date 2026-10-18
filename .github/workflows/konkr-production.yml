@@ -3,7 +3,7 @@ name: slot. for KONKR ARM64
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'extract/**']
+    branches: [main, 'extract/**', 'beta/**']
     tags: ['konkr-v*']
 
 permissions:
@@ -63,7 +63,7 @@ jobs:
       - name: Test full-width Slot onboarding prompts
         run: cargo test -p slot-ui --lib onboarding_tests
       - name: Test original Slot v1.7 PNG and cartridge graphics
-        run: cargo test -p slot-ui --test cart_material --test upstream_v17_assets --test native_resolution
+        run: cargo test -p slot-ui --test cart_material --test upstream_v17_assets --test native_resolution --test insert_neighbour_motion --test mixed_shelf_parity --test chrome_crt_parity
       - name: Export authentic Slot keycap graphics for Android Apps
         run: |
           cargo run --locked -p slot-ui --example export_apps_legend -- android/app/src/main/assets/apps_controls
@@ -128,8 +128,8 @@ jobs:
             --source . --built studio-upstream/slot-cart-studio/web
           test -s android/app/src/main/assets/studio/pkg/slot_cart_studio_bg.wasm
 
-      - name: Test RetroArch RZIP v1 codec on JVM
-        run: gradle --no-daemon -p android :app:testDebugUnitTest
+      - name: Test Android debug and KONKR release policies on JVM
+        run: gradle --no-daemon -p android :app:testDebugUnitTest :app:testReleaseUnitTest
       - name: Assemble signed KONKR ARM64 release
         env:
           SLOT_KEYSTORE_BASE64: ${{ secrets.SLOT_KEYSTORE_BASE64 }}
@@ -150,8 +150,8 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "package: name='fyi.slot.konkr' versionCode='108'" "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "versionName='1.1.0'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='113'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "versionName='1.2.0-beta5'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
           for core in slot_android mgba_libretro gpsp_libretro; do
@@ -161,47 +161,19 @@ jobs:
             echo "::error::Non-KONKR ABI included in production APK"; exit 1
           fi
           unzip -Z -1 "$APK" | grep -Fx 'assets/studio/pkg/slot_cart_studio_bg.wasm'
+          # The signed KONKR APK must not contain AVD keyboard detection or
+          # isolated Multiplayer Lab storage behavior from src/debug.
+          unzip -Z -1 "$APK" | grep -Eq '^classes([0-9]+)?[.]dex$'
+          while IFS= read -r dex; do
+            if unzip -p "$APK" "$dex" | strings -a |
+                grep -E 'sdk_gphone|ranchu|goldfish|fyi[.]slot[.]konkr[.]lab|Multiplayer Lab:'; then
+              echo "::error::Found AVD / Multiplayer Lab test code in release DEX"
+              exit 1
+            fi
+          done < <(unzip -Z -1 "$APK" | grep -E '^classes([0-9]+)?[.]dex$')
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.1.0-arm64-signed
+          name: slot-for-kpa-1.2.0-beta5-arm64-signed
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
-  publish:
-    # One-shot, explicit release commit on main. Do not publish from regular
-    # pushes, manual CI runs or tag pushes. Only release after arm64-apk passes.
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      github.event.head_commit.message == 'release: slot. for KONKR Pocket Advance v1.1.0'
-    needs: arm64-apk
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: slot-for-konkr-1.1.0-arm64-signed
-          path: release-assets
-      - name: Publish verified v1.1.0 APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag=konkr-v1.1.0
-          test "$GITHUB_REF" = "refs/heads/main"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test -s release-assets/app-release.apk
-          apk=release-assets/slot-for-konkr-1.1.0-arm64.apk
-          mv release-assets/app-release.apk "$apk"
-          (cd release-assets && sha256sum "$(basename "$apk")" > SHA256SUMS.txt)
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::Release already exists; refusing to overwrite"
-            exit 1
-          fi
-          # Explicit target pins the created tag to the verified CI commit.
-          gh release create "$tag" "$apk" release-assets/SHA256SUMS.txt \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
-            --title "slot. for KONKR Pocket Advance v1.1.0" \
-            --notes-file RELEASE-NOTES.md

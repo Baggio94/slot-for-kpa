@@ -61,7 +61,7 @@ fn u1_clear_material_is_drawn_in_exact_original_slot_depth_order() {
     ];
     let chrome=SlotChrome {
         cart:&cart,face:Some(labels[0]),rest:170.0,scale:1.0,
-        seat:0.55,alert:None,dim:0.0,screen:0.0,game:false,
+        seat:0.55,alert:None,dim:0.0,screen:0.0,game:false,over:true,
         slot_faces:None,
     };
     let mut out=Vec::new();
