@@ -100,34 +100,22 @@ internal object AutoCartLabels {
             val target = CartLabelPaths.file(context.filesDir, rom.uri)
             if (target.exists()) continue
             attempted++
-            examinedThisSession.add(rom.uri)
             try {
                 // Preserve the exact checksum match as the highest priority.
                 val crc = CartStudioCatalog.cached(context, rom)
                     ?: CartStudioCatalog.identify(context, rom)
                 if (!shouldContinue()) break
-                fun artPath(hash: String): String? = index.optJSONObject(hash)
-                    ?.optString("support-texture")
-                    ?.takeIf { validArtworkPath(it, rom.platform) }
-
-                var chosen = artPath(crc.hex)
-                if (chosen != null) {
-                    directMatches++
-                } else if (shouldContinue()) {
-                    // Generic No-Intro identification. No patched CRC keys,
-                    // no name-only fuzzy guess. The fingerprint already has
-                    // the full 0x150 cartridge header from the streaming pass.
-                    val dat = dats.getOrPut(rom.platform) {
+                val direct = OfficialArtResolver.artPath(index, rom.platform, crc.hex)
+                val dat = if (direct == null && shouldContinue()) {
+                    dats.getOrPut(rom.platform) {
                         OfficialDatSource.load(context, rom.platform, shouldContinue)
                     }
-                    if (dat != null) {
-                        val candidate = OfficialArtMatcher.fromCatalog(
-                            rom.platform, rom.title, crc.head, dat, ::artPath)
-                        chosen = candidate?.let(::artPath)
-                        if (chosen != null) catalogMatches++
-                    }
-                }
-                val path = chosen ?: continue
+                } else null
+                val resolved = OfficialArtResolver.match(rom, crc, index, dat)
+                val path = resolved?.let {
+                    OfficialArtResolver.artPath(index, rom.platform, it)
+                } ?: continue
+                if (direct != null) directMatches++ else catalogMatches++
                 matched++
                 val response = art.intercept(path)
                 if (response.statusCode != 200) {
@@ -182,6 +170,9 @@ internal object AutoCartLabels {
             } catch (error: Exception) {
                 failed++
                 Log.w(TAG, "Skipping unsupported/failed cart art", error)
+            } finally {
+                // A suspended ROM can be retried after returning from Studio.
+                if (shouldContinue()) examinedThisSession.add(rom.uri)
             }
         }
         try { CartStudioCatalog.flush(context) }
