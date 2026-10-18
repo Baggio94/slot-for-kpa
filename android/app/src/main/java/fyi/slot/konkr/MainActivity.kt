@@ -168,6 +168,7 @@ class MainActivity : Activity() {
         Thread(task, "slot-kpa-auto-labels").apply { priority = Thread.MIN_PRIORITY }
     }
     private val autoLabelsRunning = AtomicBoolean(false)
+    @Volatile private var cartStudioOpening = false
     // Paint fresh labels only when all moving carts and pending GPU uploads
     // have settled. The renderer's manual reload path is synchronous.
     private val autoLabelUpdates = java.util.concurrent.ConcurrentLinkedQueue<String>()
@@ -1438,7 +1439,7 @@ class MainActivity : Activity() {
     }
 
     private fun startAutoCartLabels() {
-        if (!resumed || isDestroyed || nativeIsPlaying()) return
+        if (!resumed || isDestroyed || nativeIsPlaying() || cartStudioOpening) return
         if (!autoLabelsRunning.compareAndSet(false, true)) return
         try {
             autoLabelsWorker.execute {
@@ -1451,13 +1452,13 @@ class MainActivity : Activity() {
                         return@execute
                     }
                     anotherBatch = AutoCartLabels.fill(applicationContext,
-                        shouldContinue = { resumed && !isDestroyed && !nativeIsPlaying() },
+                        shouldContinue = { resumed && !isDestroyed && !nativeIsPlaying() && !cartStudioOpening },
                         onSaved = { uri -> autoLabelUpdates.add(uri) })
                 } catch (error: Exception) {
                     Log.w("SlotAutoLabels", "Automatic artwork deferred", error)
                 } finally {
                     autoLabelsRunning.set(false)
-                    if (anotherBatch && resumed && !isDestroyed) {
+                    if (anotherBatch && resumed && !isDestroyed && !cartStudioOpening) {
                         // A pause between bounded batches prevents continuous
                         // ROM reads and leaves the carousel's render thread free.
                         uiHandler.postDelayed({ startAutoCartLabels() }, 4_000L)
@@ -1951,6 +1952,7 @@ class MainActivity : Activity() {
         CartLabelPaths.file(filesDir, romUri)
 
     private fun openCartStudio(selected: String?) {
+        cartStudioOpening = true
         pendingCartStudioUri = selected
         val intent = Intent(this, CartStudioActivity::class.java).apply {
             if (selected != null) putExtra(CartStudioActivity.EXTRA_ROM, selected)
@@ -1961,6 +1963,7 @@ class MainActivity : Activity() {
             startActivityForResult(intent, CART_STUDIO_REQUEST)
             SlotTransitions.open(this)
         } catch (error: Exception) {
+            cartStudioOpening = false
             returnFromSlotChild = false
             nativeExternalReturn()
             Log.w(TAG, "Cannot open Cart Studio", error)
@@ -2343,6 +2346,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        cartStudioOpening = false
         if (returnFromSlotChild) {
             // Clear the preserved native menu ONLY after Apps/Studio has
             // finished and the shelf itself is about to be visible again.
