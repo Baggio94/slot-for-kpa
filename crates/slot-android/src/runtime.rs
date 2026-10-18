@@ -857,7 +857,7 @@ impl Engine {
             (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
         };
         let onboarding_note = {
-            let face = onboarding_note_face("(UNZIPPED ROMS ONLY)");
+            let face = onboarding_note_face("(ZIP ROMS SUPPORTED)");
             (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
         };
         let shelf_status_faces = SHELF_STATUS_TEXT.map(|label| {
