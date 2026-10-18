@@ -9,6 +9,7 @@ import org.json.JSONObject
 import org.json.JSONArray
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Read-only SAF source for every GB/GBC/GBA ROM already indexed by Slot.
@@ -22,6 +23,30 @@ internal class CartStudioBridge(
     private val dirty: AtomicBoolean,
 ) {
     private val keyed = roms.associateBy { key(it.uri) }
+    private val officialArt = CartStudioArtProxy(context)
+    private var indexedArtwork: JSONObject? = null
+    private val officialDats = HashMap<String, OfficialArtMatcher.Catalog?>()
+    private val sessionFingerprints = ConcurrentHashMap<String, CartStudioCatalog.Fingerprint>()
+
+    @Synchronized
+    @JavascriptInterface
+    fun officialMatch(id: String): String = runCatching {
+        val rom = known(id)
+        if (label(context, rom.uri).exists()) return@runCatching ""
+        val index = indexedArtwork
+            ?: officialArt.cachedIndex()?.also { indexedArtwork = it }
+            ?: return@runCatching ""
+        val fingerprint = sessionFingerprints[id]
+            ?: CartStudioCatalog.cached(context, rom)
+            ?: CartStudioCatalog.identify(context, rom)
+        val direct = OfficialArtResolver.artPath(index, rom.platform, fingerprint.hex)
+        val dat = if (direct == null) officialDats.getOrPut(rom.platform) {
+            OfficialDatSource.load(context, rom.platform) { false }
+        } else null
+        OfficialArtResolver.match(rom, fingerprint, index, dat).orEmpty()
+    }.onFailure {
+        android.util.Log.w("SlotStudioMatch", "Official match failed", it)
+    }.getOrDefault("")
 
     // Original Cart Studio writes a label by (platform, stem), not URI.
     // Do not pick the wrong cartridge when two filenames are identical.
@@ -82,6 +107,7 @@ internal class CartStudioBridge(
         for (rom in roms) {
             val labelExists = label(context, rom.uri).isFile
             val cached = CartStudioCatalog.cached(context, rom)
+            if (cached != null) sessionFingerprints[key(rom.uri)] = cached
             if (!labelExists && cached == null) allReady = false
             val entry = JSONObject()
                 .put("id", key(rom.uri))
@@ -107,7 +133,10 @@ internal class CartStudioBridge(
     /** Invoked lazily for each cart by the original Studio identify() loop. */
     @JavascriptInterface
     fun fingerprint(id: String): String {
-        val fingerprint = CartStudioCatalog.identify(context, known(id))
+        val fingerprint = sessionFingerprints[id]
+            ?: CartStudioCatalog.identify(context, known(id)).also {
+                sessionFingerprints[id] = it
+            }
         require(fingerprint.head.size == 0x150) { "ROM header incomplete" }
         return JSONObject()
             .put("crc", fingerprint.crc)

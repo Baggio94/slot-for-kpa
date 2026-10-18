@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux/macOS build of a debug APK; needs Android SDK/NDK and Rust toolchain.
+# Linux/macOS KONKR native build plus debug APK; CI also assembles signed Release.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

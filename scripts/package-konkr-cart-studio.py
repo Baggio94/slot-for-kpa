@@ -64,6 +64,31 @@ def package(root: Path, built: Path):
       banner('Could not open selected cartridge: ' + error.message);
     }
   }""")
+    # Reuse Slot's native No-Intro matcher only after the Studio's ordinary
+    # exact CRC lookup failed. Keep the chosen official CRC for art retrieval.
+    js = checked_replace(js,
+        "    c.game = dats.get(c.platform)?.game_for(c.crc) ?? null;\n    await dress(s, c);",
+        """    c.game = dats.get(c.platform)?.game_for(c.crc) ?? null;
+    if (!c.game && window.AndroidStudio && c.slotId) {
+      const matched = window.AndroidStudio.officialMatch(c.slotId);
+      if (/^[0-9A-F]{8}$/.test(matched)) {
+        const official = parseInt(matched, 16);
+        const game = dats.get(c.platform)?.game_for(official) ?? null;
+        if (game) {
+          c.game = game;
+          c.androidOfficialCrc = official;
+        }
+      }
+    }
+    await dress(s, c);""")
+    js = checked_replace(js,
+        "function artKey(c) {\n  const own = c.crc === null ? null : crcHex(c.crc);",
+        """function artKey(c) {
+  if (window.AndroidStudio && c.androidOfficialCrc != null) {
+    const original = crcHex(c.androidOfficialCrc);
+    if (artIndex?.[original]) return original;
+  }
+  const own = c.crc === null ? null : crcHex(c.crc);""")
     # Load the official art index concurrently with local library setup:
     # the three tabs and edited cartridge remain usable with slow/offline Wi-Fi.
     # Browser-hosted Cart Studio already downloads from this art set,

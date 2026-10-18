@@ -234,9 +234,9 @@ class CartStudioActivity : Activity() {
             titleWidth, -1, Gravity.CENTER
         ))
         val close = SlotUi.nativeHint(this, "B", "BACK").apply {
-            setOnClickListener { finish() }
+            setOnClickListener { backInStudio() }
             isFocusable = true
-            contentDescription = "Close Cart Studio and return to Slot"
+            contentDescription = "Back to Cart Studio library or Slot"
         }
         val backWidth = (116 * resources.displayMetrics.density + 0.5f).toInt()
         toolbar.addView(close, FrameLayout.LayoutParams(backWidth, -1, Gravity.START))
@@ -362,10 +362,32 @@ class CartStudioActivity : Activity() {
         }
     }
 
+    /** In full Studio, B returns from an editor to the cartridge catalog.
+     *  At catalog level (or in X's one-cart shortcut), B exits to Slot.
+     *  The original editor close button preserves in-memory edits for Save.
+     */
+    private fun backInStudio() {
+        if (isFinishing) return
+        if (singleCartMode) { finish(); return }
+        val view = web ?: run { finish(); return }
+        view.evaluateJavascript("""
+            (() => {
+                const editor = document.getElementById('editor');
+                if (editor && !editor.hidden) {
+                    document.getElementById('ed-close')?.click();
+                    return 'editor';
+                }
+                return 'catalog';
+            })()
+        """.trimIndent()) { result ->
+            if (result == "\"catalog\"" && !isFinishing) finish()
+        }
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         when (keyCode) {
             KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK -> {
-                finish()
+                if (event.repeatCount == 0) backInStudio()
                 return true
             }
             KeyEvent.KEYCODE_BUTTON_A -> {

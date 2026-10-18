@@ -62,7 +62,7 @@ Getting started with slot. is easy. Just point it to your games, pick a cartridg
 
 ### Installation
 
-1. Download the latest APK from [Releases](https://github.com/Baggio94/slot-for-konkr/releases).
+1. Download the latest APK from [Releases](https://github.com/Baggio94/slot-for-kpa/releases).
 2. Install it on your KONKR Pocket Advance.
 3. Open **slot.**
 
