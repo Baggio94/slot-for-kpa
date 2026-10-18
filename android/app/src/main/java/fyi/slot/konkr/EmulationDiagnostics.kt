@@ -45,7 +45,7 @@ internal object EmulationDiagnostics {
         // Per-event Log.i in production adds unpredictable work to the
         // latency-critical input callback; only the AVD debug build emits
         // detailed key logs. Release beta still aggregates counters at 5s.
-        if (BuildConfig.DEBUG && event.repeatCount == 0) {
+        if (SlotBuildBehavior.verboseEmulationInput() && event.repeatCount == 0) {
             Log.i(TAG, "INPUT event=${if (pressed) "down" else "up"} " +
                 "key=${KeyEvent.keyCodeToString(code)} mapped=${KeyEvent.keyCodeToString(mapped)} " +
                 "device=${event.deviceId} scan=${event.scanCode} " +
