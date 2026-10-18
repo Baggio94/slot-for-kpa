@@ -1092,7 +1092,10 @@ class MainActivity : Activity() {
                 Log.i(TAG, "Slot launch queue delay: ${queueWait}ms (waiting for preceding save exports)")
             }
             try {
-                val name = uri.lastPathSegment.orEmpty()
+                // Document-provider IDs may contain the complete tree path:
+                // keep only the terminal basename before using it for a
+                // RetroArch save target, never a provider path or colon prefix.
+                val name = uri.lastPathSegment.orEmpty().substringAfterLast('/')
                 // SAF ZIPs contain an actual cartridge, not a libretro ZIP
                 // input. Inspect the embedded extension before selecting a
                 // core, a save target or a private cache extension.
