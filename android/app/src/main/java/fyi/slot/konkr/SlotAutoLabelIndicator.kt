@@ -77,21 +77,13 @@ internal class SlotAutoLabelIndicator(context: Context, rail: LinearLayout) {
     }
 
     fun progress(checked: Int, total: Int, saved: Int) {
-        if (total > 0) {
-            caption.text = String.format(Locale.ROOT,
-                "LABELS %d/%d  SAVED %d", checked.coerceIn(0, total), total,
-                saved.coerceAtLeast(0))
-        } else {
-            caption.text = String.format(Locale.ROOT,
-                "LABELS SAVED %d", saved.coerceAtLeast(0))
-        }
         if (root.visibility != View.VISIBLE) begin()
-        // begin() resets the text only on a previously hidden indicator.
-        if (total > 0) {
-            caption.text = String.format(Locale.ROOT,
-                "LABELS %d/%d  SAVED %d", checked.coerceIn(0, total), total,
-                saved.coerceAtLeast(0))
-        } else caption.text = "LABELS SAVED ${saved.coerceAtLeast(0)}"
+        caption.text = if (total > 0) {
+            String.format(Locale.ROOT, "LABELS %d/%d  SAVED %d",
+                checked.coerceIn(0, total), total, saved.coerceAtLeast(0))
+        } else {
+            String.format(Locale.ROOT, "LABELS SAVED %d", saved.coerceAtLeast(0))
+        }
     }
 
     fun finished(saved: Int) {
