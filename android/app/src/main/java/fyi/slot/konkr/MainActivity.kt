@@ -1506,6 +1506,12 @@ class MainActivity : Activity() {
                                 else autoLabelIndicator.hide()
                             }
                         }
+                    } else if (!anotherBatch && !recheck && report.total == 0) {
+                        // No indexed ROMs or network yet: never leave an
+                        // old spinner visible while the worker is stopped.
+                        uiHandler.post {
+                            if (::autoLabelIndicator.isInitialized) autoLabelIndicator.hide()
+                        }
                     }
                     if ((anotherBatch || recheck) && resumed && !isDestroyed &&
                         !nativeIsPlaying() && !cartStudioOpening) {
