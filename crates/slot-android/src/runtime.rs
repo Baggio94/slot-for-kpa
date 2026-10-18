@@ -3362,13 +3362,18 @@ impl Engine {
             return;
         }
         if key == 12 && self.game.as_ref().is_some_and(|game|
-            !game.runahead_supported()) {
-            set_message("Run-Ahead unavailable for this core/game (Link, Flash or speculative audio protection)".into());
+            game.sma4_runahead_blocked()) {
+            set_message("Run-Ahead disabled for Super Mario Advance 4 to protect saves (mGBA and gpSP).".into());
             return;
         }
         if key == 12 && self.game.as_ref().is_some_and(|game|
             game.mgba_flash_runahead_blocked()) {
-            set_message("Run-Ahead is disabled for Pokemon Gen III with mGBA to protect Flash saves. gpSP is unchanged.".into());
+            set_message("Run-Ahead disabled for Pokemon Gen III with mGBA to protect Flash saves. gpSP is unchanged.".into());
+            return;
+        }
+        if key == 12 && self.game.as_ref().is_some_and(|game|
+            !game.runahead_supported()) {
+            set_message("Run-Ahead unavailable for this core/game (Link, Flash or speculative audio protection)".into());
             return;
         }
         let Some(uri) = self.selected_rom_uri() else { return; };
