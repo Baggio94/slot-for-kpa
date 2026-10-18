@@ -76,7 +76,7 @@ On your first launch, you'll see a message asking you to press **START**.
 4. Grant Android permission to access the folder.
 5. Wait for your cartridges to appear in the carousel. You're ready to play!
 
-**Important:** ROMs must be unzipped. Supported formats are `.gba`, `.gbc` and `.gb`.
+**Supported cartridges:** `.gba`, `.gbc`, `.gb` and `.zip` archives containing a GB, GBC or GBA ROM. Each ZIP appears as one cartridge and launches its first supported ROM entry; use one game per archive for predictable saves and artwork. Original ZIP files stay untouched.
 
 ### Optional folders
 
