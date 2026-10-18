@@ -27,7 +27,7 @@ internal object OfficialDatSource {
     fun load(context: Context, platform: String, shouldContinue: () -> Boolean):
         OfficialArtMatcher.Catalog? {
         val fileName = names[platform] ?: return null
-        val cacheDir = File(context.cacheDir, "slot-no-intro-dat").apply { mkdirs() }
+        val cacheDir = File(context.cacheDir, "slot-studio-dat").apply { mkdirs() }
         val cache = File(cacheDir, "$platform.dat")
 
         fun cached(): String? = if (cache.isFile && cache.length() in 1..MAX_BYTES.toLong())
