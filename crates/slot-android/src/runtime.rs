@@ -3947,14 +3947,33 @@ impl Engine {
         }
     }
 
+    /// Draw an optional version label on a common vertical centerline and
+    /// return the true right edge for the following AVAILABLE glyph.
     fn draw_update_value(&self, face: Option<(slot_gfx::TexId,u32,u32)>,
-                         x: f32, y: f32, out: &mut Vec<Draw>) {
+                         x: f32, center_y: f32, alpha: f32, out: &mut Vec<Draw>) -> f32 {
         if let Some((tex,w,h)) = face {
             let scale = (185.0 / w.max(1) as f32).min(0.79);
+            let width = w as f32 * scale;
+            let height = h as f32 * scale;
             out.push(Draw::Tex {
-                x,y,w:w as f32 * scale,h:h as f32 * scale,tex,alpha:0.90,
+                x, y: center_y - height / 2.0,
+                w: width, h: height, tex, alpha,
             });
+            return x + width;
         }
+        x
+    }
+
+    fn draw_update_status_centered(&self, index: usize, x: f32, center_y: f32,
+                                   max_w: f32, alpha: f32, out: &mut Vec<Draw>) {
+        let (tex,w,h) = self.menu_textures[index];
+        if w == 0 || h == 0 { return; }
+        let scale = (max_w / w as f32).min(0.79);
+        let height = h as f32 * scale;
+        out.push(Draw::Tex {
+            x, y: center_y - height / 2.0,
+            w: w as f32 * scale, h: height, tex, alpha,
+        });
     }
 
     fn draw_overlay(&self, out: &mut Vec<Draw>) {
@@ -3963,8 +3982,11 @@ impl Engine {
             ShelfOverlay::Menu { row } => {
                 self.draw_original_style_menu(0, &[1, 2, 3, 48, 25, 31], row, out);
                 if self.update_status == 1 {
-                    self.text_fit(106, 523.0, settings_row_top(6) +
-                        5.0*QUICK_PITCH+8.0, 175.0, 0.70, out);
+                    // Scale to the available right-hand width, then center the
+                    // resulting shorter glyph vertically within About's row.
+                    self.draw_update_status_centered(106, 523.0,
+                        settings_row_top(6) + 5.5 * QUICK_PITCH,
+                        175.0, 0.70, out);
                 }
             }
             ShelfOverlay::Library { row } => {
@@ -4054,19 +4076,24 @@ impl Engine {
                 self.text_fit(98, 37.0, top + QUICK_PITCH + 8.0, 475.0, fade, out);
                 self.text_fit(if self.update_auto {105}else{104},
                     592.0, top + QUICK_PITCH + 8.0, 95.0, fade, out);
-                let status_y = top + 2.0 * QUICK_PITCH + 7.0;
+                // Third line is status-only, not selectable. Center both
+                // glyphs on ONE baseline and leave more space to the keycaps.
+                let status_center = top + 2.0 * QUICK_PITCH + 11.0;
                 if matches!(self.update_status, 1 | 5) {
-                    self.draw_update_value(self.update_version_face, 37.0, status_y, out);
-                    self.text_fit(115, 246.0, status_y, 420.0, 0.78 * fade, out);
+                    let right = self.draw_update_value(self.update_version_face,
+                        37.0, status_center, 0.90 * fade, out);
+                    self.draw_update_status_centered(115, right + 17.0,
+                        status_center, 600.0 - right, 0.78 * fade, out);
                 } else {
                     let status = match self.update_status {
                         2 => 112, 3 => 114, 4 => 113, _ => 111,
                     };
-                    self.text_fit(status, 37.0, status_y, 610.0, 0.78 * fade, out);
+                    self.draw_update_status_centered(status, 37.0,
+                        status_center, 610.0, 0.78 * fade, out);
                 }
                 for (tex,w,x) in centred_hints(&self.menu_hints, LEGEND_GAP) {
                     out.push(Draw::Tex {
-                        x, y: 427.0, w: w as f32, h: HINT_H as f32,
+                        x, y: 439.0, w: w as f32, h: HINT_H as f32,
                         tex, alpha: fade,
                     });
                 }
