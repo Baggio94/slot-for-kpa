@@ -48,6 +48,19 @@ fn pokemon_gen3_flash_code(code: &[u8; 4]) -> bool {
     [b"BPR", b"BPG", b"BPE", b"AXV", b"AXP"]
         .iter().any(|prefix| code.starts_with(*prefix))
 }
+/// Drill Dozer has its own cartridge rumble motor. Forcing Game Boy Player
+/// rumble for this ROM can interfere with mGBA's one-frame speculative path.
+/// Limit the experimental bypass to physical cartridge header V49*, not titles
+/// or filenames; gpSP and all other mGBA games retain their current options.
+fn drill_dozer_mgba_gbp_bypass(rom: &Path, which: Core, platform: Platform) -> bool {
+    if which != Core::Mgba || platform != Platform::Gba { return false; }
+    let Ok(mut file) = std::fs::File::open(rom) else { return false; };
+    if file.seek(SeekFrom::Start(0xAC)).is_err() { return false; }
+    let mut code = [0u8; 4];
+    file.read_exact(&mut code).is_ok()
+        && code.starts_with(b"V49") && code[3].is_ascii_uppercase()
+}
+
 fn sma4_runahead_guard(rom: &Path, platform: Platform) -> bool {
     if platform != Platform::Gba { return false; }
     let Ok(mut file) = std::fs::File::open(rom) else { return false; };
@@ -392,7 +405,13 @@ impl GameSession {
                 core.set_option("mgba_use_bios", "ON");
                 core.set_option("mgba_skip_bios", "OFF");
                 core.set_option("mgba_sgb_borders", "OFF");
-                core.set_option("mgba_force_gbp", "ON");
+                // Drill Dozer's built-in rumble is not Game Boy Player
+                // hardware. Keep normal mGBA behavior for all other ROMs.
+                let force_gbp = !drill_dozer_mgba_gbp_bypass(rom, which, platform);
+                core.set_option("mgba_force_gbp", if force_gbp { "ON" } else { "OFF" });
+                if !force_gbp {
+                    log_launch_timing("Drill Dozer mGBA: GBP rumble OFF; Run-Ahead remains enabled for testing");
+                }
                 if let Some(name) = gb_palette.filter(|_| dmg_only) {
                     core.set_option("mgba_gb_model", "Game Boy");
                     core.set_option("mgba_gb_colors_preset", "0");
@@ -1209,6 +1228,29 @@ mod pokemon_flash_guard_tests {
         assert_eq!(pokemon_flash_complete_bank_count(&image), 0);
         image.truncate(65536);
         assert_eq!(pokemon_flash_complete_bank_count(&image), 0);
+    }
+
+    #[test]
+    fn drill_dozer_disables_only_forced_mgba_gbp_rumble() {
+        let dir = std::env::temp_dir().join(format!("slot-drill-dozer-gbp-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("game-renamed-unrelated.gba");
+        for code in [*b"V49E", *b"V49J", *b"V49P"] {
+            let mut rom = vec![0u8; 192];
+            rom[0xAC..0xB0].copy_from_slice(&code);
+            std::fs::write(&path, rom).unwrap();
+            assert!(drill_dozer_mgba_gbp_bypass(&path, Core::Mgba, Platform::Gba));
+            assert!(!drill_dozer_mgba_gbp_bypass(&path, Core::Gpsp, Platform::Gba));
+            assert!(!drill_dozer_mgba_gbp_bypass(&path, Core::Mgba, Platform::Gb));
+        }
+        for code in [*b"AX4E", *b"BPGE", *b"V48E", *b"V49-"] {
+            let mut rom = vec![0u8; 192];
+            rom[0xAC..0xB0].copy_from_slice(&code);
+            std::fs::write(&path, rom).unwrap();
+            assert!(!drill_dozer_mgba_gbp_bypass(&path, Core::Mgba, Platform::Gba));
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
