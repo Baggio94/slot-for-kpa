@@ -4076,10 +4076,18 @@ impl Engine {
                 self.text_fit(98, 37.0, top + QUICK_PITCH + 8.0, 475.0, fade, out);
                 self.text_fit(if self.update_auto {105}else{104},
                     592.0, top + QUICK_PITCH + 8.0, 95.0, fade, out);
-                // Third line is status-only, not selectable. Center both
-                // glyphs on ONE baseline and leave more space to the keycaps.
-                let status_center = top + 2.0 * QUICK_PITCH + 11.0;
+                // Equal first-pixel baselines: the third status line begins
+                // exactly one QUICK_PITCH after the second line, rather than
+                // being vertically centered using a different offset.
+                // Its optional version is still centered against AVAILABLE.
+                let status_top = top + 2.0 * QUICK_PITCH + 8.0;
                 if matches!(self.update_status, 1 | 5) {
+                    let (label_w, label_h) = {
+                        let (_, w, h) = self.menu_textures[115];
+                        (w.max(1) as f32, h as f32)
+                    };
+                    let status_center = status_top +
+                        label_h * (0.79f32.min(420.0 / label_w)) / 2.0;
                     let right = self.draw_update_value(self.update_version_face,
                         37.0, status_center, 0.90 * fade, out);
                     self.draw_update_status_centered(115, right + 17.0,
@@ -4088,6 +4096,9 @@ impl Engine {
                     let status = match self.update_status {
                         2 => 112, 3 => 114, 4 => 113, _ => 111,
                     };
+                    let (_, w, h) = self.menu_textures[status];
+                    let status_center = status_top +
+                        h as f32 * (0.79f32.min(610.0 / w.max(1) as f32)) / 2.0;
                     self.draw_update_status_centered(status, 37.0,
                         status_center, 610.0, 0.78 * fade, out);
                 }
@@ -5325,7 +5336,7 @@ mod ui_feedback_tests {
         }
         assert_eq!(move_menu_row(0, 19, 2), 1);
         assert_eq!(move_menu_row(1, 20, 2), 0);
-        assert_eq!(about_row_top(), 284.0);
+        assert_eq!(about_row_top(), 276.0);
     }
 
     #[test]
