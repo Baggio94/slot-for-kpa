@@ -66,6 +66,40 @@ impl Appearance {
     pub fn toggle(self)->Self { if self==Self::Dark {Self::Light}else{Self::Dark} }
 }
 
+/// Original PR #2 by Its-TroyM: persisted optional 12/24-hour shelf clock.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TimeFormat {
+    #[default]
+    #[serde(rename = "24h")]
+    TwentyFourHour,
+    #[serde(rename = "12h")]
+    TwelveHour,
+}
+impl TimeFormat {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::TwentyFourHour => Self::TwelveHour,
+            Self::TwelveHour => Self::TwentyFourHour,
+        }
+    }
+
+    /// Android supplies local time as ASCII HH:mm, independent of the choice.
+    pub fn format_clock(self, clock: &str) -> String {
+        if self == Self::TwentyFourHour { return clock.to_owned(); }
+        let time = clock.split_once(':').and_then(|(hour, minute)| {
+            Some((hour.parse::<u8>().ok()?, minute.parse::<u8>().ok()?))
+        });
+        match time {
+            Some((hour, minute)) if hour < 24 && minute < 60 => {
+                let period = if hour < 12 { "AM" } else { "PM" };
+                let display_hour = if hour % 12 == 0 { 12 } else { hour % 12 };
+                format!("{display_hour}:{minute:02} {period}")
+            }
+            _ => clock.to_owned(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="snake_case")]
 pub enum Bezel { None, Default }
@@ -154,6 +188,8 @@ pub struct Settings {
     // below must not interpret those historical booleans as explicit consent.
     pub show_wifi: bool, pub show_bluetooth: bool,
     pub show_integrations: bool,
+    /// Missing legacy field retains original 24h display.
+    pub time_format: TimeFormat,
     #[serde(default)]
     pub status_opt_in_v2: bool,
     // Slot v1.7 visual settings; independent of saved emulation profiles.
@@ -180,6 +216,7 @@ impl Default for Settings {
             display_sync_pacing: false,
             run_ahead_frames: 0,
             show_wifi: false, show_bluetooth: false, show_integrations: false,
+            time_format: TimeFormat::TwentyFourHour,
             status_opt_in_v2: true, wallpaper: WallpaperPick::Default,
             wallpaper_tint: WallpaperTint::Off, appearance: Appearance::Dark,
             show_recents: false, show_titles: false }
@@ -346,6 +383,7 @@ impl Settings {
             13 => self.show_wifi = !self.show_wifi,
             14 => self.show_bluetooth = !self.show_bluetooth,
             15 => self.show_integrations = !self.show_integrations,
+            28 => self.time_format = self.time_format.toggle(),
             _ => return false,
         }
         *self != before
@@ -403,6 +441,60 @@ pub fn frame_debt_display_sync(prev: f64, elapsed: f64, speed: f64,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clock_formats_midnight_noon_and_day_boundaries() {
+        for (clock, expected) in [
+            ("00:00", "12:00 AM"),
+            ("00:07", "12:07 AM"),
+            ("01:05", "1:05 AM"),
+            ("11:59", "11:59 AM"),
+            ("12:00", "12:00 PM"),
+            ("12:07", "12:07 PM"),
+            ("13:05", "1:05 PM"),
+            ("23:59", "11:59 PM"),
+        ] {
+            assert_eq!(TimeFormat::TwelveHour.format_clock(clock), expected);
+            assert_eq!(TimeFormat::TwentyFourHour.format_clock(clock), clock);
+        }
+        for clock in ["", "invalid", "24:00", "12:60"] {
+            assert_eq!(TimeFormat::TwelveHour.format_clock(clock), clock);
+        }
+    }
+
+    #[test]
+    fn time_format_defaults_preserve_existing_and_fresh_install_clocks() {
+        let legacy: Settings = serde_json::from_str(
+            r#"{"ff_speed":4,"show_titles":true}"#).unwrap();
+        assert_eq!(legacy.time_format, TimeFormat::TwentyFourHour);
+        assert_eq!(Settings::first_install_defaults().time_format,
+            TimeFormat::TwentyFourHour);
+        assert_eq!(legacy.ff_speed, 4);
+        assert!(legacy.show_titles);
+    }
+
+    #[test]
+    fn time_format_changes_in_both_directions_and_survives_restart() {
+        let root = std::env::temp_dir().join(format!(
+            "slot-time-format-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        let mut settings = Settings::first_install_defaults();
+        settings.ff_speed = 4;
+        settings.show_titles = true;
+        let before = settings.clone();
+        for right in [true, false] {
+            assert!(settings.change(28, right));
+            assert_eq!(settings.time_format, TimeFormat::TwelveHour);
+            settings.save(&root).unwrap();
+            assert_eq!(Settings::load(&root), settings);
+            assert!(settings.change(28, right));
+            assert_eq!(settings, before);
+            settings.save(&root).unwrap();
+            assert_eq!(Settings::load(&root), before);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn old_shared_gb_gbc_shader_and_colour_migrate_identically_then_split() {

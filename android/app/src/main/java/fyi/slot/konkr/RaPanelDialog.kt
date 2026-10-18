@@ -142,7 +142,15 @@ internal class RaPanelDialog(
         }
         content = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(14), 0, dp(10))
+            // Heading's pre-rasterized PNG has a 20px left transparent
+            // gutter, scaled by 0.79 = ~16 native pixels. Native menu
+            // labels have the SAME raster gutter, TextViews do not.
+            // Thus: 16px (visible heading) + 5px (original Slot offset)
+            // places actual RA letters at x=53 vs heading letters x=48.
+            // Keep the previous right padding for value-column width.
+            val visibleHeadingGutter = SlotUi.menuPixel(activity, 16)
+            val inset = visibleHeadingGutter + SlotUi.menuEntryInset(activity)
+            setPadding(inset, dp(14), SlotUi.menuEntryInset(activity), dp(10))
         }
         // Account information must be visible immediately, even while the
         // first cache diagnostics pass is scanning 115+ ROM definitions.
@@ -244,12 +252,14 @@ internal class RaPanelDialog(
         row("Awards to sync", snapshot.pendingAwards?.toString() ?: "Unknown")
         row("Awards saved", snapshot.recordedAwards?.toString() ?: "Unknown")
         row("GB / GBC", "Online + offline (mGBA)")
-        val note = snapshot.warning ?:
-            "Icon totals count distinct known images, not all ROMs. Legacy " +
-                "games with missing icon IDs refresh in the background. Local awards remain."
-        content.addView(text(note, 11f, muted).apply {
-            setPadding(0, dp(15), 0, dp(2))
-        })
+        // The permanent icon-count explanation was redundant. Show this
+        // area only for a genuine local-ledger warning, never for routine
+        // offline cache progress. Existing award records are untouched.
+        snapshot.warning?.let { warning ->
+            content.addView(text(warning, 11f, muted).apply {
+                setPadding(0, dp(15), 0, dp(2))
+            })
+        }
         // The 15-second dashboard refresh must never jump to the top.
         scroll.post { if (dialog.isShowing) scroll.scrollTo(0, previousScroll) }
     }

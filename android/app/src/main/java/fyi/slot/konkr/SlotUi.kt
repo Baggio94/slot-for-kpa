@@ -73,6 +73,9 @@ internal object SlotUi {
     fun menuPixel(context: Context, px: Int): Int =
         (px * context.resources.displayMetrics.widthPixels / 720f + .5f).toInt()
 
+    /** Native Slot menu headings start at x=32; entries begin at x=37. */
+    fun menuEntryInset(context: Context): Int = menuPixel(context, 5)
+
     fun menuHeading(context: Context, title: String): View {
         val asset = when (title.uppercase(Locale.ROOT)) {
             "APPS" -> "heading-apps.png"

@@ -355,7 +355,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 116] = [
+const MENU_TEXT: [&str; 117] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -472,7 +472,11 @@ const MENU_TEXT: [&str; 116] = [
     "CHECK FAILED",                      // 113
     "DOWNLOADING...",                    // 114
     "AVAILABLE",                         // 115
+    "Time Format",                       // 116, Its-TroyM PR #2
 ];
+
+const INTERFACE_ROWS: [usize; 4] = [63, 64, 65, 116];
+const INTERFACE_KEYS: [usize; 4] = [13, 14, 15, 28];
 
 #[derive(Clone, Copy)]
 struct LiveGameOptions {
@@ -922,7 +926,7 @@ impl Engine {
                               "Dark", "Light", "Low", "Medium", "High", "Custom",
                                "LCD Grid V2", "Grid V2 + GBA Color", "zfast LCD",
                                "LCD1x", "Simpletex + GBA", "AGB-001",
-                               "AGS-001", "Sharp Bilinear"]
+                               "AGS-001", "Sharp Bilinear", "12 HR", "24 HR"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
@@ -1176,8 +1180,9 @@ impl Engine {
 
     fn refresh_system_status(&mut self) {
         let status = SYSTEM_STATUS.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        if status.clock != self.clock_text {
-            self.clock_text = status.clock;
+        let clock = self.settings.time_format.format_clock(&status.clock);
+        if clock != self.clock_text {
+            self.clock_text = clock;
             if !self.clock_text.is_empty() {
                 let face = slot_ui::word_ink(&self.clock_text, self.shelf_footer_ink());
                 let tex = match self.clock_texture {
@@ -2610,9 +2615,13 @@ impl Engine {
                             },
                             ShelfOverlay::InterfaceSettings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::InterfaceSettings {
-                                    row: move_menu_row(row, code, 3),
+                                    row: move_menu_row(row, code, INTERFACE_ROWS.len()),
                                 },
-                                21 | 22 if row < 3 => self.change_setting(row + 13, code == 22),
+                                21 | 22 | 96 => {
+                                    if let Some(&key) = INTERFACE_KEYS.get(row) {
+                                        self.change_setting(key, code != 21);
+                                    }
+                                },
                                 97 => self.overlay = ShelfOverlay::Settings { row: 4 },
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
@@ -3770,6 +3779,8 @@ impl Engine {
             25 => if scoped.bezel_gba==crate::settings::Bezel::None {17}else{19},
             26 => if scoped.bezel_gbc==crate::settings::Bezel::None {17}else{19},
             27 => if scoped.bezel_gb==crate::settings::Bezel::None {17}else{19},
+            28 => if self.settings.time_format==crate::settings::TimeFormat::TwelveHour
+                {35}else{36},
             _ => 5,
         }
     }
@@ -3799,7 +3810,7 @@ impl Engine {
     fn draw_setting_values(&self, row: usize, keys: &[usize], out: &mut Vec<Draw>) {
         let top = settings_row_top(keys.len());
         for (index, key) in keys.iter().copied().enumerate() {
-            if key > 27 { continue; } // Action-only rows have no value.
+            if key > 28 { continue; } // Action-only rows have no value.
             let (tex, width, height) =
                 if key == 16 && matches!(self.settings.wallpaper,
                     crate::settings::WallpaperPick::File(_)) {
@@ -3947,14 +3958,33 @@ impl Engine {
         }
     }
 
+    /// Draw an optional version label on a common vertical centerline and
+    /// return the true right edge for the following AVAILABLE glyph.
     fn draw_update_value(&self, face: Option<(slot_gfx::TexId,u32,u32)>,
-                         x: f32, y: f32, out: &mut Vec<Draw>) {
+                         x: f32, center_y: f32, alpha: f32, out: &mut Vec<Draw>) -> f32 {
         if let Some((tex,w,h)) = face {
             let scale = (185.0 / w.max(1) as f32).min(0.79);
+            let width = w as f32 * scale;
+            let height = h as f32 * scale;
             out.push(Draw::Tex {
-                x,y,w:w as f32 * scale,h:h as f32 * scale,tex,alpha:0.90,
+                x, y: center_y - height / 2.0,
+                w: width, h: height, tex, alpha,
             });
+            return x + width;
         }
+        x
+    }
+
+    fn draw_update_status_centered(&self, index: usize, x: f32, center_y: f32,
+                                   max_w: f32, alpha: f32, out: &mut Vec<Draw>) {
+        let (tex,w,h) = self.menu_textures[index];
+        if w == 0 || h == 0 { return; }
+        let scale = (max_w / w as f32).min(0.79);
+        let height = h as f32 * scale;
+        out.push(Draw::Tex {
+            x, y: center_y - height / 2.0,
+            w: w as f32 * scale, h: height, tex, alpha,
+        });
     }
 
     fn draw_overlay(&self, out: &mut Vec<Draw>) {
@@ -3963,8 +3993,11 @@ impl Engine {
             ShelfOverlay::Menu { row } => {
                 self.draw_original_style_menu(0, &[1, 2, 3, 48, 25, 31], row, out);
                 if self.update_status == 1 {
-                    self.text_fit(106, 523.0, settings_row_top(6) +
-                        5.0*QUICK_PITCH+8.0, 175.0, 0.70, out);
+                    // Scale to the available right-hand width, then center the
+                    // resulting shorter glyph vertically within About's row.
+                    self.draw_update_status_centered(106, 523.0,
+                        settings_row_top(6) + 5.5 * QUICK_PITCH,
+                        175.0, 0.70, out);
                 }
             }
             ShelfOverlay::Library { row } => {
@@ -3983,8 +4016,8 @@ impl Engine {
                 self.draw_setting_values(row,&keys,out);
             }
             ShelfOverlay::InterfaceSettings { row } => {
-                self.draw_original_style_menu(59, &[63, 64, 65], row, out);
-                self.draw_setting_values(row, &[13, 14, 15], out);
+                self.draw_original_style_menu(59, &INTERFACE_ROWS, row, out);
+                self.draw_setting_values(row, &INTERFACE_KEYS, out);
             }
             ShelfOverlay::EmulationSettings { row } => {
                 self.draw_original_style_menu(50, &[51, 52, 55], row, out);
@@ -4034,7 +4067,7 @@ impl Engine {
                 if let Some(tex) = self.about_texture {
                     out.push(Draw::Tex {
                         x: (OUT_W - STICKER_W) as f32 / 2.0,
-                        y: 42.0, w: STICKER_W as f32, h: STICKER_H as f32,
+                        y: 30.0, w: STICKER_W as f32, h: STICKER_H as f32,
                         tex, alpha: 1.0,
                     });
                 }
@@ -4054,15 +4087,31 @@ impl Engine {
                 self.text_fit(98, 37.0, top + QUICK_PITCH + 8.0, 475.0, fade, out);
                 self.text_fit(if self.update_auto {105}else{104},
                     592.0, top + QUICK_PITCH + 8.0, 95.0, fade, out);
-                let status_y = top + 2.0 * QUICK_PITCH + 7.0;
+                // Equal first-pixel baselines: the third status line begins
+                // exactly one QUICK_PITCH after the second line, rather than
+                // being vertically centered using a different offset.
+                // Its optional version is still centered against AVAILABLE.
+                let status_top = top + 2.0 * QUICK_PITCH + 8.0;
                 if matches!(self.update_status, 1 | 5) {
-                    self.draw_update_value(self.update_version_face, 37.0, status_y, out);
-                    self.text_fit(115, 246.0, status_y, 420.0, 0.78 * fade, out);
+                    let (label_w, label_h) = {
+                        let (_, w, h) = self.menu_textures[115];
+                        (w.max(1) as f32, h as f32)
+                    };
+                    let status_center = status_top +
+                        label_h * (0.79f32.min(420.0 / label_w)) / 2.0;
+                    let right = self.draw_update_value(self.update_version_face,
+                        37.0, status_center, 0.90 * fade, out);
+                    self.draw_update_status_centered(115, right + 17.0,
+                        status_center, 600.0 - right, 0.78 * fade, out);
                 } else {
                     let status = match self.update_status {
                         2 => 112, 3 => 114, 4 => 113, _ => 111,
                     };
-                    self.text_fit(status, 37.0, status_y, 610.0, 0.78 * fade, out);
+                    let (_, w, h) = self.menu_textures[status];
+                    let status_center = status_top +
+                        h as f32 * (0.79f32.min(610.0 / w.max(1) as f32)) / 2.0;
+                    self.draw_update_status_centered(status, 37.0,
+                        status_center, 610.0, 0.78 * fade, out);
                 }
                 for (tex,w,x) in centred_hints(&self.menu_hints, LEGEND_GAP) {
                     out.push(Draw::Tex {
@@ -4365,7 +4414,7 @@ impl Engine {
             ShelfOverlay::GeneralSettings { row } =>
                 (12u8, row, self.general_rows().len()),
             ShelfOverlay::About { row } => (17u8, row, 2usize),
-            ShelfOverlay::InterfaceSettings { row } => (10u8, row, 3usize),
+            ShelfOverlay::InterfaceSettings { row } => (10u8, row, INTERFACE_ROWS.len()),
             ShelfOverlay::EmulationSettings { row } => (8u8, row, 3usize),
             ShelfOverlay::PauseEmulationSettings { row } => (9u8, row, 3usize),
             ShelfOverlay::ScreenSettings { row } => (5u8, row, 3usize),
@@ -4994,6 +5043,7 @@ impl Engine {
             if self.settings.show_bluetooth { indicator_flags |= 4; }
             if self.settings.show_integrations { indicator_flags |= 8; }
             let light=self.settings.appearance==crate::settings::Appearance::Light;
+            if light { indicator_flags |= 16; } // theme ink for Android Wi-Fi/task glyphs
             slot_ui::draw_footer_with_ink(self.battery,self.battery_face,
                 Some(if light {self.bolt_light_texture} else {self.bolt_texture}),
                 self.clock_face,self.shelf_footer_ink(),&mut commands);
@@ -5243,7 +5293,7 @@ fn slot_name_alpha(elapsed_ms: u64) -> f32 {
 }
 
 /// Native About rows share one cursor. The third status line never receives focus.
-fn about_row_top() -> f32 { 284.0 }
+fn about_row_top() -> f32 { 270.0 }
 
 /// A verified downloaded release (READY=5) remains eligible for installation.
 fn about_primary_action(status: u8) -> i32 {
@@ -5297,7 +5347,7 @@ mod ui_feedback_tests {
         }
         assert_eq!(move_menu_row(0, 19, 2), 1);
         assert_eq!(move_menu_row(1, 20, 2), 0);
-        assert_eq!(about_row_top(), 284.0);
+        assert_eq!(about_row_top(), 270.0);
     }
 
     #[test]

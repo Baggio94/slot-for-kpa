@@ -152,7 +152,9 @@ class MainActivity : Activity() {
         val serial: Int, val quiet: Boolean
     )
     private var pendingLibraryIndex: PendingLibraryIndex? = null
+    private lateinit var taskIndicators: SlotShelfTaskIndicators
     private lateinit var libraryRefreshIndicator: SlotLibraryRefreshIndicator
+    private lateinit var autoLabelIndicator: SlotAutoLabelIndicator
     private val raLoginWorker = Executors.newSingleThreadExecutor()
     private val raSmartWorker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "slot-ra-smart-cache").apply { priority = Thread.MIN_PRIORITY }
@@ -419,6 +421,9 @@ class MainActivity : Activity() {
             if (::shelfStatus.isInitialized) {
                 val flags = nativeShelfIndicatorFlags()
                 shelfStatus.refresh(flags)
+                if (::taskIndicators.isInitialized) {
+                    taskIndicators.setLightTheme(flags and 16 != 0)
+                }
                 // Library feedback and START are rendered inside Slot's
                 // GL carousel, not overlaid by an Android TextView.
             }
@@ -426,6 +431,21 @@ class MainActivity : Activity() {
             updateDisplaySyncMode()
             updateCarouselPacing()
             publishAutoLabelsWhenIdle()
+            if (::autoLabelIndicator.isInitialized) {
+                if (nativeIsPlaying() || cartStudioOpening) {
+                    autoLabelIndicator.hide()
+                } else if (autoLabelsRunning.get()) {
+                    // The scanner only writes one immutable, lock-free
+                    // snapshot. No Handler post or UI work per cartridge.
+                    val progress = AutoCartLabelDiagnostics.snapshot()
+                    if (progress.total > 0) {
+                        autoLabelIndicator.progress(
+                            progress.checked, progress.total, progress.saved)
+                    }
+                } else {
+                    autoLabelIndicator.tick()
+                }
+            }
             updateRomWarmCandidate()
             if (resumed && nativeIsPlaying()) {
                 if (!audioRunning.get()) startAudio()
@@ -769,7 +789,9 @@ class MainActivity : Activity() {
         val frame = FrameLayout(this)
         frame.addView(view, FrameLayout.LayoutParams(-1, -1))
         shelfStatus = SlotStatusIndicators(this, frame)
-        libraryRefreshIndicator = SlotLibraryRefreshIndicator(this, frame)
+        taskIndicators = SlotShelfTaskIndicators(this, frame)
+        libraryRefreshIndicator = taskIndicators.library
+        autoLabelIndicator = taskIndicators.labels
         // There is no Android status view: the native Slot renderer owns all
         // shelf messages and controller hints, even during ROM rescanning.
         performanceHud = TextView(this).apply {
@@ -1450,6 +1472,7 @@ class MainActivity : Activity() {
         try {
             autoLabelsWorker.execute {
                 var anotherBatch = false
+                AutoCartLabelDiagnostics.clear()
                 try {
                     val manager = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
                     val caps = manager?.getNetworkCapabilities(manager.activeNetwork)
@@ -1457,6 +1480,9 @@ class MainActivity : Activity() {
                         Log.i("SlotAutoLabels", "Deferred: Android default Internet network is not validated")
                         return@execute
                     }
+                    // Exactly the production 1.2.0 callback: enqueue a
+                    // successful saved label for an idle carousel repaint.
+                    // Status/UI snapshots are completely separate.
                     anotherBatch = AutoCartLabels.fill(applicationContext,
                         shouldContinue = { resumed && !isDestroyed && !nativeIsPlaying() && !cartStudioOpening },
                         onSaved = { uri -> autoLabelUpdates.add(uri) })
@@ -1465,6 +1491,28 @@ class MainActivity : Activity() {
                 } finally {
                     autoLabelsRunning.set(false)
                     val recheck = autoLabelsRestartRequested.getAndSet(false)
+                    val report = AutoCartLabelDiagnostics.snapshot()
+                    if (!anotherBatch && !recheck && report.total > 0) {
+                        Log.i("SlotAutoLabels",
+                            "ART_SUMMARY examined=${report.checked}/${report.total} " +
+                                "saved=${report.saved} not_found=${report.notFound} " +
+                                "network_error=${report.networkError} " +
+                                "invalid_artwork=${report.invalidArtwork} " +
+                                "other_error=${report.otherError}")
+                        uiHandler.post {
+                            if (::autoLabelIndicator.isInitialized) {
+                                if (resumed && !isDestroyed && !nativeIsPlaying() &&
+                                    !cartStudioOpening) autoLabelIndicator.finished(report.saved)
+                                else autoLabelIndicator.hide()
+                            }
+                        }
+                    } else if (!anotherBatch && !recheck && report.total == 0) {
+                        // No indexed ROMs or network yet: never leave an
+                        // old spinner visible while the worker is stopped.
+                        uiHandler.post {
+                            if (::autoLabelIndicator.isInitialized) autoLabelIndicator.hide()
+                        }
+                    }
                     if ((anotherBatch || recheck) && resumed && !isDestroyed &&
                         !nativeIsPlaying() && !cartStudioOpening) {
                         // A pause between bounded batches prevents continuous
@@ -1743,7 +1791,9 @@ class MainActivity : Activity() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastStatusPoll < 15000L) return
         lastStatusPoll = now
-        val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        // PR #2 by Its-TroyM: JNI passes locale-independent 24h ASCII;
+        // Slot's native saved preference handles 12h AM/PM presentation.
+        val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT)
             .format(java.util.Date())
         val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
@@ -2330,6 +2380,7 @@ class MainActivity : Activity() {
         // multicast lock across Android background sleep.
         releaseLinkMulticast()
         if (::shelfStatus.isInitialized) shelfStatus.onPause()
+        if (::autoLabelIndicator.isInitialized) autoLabelIndicator.hide()
         Choreographer.getInstance().removeFrameCallback(vsyncCallback)
         if (displaySyncApplied) {
             view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY

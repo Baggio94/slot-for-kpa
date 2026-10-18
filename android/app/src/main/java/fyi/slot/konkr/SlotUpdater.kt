@@ -8,10 +8,12 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.core.content.FileProvider
 import org.json.JSONArray
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -31,6 +33,7 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
         const val DOWNLOADING = 3
         const val FAILED = 4
         const val READY = 5
+        private const val TAG = "SlotUpdater"
 
         private const val API = "https://api.github.com/repos/Baggio94/slot-for-kpa/releases?per_page=20"
         private const val RELEASES = "https://github.com/Baggio94/slot-for-kpa/releases/"
@@ -57,7 +60,15 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
                 setRequestProperty("User-Agent", "slot-konkr-update")
             }
             return try {
-                require(connection.responseCode == 200) { "GitHub HTTP ${connection.responseCode}" }
+                val status = connection.responseCode
+                if (status != 200) {
+                    // Retry only transient service/rate-limit failures;
+                    // permanent errors must not hammer the GitHub API.
+                    if (status == 429 || status in 500..599) {
+                        throw IOException("GitHub HTTP $status")
+                    }
+                    error("GitHub HTTP $status")
+                }
                 connection.inputStream.use { input ->
                     val out = java.io.ByteArrayOutputStream()
                     val buffer = ByteArray(8192)
@@ -119,12 +130,35 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
         publish(if (latest == null) CURRENT else AVAILABLE, latest?.version ?: version())
     }
 
+    /**
+     * A manual button press is never failed just because Android has not yet
+     * marked a freshly-connected Wi-Fi as VALIDATED. Do the brief readiness
+     * wait/retries on the existing low-priority worker, never on the UI thread.
+     */
+    private fun findReleaseWithRetry(): Release? {
+        for (attempt in 1..3) {
+            if (!network()) {
+                if (attempt == 3) throw IOException("Android Internet network not yet validated")
+                Log.i(TAG, "Network not yet validated, waiting before GitHub check (attempt $attempt)")
+                Thread.sleep(attempt * 650L)
+                continue
+            }
+            try {
+                return findRelease()
+            } catch (error: IOException) {
+                if (attempt == 3) throw error
+                Log.w(TAG, "Transient GitHub update check failure; retry $attempt/2", error)
+                Thread.sleep(attempt * 650L)
+            }
+        }
+        throw IOException("Unable to check GitHub release metadata")
+    }
+
     fun check(manual: Boolean) {
         if (!manual && !enabled()) return
-        if (!network()) {
-            if (manual) publish(FAILED)
-            return
-        }
+        // Automatic checks wait for a validated network; explicit checks may
+        // start during Android's brief network-validation window.
+        if (!manual && !network()) return
         val now = System.currentTimeMillis()
         if (!manual && !SlotUpdatePolicy.due(now, prefs.getLong("success", 0L),
                 prefs.getLong("failure", 0L))) return
@@ -132,7 +166,7 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
         publish(CHECKING)
         worker.execute {
             try {
-                val found = findRelease()
+                val found = findReleaseWithRetry()
                 prefs.edit().putLong("success", System.currentTimeMillis())
                     .remove("failure").apply()
                 latest = found
@@ -146,7 +180,8 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
                         .remove("sha").apply()
                     publish(CURRENT, version())
                 }
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                Log.w(TAG, "Update check failed after readiness/retry checks", error)
                 prefs.edit().putLong("failure", System.currentTimeMillis()).apply()
                 val cached = latest
                 publish(if (cached == null) FAILED else AVAILABLE, cached?.version.orEmpty())

@@ -54,6 +54,11 @@ internal object AutoCartLabels {
         }
         Log.i(TAG, "Starting automatic labels: games=${games.size}, missing=${missing.size}, " +
             "pending=${pending.size}, savedTotal=$savedTotal")
+        // Telemetry only: no network, disk access or UI callback.
+        AutoCartLabelDiagnostics.start(
+            examinedThisSession.size,
+            examinedThisSession.size + pending.size,
+            savedTotal)
 
         // Original Studio's HTTPS allowlist, disk cache and bounded response.
         // An unavailable index remains retryable when connectivity returns.
@@ -100,6 +105,7 @@ internal object AutoCartLabels {
             val target = CartLabelPaths.file(context.filesDir, rom.uri)
             if (target.exists()) continue
             attempted++
+            var outcome = "NOT_FOUND"
             try {
                 // Preserve the exact checksum match as the highest priority.
                 val crc = CartStudioCatalog.cached(context, rom)
@@ -111,14 +117,18 @@ internal object AutoCartLabels {
                         OfficialDatSource.load(context, rom.platform, shouldContinue)
                     }
                 } else null
+                if (direct == null && dat == null) outcome = "DAT_UNAVAILABLE"
                 val resolved = OfficialArtResolver.match(rom, crc, index, dat)
                 val path = resolved?.let {
                     OfficialArtResolver.artPath(index, rom.platform, it)
                 } ?: continue
                 if (direct != null) directMatches++ else catalogMatches++
                 matched++
+                outcome = "MATCHED"
                 val response = art.intercept(path)
                 if (response.statusCode != 200) {
+                    outcome = if (response.statusCode >= 500 ||
+                        response.statusCode == 429) "NETWORK_ERROR" else "NOT_FOUND"
                     failed++
                     continue
                 }
@@ -138,15 +148,18 @@ internal object AutoCartLabels {
                 fetched++
                 if (bytes.size !in 8..MAX_SOURCE ||
                     !bytes.copyOfRange(0, 8).contentEquals(pngSignature)) {
+                    outcome = "INVALID_ARTWORK"
                     unsuitable++
                     continue
                 }
                 val label = cropPhysicalCartLabel(bytes, rom.platform)
                 if (label == null) {
+                    outcome = "INVALID_ARTWORK"
                     unsuitable++
                     continue
                 }
                 if (label.size > MAX_LABEL || target.exists()) {
+                    outcome = if (label.size > MAX_LABEL) "INVALID_ARTWORK" else "EXISTS"
                     unsuitable++
                     continue
                 }
@@ -165,14 +178,21 @@ internal object AutoCartLabels {
                 }
                 saved++
                 savedTotal++
+                outcome = "SAVED"
                 onSaved(rom.uri)
                 Thread.sleep(120L)
             } catch (error: Exception) {
+                if (outcome != "SAVED") outcome = "ERROR"
                 failed++
                 Log.w(TAG, "Skipping unsupported/failed cart art", error)
             } finally {
-                // A suspended ROM can be retried after returning from Studio.
+                // Exact v1.2.0 scan lifecycle. Metrics never affect retries.
                 if (shouldContinue()) examinedThisSession.add(rom.uri)
+                AutoCartLabelDiagnostics.result(examinedThisSession.size, savedTotal, outcome)
+                // The game's library TITLE is sufficient for user-side
+                // diagnostics; never log SAF URI, save data or hashes.
+                Log.i(TAG, "ART_RESULT $outcome [${rom.platform}] " +
+                    rom.title.take(96))
             }
         }
         try { CartStudioCatalog.flush(context) }
