@@ -5021,6 +5021,7 @@ impl Engine {
             if self.settings.show_bluetooth { indicator_flags |= 4; }
             if self.settings.show_integrations { indicator_flags |= 8; }
             let light=self.settings.appearance==crate::settings::Appearance::Light;
+            if light { indicator_flags |= 16; } // theme ink for Android Wi-Fi/task glyphs
             slot_ui::draw_footer_with_ink(self.battery,self.battery_face,
                 Some(if light {self.bolt_light_texture} else {self.bolt_texture}),
                 self.clock_face,self.shelf_footer_ink(),&mut commands);
