@@ -153,6 +153,7 @@ class MainActivity : Activity() {
     )
     private var pendingLibraryIndex: PendingLibraryIndex? = null
     private lateinit var libraryRefreshIndicator: SlotLibraryRefreshIndicator
+    private lateinit var autoLabelIndicator: SlotAutoLabelIndicator
     private val raLoginWorker = Executors.newSingleThreadExecutor()
     private val raSmartWorker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "slot-ra-smart-cache").apply { priority = Thread.MIN_PRIORITY }
@@ -426,6 +427,10 @@ class MainActivity : Activity() {
             updateDisplaySyncMode()
             updateCarouselPacing()
             publishAutoLabelsWhenIdle()
+            if (::autoLabelIndicator.isInitialized) {
+                if (nativeIsPlaying() || cartStudioOpening) autoLabelIndicator.hide()
+                else autoLabelIndicator.tick()
+            }
             updateRomWarmCandidate()
             if (resumed && nativeIsPlaying()) {
                 if (!audioRunning.get()) startAudio()
@@ -770,6 +775,7 @@ class MainActivity : Activity() {
         frame.addView(view, FrameLayout.LayoutParams(-1, -1))
         shelfStatus = SlotStatusIndicators(this, frame)
         libraryRefreshIndicator = SlotLibraryRefreshIndicator(this, frame)
+        autoLabelIndicator = SlotAutoLabelIndicator(this, frame)
         // There is no Android status view: the native Slot renderer owns all
         // shelf messages and controller hints, even during ROM rescanning.
         performanceHud = TextView(this).apply {
@@ -1450,6 +1456,8 @@ class MainActivity : Activity() {
         try {
             autoLabelsWorker.execute {
                 var anotherBatch = false
+                var lastSaved = 0
+                var reported = false
                 try {
                     val manager = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
                     val caps = manager?.getNetworkCapabilities(manager.activeNetwork)
@@ -1459,12 +1467,31 @@ class MainActivity : Activity() {
                     }
                     anotherBatch = AutoCartLabels.fill(applicationContext,
                         shouldContinue = { resumed && !isDestroyed && !nativeIsPlaying() && !cartStudioOpening },
-                        onSaved = { uri -> autoLabelUpdates.add(uri) })
+                        onSaved = { uri -> autoLabelUpdates.add(uri) },
+                        onProgress = { checked, total, saved ->
+                            reported = true
+                            lastSaved = saved
+                            uiHandler.post {
+                                if (::autoLabelIndicator.isInitialized && resumed && !isDestroyed &&
+                                    !nativeIsPlaying() && !cartStudioOpening) {
+                                    autoLabelIndicator.progress(checked, total)
+                                }
+                            }
+                        })
                 } catch (error: Exception) {
                     Log.w("SlotAutoLabels", "Automatic artwork deferred", error)
                 } finally {
                     autoLabelsRunning.set(false)
                     val recheck = autoLabelsRestartRequested.getAndSet(false)
+                    if (!anotherBatch && !recheck && reported) {
+                        uiHandler.post {
+                            if (::autoLabelIndicator.isInitialized) {
+                                if (resumed && !isDestroyed && !nativeIsPlaying() &&
+                                    !cartStudioOpening) autoLabelIndicator.finished(lastSaved)
+                                else autoLabelIndicator.hide()
+                            }
+                        }
+                    }
                     if ((anotherBatch || recheck) && resumed && !isDestroyed &&
                         !nativeIsPlaying() && !cartStudioOpening) {
                         // A pause between bounded batches prevents continuous
@@ -2330,6 +2357,7 @@ class MainActivity : Activity() {
         // multicast lock across Android background sleep.
         releaseLinkMulticast()
         if (::shelfStatus.isInitialized) shelfStatus.onPause()
+        if (::autoLabelIndicator.isInitialized) autoLabelIndicator.hide()
         Choreographer.getInstance().removeFrameCallback(vsyncCallback)
         if (displaySyncApplied) {
             view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
