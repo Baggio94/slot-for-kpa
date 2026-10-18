@@ -42,7 +42,10 @@ internal object EmulationDiagnostics {
         }
         val dispatchLagMs = (SystemClock.uptimeMillis() - event.eventTime)
             .coerceAtLeast(0L)
-        if (event.repeatCount == 0) {
+        // Per-event Log.i in production adds unpredictable work to the
+        // latency-critical input callback; only the AVD debug build emits
+        // detailed key logs. Release beta still aggregates counters at 5s.
+        if (BuildConfig.DEBUG && event.repeatCount == 0) {
             Log.i(TAG, "INPUT event=${if (pressed) "down" else "up"} " +
                 "key=${KeyEvent.keyCodeToString(code)} mapped=${KeyEvent.keyCodeToString(mapped)} " +
                 "device=${event.deviceId} scan=${event.scanCode} " +
@@ -90,6 +93,20 @@ internal object EmulationDiagnostics {
         }
     }
 
+    private fun resetCounters() {
+        keyCount.set(0L)
+        glCount.set(0L)
+        glSlow25.set(0L)
+        glSlow40.set(0L)
+        keyToGlUsTotal.set(0L)
+        keyToGlCount.set(0L)
+        keyToGlUsMax.set(0L)
+        audioChunks.set(0L)
+        audioSamples.set(0L)
+        audioEmpty.set(0L)
+        audioGapCandidates.set(0L)
+    }
+
     @Synchronized
     fun report(isPlaying: Boolean, native: String?, queuedShorts: Int,
                sampleRate: Int, audioUnderruns: Int) {
@@ -99,10 +116,14 @@ internal object EmulationDiagnostics {
             lastNative = ""
             glLastNs = 0L
             hasAudioTail = false
+            resetCounters()
             return
         }
         if (!native.isNullOrBlank()) lastNative = native
         if (lastReportAt == 0L) {
+            // Start a clean measurement window; menu navigation and the
+            // initial audio queue cannot pollute later comparison trials.
+            resetCounters()
             lastReportAt = now
             return
         }
