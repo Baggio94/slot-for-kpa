@@ -346,8 +346,7 @@ enum ShelfOverlay {
     PauseScreenSettings { row: usize },
     PauseGameplaySettings { row: usize },
     PauseEmulationSettings { row: usize },
-    About,
-    Updates { row: usize },
+    About { row: usize },
     Scraping,
     Achievements,
     Core,
@@ -356,7 +355,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 110] = [
+const MENU_TEXT: [&str; 116] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -467,6 +466,12 @@ const MENU_TEXT: [&str; 110] = [
     "SOFTWARE UPDATE  >",              // 107, actionable About row
     "INSTALLED VERSION",                // 108
     "AVAILABLE VERSION",                // 109
+    "Install Update",                    // 110
+    "UP TO DATE",                        // 111
+    "CHECKING...",                       // 112
+    "CHECK FAILED",                      // 113
+    "DOWNLOADING...",                    // 114
+    "AVAILABLE",                         // 115
 ];
 
 #[derive(Clone, Copy)]
@@ -1984,12 +1989,7 @@ impl Engine {
             Input::UpdateStatus(status, installed, available, automatic) => {
                 self.update_status = status.min(5);
                 self.update_auto = automatic;
-                // An update check may reduce the menu from four to two rows.
-                // Clamp focus so no hidden action is ever selectable.
-                if let ShelfOverlay::Updates { row } = self.overlay {
-                    let count = update_rows(self.update_status).len();
-                    self.overlay = ShelfOverlay::Updates { row: row.min(count - 1) };
-                }
+                // Two selection rows regardless of update status.
                 for (label, is_installed) in [(installed, true), (available, false)] {
                     if label.is_empty() || !label.is_ascii() || label.len() > 48 {
                         continue;
@@ -2541,7 +2541,7 @@ impl Engine {
                                         4 => ShelfOverlay::Settings { row: 0 },
                                         _ => {
                                             self.prepare_about();
-                                            ShelfOverlay::About
+                                            ShelfOverlay::About { row: 0 }
                                         },
                                     };
                                 }
@@ -2659,34 +2659,22 @@ impl Engine {
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
-                            ShelfOverlay::About => match code {
-                                96 => self.overlay = ShelfOverlay::Updates { row: 0 },
+                            ShelfOverlay::About { row } => match code {
+                                19 | 20 => self.overlay = ShelfOverlay::About {
+                                    row: move_menu_row(row, code, 2),
+                                },
+                                96 => {
+                                    let action = if row == 0 {
+                                        about_primary_action(self.update_status)
+                                    } else { 22 };
+                                    UI_ACTION.lock().unwrap_or_else(|e| e.into_inner())
+                                        .push_back(action);
+                                },
+                                21 | 22 if row == 1 =>
+                                    UI_ACTION.lock().unwrap_or_else(|e| e.into_inner()).push_back(22),
                                 97 => self.overlay = ShelfOverlay::Menu { row: 5 },
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
-                            },
-                            ShelfOverlay::Updates { row } => {
-                                let rows = update_rows(self.update_status);
-                                let selected = rows[row.min(rows.len() - 1)];
-                                match code {
-                                    19 | 20 => self.overlay = ShelfOverlay::Updates {
-                                        row: move_menu_row(row, code, rows.len()),
-                                    },
-                                    96 => match selected {
-                                        95 => UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(19),
-                                        96 if self.update_status == 1 =>
-                                            UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(20),
-                                        97 if self.update_status == 1 =>
-                                            UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(21),
-                                        98 => UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(22),
-                                        _ => {}
-                                    },
-                                    21 | 22 if selected == 98 =>
-                                        UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(22),
-                                    97 => self.overlay = ShelfOverlay::About,
-                                    108 => self.overlay = ShelfOverlay::None,
-                                    _ => {}
-                                }
                             },
                             ShelfOverlay::Scraping | ShelfOverlay::Achievements => match code {
                                 96 if matches!(self.overlay, ShelfOverlay::Scraping) => {
@@ -4031,48 +4019,52 @@ impl Engine {
                 self.draw_original_style_menu(33, &[27, 28, 37, 38, 30, 39], row, out);
                 self.draw_setting_values(row, &[4, 5, 6, 7, 8, 9], out);
             }
-            ShelfOverlay::About => {
+            ShelfOverlay::About { row } => {
+                // The native KONKR sticker stays intact, shifted up to make room
+                // for two transparent menu rows and a non-focusable status line.
                 out.push(Draw::Rect {
                     x: 0.0, y: 0.0, w: OUT_W as f32, h: OUT_H as f32,
-                    colour: [0.055, 0.055, 0.065, 1.0],
+                    colour: opening(),
                 });
                 if let Some(tex) = self.about_texture {
                     out.push(Draw::Tex {
                         x: (OUT_W - STICKER_W) as f32 / 2.0,
-                        y: (OUT_H - STICKER_H) as f32 / 2.0,
-                        w: STICKER_W as f32, h: STICKER_H as f32,
+                        y: 42.0, w: STICKER_W as f32, h: STICKER_H as f32,
                         tex, alpha: 1.0,
                     });
                 }
-                // Make A's destination discoverable without modifying the
-                // original barcode sticker or the physical keycap legends.
+                let fade = slot_ui::ease(
+                    (self.menu_opened.elapsed().as_secs_f32() / 0.16).clamp(0.0, 1.0));
+                let top = about_row_top();
+                let cursor = if self.menu_cursor_y.is_finite() {
+                    self.menu_cursor_y
+                } else { top + row as f32 * QUICK_PITCH };
                 out.push(Draw::Rect {
-                    x: 29.0, y: 361.0, w: 662.0, h: 43.0,
-                    colour: [0.20,0.20,0.22,0.42],
+                    x: 0.0, y: cursor + 4.0, w: OUT_W as f32,
+                    h: QUICK_PITCH - 8.0,
+                    colour: { let mut c = edge(); c[3] *= fade; c },
                 });
-                self.text_fit(107, 45.0, 373.0, 400.0, 1.0, out);
-                self.text_fit(self.update_caption(), 514.0, 373.0, 176.0, 0.78, out);
+                self.text_fit(if about_primary_action(self.update_status) == 21 {110} else {95},
+                    37.0, top + 8.0, 590.0, fade, out);
+                self.text_fit(98, 37.0, top + QUICK_PITCH + 8.0, 475.0, fade, out);
+                self.text_fit(if self.update_auto {105}else{104},
+                    592.0, top + QUICK_PITCH + 8.0, 95.0, fade, out);
+                let status_y = top + 2.0 * QUICK_PITCH + 7.0;
+                if matches!(self.update_status, 1 | 5) {
+                    self.draw_update_value(self.update_version_face, 37.0, status_y, out);
+                    self.text_fit(115, 246.0, status_y, 420.0, 0.78 * fade, out);
+                } else {
+                    let status = match self.update_status {
+                        2 => 112, 3 => 114, 4 => 113, _ => 111,
+                    };
+                    self.text_fit(status, 37.0, status_y, 610.0, 0.78 * fade, out);
+                }
                 for (tex,w,x) in centred_hints(&self.menu_hints, LEGEND_GAP) {
                     out.push(Draw::Tex {
-                        x,y:427.0,w:w as f32,h:HINT_H as f32,tex,alpha:1.0,
+                        x, y: 427.0, w: w as f32, h: HINT_H as f32,
+                        tex, alpha: fade,
                     });
                 }
-            }
-            ShelfOverlay::Updates { row } => {
-                let rows = update_rows(self.update_status);
-                self.draw_original_style_menu(94, rows, row.min(rows.len() - 1), out);
-                // Always show the installed version, even without a network.
-                self.text_fit(108, 37.0, 78.0, 275.0, 0.74, out);
-                self.draw_update_value(self.update_installed_face, 392.0, 78.0, out);
-                if self.update_status == 1 {
-                    self.text_fit(109, 37.0, 108.0, 275.0, 0.74, out);
-                    self.draw_update_value(self.update_version_face, 392.0, 108.0, out);
-                }
-                self.text_fit(self.update_caption(), 37.0, 364.0, 475.0, 0.72, out);
-                let auto_row = rows.iter().position(|id| *id == 98).unwrap();
-                self.text_fit(if self.update_auto {105}else{104},
-                    594.0, settings_row_top(rows.len()) + auto_row as f32 * QUICK_PITCH + 8.0,
-                    90.0,1.0,out);
             }
             ShelfOverlay::Scraping | ShelfOverlay::Achievements => {
                 self.modal(110.0, 127.0, 500.0, 227.0, out, 0.78);
@@ -4367,8 +4359,7 @@ impl Engine {
             ShelfOverlay::Settings { row } => (4u8, row, 5usize),
             ShelfOverlay::GeneralSettings { row } =>
                 (12u8, row, self.general_rows().len()),
-            ShelfOverlay::Updates { row } =>
-                (17u8, row, update_rows(self.update_status).len()),
+            ShelfOverlay::About { row } => (17u8, row, 2usize),
             ShelfOverlay::InterfaceSettings { row } => (10u8, row, 3usize),
             ShelfOverlay::EmulationSettings { row } => (8u8, row, 3usize),
             ShelfOverlay::PauseEmulationSettings { row } => (9u8, row, 3usize),
@@ -4382,11 +4373,12 @@ impl Engine {
             self.menu_seen = kind;
             self.menu_opened = now;
             if count > 0 {
-                self.menu_cursor_y = settings_row_top(count)
-                    + selected as f32 * QUICK_PITCH;
+                self.menu_cursor_y = (if kind == 17 { about_row_top() }
+                    else { settings_row_top(count) }) + selected as f32 * QUICK_PITCH;
             }
         } else if count > 0 {
-            let goal = settings_row_top(count) + selected as f32 * QUICK_PITCH;
+            let goal = (if kind == 17 { about_row_top() }
+                else { settings_row_top(count) }) + selected as f32 * QUICK_PITCH;
             let response = 1.0 - (-dt * 24.0).exp();
             self.menu_cursor_y += (goal - self.menu_cursor_y) * response;
         }
@@ -5245,9 +5237,12 @@ fn slot_name_alpha(elapsed_ms: u64) -> f32 {
     slot_ui::ease(level)
 }
 
-/// The same visible rows drive drawing, D-pad focus, and click actions.
-fn update_rows(status: u8) -> &'static [usize] {
-    if status == 1 { &[95, 96, 97, 98] } else { &[95, 98] }
+/// Native About rows share one cursor. The third status line never receives focus.
+fn about_row_top() -> f32 { 284.0 }
+
+/// A verified downloaded release (READY=5) remains eligible for installation.
+fn about_primary_action(status: u8) -> i32 {
+    if matches!(status, 1 | 5) { 21 } else { 19 }
 }
 
 /// Physical D-pad UP and DOWN must move the selection in opposite
@@ -5288,15 +5283,16 @@ mod ui_feedback_tests {
     use super::*;
 
     #[test]
-    fn updater_visible_rows_and_navigation_match_update_state() {
-        assert_eq!(update_rows(0), &[95, 98]);
-        assert_eq!(update_rows(1), &[95, 96, 97, 98]);
-        for status in [2, 3, 4, 5] {
-            assert_eq!(update_rows(status), &[95, 98]);
+    fn updater_about_has_two_actions_in_all_statuses() {
+        assert_eq!(about_primary_action(0), 19);
+        assert_eq!(about_primary_action(1), 21);
+        assert_eq!(about_primary_action(5), 21);
+        for status in [2, 3, 4] {
+            assert_eq!(about_primary_action(status), 19);
         }
         assert_eq!(move_menu_row(0, 19, 2), 1);
         assert_eq!(move_menu_row(1, 20, 2), 0);
-        assert_eq!(move_menu_row(3, 20, 4), 0);
+        assert_eq!(about_row_top(), 284.0);
     }
 
     #[test]

@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // Signed KONKR beta3 updates v1.1.0 (108), beta1 (109) and beta2 (110).
-        versionCode = 111
-        versionName = "1.2.0-beta3"
+        // Signed KONKR beta4 updates v1.1.0 (108), beta1 (109) and beta2 (110).
+        versionCode = 112
+        versionName = "1.2.0-beta4"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 

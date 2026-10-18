@@ -1675,11 +1675,13 @@ class MainActivity : Activity() {
             return
         }
 
+        // A successful login transitions directly to the RA dashboard.
+        var openingDashboard = false
         val login = SlotModalDialog(
             this,
             "RETROACHIEVEMENTS",
             "Sign in securely. Achievements use Casual mode.",
-            onDismiss = { nativeExternalReturn() }
+            onDismiss = { if (!openingDashboard) nativeExternalReturn() }
         )
         val username = login.addInput("USERNAME", "RetroAchievements username")
         val password = login.addInput("PASSWORD", "Password (not saved)", password = true)
@@ -1699,9 +1701,11 @@ class MainActivity : Activity() {
                         if (isDestroyed) return@runOnUiThread
                         when (result) {
                             is RaAccount.Result.Connected -> {
+                                openingDashboard = true
                                 login.dismiss()
                                 nativeRaAccountConfigured()
                                 startRaSmartCache()
+                                openRetroAchievementsAccount()
                                 SlotToast.makeText(this,
                                     "RA connected as " + result.username +
                                         ". Preparing GB/GBC/GBA achievements in background.",
