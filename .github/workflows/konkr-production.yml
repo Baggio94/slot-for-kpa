@@ -56,6 +56,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+      - name: Test offline Emulation Lab telemetry parser
+        run: python3 -m unittest discover -s tools/emulation-lab -p 'test_*.py' -v
       - name: Test native RetroAchievements evaluator and offline queue
         run: cargo test -p slot-achievements -p slot-retro
       - name: Test KONKR 3:2 scaling
