@@ -21,6 +21,9 @@ internal object AutoCartLabelDiagnostics {
 
     fun snapshot(): Snapshot = current
 
+    /** Reset when a new batch starts, before the scanner accesses disk. */
+    fun clear() { current = Snapshot() }
+
     // Only AutoCartLabels.fill's single worker writes these snapshots.
     fun start(checked: Int, total: Int, saved: Int) {
         current = Snapshot(
