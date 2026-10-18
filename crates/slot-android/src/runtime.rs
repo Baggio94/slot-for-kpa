@@ -189,6 +189,8 @@ static RUMBLE_STRENGTH: AtomicI32 = AtomicI32::new(0);
 // Updated once per second by the GL thread; read-only and optional on Android.
 static PERF_STATUS: Mutex<Option<String>> = Mutex::new(None);
 static PERF_ACTIVE: AtomicBool = AtomicBool::new(false);
+// Read-only 1 Hz emulator telemetry, independent of Show Stats UI.
+static EMULATION_DIAGNOSTICS: Mutex<Option<String>> = Mutex::new(None);
 // Read-only status bar snapshot for Android's upper shelf overlays.
 // Updated on the GL thread alongside the *existing* Slot footer gate.
 static SHELF_INDICATOR_FLAGS: AtomicI32 = AtomicI32::new(0);
@@ -4355,10 +4357,16 @@ impl Engine {
         let dt = (now - self.last).as_secs_f32().min(0.05);
         self.last = now;
 
-        // FPS is a *real* libretro simulation measurement, not the display
-        // refresh rate; the separate draw rate reveals missed vsyncs.
-        if self.game.is_some() && self.current_emulation().show_fps {
-            PERF_ACTIVE.store(true, Ordering::Release);
+        // Measure real libretro simulation FPS independently of the optional
+        // performance HUD. No display toggles or simulation timing changes.
+        // The 1Hz snapshot is read on Android's existing 100ms UI heartbeat.
+        if self.game.is_some() {
+            let show_fps = self.current_emulation().show_fps;
+            if show_fps {
+                PERF_ACTIVE.store(true, Ordering::Release);
+            } else if PERF_ACTIVE.swap(false, Ordering::AcqRel) {
+                *PERF_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
             self.perf_rendered += 1;
             let span = self.perf_last.elapsed().as_secs_f64();
             if span >= 1.0 {
@@ -4366,9 +4374,23 @@ impl Engine {
                 let render = self.perf_rendered as f64 / span;
                 let catchup = 100.0 * self.perf_catchup as f64 /
                     self.perf_rendered.max(1) as f64;
-                let target = self.game.as_ref().map_or(60.0, |g| g.fps);
-                *PERF_STATUS.lock().unwrap_or_else(|e| e.into_inner()) =
-                    Some(format!("EMU {emu:.1}/{target:.1} | DISPLAY {render:.1} | CATCHUP {catchup:.0}%"));
+                let (target, core, linked) = self.game.as_ref().map_or(
+                    (60.0, "none", false),
+                    |g| (g.fps, g.core_kind().as_str(), g.linked()));
+                let profile = self.current_emulation();
+                let requested = profile.run_ahead_frames;
+                let probe = self.game.as_mut()
+                    .map(|g| g.take_runahead_probe()).unwrap_or_default();
+                *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
+                    Some(format!(
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} linked={linked}",
+                        requested, probe.calls, probe.snapshots_us,
+                        probe.speculative_us, probe.restores_us, probe.max_us,
+                        probe.failures));
+                if show_fps {
+                    *PERF_STATUS.lock().unwrap_or_else(|e|e.into_inner()) =
+                        Some(format!("EMU {emu:.1}/{target:.1} | DISPLAY {render:.1} | CATCHUP {catchup:.0}%"));
+                }
                 self.perf_last = now;
                 self.perf_rendered = 0;
                 self.perf_emulated = 0;
@@ -4379,8 +4401,9 @@ impl Engine {
             self.perf_rendered = 0;
             self.perf_emulated = 0;
             self.perf_catchup = 0;
+            *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) = None;
             if PERF_ACTIVE.swap(false, Ordering::AcqRel) {
-                *PERF_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *PERF_STATUS.lock().unwrap_or_else(|e|e.into_inner()) = None;
             }
         }
 
@@ -6144,6 +6167,17 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDisplaySyncEnabled
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeShelfIndicatorFlags(
     _env: *mut c_void, _this: *mut c_void,
 ) -> jint { SHELF_INDICATOR_FLAGS.load(Ordering::Acquire) }
+
+/// Read-only libretro FPS and speculative timing, irrespective of on-screen FPS settings.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeEmulationDiagnostics(
+    env: JNIEnv<'_>, _this: JObject<'_>,
+) -> jstring {
+    EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|line| env.new_string(line).ok())
+        .map_or(std::ptr::null_mut(), |text| text.into_raw())
+}
 
 /// Null when show-FPS is OFF, the game is not running or measurement isn't ready.
 #[unsafe(no_mangle)]
