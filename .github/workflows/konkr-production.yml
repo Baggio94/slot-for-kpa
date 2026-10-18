@@ -3,7 +3,7 @@ name: slot. for KONKR ARM64
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'extract/**', 'beta/**']
+    branches: [main, 'extract/**', 'beta/**', 'release/**']
     tags: ['konkr-v*']
 
 permissions:
@@ -150,8 +150,8 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "package: name='fyi.slot.konkr' versionCode='113'" "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "versionName='1.2.0-beta5'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='114'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "versionName='1.2.0'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
           for core in slot_android mgba_libretro gpsp_libretro; do
@@ -174,6 +174,90 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-kpa-1.2.0-beta5-arm64-signed
+          name: slot-for-konkr-1.2.0-arm64-signed
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+
+  publish:
+    # Only the explicit release merge into main publishes a stable release.
+    # No beta, branch CI, manual run or tag push can publish this release.
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      startsWith(github.event.head_commit.message, 'release: slot. for KONKR Pocket Advance v1.2.0')
+    needs: arm64-apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: slot-for-konkr-1.2.0-arm64-signed
+          path: release-assets
+
+      - name: Validate, create GitHub-verified release commit, and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=konkr-v1.2.0
+          file=slot-for-konkr-1.2.0-arm64.apk
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -s release-assets/app-release.apk
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release already exists; refusing to overwrite"
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::Release tag already exists; refusing to overwrite"
+            exit 1
+          fi
+          mv release-assets/app-release.apk "release-assets/$file"
+          (cd release-assets && sha256sum "$file" > SHA256SUMS.txt)
+          (cd release-assets && sha256sum -c SHA256SUMS.txt)
+
+          # As in v1.1.0: create a no-source-change GitHub-signed commit,
+          # then verify GitHub's signature BEFORE tagging or publishing.
+          current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          test "$current" = "$GITHUB_SHA" || {
+            echo "::error::main moved during release; abort"; exit 1;
+          }
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          jq -nc --arg tree "$tree" --arg parent "$GITHUB_SHA" \
+            --arg message "chore: signed v1.2.0 release reference" \
+            '{message:$message,tree:$tree,parents:[$parent]}' \
+            | gh api --method POST "repos/$GITHUB_REPOSITORY/git/commits" --input - \
+            > "$RUNNER_TEMP/signed-commit.json"
+          verified="$(jq -r '.verification.verified' "$RUNNER_TEMP/signed-commit.json")"
+          sha="$(jq -r '.sha' "$RUNNER_TEMP/signed-commit.json")"
+          test "$verified" = true || {
+            echo "::error::GitHub did not verify release commit; release not published"
+            exit 1
+          }
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$sha" --jq '.verification.verified')" = true
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/main" \
+            -f sha="$sha" -F force=false >/dev/null
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$sha"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$tag" -f sha="$sha" >/dev/null
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .object.sha)" = "$sha"
+
+          gh release create "$tag" "release-assets/$file" release-assets/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
+            --title "slot. for KONKR Pocket Advance v1.2.0" \
+            --notes-file RELEASE-NOTES.md
+
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+            --json name,isDraft,isPrerelease,tagName,assets,url \
+            | tee "$RUNNER_TEMP/release-result.json"
+          jq -e --arg tag "$tag" --arg apk "$file" \
+            '.tagName == $tag and (.isDraft == false) and (.isPrerelease == false) and
+             ([.assets[].name] | index($apk) != null and index("SHA256SUMS.txt") != null)' \
+            "$RUNNER_TEMP/release-result.json"
+          mkdir -p "$RUNNER_TEMP/check-published-assets"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --dir "$RUNNER_TEMP/check-published-assets"
+          (cd "$RUNNER_TEMP/check-published-assets" && sha256sum -c SHA256SUMS.txt)
+          echo "Published stable verified v1.2.0 tag at $sha"
