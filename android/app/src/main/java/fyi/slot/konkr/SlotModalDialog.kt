@@ -91,17 +91,19 @@ internal class SlotModalDialog(
     }
     private val body = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
-        // Heading PNGs contain a transparent left gutter. Align RA form text
-        // and SIGN OUT confirmation copy with the 12dp-inset action labels.
-        // Keep other dialogs' established layout unchanged.
-        val inset = if (isRaLogin || isRaSignOut) {
-            // Preserve the already-tested RA form offset (PNG has its own
-            // transparent gutter); never squeeze login fields on KONKR.
+        // The RA heading image contains a ~16 logical-pixel transparent
+        // gutter; its first visible letter begins at x=32+16. Native Slot
+        // menu entries begin 5 pixels after the title's visible ink.
+        // Match the account dashboard: text and inputs begin at x=53.
+        // Keep the smaller trailing inset to preserve input-field width.
+        val inset = if (isRaLogin) {
+            SlotUi.menuPixel(activity, 16) + SlotUi.menuEntryInset(activity)
+        } else if (isRaSignOut) {
             SlotUi.dp(activity, 12)
         } else {
             SlotUi.menuEntryInset(activity)
         }
-        setPadding(inset, 0, inset, 0)
+        setPadding(inset, 0, if (isRaLogin) SlotUi.menuEntryInset(activity) else inset, 0)
     }
     private val scroll = ScrollView(activity).apply {
         isVerticalScrollBarEnabled = false
@@ -191,7 +193,9 @@ internal class SlotModalDialog(
     fun addButton(label: String, onClick: () -> Unit): TextView {
         val button = SlotUi.label(activity, label, 16f, SlotUi.muted).apply {
             gravity = Gravity.CENTER_VERTICAL
-            val inset = if (isRaLogin || isRaSignOut) {
+            val inset = if (isRaLogin) {
+                SlotUi.menuPixel(activity, 16) + SlotUi.menuEntryInset(activity)
+            } else if (isRaSignOut) {
                 SlotUi.dp(activity, 12)
             } else SlotUi.menuEntryInset(activity)
             setPadding(inset, 0, inset, 0)
