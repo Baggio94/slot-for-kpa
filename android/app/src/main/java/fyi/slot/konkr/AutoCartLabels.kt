@@ -79,7 +79,7 @@ internal object AutoCartLabels {
             Log.i(TAG, "No pending official art: games=${games.size}, missing=${missing.size}, savedTotal=$savedTotal")
             return false
         }
-        val checked = games.count { !retry.pending(it.uri) }
+        var checked = games.count { !retry.pending(it.uri) }
         AutoCartLabelDiagnostics.start(checked, checked + pending.size, savedTotal)
 
         val now = android.os.SystemClock.elapsedRealtime()
@@ -116,9 +116,9 @@ internal object AutoCartLabels {
                 Log.w(TAG, "Official art index could not be parsed", error)
                 return indexFailure(pending, shouldContinue, "invalid JSON")
             }
-        retry.finished(INDEX_KEY)
-        // Index success is normal for the rest of this process: mark it as
-        // completed but do not require any more requests to make progress.
+        retry.reset(INDEX_KEY)
+        // Index success clears its temporary outage budget; future batches
+        // still use the same official index/cache and can check connectivity.
         Log.i(TAG, "Official art index ready: CRC entries=${index.length()}")
 
         val art = CartStudioArtProxy(context)
@@ -238,6 +238,7 @@ internal object AutoCartLabels {
                 errors++
                 Log.w(TAG, "Auto-art deferred for ${rom.title.take(80)}", error)
             } finally {
+                val wasPending = retry.pending(rom.uri)
                 // A real stored label always wins, including when the user
                 // navigated away just after a successful atomic write.
                 if (target.exists()) retry.finished(rom.uri)
@@ -256,8 +257,8 @@ internal object AutoCartLabels {
                         // Interrupted work never burns a retry allowance.
                     }
                 }
-                val observed = games.count { !retry.pending(it.uri) }
-                AutoCartLabelDiagnostics.result(observed, savedTotal, outcome)
+                if (wasPending && !retry.pending(rom.uri)) checked++
+                AutoCartLabelDiagnostics.result(checked, savedTotal, outcome)
                 if (outcome == "NOT_FOUND") notFound++
                 Log.i(TAG, "ART_RESULT $outcome [${rom.platform}] ${rom.title.take(96)}")
             }
