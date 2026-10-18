@@ -34,7 +34,7 @@ internal object SlotBuildBehavior {
     }
 
     private fun isolatedLab(packageName: String): Boolean =
-        packageName == "fyi.slot.konkr.lab"
+        packageName == "fyi.slot.konkr.lab" || packageName == "fyi.slot.konkr.diag"
 
     fun storagePolicy(
         packageName: String,
