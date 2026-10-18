@@ -8,6 +8,7 @@ import android.view.KeyEvent
  * side-by-side multiplayer QA install. Not packaged in the release APK.
  */
 internal object SlotBuildBehavior {
+    fun verboseEmulationInput(): Boolean = true
     private val isAndroidEmulator by lazy {
         val fingerprint = Build.FINGERPRINT.lowercase()
         val hardware = Build.HARDWARE.lowercase()
