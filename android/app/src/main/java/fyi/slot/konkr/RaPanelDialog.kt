@@ -142,7 +142,9 @@ internal class RaPanelDialog(
         }
         content = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(14), 0, dp(10))
+            // Match Menu/Library/Settings: heading at x=32, entries x=37.
+            val inset = SlotUi.menuEntryInset(activity)
+            setPadding(inset, dp(14), inset, dp(10))
         }
         // Account information must be visible immediately, even while the
         // first cache diagnostics pass is scanning 115+ ROM definitions.
