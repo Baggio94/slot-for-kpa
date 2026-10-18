@@ -1791,7 +1791,9 @@ class MainActivity : Activity() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastStatusPoll < 15000L) return
         lastStatusPoll = now
-        val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        // PR #2 by Its-TroyM: JNI passes locale-independent 24h ASCII;
+        // Slot's native saved preference handles 12h AM/PM presentation.
+        val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.ROOT)
             .format(java.util.Date())
         val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
