@@ -94,10 +94,14 @@ internal class SlotModalDialog(
         // Heading PNGs contain a transparent left gutter. Align RA form text
         // and SIGN OUT confirmation copy with the 12dp-inset action labels.
         // Keep other dialogs' established layout unchanged.
-        if (isRaLogin || isRaSignOut) {
-            val inset = SlotUi.dp(activity, 12)
-            setPadding(inset, 0, inset, 0)
+        val inset = if (isRaLogin || isRaSignOut) {
+            // Preserve the already-tested RA form offset (PNG has its own
+            // transparent gutter); never squeeze login fields on KONKR.
+            SlotUi.dp(activity, 12)
+        } else {
+            SlotUi.menuEntryInset(activity)
         }
+        setPadding(inset, 0, inset, 0)
     }
     private val scroll = ScrollView(activity).apply {
         isVerticalScrollBarEnabled = false
@@ -187,7 +191,10 @@ internal class SlotModalDialog(
     fun addButton(label: String, onClick: () -> Unit): TextView {
         val button = SlotUi.label(activity, label, 16f, SlotUi.muted).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), 0, dp(12), 0)
+            val inset = if (isRaLogin || isRaSignOut) {
+                SlotUi.dp(activity, 12)
+            } else SlotUi.menuEntryInset(activity)
+            setPadding(inset, 0, inset, 0)
             isFocusable = true
             isClickable = true
             contentDescription = label
