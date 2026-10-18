@@ -30,6 +30,7 @@ internal object CartStudioCatalog {
         val title: String,
         val size: Long,
         val modified: Long,
+        val filename: String = "",
     )
 
     internal data class Fingerprint(
@@ -54,7 +55,8 @@ internal object CartStudioCatalog {
             val platform = row.optString("platform")
             if (!uri.startsWith("content://") || platform !in setOf("GBA", "GB", "GBC")) continue
             result.add(Rom(uri, platform, row.optString("title"),
-                row.optLong("size", -1), row.optLong("modified", -1)))
+                row.optLong("size", -1), row.optLong("modified", -1),
+                row.optString("filename")))
         }
         return result
     }
@@ -172,7 +174,15 @@ internal object CartStudioCatalog {
         val entries = records(context)
         val content = context.contentResolver.openInputStream(Uri.parse(rom.uri))
             ?: throw IllegalArgumentException("Unable to read the ROM")
-        val fingerprint = fingerprintStream(content)
+        val filename = rom.filename.ifBlank { Uri.parse(rom.uri).lastPathSegment.orEmpty() }
+        val fingerprint = RomSource.useRom(content, filename) { input, embeddedExt ->
+            require(when (rom.platform) {
+                "GBA" -> embeddedExt == "gba"
+                "GB", "GBC" -> embeddedExt in setOf("gb", "gbc")
+                else -> false
+            }) { "Unexpected cartridge platform in ZIP" }
+            fingerprintStream(input)
+        }
         if (rom.size > 0 && rom.modified > 0 && fingerprint.head.size == HEAD_BYTES) {
             entries.put(rom.uri, JSONObject()
                 .put("size", rom.size)
