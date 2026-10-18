@@ -453,10 +453,12 @@ internal class SlotStatusIndicators(
                 val active = i <= level
                 outline.alpha = if (active) 105 else 30
                 ink.alpha = if (active) 255 else 68
+                // Match the visual glyph height of the 24px Bluetooth rune,
+                // without increasing stroke or changing the white-on-light look.
                 val radius = when (i) {
-                    3 -> 13.6f
-                    2 -> 9.2f
-                    else -> 4.8f
+                    3 -> 15.7f
+                    2 -> 10.6f
+                    else -> 5.6f
                 }
                 val arc = RectF(cx - radius, cy - radius,
                     cx + radius, cy + radius)
@@ -467,8 +469,8 @@ internal class SlotStatusIndicators(
             outline.alpha = if (level > 0) 105 else 30
             ink.style = Paint.Style.FILL
             ink.alpha = if (level > 0) 255 else 68
-            canvas.drawCircle(cx, cy, 2.6f, outline)
-            canvas.drawCircle(cx, cy, 1.8f, ink)
+            canvas.drawCircle(cx, cy, 2.8f, outline)
+            canvas.drawCircle(cx, cy, 2.0f, ink)
             outline.style = Paint.Style.STROKE
             ink.style = Paint.Style.STROKE
             canvas.restore()
