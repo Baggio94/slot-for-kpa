@@ -24,7 +24,7 @@ internal class SlotAutoLabelIndicator(context: Context, frame: FrameLayout) {
     private val root = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(dim(8), dim(4), dim(8), dim(4))
+        setPadding(dim(6), dim(2), dim(6), dim(2))
         setBackgroundColor(SlotUi.menuBackground)
         isClickable = false
         isFocusable = false
@@ -54,11 +54,12 @@ internal class SlotAutoLabelIndicator(context: Context, frame: FrameLayout) {
         root.addView(spinner, LinearLayout.LayoutParams(dim(13), dim(13)))
         caption.setPadding(dim(6), 0, 0, 0)
         root.addView(caption)
-        frame.addView(root, FrameLayout.LayoutParams(-2, dim(26),
+        frame.addView(root, FrameLayout.LayoutParams(-2, dim(20),
             Gravity.TOP or Gravity.END).apply {
-            // Library refresh is at 59-85: reserve a visible gap.
-            topMargin = dim(92)
-            rightMargin = dim(24)
+            // Above native status sprites (24px top margin) and the
+            // library-refresh banner (59px), never overlap either.
+            topMargin = dim(2)
+            rightMargin = dim(10)
         })
     }
 
