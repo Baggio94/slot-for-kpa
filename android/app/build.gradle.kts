@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // KONKR 1.2.2-beta2 adds bounded ZIP support on top of beta1 (121).
-        versionCode = 122
-        versionName = "1.2.2-beta2"
+        // Experimental 1.2.2-beta3 adds opt-in AVD/KONKR emulator telemetry to beta2 (122).
+        versionCode = 123
+        versionName = "1.2.2-beta3"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
