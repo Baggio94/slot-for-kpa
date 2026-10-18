@@ -29,6 +29,12 @@ internal class AutoLabelRetryPolicy {
         deferred.remove(key)
     }
 
+    /** A successful index fetch resets its temporary outage counter. */
+    fun reset(key: String) {
+        complete.remove(key)
+        deferred.remove(key)
+    }
+
     /** True when retry is scheduled; false after bounded attempts exhausted. */
     fun transient(key: String, nowMs: Long): Boolean {
         if (!pending(key)) return false
