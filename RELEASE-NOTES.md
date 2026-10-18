@@ -11,10 +11,7 @@ This update builds on v1.2.0 to make slot. faster, smarter and easier to use, wi
 ## What's new in v1.2.1
 
 - **12-hour / 24-hour clock** — Choose the preferred time format in **START → Settings → Interface → Time Format**, with AM/PM support and saved preferences. Thanks to [Its-TroyM](https://github.com/Its-TroyM) for [PR #2](https://github.com/Baggio94/slot-for-kpa/pull/2).
-- **Refined status bar** — Harmonized Wi-Fi, Bluetooth and app integration icons, with improved proportions and visibility in both themes.
-- **Live background activity indicators** — Transparent, automatically stacked progress for library refreshes and automatic artwork downloads, including the number of labels actually saved.
-- **More reliable artwork experience** — Restored the proven v1.2.0 automatic artwork download flow, with improved progress reporting and diagnostics.
-- **Interface polish** — Cleaner About and Software Update layouts, improved RetroAchievements pages and more consistent menu alignment.
+- **UI and reliability refinements** — Cleaner menus and status icons, clearer background progress and dependable artwork downloads.
 
 ## Installation & Documentation
 
