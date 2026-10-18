@@ -150,8 +150,8 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "package: name='fyi.slot.konkr' versionCode='119'" "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "versionName='1.2.1-beta5'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='120'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "versionName='1.2.1'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
           for core in slot_android mgba_libretro gpsp_libretro; do
@@ -174,7 +174,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.2.1-beta5-arm64-signed
+          name: slot-for-konkr-1.2.1-arm64-signed
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
@@ -184,7 +184,7 @@ jobs:
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      startsWith(github.event.head_commit.message, 'release: slot. for KONKR Pocket Advance v1.2.0')
+      startsWith(github.event.head_commit.message, 'release: slot. for KONKR Pocket Advance v1.2.1')
     needs: arm64-apk
     runs-on: ubuntu-latest
     permissions:
@@ -193,7 +193,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: slot-for-konkr-1.2.1-beta5-arm64-signed
+          name: slot-for-konkr-1.2.1-arm64-signed
           path: release-assets
 
       - name: Validate, create GitHub-verified release commit, and publish
@@ -201,8 +201,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag=konkr-v1.2.0
-          file=slot-for-konkr-1.2.0-arm64.apk
+          tag=konkr-v1.2.1
+          file=slot-for-konkr-1.2.1-arm64.apk
           test "$GITHUB_REF" = "refs/heads/main"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -s release-assets/app-release.apk
@@ -226,7 +226,7 @@ jobs:
           }
           tree="$(git rev-parse 'HEAD^{tree}')"
           jq -nc --arg tree "$tree" --arg parent "$GITHUB_SHA" \
-            --arg message "chore: signed v1.2.0 release reference" \
+            --arg message "chore: signed v1.2.1 release reference" \
             '{message:$message,tree:$tree,parents:[$parent]}' \
             | gh api --method POST "repos/$GITHUB_REPOSITORY/git/commits" --input - \
             > "$RUNNER_TEMP/signed-commit.json"
@@ -246,7 +246,7 @@ jobs:
 
           gh release create "$tag" "release-assets/$file" release-assets/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
-            --title "slot. for KONKR Pocket Advance v1.2.0" \
+            --title "slot. for KONKR Pocket Advance v1.2.1" \
             --notes-file RELEASE-NOTES.md
 
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
@@ -260,4 +260,4 @@ jobs:
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
             --dir "$RUNNER_TEMP/check-published-assets"
           (cd "$RUNNER_TEMP/check-published-assets" && sha256sum -c SHA256SUMS.txt)
-          echo "Published stable verified v1.2.0 tag at $sha"
+          echo "Published stable verified v1.2.1 tag at $sha"
