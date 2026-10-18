@@ -10,6 +10,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import org.json.JSONObject
 
 /**
  * CORS-safe, allowlisted art source for the *original* Cart Studio WebView.
@@ -35,6 +36,15 @@ internal class CartStudioArtProxy(private val context: Context) {
     }
 
     private val cacheDir = File(context.cacheDir, "slot-studio-art").apply { mkdirs() }
+
+    fun cachedIndex(): JSONObject? = runCatching {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("index.json".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val file = File(cacheDir, digest + ".json")
+        if (!file.isFile || file.length() !in 1L..(12L * 1024 * 1024)) null
+        else JSONObject(file.readText(Charsets.UTF_8))
+    }.getOrNull()
 
     private fun response(status: Int, type: String, bytes: ByteArray): WebResourceResponse =
         WebResourceResponse(type, if (type == "application/json") "UTF-8" else null,
