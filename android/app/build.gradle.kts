@@ -26,6 +26,16 @@ android {
         disable += "ExpiredTargetSdkVersion"
     }
 
+    // An AVD Emulation Lab must never overwrite the official KONKR
+    // installation, its preferences, ROM grants or native save folder.
+    buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".diag"
+            versionNameSuffix = "-mac-lab"
+            isDebuggable = true
+        }
+    }
+
     // A stable signing key can be provided by GitHub Actions secrets or a
     // local development environment. Never commit the keystore or credentials.
     // Without these variables Gradle falls back to its ephemeral debug key.
