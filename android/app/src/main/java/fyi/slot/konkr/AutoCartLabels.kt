@@ -38,7 +38,8 @@ internal object AutoCartLabels {
     private var savedTotal = 0
 
     /** Returns true if another small, foreground-only batch is worthwhile. */
-    fun fill(context: Context, shouldContinue: () -> Boolean, onSaved: (String) -> Unit): Boolean {
+    fun fill(context: Context, shouldContinue: () -> Boolean, onSaved: (String) -> Unit,
+             onProgress: (checked: Int, total: Int, saved: Int) -> Unit = { _, _, _ -> }): Boolean {
         if (!shouldContinue()) return false
         val games = CartStudioCatalog.games(context)
         if (games.isEmpty()) {
@@ -47,6 +48,9 @@ internal object AutoCartLabels {
         }
         val missing = games.filter { !CartLabelPaths.file(context.filesDir, it.uri).exists() }
         val pending = missing.filter { it.uri !in examinedThisSession }
+        // This is progress through missing cartridges, not a misleading
+        // promise that every ROM has official art available.
+        val total = examinedThisSession.size + pending.size
         if (pending.isEmpty()) {
             Log.i(TAG, "No pending artwork: games=${games.size}, missing=${missing.size}, " +
                 "examined=${examinedThisSession.size}, savedTotal=$savedTotal")
@@ -54,6 +58,7 @@ internal object AutoCartLabels {
         }
         Log.i(TAG, "Starting automatic labels: games=${games.size}, missing=${missing.size}, " +
             "pending=${pending.size}, savedTotal=$savedTotal")
+        onProgress(examinedThisSession.size, total, savedTotal)
 
         // Original Studio's HTTPS allowlist, disk cache and bounded response.
         // An unavailable index remains retryable when connectivity returns.
@@ -172,7 +177,10 @@ internal object AutoCartLabels {
                 Log.w(TAG, "Skipping unsupported/failed cart art", error)
             } finally {
                 // A suspended ROM can be retried after returning from Studio.
-                if (shouldContinue()) examinedThisSession.add(rom.uri)
+                if (shouldContinue()) {
+                    examinedThisSession.add(rom.uri)
+                    onProgress(examinedThisSession.size, total, savedTotal)
+                }
             }
         }
         try { CartStudioCatalog.flush(context) }
