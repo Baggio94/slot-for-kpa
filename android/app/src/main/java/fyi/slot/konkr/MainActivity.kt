@@ -206,6 +206,7 @@ class MainActivity : Activity() {
     private lateinit var shelfStatus: SlotStatusIndicators
     private var lastPerfPoll = 0L
     private var displaySyncApplied = false
+    @Volatile private var latestVsyncFrameNs = 0L
     // RA cached game details can be ready before Slot's seating/CRT sequence
     // has set PLAYING=true. Hold that notice, then reveal it on actual gameplay.
     // Distinguish that legitimate startup from a stale notice after eject.
@@ -214,11 +215,12 @@ class MainActivity : Activity() {
     private var raWasPlaying = false
     private var raPendingGameNotice: RaAchievementOverlay.Notice? = null
 
-    // Only attach the Choreographer callback while DISPLAY SYNC is selected.
-    // Normal RESPONSIVE and STANDARD add no extra work to every UI vsync.
+    // Only attach Choreographer while DISPLAY SYNC or SYNC LAB is active.
+    // STANDARD and RESPONSIVE retain their original render policy.
     private val vsyncCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!displaySyncApplied || !resumed || isDestroyed) return
+            latestVsyncFrameNs = frameTimeNanos
             view.requestRender()
             Choreographer.getInstance().postFrameCallback(this)
         }
@@ -721,6 +723,9 @@ class MainActivity : Activity() {
                     private var nativeUsMax = 0L
                     private var nativeOver16ms = 0
                     private var nativeOver33ms = 0
+                    private var vsyncAgeTotalUs = 0L
+                    private var vsyncAgeMaxUs = 0L
+                    private var vsyncAgeCount = 0
                     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
                         ready = nativeSurfaceCreated()
                         if (!ready) Log.e(TAG, "Slot GLES initialization failed")
@@ -734,6 +739,17 @@ class MainActivity : Activity() {
                     }
                     override fun onDrawFrame(gl: GL10?) {
                         val a12StartedNs = SystemClock.elapsedRealtimeNanos()
+                        // Beta8 observer: age of last Choreographer timestamp
+                        // when GL starts, not a measured display-present time.
+                        val vsyncStamp = latestVsyncFrameNs
+                        if (nativeIsPlaying() && vsyncStamp > 0) {
+                            val ageUs = (System.nanoTime() - vsyncStamp) / 1000L
+                            if (ageUs in 0L..200_000L) {
+                                vsyncAgeTotalUs += ageUs
+                                vsyncAgeMaxUs = maxOf(vsyncAgeMaxUs, ageUs)
+                                vsyncAgeCount++
+                            }
+                        }
                         if (nativeIsPlaying()) EmulationDiagnostics.frame()
                         var a12NativeUs = 0L
                         if (ready) {
@@ -776,7 +792,9 @@ class MainActivity : Activity() {
                                 Log.i(TAG, "GL callback pacing: callbacks=$callbacks fps_x10=$fpsX10 " +
                                     "gap_over_25ms=$gapOver25ms gap_over_40ms=$gapOver40ms " +
                                     "gap_us_max=$gapUsMax native_us_max=$nativeUsMax " +
-                                    "native_over_16ms=$nativeOver16ms native_over_33ms=$nativeOver33ms")
+                                    "native_over_16ms=$nativeOver16ms native_over_33ms=$nativeOver33ms " +
+                                    "vsync_gl_age_mean_us=${if (vsyncAgeCount > 0) vsyncAgeTotalUs / vsyncAgeCount else -1} " +
+                                    "vsync_gl_age_max_us=$vsyncAgeMaxUs")
                                 probeStartNs = a12StartedNs
                                 callbacks = 0
                                 gapOver25ms = 0
@@ -785,6 +803,9 @@ class MainActivity : Activity() {
                                 nativeUsMax = 0L
                                 nativeOver16ms = 0
                                 nativeOver33ms = 0
+                                vsyncAgeTotalUs = 0L
+                                vsyncAgeMaxUs = 0L
+                                vsyncAgeCount = 0
                             }
                         } else {
                             probeStartNs = 0L
@@ -1319,6 +1340,12 @@ class MainActivity : Activity() {
             // Diagnostic only: how fast AudioTrack's own playback-head clock
             // advances relative to submitted PCM. No buffer or DSP changes.
             var playbackHeadAtProbe = 0L
+            // Read-only beta8 AudioTrack output headroom probe. Capacity is
+            // not occupancy; use cumulative submitted frames - playback head.
+            var submittedFramesSinceTrackCreate = 0L
+            var minimumOutputFrames = Long.MAX_VALUE
+            var maximumOutputFrames = 0L
+            var outputDepthSamples = 0
             try {
                 while (audioRunning.get()) {
                     val wanted = nativeAudioSampleRate()
@@ -1361,6 +1388,10 @@ class MainActivity : Activity() {
                         audioProbeAt = SystemClock.elapsedRealtime()
                         awaitingFirstPcm = true
                         playbackHeadAtProbe = 0L
+                        submittedFramesSinceTrackCreate = 0L
+                        minimumOutputFrames = Long.MAX_VALUE
+                        maximumOutputFrames = 0L
+                        outputDepthSamples = 0
                     } else if (!awaitingFirstPcm &&
                         player.playState != AudioTrack.PLAYSTATE_PLAYING) {
                         // A paused legacy buffer is reused when the next game has
@@ -1450,6 +1481,15 @@ class MainActivity : Activity() {
                             "$written/${samples.size} shorts")
                     }
                     playedShorts += written.toLong()
+                    submittedFramesSinceTrackCreate += written.toLong() / 2L
+                    // Sampling after each successful PCM submission is
+                    // diagnostic only. No changed writes, latency or clock.
+                    val outputHead = track.playbackHeadPosition.toLong() and 0xffffffffL
+                    val outputDepth = (submittedFramesSinceTrackCreate - outputHead)
+                        .coerceIn(0L, audioBufferBytes.toLong() / 4L)
+                    minimumOutputFrames = minOf(minimumOutputFrames, outputDepth)
+                    maximumOutputFrames = maxOf(maximumOutputFrames, outputDepth)
+                    outputDepthSamples++
                     // Diagnostic only; do not modify audio queue, buffer size or
                     // event-driven wakeup. A rise here distinguishes Android
                     // playback underruns from mGBA mixer discontinuities.
@@ -1478,6 +1518,11 @@ class MainActivity : Activity() {
                         playbackHeadAtProbe = playbackHead
                         // Report even when there are no underruns, to isolate
                         // PCM producer starvation from AudioTrack HAL behaviour.
+                        Log.i(TAG, "AudioTrack queue depth: " +
+                            "sample_count=$outputDepthSamples " +
+                            "minimum_ms=${if (minimumOutputFrames == Long.MAX_VALUE) -1.0 else minimumOutputFrames * 1000.0 / wanted} " +
+                            "maximum_ms=${maximumOutputFrames * 1000.0 / wanted} " +
+                            "buffer_capacity_ms=${audioBufferBytes * 250.0 / wanted}")
                         Log.i(TAG, "A12 PCM pacing: rate=$wanted span_ms=$spanMs " +
                             "written_shorts=$playedShorts expected_shorts=$expected " +
                             "playback_frames=$playbackFrames submitted_frames=${playedShorts / 2L} " +
@@ -1486,6 +1531,9 @@ class MainActivity : Activity() {
                             "underruns=${underflows - observedUnderruns}")
                         observedUnderruns = underflows
                         playedShorts = 0L
+                        minimumOutputFrames = Long.MAX_VALUE
+                        maximumOutputFrames = 0L
+                        outputDepthSamples = 0
                         emptyAudioReads = 0
                         audioProbeAt = probeNow
                     }
