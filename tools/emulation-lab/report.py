@@ -48,9 +48,17 @@ def parse_log(source: str) -> dict:
         "cores_observed": sorted({s["core"] for s in samples if "core" in s}),
         "requested_runahead": sorted({s["runahead_requested"] for s in samples
                                       if "runahead_requested" in s}),
+        "pacing_modes_observed": sorted({s["pacing_mode"] for s in samples
+                                         if "pacing_mode" in s}),
         "emu_fps": measurement("emu_fps"),
         "target_fps": measurement("target_fps"),
         "gl_callback_fps": measurement("gl_callback_fps"),
+        "gl_gap_p50_us": measurement("gl_gap_p50_us"),
+        "gl_gap_p95_us": measurement("gl_gap_p95_us"),
+        "gl_gap_p99_us": measurement("gl_gap_p99_us"),
+        "emu_step0_1s": measurement("emu_step0_1s"),
+        "emu_step1_1s": measurement("emu_step1_1s"),
+        "emu_step_multi_1s": measurement("emu_step_multi_1s"),
         "display_callback_fps": measurement("display_callbacks_fps"),
         "gl_over25_total": round(sum(values("gl_over25"))),
         "gl_over40_total": round(sum(values("gl_over40"))),
@@ -73,6 +81,8 @@ def parse_log(source: str) -> dict:
         "other_diagnostics": other[-50:],
         "warnings": [
             "GL callback FPS is not display presentation FPS (EGL swap occurs later)",
+            "GL gap quantiles are approximate (1ms buckets) and are not presentation times",
+            "Emulation step0/1/multi counters are one-second snapshots, not five-second totals",
             "Input-to-next-GL callback is not physical input-to-photon latency",
             "PCM jump candidates can be legitimate game audio transients",
             "Mac AVD results do not establish KONKR hardware performance",
@@ -95,9 +105,16 @@ def main():
         return
     print("Core:", ", ".join(result["cores_observed"]), "| Run-Ahead:",
           ", ".join(result["requested_runahead"]))
+    if result["pacing_modes_observed"]:
+        print("Pacing:", ", ".join(result["pacing_modes_observed"]))
     for key, label in (
         ("emu_fps", "Core emulated FPS"),
         ("gl_callback_fps", "GL callback FPS"),
+        ("gl_gap_p50_us", "GL gap P50 (us)"),
+        ("gl_gap_p95_us", "GL gap P95 (us)"),
+        ("gl_gap_p99_us", "GL gap P99 (us)"),
+        ("emu_step0_1s", "Zero-step callbacks / 1s"),
+        ("emu_step_multi_1s", "Multi-step callbacks / 1s"),
         ("input_next_gl_mean_us", "Input-to-next GL callback (us)"),
         ("runahead_max_us", "Slowest Run-Ahead call (us)"),
         ("audio_queued_ms", "Native queued audio (ms)")):
