@@ -16,7 +16,7 @@ def log(headrooms=(40.0, 35.0), core="gpsp", ra="1", fail=None,
         early=True):
     text = "\n".join([sample(core=core, ra=ra)] * 10)
     for n in headrooms:
-        text += f"\nI/SlotKonkr: AudioTrack queue depth: sample_count=300 minimum_ms={n} maximum_ms=80.0"
+        text += f"\nI/SlotKonkr: AudioTrack queue depth: sample_count=300 minimum_ms={n} maximum_ms=80.0 buffer_capacity_ms=85.57"
     if early:
         text += "\nI/SlotKonkr: GL callback pacing: early_pcm_wakes_5s=299"
     if fail:
@@ -41,6 +41,8 @@ class QuickCheckTests(unittest.TestCase):
         self.assertEqual(result["status"], "OK PROVISOIRE")
         self.assertEqual(result["underruns"], 0)
         self.assertEqual(result["early_pcm_wakes"], 299)
+        self.assertEqual(result["output_median_max_ms"], 80.0)
+        self.assertEqual(result["output_capacity_ms"], 85.57)
         self.assertIn("provisoire", markdown(result).lower())
 
     def test_near_empty_audio_output_is_not_success(self):
@@ -81,6 +83,22 @@ class QuickCheckTests(unittest.TestCase):
         result = triage(report(), data)
         self.assertEqual(result["status"], "OK PROVISOIRE")
         self.assertTrue(any("EGL" in x for x in result["cautions"]))
+
+    def test_eGL_invalid_flag_does_not_claim_real_present_fps(self):
+        data = log()
+        data += ("\nI/SlotKonkr: EGL presentation: "
+                 "status=incomplete_timestamps present_fps=-1.0 "
+                 "present_fps_valid=false lost=0 errors=0")
+        result = triage(report(), data)
+        self.assertEqual(result["status"], "OK PROVISOIRE")
+        self.assertTrue(any("EGL" in c for c in result["cautions"]))
+
+    def test_buffer_occupancy_is_not_audio_latency_measurement(self):
+        result = triage(report(), log(headrooms=(43.1, 42.9)))
+        self.assertEqual(result["status"], "OK PROVISOIRE")
+        self.assertEqual(result["output_capacity_ms"], 85.57)
+        self.assertEqual(result["output_median_max_ms"], 80.0)
+        self.assertIn("non latence mesurée", markdown(result))
 
     def test_runahead_failures_are_blocking(self):
         result = triage(report(failure=2), log())
