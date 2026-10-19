@@ -29,6 +29,20 @@ internal object RomSource {
     fun isAcceptedFile(filename: String): Boolean =
         filename.substringAfterLast('.', "").lowercase(Locale.ROOT) in supported + "zip"
 
+    /**
+     * The save/RTC/auto-state basename must remain the OUTER ZIP basename
+     * (RetroArch convention) while the actual cartridge extension must be
+     * the embedded one. In particular, a .zip containing a .gba must be
+     * eligible for opt-in shared GBA saves, never treated as a GB cartridge.
+     * The ROM identity itself remains the original SAF URI.
+     */
+    fun archiveSaveFilename(zipFilename: String, embeddedExtension: String): String {
+        require(isContainer(zipFilename)) { "Expected a cartridge ZIP" }
+        val ext = embeddedExtension.lowercase(Locale.ROOT)
+        require(ext in supported) { "Unsupported embedded cartridge type" }
+        return "${zipFilename.substringBeforeLast('.')}.$ext"
+    }
+
     private fun extension(filename: String): String =
         filename.substringAfterLast('.', "").lowercase(Locale.ROOT)
 
