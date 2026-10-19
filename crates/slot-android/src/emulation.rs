@@ -251,7 +251,11 @@ mod tests {
 
     #[test]
     fn beta7_hybrid_is_explicit_and_roundtrips_per_game_without_global_changes() {
-        let globals = Settings::first_install_defaults();
+        // Keep exercising old explicit DISPLAY SYNC -> SYNC LAB cycling;
+        // v1.2.2 fresh installs now intentionally start in SYNC LAB.
+        let mut globals = Settings::default();
+        globals.responsive_pacing = true;
+        globals.display_sync_pacing = true;
         assert!(!globals.hybrid_pacing);
         let mut profile = EmulationProfile::from_settings(&globals);
         assert_eq!(profile.display_sync_pacing, true);
@@ -265,6 +269,24 @@ mod tests {
         let legacy: EmulationProfile = serde_json::from_str(
             r#"{"responsive_pacing":true,"display_sync_pacing":true}"#).unwrap();
         assert!(!legacy.hybrid_pacing);
+    }
+
+    #[test]
+    fn v122_new_game_profiles_inherit_new_install_sync_lab_and_no_runahead() {
+        let fresh = Settings::first_install_defaults();
+        let game = EmulationProfile::from_settings(&fresh);
+        assert!(game.hybrid_pacing);
+        assert!(!game.display_sync_pacing && !game.responsive_pacing);
+        assert_eq!(game.run_ahead_frames, 0);
+        // An existing user's explicit legacy Display Sync and Run-Ahead 1
+        // preferences must still roundtrip to the game profile as-is.
+        let mut legacy = Settings::default();
+        legacy.responsive_pacing = true;
+        legacy.display_sync_pacing = true;
+        legacy.run_ahead_frames = 1;
+        let old_game = EmulationProfile::from_settings(&legacy);
+        assert!(old_game.display_sync_pacing && !old_game.hybrid_pacing);
+        assert_eq!(old_game.run_ahead_frames, 1);
     }
 
     #[test]
