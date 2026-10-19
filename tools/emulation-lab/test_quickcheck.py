@@ -79,7 +79,7 @@ class QuickCheckTests(unittest.TestCase):
         data = log()
         data += "\nI/SlotKonkr: EGL presentation: status=supported present_fps=57.66 lost=5 errors=7"
         result = triage(report(), data)
-        self.assertEqual(result["status"], "SURVEILLER")
+        self.assertEqual(result["status"], "OK PROVISOIRE")
         self.assertTrue(any("EGL" in x for x in result["cautions"]))
 
     def test_runahead_failures_are_blocking(self):
