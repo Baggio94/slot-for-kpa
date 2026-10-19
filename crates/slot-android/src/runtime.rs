@@ -167,6 +167,13 @@ fn queue_ra_notice(queue: &mut VecDeque<String>, payload: String) {
 }
 
 static PATHS: Mutex<Option<(PathBuf, PathBuf)>> = Mutex::new(None);
+/// Beta10 opt-in: only SOLO SYNC LAB with a speculative frame can
+/// signal PCM early. Every pre-existing mode retains its legacy wake path.
+fn early_pcm_wake_allowed(sync_lab: bool, runahead: u8, fast: bool,
+                          linked: bool, committed_pcm: bool) -> bool {
+    sync_lab && runahead > 0 && !fast && !linked && committed_pcm
+}
+
 static AUDIO: Mutex<VecDeque<i16>> = Mutex::new(VecDeque::new());
 static PLAYING: AtomicBool = AtomicBool::new(false);
 static SAMPLE_RATE: AtomicI32 = AtomicI32::new(0);
@@ -4332,7 +4339,7 @@ impl Engine {
         self.handle(Input::Key(key,true));
         self.menu_repeat_dispatch=false;
     }
-    fn draw(&mut self) {
+    fn draw(&mut self, mut on_pcm_ready: impl FnMut()) {
         self.tick_menu_repeat();
         self.refresh_system_status();
         // Poll the already-running achievement evaluator without blocking GL.
@@ -4808,13 +4815,28 @@ impl Engine {
                     self.game_accum -= period;
                     stepped += 1;
                     let samples = session.take_audio();
-                    if (!fast || (live.ff_sound &&
+                    let queue_pcm = (!fast || (live.ff_sound &&
                         FF_AUDIO_SUPPORTED.load(Ordering::Acquire)))
-                        && !samples.is_empty() {
-                        let mut audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
-                        let overflow = audio.len().saturating_add(samples.len()).saturating_sub(96_000);
-                        for _ in 0..overflow.min(audio.len()) { audio.pop_front(); }
-                        audio.extend(samples);
+                        && !samples.is_empty();
+                    if queue_pcm {
+                        // Only the committed timeline's PCM is forwarded.
+                        // Drop AUDIO's lock before waking its Java writer;
+                        // speculative Run-Ahead MUST never supply audio.
+                        {
+                            let mut audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
+                            let overflow = audio.len().saturating_add(samples.len()).saturating_sub(96_000);
+                            for _ in 0..overflow.min(audio.len()) { audio.pop_front(); }
+                            audio.extend(samples);
+                        }
+                        // Beta10 isolated experiment: the legacy Android
+                        // notification happens only AFTER speculation + GLES.
+                        // Wake AudioTrack immediately after committed PCM
+                        // exists, so its writer can run during speculation.
+                        // VSync, input and saved-state ownership are unchanged.
+                        if early_pcm_wake_allowed(hybrid, profile.run_ahead_frames, fast,
+                            session.linked(), true) {
+                            on_pcm_ready();
+                        }
                     }
                 }
             }
@@ -5739,6 +5761,21 @@ mod ui_feedback_tests {
     }
 
     #[test]
+    fn beta10_early_audio_wake_is_solo_sync_lab_runahead_only() {
+        assert!(early_pcm_wake_allowed(true, 1, false, false, true));
+        assert!(early_pcm_wake_allowed(true, 2, false, false, true));
+        for (sync, ra, ff, linked, pcm) in [
+            (false, 1, false, false, true), // Standard and Display Sync
+            (true, 0, false, false, true),  // no RA: stable original path
+            (true, 1, true, false, true),   // fast forward
+            (true, 1, false, true, true),   // multiplayer link
+            (true, 1, false, false, false), // no committed PCM
+        ] {
+            assert!(!early_pcm_wake_allowed(sync, ra, ff, linked, pcm));
+        }
+    }
+
+    #[test]
     fn original_settings_menu_rows_are_on_screen_and_outside_footer() {
         for rows in [3, 5, 6, 7] {
             let top = settings_row_top(rows);
@@ -5949,8 +5986,8 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeReloadVisualAssets
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
-    _env: *mut c_void,
-    _activity: *mut c_void,
+    mut env: JNIEnv<'_>,
+    activity: JObject<'_>,
 ) {
     ENGINE.with(|holder| {
         let safe = holder.borrow().as_ref().is_some_and(|e|
@@ -5999,7 +6036,16 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
                 Err(error) => eprintln!("slot-konkr: could not reload library: {error}"),
             }
         }
-        if let Some(engine) = holder.borrow_mut().as_mut() { engine.draw(); }
+        if let Some(engine) = holder.borrow_mut().as_mut() {
+            engine.draw(|| {
+                // One callback per committed core frame maximum; SYNC LAB
+                // itself runs only one real frame per GL callback. Never
+                // invoke Java while holding the native PCM queue mutex.
+                if env.call_method(&activity, "onNativePcmReady", "()V", &[]).is_err() {
+                    let _ = env.exception_clear();
+                }
+            });
+        }
         let now_safe = holder.borrow().as_ref().is_some_and(|e|
             may_apply_library_update(e.game.is_some(), e.inserted, e.awaiting_game));
         LIBRARY_UPDATE_SAFE.store(now_safe, Ordering::Release);
