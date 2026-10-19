@@ -183,6 +183,9 @@ pub struct Settings {
     // Choreographer-driven display callbacks, with a single real core
     // frame maximum per callback and fractional frame time carryover.
     pub display_sync_pacing: bool,
+    // Beta7 experimental, opt-in only: VSync requests + bounded real catch-up.
+    // Old JSON stays on its prior mode because serde(default) makes this false.
+    pub hybrid_pacing: bool,
     pub run_ahead_frames: u8,
     // Opt-in only. Old builds enabled these by default; the migration
     // below must not interpret those historical booleans as explicit consent.
@@ -213,7 +216,7 @@ impl Default for Settings {
             gb_palettes: false, gb_palette: 1, rewind: true,
             turbo: true, eject_save: true,
             show_fps: false, responsive_pacing: false,
-            display_sync_pacing: false,
+            display_sync_pacing: false, hybrid_pacing: false,
             run_ahead_frames: 0,
             show_wifi: false, show_bluetooth: false, show_integrations: false,
             time_format: TimeFormat::TwentyFourHour,
@@ -276,7 +279,10 @@ impl Settings {
                 if !Shader::GB.contains(&s.shader_gb) { s.shader_gb = Shader::Off; }
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
                 if s.gb_palette >= 48 { s.gb_palette = 1; }
-                if !s.responsive_pacing { s.display_sync_pacing = false; }
+                if s.hybrid_pacing {
+                    s.responsive_pacing = false;
+                    s.display_sync_pacing = false;
+                } else if !s.responsive_pacing { s.display_sync_pacing = false; }
                 if s.run_ahead_frames > 2 { s.run_ahead_frames = 0; }
                 // Before this version all three toggles defaulted ON.
                 // A previously written settings file therefore isn't proof
@@ -378,7 +384,8 @@ impl Settings {
             8 => self.rumble = !self.rumble,
             9 => self.eject_save = !self.eject_save,
             10 => self.show_fps = !self.show_fps,
-            11 => cycle_pacing(&mut self.responsive_pacing, &mut self.display_sync_pacing, right),
+            11 => cycle_pacing(&mut self.responsive_pacing,
+                &mut self.display_sync_pacing, &mut self.hybrid_pacing, right),
             12 => self.run_ahead_frames = cycle_u8(self.run_ahead_frames, 2, right),
             13 => self.show_wifi = !self.show_wifi,
             14 => self.show_bluetooth = !self.show_bluetooth,
@@ -393,15 +400,25 @@ impl Settings {
             .unwrap_or(GbPalette::DEFAULT).core_name()
     }
 }
-/// Three explicit states; persisted Beta 5 profiles with responsive=true
-/// remain RESPONSIVE, not DISPLAY SYNC, after upgrade.
-pub fn cycle_pacing(responsive: &mut bool, display_sync: &mut bool, right: bool) {
-    let modes = [(false, false), (true, false), (true, true)];
-    let current = modes.iter().position(|&(r, d)| r == *responsive && d == *display_sync)
-        .unwrap_or(0);
+/// Keep old three choices unchanged; append the opt-in Beta7 HYBRID LAB.
+/// Mutually exclusive flags preserve all previously persisted profiles.
+pub fn cycle_pacing(
+    responsive: &mut bool, display_sync: &mut bool, hybrid: &mut bool, right: bool
+) {
+    let modes = [(false, false, false), (true, false, false),
+        (true, true, false), (false, false, true)];
+    let current = modes.iter().position(|&(r, d, h)|
+        r == *responsive && d == *display_sync && h == *hybrid).unwrap_or(0);
     let next = if right { (current + 1) % modes.len() }
         else { (current + modes.len() - 1) % modes.len() };
-    (*responsive, *display_sync) = modes[next];
+    (*responsive, *display_sync, *hybrid) = modes[next];
+}
+
+/// Retain up to 2.5 frame periods when Android misses a display VSync.
+/// The caller may execute at most two real frames per callback, only for
+/// solo sessions. Never invent audio/silent frames or skip pending real work.
+pub fn frame_debt_hybrid(prev: f64, elapsed: f64, speed: f64, period: f64) -> f64 {
+    (prev + elapsed * speed).clamp(0.0, period * 2.5)
 }
 pub fn cycle_u8(value: u8, max: u8, right: bool) -> u8 {
     if right { if value >= max { 0 } else { value + 1 } }
@@ -684,6 +701,20 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_bounds_missed_vsync_without_dropping_all_audio_frame_debt() {
+        let p = 1.0 / 59.7275;
+        assert!((frame_debt_hybrid(0.0, 1.0/60.0, 1.0, p)
+            - 1.0/60.0).abs() < 1e-9);
+        assert!((frame_debt_hybrid(0.0, 0.1, 1.0, p)
+            - p * 2.5).abs() < 1e-9);
+        let mut debt = frame_debt_hybrid(0.0, 2.0*p, 1.0, p);
+        let mut steps = 0;
+        while debt >= p && steps < 2 { debt -= p; steps += 1; }
+        assert_eq!(steps, 2);
+        assert!(debt < p);
+    }
+
+    #[test]
     fn display_sync_drops_large_hitches_without_overrunning_input() {
         let period = 1.0 / 59.7275;
         let debt = frame_debt_display_sync(
@@ -693,19 +724,25 @@ mod tests {
     }
 
     #[test]
-    fn frame_pacing_cycles_three_modes_without_changing_legacy_defaults() {
+    fn frame_pacing_cycles_four_modes_without_changing_legacy_defaults() {
         let mut s = Settings::default();
         assert!(!s.responsive_pacing && !s.display_sync_pacing);
         assert!(s.change(11, true));
         assert!(s.responsive_pacing && !s.display_sync_pacing);
         assert!(s.change(11, true));
-        assert!(s.responsive_pacing && s.display_sync_pacing);
+        assert!(s.responsive_pacing && s.display_sync_pacing && !s.hybrid_pacing);
         assert!(s.change(11, true));
-        assert!(!s.responsive_pacing && !s.display_sync_pacing);
+        assert!(s.hybrid_pacing && !s.responsive_pacing && !s.display_sync_pacing);
+        assert!(s.change(11, true));
+        assert!(!s.responsive_pacing && !s.display_sync_pacing && !s.hybrid_pacing);
         assert!(s.change(11, false));
-        assert!(s.responsive_pacing && s.display_sync_pacing);
+        assert!(s.hybrid_pacing && !s.responsive_pacing && !s.display_sync_pacing);
         let old: Settings = serde_json::from_str(r#"{"responsive_pacing":true}"#).unwrap();
-        assert!(old.responsive_pacing && !old.display_sync_pacing);
+        assert!(old.responsive_pacing && !old.display_sync_pacing && !old.hybrid_pacing);
+        let old_sync: Settings = serde_json::from_str(
+            r#"{"responsive_pacing":true,"display_sync_pacing":true}"#).unwrap();
+        assert!(old_sync.display_sync_pacing && !old_sync.hybrid_pacing);
+        assert!(!Settings::first_install_defaults().hybrid_pacing);
     }
 
     #[test]
