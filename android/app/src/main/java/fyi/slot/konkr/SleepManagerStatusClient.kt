@@ -12,7 +12,8 @@ import org.json.JSONObject
  */
 internal object SleepManagerStatusClient {
     const val API_VERSION = 1
-    val URI: Uri = Uri.parse("content://com.med.sleepmanager.status")
+    // Keep JVM-only status parser tests independent of android.jar's Uri stub.
+    val URI: Uri get() = Uri.parse("content://com.med.sleepmanager.status")
 
     data class Status(val enabled: Boolean, val serviceRunning: Boolean)
 
