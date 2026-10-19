@@ -90,8 +90,11 @@ def triage(report: dict, logcat: str, expected_core: str | None = None,
     if egl and any(int(e.get("errors", "0")) or int(e.get("lost", "0"))
                    for e in egl):
         cautions.append("Timestamps EGL incomplets : FPS de présentation non fiables.")
+    # Invalid EGL telemetry does NOT automatically make the audio test fail.
+    # Only missing/near-empty output queue metrics affect audio confidence.
+    audio_cautions = [c for c in cautions if "EGL" not in c]
     if not issues:
-        status = "SURVEILLER" if cautions else "OK PROVISOIRE"
+        status = "SURVEILLER" if audio_cautions else "OK PROVISOIRE"
     else:
         status = "A REVOIR"
     return {
@@ -184,6 +187,15 @@ def main() -> int:
     try:
         report = json.loads((out / "report.json").read_text(encoding="utf8"))
         logcat = (out / "logcat.txt").read_text(encoding="utf8", errors="replace")
+        if not report.get("requested_duration_s"):
+            if args.existing:
+                metadata = out / "metadata.txt"
+                if metadata.exists():
+                    m = re.search(r"^duration_s=(\d+)\s*$", metadata.read_text(), re.M)
+                    if m:
+                        report["requested_duration_s"] = int(m.group(1))
+            else:
+                report["requested_duration_s"] = args.seconds
     except (OSError, ValueError) as exc:
         print(f"Données de capture invalides : {exc}", file=sys.stderr)
         return 2
