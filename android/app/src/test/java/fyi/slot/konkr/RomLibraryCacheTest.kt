@@ -28,6 +28,18 @@ class RomLibraryCacheTest {
         org.junit.Assert.assertFalse(RomLibrary.equivalentEntries(listOf(a, a), listOf(a, b)))
     }
 
+    @Test fun newlyIndexedGbHeaderRefreshesLegacyShelfOnce() {
+        val legacy = RomLibrary.IndexEntry(
+            "content://rom/red", "Pokémon Red", "Pokemon Red.gb", "GB",
+            "", false, 524288L, 1700000000L)
+        val upgraded = legacy.copy(
+            gbTitle = "POKEMON RED", gbCode = "", gbJapan = false, gbCgbFlag = 0)
+        assertFalse(RomLibrary.equivalentEntries(listOf(legacy), listOf(upgraded)))
+        assertTrue(RomLibrary.equivalentEntries(listOf(upgraded), listOf(upgraded.copy())))
+        assertFalse(RomLibrary.equivalentEntries(
+            listOf(upgraded), listOf(upgraded.copy(gbCgbFlag = 0xc0))))
+    }
+
     @Test fun unchangedFileReusesHeaderSafely() {
         assertTrue(RomLibrary.canReuseHeader("Advance Wars", 8_388_608, 1_700_000_000_000,
             "Advance Wars", 8_388_608, 1_700_000_000_000))
