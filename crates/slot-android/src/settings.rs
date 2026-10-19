@@ -425,6 +425,12 @@ pub fn cycle_pacing(
 pub fn frame_debt_hybrid(prev: f64, elapsed: f64, speed: f64, period: f64) -> f64 {
     (prev + elapsed * speed).clamp(0.0, period * 4.0)
 }
+
+/// Preserve SYNC LAB's one committed frame per Choreographer callback.
+/// A beta14 experiment allowed a second frame to rescue AudioTrack, but
+/// physical KONKR testing confirmed unacceptable motion/input regression.
+/// Do not silently trade presentation cadence or controls for zero underruns.
+pub fn sync_lab_reactivity_first_frame_budget() -> usize { 1 }
 pub fn cycle_u8(value: u8, max: u8, right: bool) -> u8 {
     if right { if value >= max { 0 } else { value + 1 } }
     else if value == 0 || value > max { max } else { value - 1 }
@@ -703,6 +709,18 @@ mod tests {
             "do not discard extra fractions of emulation time");
         assert!(beta8_frames - beta7_frames < 100,
             "this must never simulate large catch-up bursts");
+    }
+
+    #[test]
+    fn beta15_rejects_multi_frame_sync_lab_catchup_after_physical_regression() {
+        assert_eq!(sync_lab_reactivity_first_frame_budget(), 1);
+        let period = 1.0 / 59.728;
+        let debt = frame_debt_hybrid(0.0, period * 4.0, 1.0, period);
+        assert_eq!(debt, period * 4.0);
+        // Even a full four-frame backlog must not execute more than one
+        // frame on the display callback. The debt stays for future draws.
+        let remaining = debt - period * sync_lab_reactivity_first_frame_budget() as f64;
+        assert!((remaining - period * 3.0).abs() < 1e-9);
     }
 
     #[test]
