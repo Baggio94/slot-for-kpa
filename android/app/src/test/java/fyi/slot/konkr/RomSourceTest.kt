@@ -7,6 +7,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -94,4 +96,90 @@ class RomSourceTest {
         // No entry paths are returned for the launcher to write; it uses an
         // independently SHA-256-derived filename in Android's private cache.
     }
+
+    @Test fun zipSaveStemPreservesRetroArchIdentityAndEmbeddedGbaType() {
+        for (ext in listOf("gba", "gbc", "gb")) {
+            val normalized = RomSource.archiveSaveFilename("Pokemon Emerald.ZIP", ext.uppercase())
+            assertEquals("Pokemon Emerald.$ext", normalized)
+            assertEquals(ext == "gba", normalized.endsWith(".gba", ignoreCase = true))
+            assertEquals("Pokemon Emerald", normalized.substringBeforeLast('.'))
+        }
+        // The outer basename is authoritative, even if it already contains
+        // a different extension. Existing SRAM, RTC and states use this stem.
+        assertEquals("Game.gbc.gba",
+            RomSource.archiveSaveFilename("Game.gbc.zip", "gba"))
+        for ((name, inner) in listOf(
+            "game.gba" to "gba", "game.7z" to "gba",
+            "game.ZIP" to "7z", "game.ZIP" to "zip"
+        )) {
+            try {
+                RomSource.archiveSaveFilename(name, inner)
+                throw AssertionError("Expected invalid ZIP save identity rejection")
+            } catch (_: IllegalArgumentException) { }
+        }
+    }
+
+    @Test fun firstMatchingRomIsIdenticalForHeaderCacheAndEmulation() {
+        val first = cartridge()
+        val second = ByteArray(0x180) { 0x55 }
+        val zipped = archive(
+            "covers/front.png" to byteArrayOf(0, 1, 2),
+            "docs/README.txt" to byteArrayOf(3, 4),
+            "../GBA/First.GBA" to first,
+            "GBA/Second.gba" to second
+        )
+        val head = RomSource.inspect(ByteArrayInputStream(zipped), "Outer.zip")
+        assertEquals("gba", head.extension)
+        assertArrayEquals(first.copyOf(RomSource.MIN_ROM_BYTES), head.bytes)
+        val launchBytes = RomSource.useRom(ByteArrayInputStream(zipped), "Outer.zip") {
+            input, ext ->
+            assertEquals(head.extension, ext)
+            input.readBytes()
+        }
+        assertArrayEquals(first, launchBytes)
+        // A ZIP's ROM identity is the outer SAF URI, not an inner entry path.
+        assertEquals("Outer.gba", RomSource.archiveSaveFilename("Outer.zip", head.extension))
+    }
+
+    @Test fun allows256thEntryAndRejectsRomBeyondEntrySafetyLimit() {
+        val docs = (1..255).map { "docs/$it.txt" to byteArrayOf(1) }
+        val firstArchive = archive(*(docs + ("game.gba" to cartridge())).toTypedArray())
+        assertEquals("gba",
+            RomSource.inspect(ByteArrayInputStream(firstArchive), "many.zip").extension)
+        val tooMany = archive(*(
+            docs + ("docs/256.txt" to byteArrayOf(1)) + ("game.gba" to cartridge())
+        ).toTypedArray())
+        try {
+            RomSource.inspect(ByteArrayInputStream(tooMany), "many.zip")
+            throw AssertionError("ROM beyond 256 ZIP entries must not be used")
+        } catch (_: IllegalArgumentException) { }
+    }
+
+    @Test fun rejectsDeclaredOversizedZipRomWithoutAllocatingOrExtracting() {
+        // ZipInputStream reads the local entry header before inflation. A
+        // bogus declared 64MiB+1 ROM must be rejected before any cache write
+        // or large allocation. The payload itself is intentionally absent.
+        val name = "Oversized.gba".toByteArray(Charsets.UTF_8)
+        val size = (RomSource.MAX_ROM_BYTES + 1).toInt()
+        val header = ByteBuffer.allocate(30 + name.size).order(ByteOrder.LITTLE_ENDIAN)
+        header.putInt(0x04034b50) // ZIP local file header signature
+        header.putShort(20.toShort()) // version needed
+        header.putShort(0.toShort()) // flags
+        header.putShort(0.toShort()) // STORED
+        header.putShort(0.toShort()) // time
+        header.putShort(0.toShort()) // date
+        header.putInt(0) // CRC
+        header.putInt(size) // compressed bytes
+        header.putInt(size) // uncompressed bytes
+        header.putShort(name.size.toShort())
+        header.putShort(0.toShort()) // extra length
+        header.put(name)
+        try {
+            RomSource.inspect(ByteArrayInputStream(header.array()), "unsafe.zip")
+            throw AssertionError("Oversized ROM was accepted")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message.orEmpty().contains("safe size"))
+        }
+    }
+
 }
