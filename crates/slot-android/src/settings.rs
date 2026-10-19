@@ -183,7 +183,8 @@ pub struct Settings {
     // Choreographer-driven display callbacks, with a single real core
     // frame maximum per callback and fractional frame time carryover.
     pub display_sync_pacing: bool,
-    // Beta7 experimental, opt-in only: VSync requests + bounded real catch-up.
+    // Beta8 experimental: preserve overdue emulation time but never run multiple
+    // real steps per VSync callback. Legacy beta7 flag remains readable.
     // Old JSON stays on its prior mode because serde(default) makes this false.
     pub hybrid_pacing: bool,
     pub run_ahead_frames: u8,
@@ -400,7 +401,8 @@ impl Settings {
             .unwrap_or(GbPalette::DEFAULT).core_name()
     }
 }
-/// Keep old three choices unchanged; append the opt-in Beta7 HYBRID LAB.
+/// Keep old three choices unchanged; reuse the experimental fourth slot
+/// for beta8 SYNC LAB. The serialized flag is backward compatible.
 /// Mutually exclusive flags preserve all previously persisted profiles.
 pub fn cycle_pacing(
     responsive: &mut bool, display_sync: &mut bool, hybrid: &mut bool, right: bool
@@ -414,11 +416,14 @@ pub fn cycle_pacing(
     (*responsive, *display_sync, *hybrid) = modes[next];
 }
 
-/// Retain up to 2.5 frame periods when Android misses a display VSync.
-/// The caller may execute at most two real frames per callback, only for
-/// solo sessions. Never invent audio/silent frames or skip pending real work.
+/// SYNC LAB (experimental): the Display Sync implementation discards
+/// accumulated time at 1.95 frame periods even on short missed VSyncs.
+/// Retain a bounded FOUR-frame backlog for subsequent spare 60Hz callbacks,
+/// while the caller emits MAX ONE real video/audio frame each callback.
+/// No synthesized PCM, no duplicated simulation, no unbounded lag after
+/// Android suspension. Backlog is deliberately visible in diagnostics.
 pub fn frame_debt_hybrid(prev: f64, elapsed: f64, speed: f64, period: f64) -> f64 {
-    (prev + elapsed * speed).clamp(0.0, period * 2.5)
+    (prev + elapsed * speed).clamp(0.0, period * 4.0)
 }
 pub fn cycle_u8(value: u8, max: u8, right: bool) -> u8 {
     if right { if value >= max { 0 } else { value + 1 } }
@@ -701,17 +706,21 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_bounds_missed_vsync_without_dropping_all_audio_frame_debt() {
+    fn sync_lab_retains_missed_vsync_debt_but_steps_once() {
         let p = 1.0 / 59.7275;
-        assert!((frame_debt_hybrid(0.0, 1.0/60.0, 1.0, p)
-            - 1.0/60.0).abs() < 1e-9);
+        assert!((frame_debt_hybrid(0.0, 1.0 / 60.0, 1.0, p)
+            - 1.0 / 60.0).abs() < 1e-9);
         assert!((frame_debt_hybrid(0.0, 0.1, 1.0, p)
-            - p * 2.5).abs() < 1e-9);
-        let mut debt = frame_debt_hybrid(0.0, 2.0*p, 1.0, p);
-        let mut steps = 0;
-        while debt >= p && steps < 2 { debt -= p; steps += 1; }
-        assert_eq!(steps, 2);
-        assert!(debt < p);
+            - p * 4.0).abs() < 1e-9);
+        // Two missed frame periods must not be discarded at 1.95p.
+        let mut debt = frame_debt_hybrid(0.0, 3.0 * p, 1.0, p);
+        assert!((debt - 3.0 * p).abs() < 1e-9);
+        debt -= p; // one real libretro step; never skip intermediate video
+        assert!((debt - 2.0 * p).abs() < 1e-9);
+        assert!(debt > p); // late simulation remains queued for later vsyncs
+        // Short-term debt recovery is bounded; absurd delay cannot
+        // accumulate seconds of input/audio latency.
+        assert_eq!(frame_debt_hybrid(debt, 10.0, 1.0, p), 4.0 * p);
     }
 
     #[test]
