@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // v1.2.2 RC1: native SYNC LAB 1-frame cadence, RA OFF on fresh installs, SleepManager Status API v1.
-        versionCode = 137
-        versionName = "1.2.2-rc1"
+        // v1.2.2 stable candidate: SYNC LAB/RA0 fresh-install defaults, immutable existing settings, SleepManager API v1.
+        versionCode = 138
+        versionName = "1.2.2"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
