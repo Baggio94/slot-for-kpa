@@ -3,6 +3,9 @@ package fyi.slot.konkr
 import android.Manifest
 import android.app.Activity
 import android.app.ActivityManager
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -45,9 +48,8 @@ import kotlin.math.roundToInt
  * - No RA indicator when the RA account/service is disabled.
  * - BasicSync uses its supported STATE_CHANGED / REQUEST_STATE contract.
  * - Syncthing uses its local health endpoint off the UI and GL threads.
- * - SleepManager exposes no third-party status API currently; the positive
- *   running-service observation is best effort on Android 12 and MUST NOT be
- *   mistaken for a guaranteed state check.
+ * - SleepManager 0.7.3+ exposes a read-only ContentProvider Status API v1.
+ *   Older versions without that API retain the previous best-effort fallback.
  */
 internal class SlotStatusIndicators(
     private val host: Activity,
@@ -95,6 +97,7 @@ internal class SlotStatusIndicators(
         }
     }
     private val healthBusy = AtomicBoolean(false)
+    private val sleepStatusBusy = AtomicBoolean(false)
     private val wifiManager = host.applicationContext.getSystemService(Context.WIFI_SERVICE)
         as WifiManager
     private val connections = host.getSystemService(Context.CONNECTIVITY_SERVICE)
@@ -110,7 +113,10 @@ internal class SlotStatusIndicators(
     private var lastBasicResponse = 0L
     private var raAccountConfigured = false
     private var installedSleep = false
-    private var observedSleepRunning = false
+    @Volatile private var observedSleepRunning = false
+    @Volatile private var sleepApiKnown = false
+    private var lastSleepStatusQuery = 0L
+    private var sleepStatusObserver: ContentObserver? = null
     private var installedBasic = false
     private var installedSyncthing = false
     private var bluetoothPermissionAsked = false
@@ -156,6 +162,56 @@ internal class SlotStatusIndicators(
         })
     }
 
+    /**
+     * Read-only SleepManager events are cheap notifications; actual provider
+     * queries are handled by the existing low-priority status worker.
+     */
+    private fun registerSleepStatusObserver() {
+        if (sleepStatusObserver != null) return
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                requestSleepStatus(force = true)
+            }
+        }
+        runCatching {
+            host.contentResolver.registerContentObserver(
+                SleepManagerStatusClient.URI, false, observer
+            )
+        }.onSuccess {
+            sleepStatusObserver = observer
+        }
+    }
+
+    private fun requestSleepStatus(force: Boolean = false) {
+        if (!installedSleep || !subscribed) return
+        val now = SystemClock.elapsedRealtime()
+        // API v1 requires no polling. Retry the legacy fallback at a modest
+        // interval until a newer SleepManager gets installed.
+        if (!force && sleepApiKnown) return
+        if (!force && lastSleepStatusQuery != 0L &&
+            now - lastSleepStatusQuery < 15000L) return
+        if (!sleepStatusBusy.compareAndSet(false, true)) return
+        lastSleepStatusQuery = now
+        worker.execute {
+            try {
+                val status = SleepManagerStatusClient.read(host)
+                if (status != null) {
+                    sleepApiKnown = true
+                    observedSleepRunning = status.enabled && status.serviceRunning
+                } else {
+                    sleepApiKnown = false
+                    // SleepManager <=0.7.2 has no status provider.
+                    // This negative observation is never authoritative.
+                    observedSleepRunning = sleepObservedRunning()
+                }
+            } catch (error: Exception) {
+                Log.w("SlotStatus", "SleepManager status check failed", error)
+            } finally {
+                sleepStatusBusy.set(false)
+            }
+        }
+    }
+
     private val basicReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != "com.chiller3.basicsync.STATE_CHANGED") return
@@ -179,12 +235,18 @@ internal class SlotStatusIndicators(
             subscribed = true
             lastBasicRequest = 0
             lastStatePoll = 0
+            lastSleepStatusQuery = 0L
+            registerSleepStatusObserver()
         } catch (_: RuntimeException) {
             subscribed = false
         }
     }
 
     fun onPause() {
+        sleepStatusObserver?.let { observer ->
+            runCatching { host.contentResolver.unregisterContentObserver(observer) }
+        }
+        sleepStatusObserver = null
         left.visibility = View.GONE
         right.visibility = View.GONE
         if (subscribed) {
@@ -210,7 +272,13 @@ internal class SlotStatusIndicators(
         // in the actual game-launch notice, not on this top-shelf icon.
         raAccountConfigured = RaAccount.configuredUser(host.filesDir) != null
         installedSleep = installed("com.med.sleepmanager")
-        observedSleepRunning = sleepObservedRunning()
+        if (installedSleep) {
+            requestSleepStatus()
+        } else {
+            observedSleepRunning = false
+            sleepApiKnown = false
+            lastSleepStatusQuery = 0L
+        }
         installedBasic = installed("com.chiller3.basicsync")
         installedSyncthing = listOf(
             "com.github.catfriend1.syncthingfork",
@@ -255,9 +323,8 @@ internal class SlotStatusIndicators(
 
     private fun sleepObservedRunning(): Boolean {
         if (!installedSleep) return false
-        // On modern Android this is sometimes restricted to own processes.
-        // A negative result is NOT authoritative; until SleepManager exposes
-        // a signed read-only status API, this is only a best-effort indicator.
+        // Legacy fallback only for SleepManager without the public API.
+        // Modern Android can hide other apps' services: negative != disabled.
         return try {
             val mgr = host.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             @Suppress("DEPRECATION")
