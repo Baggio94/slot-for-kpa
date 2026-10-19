@@ -12,6 +12,7 @@
     <queries>
         <!-- Only the explicitly supported optional status integrations. -->
         <package android:name="com.med.sleepmanager" />
+        <provider android:authorities="com.med.sleepmanager.status" />
         <package android:name="com.chiller3.basicsync" />
         <package android:name="com.github.catfriend1.syncthingfork" />
         <package android:name="com.github.catfriend1.syncthingfork.debug" />
