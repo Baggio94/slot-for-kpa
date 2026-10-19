@@ -1,3 +1,43 @@
+## Fast path from beta10 onward — one command
+
+For routine tests, **stop doing a full core × Run-Ahead matrix at each build**.
+Run the Rust/Android/parser safety checks in CI, then reserve **one short physical
+spot-check per modified subsystem**. Extend only when output headroom or regressions
+require more evidence.
+
+The read-only `quickcheck.py` automates the existing `capture.sh` script,
+extracts native metrics and **actual AudioTrack queue-depth history**, and
+writes `quickcheck.md` + `quickcheck.json` alongside the raw reports.
+It does **not** modify an installed APK, selected emulator, Run-Ahead,
+settings, ROMs, game state or saves. **Start a game first.**
+
+From the repository root (gpSP + RA1 selected in the app already):
+
+    python3 tools/emulation-lab/quickcheck.py --seconds 180 --expect-core gpsp --expect-ra 1
+
+Or review a previous capture, without any device:
+
+    python3 tools/emulation-lab/quickcheck.py --existing emulation-lab-results/TIMESTAMP-scenario
+
+The known KONKR serial is the default (override with `--serial`).
+If using an **older beta3 test kit**, download the single standalone
+`tools/emulation-lab/quickcheck.py` from this branch into the kit root:
+
+    python3 quickcheck.py --seconds 180 --expect-core gpsp --expect-ra 1
+
+**Results:** `OK PROVISOIRE` indicates no *measured* hardware underruns or RA
+failures and no near-empty sampled AudioTrack output queue in this capture.
+`SURVEILLER` flags <1ms queue headroom, invalid EGL timestamps, or missing
+measurements; `A REVOIR` flags underruns, incompatible settings or failures.
+Even OK does NOT establish audible quality, permanent stability, real
+presentation timing or input-to-photon latency. Real-device acceptance
+still requires listening, visual review, and representative game coverage.
+The known EGL probe loses some timestamps on KONKR; do not interpret its
+~57 sampled present FPS as physical displayed FPS. `audio_empty_total` is
+NOT a count of AudioTrack underruns.
+
+---
+
 # slot. for KONKR — Emulation Lab (1.2.2-beta3)
 
 An opt-in diagnostics build for the established **Mac Apple Silicon ARM64
