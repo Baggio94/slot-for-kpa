@@ -30,7 +30,7 @@ sleep "$seconds"
 kill "$recorder" 2>/dev/null || true
 wait "$recorder" 2>/dev/null || true
 trap - EXIT
-python3 "$(dirname "$0")/report.py" "$dir/logcat.txt" > "$dir/report.txt"
-python3 "$(dirname "$0")/report.py" "$dir/logcat.txt" --json > "$dir/report.json"
+python3 "$(dirname "$0")/report.py" "$dir/logcat.txt" --expected-seconds "$seconds" > "$dir/report.txt"
+python3 "$(dirname "$0")/report.py" "$dir/logcat.txt" --expected-seconds "$seconds" --json > "$dir/report.json"
 echo "Saved $dir/report.txt and $dir/report.json"
 cat "$dir/report.txt"
