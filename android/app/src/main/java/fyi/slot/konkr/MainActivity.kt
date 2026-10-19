@@ -1313,6 +1313,9 @@ class MainActivity : Activity() {
             var emptyAudioReads = 0
             var playedShorts = 0L
             var audioBufferBytes = 0
+            // Diagnostic only: how fast AudioTrack's own playback-head clock
+            // advances relative to submitted PCM. No buffer or DSP changes.
+            var playbackHeadAtProbe = 0L
             try {
                 while (audioRunning.get()) {
                     val wanted = nativeAudioSampleRate()
@@ -1354,6 +1357,8 @@ class MainActivity : Activity() {
                         playedShorts = 0L
                         audioProbeAt = SystemClock.elapsedRealtime()
                         player.play()
+                        playbackHeadAtProbe =
+                            player.playbackHeadPosition.toLong() and 0xffffffffL
                     } else if (player.playState != AudioTrack.PLAYSTATE_PLAYING) {
                         // A paused legacy buffer is reused when the next game has
                         // the same sample rate; it still must be resumed.
@@ -1426,10 +1431,18 @@ class MainActivity : Activity() {
                         }
                         val spanMs = (probeNow - audioProbeAt).coerceAtLeast(1L)
                         val expected = wanted.toLong() * 2L * spanMs / 1000L
+                        val playbackHead = player.playbackHeadPosition.toLong() and 0xffffffffL
+                        // Playback position is 32-bit and can wrap. Count actual
+                        // advanced frames, not wall-clock guesses. On certain HALs
+                        // this freezes during underrun, which is useful evidence.
+                        val playbackFrames = (playbackHead - playbackHeadAtProbe) and 0xffffffffL
+                        playbackHeadAtProbe = playbackHead
                         // Report even when there are no underruns, to isolate
                         // PCM producer starvation from AudioTrack HAL behaviour.
                         Log.i(TAG, "A12 PCM pacing: rate=$wanted span_ms=$spanMs " +
                             "written_shorts=$playedShorts expected_shorts=$expected " +
+                            "playback_frames=$playbackFrames submitted_frames=${playedShorts / 2L} " +
+                            "speed_permille=$requestedSpeed " +
                             "empty_reads=$emptyAudioReads queued_shorts=${nativeAudioQueuedShorts()} " +
                             "underruns=${underflows - observedUnderruns}")
                         observedUnderruns = underflows
