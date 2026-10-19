@@ -23,7 +23,9 @@ internal object RomLibrary {
     /** Ignore SAF iteration order, but never hide real additions/removals. */
     internal data class IndexEntry(
         val uri: String, val title: String, val filename: String, val platform: String,
-        val code: String, val colorOnly: Boolean, val size: Long, val modified: Long
+        val code: String, val colorOnly: Boolean, val size: Long, val modified: Long,
+        val gbTitle: String = "", val gbCode: String = "",
+        val gbJapan: Boolean = false, val gbCgbFlag: Int = -1
     )
     internal fun equivalentEntries(left: List<IndexEntry>, right: List<IndexEntry>): Boolean {
         if (left.size != right.size) return false
@@ -39,7 +41,9 @@ internal object RomLibrary {
             IndexEntry(obj.getString("uri"), obj.optString("title"),
                 obj.optString("filename"), obj.optString("platform"),
                 obj.optString("code"), obj.optBoolean("color_only"),
-                obj.optLong("size", -1), obj.optLong("modified", -1))
+                obj.optLong("size", -1), obj.optLong("modified", -1),
+                obj.optString("gb_title"), obj.optString("gb_code"),
+                obj.optBoolean("gb_japan"), obj.optInt("gb_cgb_flag", -1))
         }
     }
     internal fun sameIndex(before: String, after: String): Boolean =
@@ -150,7 +154,10 @@ internal object RomLibrary {
                     val old = previous[uriText]
                     val reuse = old != null && canReuseHeader(
                         old.optString("title"), old.optLong("size", -1),
-                        old.optLong("modified", -1), title, size, modified)
+                        old.optLong("modified", -1), title, size, modified) &&
+                        // Old indexes lack the GB header metadata used by
+                        // Cart Studio. Read only 0x150 bytes once to migrate.
+                        (old.optString("platform") == "GBA" || old.has("gb_cgb_flag"))
                     // ZIP archives remain a single shelf cartridge identified
                     // by the ZIP's SAF URI and filename. Resolve the embedded
                     // ROM header/extension only on cache misses.
@@ -178,14 +185,34 @@ internal object RomLibrary {
                     var code: String
                     var colorOnly: Boolean
                     var platform: String
+                    var gbTitle = ""
+                    var gbCode = ""
+                    var gbJapan = false
+                    var gbCgbFlag = -1
                     if (reuse && old != null) {
                         headersReused++
                         code = old.optString("code")
                         colorOnly = old.optBoolean("color_only")
                         platform = old.optString("platform")
+                        gbTitle = old.optString("gb_title")
+                        gbCode = old.optString("gb_code")
+                        gbJapan = old.optBoolean("gb_japan")
+                        gbCgbFlag = old.optInt("gb_cgb_flag", -1)
                     } else {
                         headersRead++
                         val header = zipHeader?.bytes ?: cartridgeHeader(context, fileUri)
+                        // Use the exact Nintendo GB header fields read by
+                        // Cart Studio's automatic shell selector. Never infer
+                        // colours from the ROM filename or download artwork.
+                        if (!gba && header.size >= 0x14b) {
+                            gbTitle = String(header, 0x134, 11, Charsets.US_ASCII)
+                                .substringBefore('\u0000').trim()
+                            gbCode = String(header, 0x13f, 4, Charsets.US_ASCII)
+                                .takeIf { value -> value.all { it in 'A'..'Z' || it in '0'..'9' } }
+                                ?: ""
+                            gbJapan = header[0x14a].toInt() == 0
+                            gbCgbFlag = header[0x143].toInt() and 0xff
+                        }
                         code = if (gba && header.size >= 0xb0) {
                             String(header, 0xac, 4, Charsets.US_ASCII)
                                 .takeIf { it.all { c -> c in 'A'..'Z' || c in '0'..'9' } }
@@ -202,7 +229,7 @@ internal object RomLibrary {
                             else -> "GB"
                         }
                     }
-                    games.put(JSONObject()
+                    val game = JSONObject()
                         .put("title", title)
                         .put("filename", name)
                         .put("platform", platform)
@@ -210,7 +237,14 @@ internal object RomLibrary {
                         .put("code", code)
                         .put("color_only", colorOnly)
                         .put("size", size)
-                        .put("modified", modified))
+                        .put("modified", modified)
+                    if (!gba) {
+                        game.put("gb_title", gbTitle)
+                            .put("gb_code", gbCode)
+                            .put("gb_japan", gbJapan)
+                            .put("gb_cgb_flag", gbCgbFlag)
+                    }
+                    games.put(game)
                 }
             }
         }
