@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // Experimental 1.2.2-beta11 preserves early PCM wake and adds telemetry/QA hardening.
-        versionCode = 131
-        versionName = "1.2.2-beta11"
+        // Experimental 1.2.2-beta12 adds clock/PCM causality diagnostics with unchanged pacing and audio buffers.
+        versionCode = 132
+        versionName = "1.2.2-beta12"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
