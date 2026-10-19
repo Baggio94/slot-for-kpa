@@ -40,6 +40,20 @@ class EmulationLabReportTests(unittest.TestCase):
         self.assertIsNone(r["audio_queued_ms"])
         self.assertAlmostEqual(r["emu_fps"]["mean"], 59.71)
 
+    def test_pacing_probes_are_parsed_without_fake_five_second_totals(self):
+        first = ("I/SlotEmuDiag: SAMPLE span_ms=5000 core=mgba "
+                 "pacing_mode=display_sync gl_callback_fps=59.90 "
+                 "gl_gap_p50_us=16500 gl_gap_p95_us=18500 "
+                 "gl_gap_p99_us=32500 emu_step0_1s=1 "
+                 "emu_step1_1s=59 emu_step_multi_1s=0")
+        second = first.replace("gl_gap_p99_us=32500", "gl_gap_p99_us=22500") \
+                      .replace("emu_step0_1s=1", "emu_step0_1s=2")
+        result = parse_log(first + "\n" + second)
+        self.assertEqual(result["pacing_modes_observed"], ["display_sync"])
+        self.assertEqual(result["gl_gap_p99_us"]["mean"], 27500)
+        self.assertEqual(result["emu_step0_1s"]["mean"], 1.5)
+        self.assertEqual(result["gl_gap_p95_us"]["n"], 2)
+
     def test_empty_capture_has_no_fake_success(self):
         r = parse_log("Device started, no game running")
         self.assertEqual(r["windows"], 0)
