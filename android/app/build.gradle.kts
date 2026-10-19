@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // Experimental 1.2.2-beta8 adds opt-in SYNC LAB frame-debt recovery and audio/VSync telemetry.
-        versionCode = 128
-        versionName = "1.2.2-beta8"
+        // Experimental 1.2.2-beta9 adds opt-in SYNC LAB EGL present and AudioTrack hardware-clock diagnostics.
+        versionCode = 129
+        versionName = "1.2.2-beta9"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
