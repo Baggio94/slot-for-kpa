@@ -724,6 +724,30 @@ mod tests {
     }
 
     #[test]
+    fn sync_lab_recovers_more_real_frames_than_display_sync_without_bursts() {
+        let p = 1.0 / 59.7275;
+        let mut old_debt = 0.0;
+        let mut lab_debt = 0.0;
+        let mut old_frames = 0;
+        let mut lab_frames = 0;
+        // Synthetic 60Hz Choreographer callbacks, occasionally one is
+        // missed (so the next draw receives 33.3ms of wall-clock time).
+        // Only one true simulation step is allowed per GL callback.
+        for i in 0..6000 {
+            let dt = if i % 320 == 41 { 2.0 / 60.0 } else { 1.0 / 60.0 };
+            old_debt = frame_debt_display_sync(old_debt, dt, 1.0, p);
+            lab_debt = frame_debt_hybrid(lab_debt, dt, 1.0, p);
+            if old_debt >= p { old_frames += 1; old_debt -= p; }
+            if lab_debt >= p { lab_frames += 1; lab_debt -= p; }
+            assert!(lab_debt >= 0.0 && lab_debt <= p * 4.0);
+        }
+        assert!(lab_frames >= old_frames + 8,
+            "retained debt must recover otherwise dropped real frames");
+        assert!(lab_frames <= 6000,
+            "no callback may emit more than one real core step");
+    }
+
+    #[test]
     fn display_sync_drops_large_hitches_without_overrunning_input() {
         let period = 1.0 / 59.7275;
         let debt = frame_debt_display_sync(
