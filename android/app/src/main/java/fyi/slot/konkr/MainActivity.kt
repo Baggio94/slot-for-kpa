@@ -1408,6 +1408,9 @@ class MainActivity : Activity() {
                         continue
                     }
                     audioFrameSignal.drainPermits()
+                    // Immutable reference for the inlined PCM writer. Avoid
+                    // capturing a mutable nullable AudioTrack in hot-path lambdas.
+                    val track = player ?: continue
                     // WRITE_BLOCKING can still return a positive *partial*
                     // count (e.g. on a route change). Never silently discard
                     // that PCM suffix, as it would insert an audible gap.
@@ -1424,14 +1427,14 @@ class MainActivity : Activity() {
                     val firstWritten = AudioWritePolicy.writeComplete(
                         samples, start = 0, length = firstLength
                     ) { offset, remaining ->
-                        player.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
+                        track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
                     }
                     if (awaitingFirstPcm && firstWritten > 0) {
-                        player.play()
+                        track.play()
                         awaitingFirstPcm = false
                         audioProbeAt = SystemClock.elapsedRealtime()
                         playbackHeadAtProbe =
-                            player.playbackHeadPosition.toLong() and 0xffffffffL
+                            track.playbackHeadPosition.toLong() and 0xffffffffL
                     }
                     val written = if (firstWritten == firstLength &&
                         samples.size > firstLength && audioRunning.get()) {
@@ -1439,7 +1442,7 @@ class MainActivity : Activity() {
                             samples, start = firstLength,
                             length = samples.size - firstLength
                         ) { offset, remaining ->
-                            player.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
+                            track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
                         }
                     } else firstWritten
                     if (written < samples.size && audioRunning.get()) {
