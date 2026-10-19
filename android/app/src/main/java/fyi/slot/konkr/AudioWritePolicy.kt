@@ -11,17 +11,21 @@ package fyi.slot.konkr
 internal object AudioWritePolicy {
     inline fun writeComplete(
         samples: ShortArray,
+        start: Int = 0,
+        length: Int = samples.size - start,
         writer: (offset: Int, remaining: Int) -> Int,
     ): Int {
-        var offset = 0
+        require(start >= 0 && length >= 0 && length <= samples.size - start)
+        var offset = start
+        val end = start + length
         var attempts = 0
-        while (offset < samples.size && attempts < 64) {
-            val left = samples.size - offset
+        while (offset < end && attempts < 64) {
+            val left = end - offset
             val count = writer(offset, left)
             if (count <= 0 || count > left) break
             offset += count
             attempts++
         }
-        return offset
+        return offset - start
     }
 }
