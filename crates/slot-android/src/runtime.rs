@@ -4776,14 +4776,29 @@ impl Engine {
                     self.game_accum = crate::settings::frame_debt(
                         self.game_accum, f64::from(dt), multiplier, period, fast, responsive);
                 }
+                // Beta14 LAB-only experiment. The beta13 KONKR run lost
+                // ~94ms of genuine committed PCM over 180s, despite nine
+                // no-step callbacks and a persistent VSync frame backlog.
+                // Rarely allow TWO committed mGBA frames only if both are
+                // already due. This is intentionally limited to SOLO mGBA
+                // + SYNC LAB + Run-Ahead 1; gpSP, RA0/2, linked sessions,
+                // rewind, FF, Standard, Responsive, and Display Sync are
+                // unchanged. A single GL presentation uses the final frame.
+                // This is opt-in QA only; it is not a proven audio fix yet.
+                let lab_mgba_ra1_recovery = hybrid
+                    && session.core_kind() == Core::Mgba
+                    && profile.run_ahead_frames == 1;
                 let frame_limit = if mgba_cable_pacing { 2 }
                     else if fast { usize::from(live.ff_speed) * 4 }
+                    else if lab_mgba_ra1_recovery {
+                        crate::settings::sync_lab_mgba_ra1_frame_budget(
+                            self.game_accum, period)
+                    }
                     else if hybrid { 1 }
                     else if responsive { 1 } else { 4 };
-                // A13.1: revert the experimental second-frame budget.
-                // Real-world A13 KONKR/AVD tests suffered repeated Link
-                // wait_peer stalls and severe AudioTrack starvation.
-                // A12's A11 bounded-debt/2-frame policy was smoother.
+                // A13.1 Link recovery remains exactly as before. The new
+                // SOLO beta14 conditional branch above is unrelated to Cable;
+                // it must never bypass peer lockstep or link-fault handling.
                 while self.game_accum >= period && stepped < frame_limit {
                     // Cable lockstep must not consume emulation time while
                     // the remote frame has not arrived. NEVER invent a solo
