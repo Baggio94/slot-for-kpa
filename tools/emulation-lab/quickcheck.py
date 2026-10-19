@@ -31,13 +31,21 @@ def triage(report: dict, logcat: str, expected_core: str | None = None,
     samples = [values(s.partition("SAMPLE ")[2]) for s in logcat.splitlines()
                if "SlotEmuDiag" in s and "SAMPLE " in s]
     depths = []
+    maximum_depths = []
+    capacities = []
     early = []
     egl = []
     for line in logcat.splitlines():
         if "AudioTrack queue depth:" in line:
             m = values(line.partition("AudioTrack queue depth:")[2])
             try:
-                depths.append(float(m["minimum_ms"]))
+                depth = float(m["minimum_ms"])
+                if depth >= 0:
+                    depths.append(depth)
+                if "maximum_ms" in m:
+                    maximum_depths.append(float(m["maximum_ms"]))
+                if "buffer_capacity_ms" in m:
+                    capacities.append(float(m["buffer_capacity_ms"]))
             except (KeyError, ValueError):
                 pass
         if "GL callback pacing:" in line:
@@ -88,7 +96,8 @@ def triage(report: dict, logcat: str, expected_core: str | None = None,
     elif min(depths) < 5:
         cautions.append("Réserve AudioTrack <5 ms : marge faible.")
     if egl and any(int(e.get("errors", "0")) or int(e.get("lost", "0"))
-                   for e in egl):
+                   or e.get("status") == "incomplete_timestamps"
+                   or e.get("present_fps_valid") == "false" for e in egl):
         cautions.append("Timestamps EGL incomplets : FPS de présentation non fiables.")
     # Invalid EGL telemetry does NOT automatically make the audio test fail.
     # Only missing/near-empty output queue metrics affect audio confidence.
@@ -106,6 +115,8 @@ def triage(report: dict, logcat: str, expected_core: str | None = None,
         "underruns": underruns, "runahead_failures": failures,
         "output_min_ms": round(min(depths), 3) if depths else None,
         "output_median_min_ms": round(median(depths), 3) if depths else None,
+        "output_median_max_ms": round(median(maximum_depths), 3) if maximum_depths else None,
+        "output_capacity_ms": round(median(capacities), 3) if capacities else None,
         "output_windows_below_1ms": sum(n < 1 for n in depths),
         "output_windows_below_5ms": sum(n < 5 for n in depths),
         "output_windows": len(depths), "early_pcm_wakes": sum(early) if early else None,
@@ -138,6 +149,8 @@ def markdown(v: dict) -> str:
         f"- Échecs Run-Ahead : {fmt(v['runahead_failures'])}",
         f"- Réserve AudioTrack minimale : {fmt(v['output_min_ms'])} ms",
         f"- Médiane des minima par fenêtre : {fmt(v['output_median_min_ms'])} ms",
+        f"- Médiane des maxima par fenêtre : {fmt(v['output_median_max_ms'])} ms",
+        f"- Capacité tampon AudioTrack (non latence mesurée) : {fmt(v['output_capacity_ms'])} ms",
         f"- Fenêtres avec réserve <1 ms : {v['output_windows_below_1ms']}/{v['output_windows']}",
         f"- Fenêtres avec réserve <5 ms : {v['output_windows_below_5ms']}/{v['output_windows']}",
         f"- Réveils audio anticipés : {fmt(v['early_pcm_wakes'])}",
