@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // Experimental beta15 rollback: recover beta13 motion/input cadence after beta14 regressions.
-        versionCode = 136
-        versionName = "1.2.2-beta15"
+        // v1.2.2 RC1: native SYNC LAB 1-frame cadence, RA OFF on fresh installs, SleepManager Status API v1.
+        versionCode = 137
+        versionName = "1.2.2-rc1"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
