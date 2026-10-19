@@ -136,6 +136,12 @@ def triage(report: dict, logcat: str, expected_core: str | None = None,
         "causal_windows": len(causal),
         "causal_callbacks": causal_sum("callbacks"),
         "causal_real_frames": causal_sum("real_frames"),
+        # Beta14: a second *committed* frame in one GL callback is real
+        # catch-up, not invented PCM or a duplicated picture. In aligned
+        # windows: real frames = callbacks - no-step callbacks + extra steps.
+        "causal_recovery_frames": max(0, causal_sum("real_frames")
+            - causal_sum("callbacks") + causal_sum("no_step_callbacks"))
+            if causal else None,
         "causal_no_step_callbacks": causal_sum("no_step_callbacks"),
         "causal_overdue_callbacks": causal_sum("overdue_callbacks"),
         "causal_empty_pcm_frames": causal_sum("empty_pcm_frames"),
@@ -179,6 +185,7 @@ def markdown(v: dict) -> str:
         f"- Réveils audio anticipés : {fmt(v['early_pcm_wakes'])}",
         f"- Fenêtres de diagnostic producteur beta12 : {v['causal_windows']}",
         f"- Callbacks / vraies frames exécutées : {v['causal_callbacks']} / {v['causal_real_frames']}",
+        f"- Récupérations beta14 (seconde vraie frame sur un callback) : {fmt(v['causal_recovery_frames'])}",
         f"- Callbacks sans frame / backlog restant : {v['causal_no_step_callbacks']} / {v['causal_overdue_callbacks']}",
         f"- Vraies frames sans PCM : {v['causal_empty_pcm_frames']}",
         f"- Durée PCM produite, fenêtres alignées (~) : {fmt(v['causal_pcm_produced_ms'])} ms",
