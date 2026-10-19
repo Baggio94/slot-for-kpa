@@ -932,7 +932,8 @@ impl Engine {
                               "Dark", "Light", "Low", "Medium", "High", "Custom",
                                "LCD Grid V2", "Grid V2 + GBA Color", "zfast LCD",
                                "LCD1x", "Simpletex + GBA", "AGB-001",
-                               "AGS-001", "Sharp Bilinear", "12 HR", "24 HR"]
+                               "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
+                               "HYBRID LAB"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
@@ -3758,7 +3759,8 @@ impl Engine {
             8 => if scoped.rumble { 4 } else { 5 },
             9 => if scoped.eject_save { 4 } else { 5 },
             10 => if profile.show_fps { 4 } else { 5 },
-            11 => if profile.display_sync_pacing { 14 }
+            11 => if profile.hybrid_pacing { 37 }
+                else if profile.display_sync_pacing { 14 }
                 else if profile.responsive_pacing { 11 } else { 10 },
             12 => match profile.run_ahead_frames { 1 => 12, 2 => 13, _ => 5 },
             13 => if self.settings.show_wifi { 4 } else { 5 },
@@ -4386,7 +4388,8 @@ impl Engine {
                     |g| (g.fps, g.core_kind().as_str(), g.linked()));
                 let profile = self.current_emulation();
                 let requested = profile.run_ahead_frames;
-                let pacing_mode = if profile.display_sync_pacing { "display_sync" }
+                let pacing_mode = if profile.hybrid_pacing { "hybrid_lab" }
+                    else if profile.display_sync_pacing { "display_sync" }
                     else if profile.responsive_pacing { "responsive" } else { "standard" };
                 let probe = self.game.as_mut()
                     .map(|g| g.take_runahead_probe()).unwrap_or_default();
@@ -4677,7 +4680,13 @@ impl Engine {
         // Android's frame callback changes GLSurfaceView renderMode only when
         // an active game explicitly selected DISPLAY SYNC. No engine work or
         // GL resource ownership ever moves away from the GL render thread.
-        DISPLAY_SYNC.store(self.game.is_some() && profile.display_sync_pacing,
+        // HYBRID LAB uses the same Choreographer frame-request path as
+        // Display Sync, but its real core frame budget is separate.
+        // Linked sessions keep their prior render/pacing configuration.
+        DISPLAY_SYNC.store(self.game.is_some()
+            && (profile.display_sync_pacing || profile.hybrid_pacing)
+            && !(profile.hybrid_pacing && self.game.as_ref()
+                .is_some_and(GameSession::linked)),
             Ordering::Release);
         // Grab clear-cart textures before borrowing the mutable emulator
         // session. They are used only for the 220ms CRT start transition.
@@ -4720,6 +4729,10 @@ impl Engine {
                 // and inconsistent input response on the physical KONKR.
                 // STANDARD and fast-forward are not changed.
                 let responsive = profile.responsive_pacing && !fast;
+                // Beta7 experiment: VSync-triggered rendering with at most
+                // two REAL emulation steps to protect PCM after missed vsync.
+                // Never affect Link sessions, FF or the existing three modes.
+                let hybrid = profile.hybrid_pacing && !fast && !session.linked();
                 // A11: this is the *same* double-GBA lockstep on both ends,
                 // even for equal ROMs. One late packet must not make gameplay
                 // and audio permanently lose an emulated frame. Restrict
@@ -4733,6 +4746,9 @@ impl Engine {
                 if mgba_cable_pacing {
                     self.game_accum = crate::settings::frame_debt_mgba_cable(
                         self.game_accum, f64::from(dt), period);
+                } else if hybrid {
+                    self.game_accum = crate::settings::frame_debt_hybrid(
+                        self.game_accum, f64::from(dt), multiplier, period);
                 } else if profile.display_sync_pacing && responsive {
                     self.game_accum = crate::settings::frame_debt_display_sync(
                         self.game_accum, f64::from(dt), multiplier, period);
@@ -4742,6 +4758,7 @@ impl Engine {
                 }
                 let frame_limit = if mgba_cable_pacing { 2 }
                     else if fast { usize::from(live.ff_speed) * 4 }
+                    else if hybrid { 2 }
                     else if responsive { 1 } else { 4 };
                 // A13.1: revert the experimental second-frame budget.
                 // Real-world A13 KONKR/AVD tests suffered repeated Link
