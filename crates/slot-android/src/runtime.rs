@@ -4392,7 +4392,7 @@ impl Engine {
                     .map(|g| g.take_runahead_probe()).unwrap_or_default();
                 *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
                     Some(format!(
-                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} emu_step0={} emu_step1={} emu_step_multi={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} linked={linked}",
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} linked={linked}",
                         self.perf_step0, self.perf_step1, self.perf_step_multi,
                         requested, probe.calls, probe.snapshots_us,
                         probe.speculative_us, probe.restores_us, probe.max_us,
