@@ -236,6 +236,7 @@ internal class SlotStatusIndicators(
             lastBasicRequest = 0
             lastStatePoll = 0
             lastSleepStatusQuery = 0L
+            sleepApiKnown = false // refresh after returning from background
             registerSleepStatusObserver()
         } catch (_: RuntimeException) {
             subscribed = false
