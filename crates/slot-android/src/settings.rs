@@ -425,6 +425,18 @@ pub fn cycle_pacing(
 pub fn frame_debt_hybrid(prev: f64, elapsed: f64, speed: f64, period: f64) -> f64 {
     (prev + elapsed * speed).clamp(0.0, period * 4.0)
 }
+
+/// Beta14 experimental SOLO mGBA + SYNC LAB + Run-Ahead 1 only (call-site gated).
+/// If at least two genuine emulation frames are due, recover at most one
+/// extra committed frame on the current GL callback. This trades a rare
+/// intermediate displayed image for accurate PCM/game time; it NEVER
+/// synthesizes PCM, speeds AudioTrack, or affects any other pacing mode.
+/// Audio and video remain on the same committed timeline. Run-Ahead still
+/// runs only after both real frames, against the last committed state.
+pub fn sync_lab_mgba_ra1_frame_budget(debt: f64, period: f64) -> usize {
+    if period.is_finite() && period > 0.0 && debt.is_finite()
+        && debt >= 2.0 * period { 2 } else { 1 }
+}
 pub fn cycle_u8(value: u8, max: u8, right: bool) -> u8 {
     if right { if value >= max { 0 } else { value + 1 } }
     else if value == 0 || value > max { max } else { value - 1 }
@@ -703,6 +715,47 @@ mod tests {
             "do not discard extra fractions of emulation time");
         assert!(beta8_frames - beta7_frames < 100,
             "this must never simulate large catch-up bursts");
+    }
+
+    #[test]
+    fn beta14_mgba_ra1_budget_requires_two_real_due_frames() {
+        let p = 1.0 / 59.728;
+        assert_eq!(sync_lab_mgba_ra1_frame_budget(0.0, p), 1);
+        assert_eq!(sync_lab_mgba_ra1_frame_budget(1.999 * p, p), 1);
+        assert_eq!(sync_lab_mgba_ra1_frame_budget(2.0 * p, p), 2);
+        assert_eq!(sync_lab_mgba_ra1_frame_budget(4.0 * p, p), 2);
+        assert_eq!(sync_lab_mgba_ra1_frame_budget(100.0, 0.0), 1);
+        assert_eq!(sync_lab_mgba_ra1_frame_budget(f64::NAN, p), 1);
+    }
+
+    #[test]
+    fn beta14_reduces_lost_committed_frames_when_vsync_skips() {
+        let p = 1.0 / 59.728;
+        let mut old_debt = 0.0;
+        let mut new_debt = 0.0;
+        let mut old_frames = 0;
+        let mut new_frames = 0;
+        let mut recovery_callbacks = 0;
+        // KONKR-like 59.76Hz callbacks, one missed VSync per 150 delivered
+        // callbacks; no PCM is invented and no third real frame is permitted.
+        for i in 0..6000 {
+            let dt = if i % 150 == 41 { 2.0 / 59.76 } else { 1.0 / 59.76 };
+            old_debt = frame_debt_hybrid(old_debt, dt, 1.0, p);
+            new_debt = frame_debt_hybrid(new_debt, dt, 1.0, p);
+            if old_debt >= p { old_debt -= p; old_frames += 1; }
+            let budget = sync_lab_mgba_ra1_frame_budget(new_debt, p);
+            let mut stepped = 0;
+            while new_debt >= p && stepped < budget {
+                new_debt -= p;
+                new_frames += 1;
+                stepped += 1;
+            }
+            if stepped == 2 { recovery_callbacks += 1; }
+            assert!(new_debt >= 0.0 && new_debt <= 4.0 * p);
+        }
+        assert!(recovery_callbacks > 0);
+        assert!(new_frames > old_frames + 20,
+            "rare second frames must repay real overdue emulation/PCM time");
     }
 
     #[test]
