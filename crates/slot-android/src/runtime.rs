@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_void, CString};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use crate::game::GameSession;
 use crate::settings::Settings;
 use crate::emulation::EmulationProfile;
@@ -12,7 +12,7 @@ use crate::core_selection;
 use crate::cart_render::CartRender;
 use crate::core_picker::{CorePicker, Press};
 use slot_retro::ButtonMask;
-use jni::{JNIEnv, objects::{JObject, JString}, sys::{jint, jboolean, jshortArray, jstring}};
+use jni::{JNIEnv, objects::{JObject, JString}, sys::{jint, jboolean, jshortArray, jlongArray, jstring}};
 use std::sync::Mutex;
 use std::time::Instant;
 use std::net::Ipv4Addr;
@@ -173,6 +173,17 @@ fn early_pcm_wake_allowed(sync_lab: bool, runahead: u8, fast: bool,
                           linked: bool, committed_pcm: bool) -> bool {
     sync_lab && runahead > 0 && !fast && !linked && committed_pcm
 }
+
+// Beta12 read-only solo SYNC LAB production counters. Read by the existing
+// Android audio worker every ~5s. Cumulative atomics deliberately survive
+// report-boundary jitter; no extra libretro frames or thread ownership change.
+static SYNC_LAB_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_COMMITTED_FRAMES: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_PCM_PRODUCED_SHORTS: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_PCM_QUEUED_SHORTS: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_EMPTY_PCM_FRAMES: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_NO_STEP_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_OVERDUE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 
 static AUDIO: Mutex<VecDeque<i16>> = Mutex::new(VecDeque::new());
 static PLAYING: AtomicBool = AtomicBool::new(false);
@@ -4818,6 +4829,18 @@ impl Engine {
                     let queue_pcm = (!fast || (live.ff_sound &&
                         FF_AUDIO_SUPPORTED.load(Ordering::Acquire)))
                         && !samples.is_empty();
+                    if hybrid {
+                        SYNC_LAB_COMMITTED_FRAMES.fetch_add(1, Ordering::Relaxed);
+                        SYNC_LAB_PCM_PRODUCED_SHORTS
+                            .fetch_add(samples.len() as u64, Ordering::Relaxed);
+                        if samples.is_empty() {
+                            SYNC_LAB_EMPTY_PCM_FRAMES.fetch_add(1, Ordering::Relaxed);
+                        }
+                        if queue_pcm {
+                            SYNC_LAB_PCM_QUEUED_SHORTS
+                                .fetch_add(samples.len() as u64, Ordering::Relaxed);
+                        }
+                    }
                     if queue_pcm {
                         // Only the committed timeline's PCM is forwarded.
                         // Drop AUDIO's lock before waking its Java writer;
@@ -4838,6 +4861,19 @@ impl Engine {
                             on_pcm_ready();
                         }
                     }
+                }
+            }
+            // Observe whether sync-lab callbacks had sufficient accumulated
+            // game time to run a committed frame, and how often the one-frame
+            // budget leaves a real backlog. These counters NEVER change debt.
+            if profile.hybrid_pacing && !self.ff_held && !self.ff_latched
+                && !session.linked() && !self.rewind_held {
+                SYNC_LAB_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+                if stepped == 0 {
+                    SYNC_LAB_NO_STEP_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+                }
+                if self.game_accum >= 1.0 / session.fps {
+                    SYNC_LAB_OVERDUE_CALLBACKS.fetch_add(1, Ordering::Relaxed);
                 }
             }
             if stepped > 0 && !self.rewind_held && !self.ff_held && !self.ff_latched
@@ -6497,6 +6533,30 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetMgbaLinkRecover
 }
 
 #[unsafe(no_mangle)]
+/// Beta12 diagnostic-only counters in this stable order:
+/// callbacks, committed real frames, PCM shorts generated, PCM shorts queued,
+/// no-PCM real frames, zero-step callbacks, overdue-after-callback frames.
+/// The GL thread owns libretro. The Android audio thread only reads atomics.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioClockCounters(
+    mut env: JNIEnv<'_>, _this: JObject<'_>,
+) -> jlongArray {
+    let values: [i64; 7] = [
+        SYNC_LAB_CALLBACKS.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_COMMITTED_FRAMES.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_PCM_PRODUCED_SHORTS.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_PCM_QUEUED_SHORTS.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_EMPTY_PCM_FRAMES.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_NO_STEP_CALLBACKS.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_OVERDUE_CALLBACKS.load(Ordering::Relaxed) as i64,
+    ];
+    let Ok(result) = env.new_long_array(values.len() as i32) else {
+        return std::ptr::null_mut();
+    };
+    let _ = env.set_long_array_region(&result, 0, &values);
+    result.into_raw()
+}
+
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioQueuedShorts(
     _env: *mut c_void, _this: *mut c_void,
 ) -> jint {
