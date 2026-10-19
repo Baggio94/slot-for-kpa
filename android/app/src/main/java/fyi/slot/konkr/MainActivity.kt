@@ -1412,25 +1412,41 @@ class MainActivity : Activity() {
                     // count (e.g. on a route change). Never silently discard
                     // that PCM suffix, as it would insert an audible gap.
                     // The helper inlines the lambda: no new hot-path objects.
-                    val written = AudioWritePolicy.writeComplete(samples) { offset, remaining ->
+                    // A WRITE_BLOCKING write before play() must never be
+                    // larger than the dormant track can hold: an oversized
+                    // first burst could deadlock waiting for a playback clock
+                    // we have intentionally not started yet. At most 2048
+                    // interleaved shorts (~15.6ms at 65,536Hz stereo) are
+                    // preloaded; remaining samples are drained AFTER play().
+                    val firstLength = if (awaitingFirstPcm) {
+                        minOf(samples.size, 2048)
+                    } else samples.size
+                    val firstWritten = AudioWritePolicy.writeComplete(
+                        samples, start = 0, length = firstLength
+                    ) { offset, remaining ->
                         player.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
                     }
+                    if (awaitingFirstPcm && firstWritten > 0) {
+                        player.play()
+                        awaitingFirstPcm = false
+                        audioProbeAt = SystemClock.elapsedRealtime()
+                        playbackHeadAtProbe =
+                            player.playbackHeadPosition.toLong() and 0xffffffffL
+                    }
+                    val written = if (firstWritten == firstLength &&
+                        samples.size > firstLength && audioRunning.get()) {
+                        firstWritten + AudioWritePolicy.writeComplete(
+                            samples, start = firstLength,
+                            length = samples.size - firstLength
+                        ) { offset, remaining ->
+                            player.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
+                        }
+                    } else firstWritten
                     if (written < samples.size && audioRunning.get()) {
                         Log.w(TAG, "AudioTrack incomplete PCM write: " +
                             "$written/${samples.size} shorts")
                     }
-                    if (written > 0) {
-                        playedShorts += written.toLong()
-                        if (awaitingFirstPcm) {
-                            // A single existing libretro frame is the entire
-                            // startup prefill; no extra fixed buffer latency.
-                            player.play()
-                            awaitingFirstPcm = false
-                            audioProbeAt = SystemClock.elapsedRealtime()
-                            playbackHeadAtProbe =
-                                player.playbackHeadPosition.toLong() and 0xffffffffL
-                        }
-                    }
+                    playedShorts += written.toLong()
                     // Diagnostic only; do not modify audio queue, buffer size or
                     // event-driven wakeup. A rise here distinguishes Android
                     // playback underruns from mGBA mixer discontinuities.
