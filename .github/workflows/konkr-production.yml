@@ -159,9 +159,9 @@ jobs:
           import re
           from pathlib import Path
           source = Path("android/app/src/main/java/fyi/slot/konkr/MainActivity.kt").read_text()
-          expected = set(re.findall(r"\\bexternal\\s+fun\\s+([A-Za-z0-9_]+)\\s*\\(", source))
+          expected = set(re.findall(r"\bexternal\s+fun\s+([A-Za-z0-9_]+)\s*\(", source))
           nm_text = Path(__import__("os").environ["RUNNER_TEMP"], "slot-jni-exports.txt").read_text()
-          exported = set(re.findall(r"\\bJava_fyi_slot_konkr_MainActivity_([A-Za-z0-9_]+)\\b", nm_text))
+          exported = set(re.findall(r"\bJava_fyi_slot_konkr_MainActivity_([A-Za-z0-9_]+)\b", nm_text))
           assert len(expected) >= 50, f"Unexpected external declaration count: {len(expected)}"
           missing = sorted(expected - exported)
           if missing:
