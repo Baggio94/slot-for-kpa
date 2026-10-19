@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // Experimental 1.2.2-beta13 fixes JNI ABI export for beta12 clock/PCM diagnostics.
-        versionCode = 134
-        versionName = "1.2.2-beta13"
+        // Experimental beta14: bounded SOLO mGBA + SYNC LAB + Run-Ahead 1 debt recovery.
+        versionCode = 135
+        versionName = "1.2.2-beta14"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
