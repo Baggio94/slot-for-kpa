@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.KeyEvent
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicLongArray
 
 /**
  * Read-only emulator instrumentation. Called from UI/GL/audio threads.
@@ -21,6 +22,9 @@ internal object EmulationDiagnostics {
     private val glCount = AtomicLong(0L)
     private val glSlow25 = AtomicLong(0L)
     private val glSlow40 = AtomicLong(0L)
+    // Allocation-free 1ms histogram of callback gaps. 65ms bucket saturates
+    // longer pauses; quantiles are approximate and NOT display-present times.
+    private val glGapMs = AtomicLongArray(66)
     private val keyToGlUsTotal = AtomicLong(0L)
     private val keyToGlCount = AtomicLong(0L)
     private val keyToGlUsMax = AtomicLong(0L)
@@ -59,6 +63,7 @@ internal object EmulationDiagnostics {
             val gap = now - glLastNs
             if (gap > 25_000_000L) glSlow25.incrementAndGet()
             if (gap > 40_000_000L) glSlow40.incrementAndGet()
+            glGapMs.incrementAndGet((gap / 1_000_000L).coerceIn(0L, 65L).toInt())
         }
         glLastNs = now
         glCount.incrementAndGet()
@@ -98,6 +103,7 @@ internal object EmulationDiagnostics {
         glCount.set(0L)
         glSlow25.set(0L)
         glSlow40.set(0L)
+        for (i in 0 until glGapMs.length()) glGapMs.set(i, 0L)
         keyToGlUsTotal.set(0L)
         keyToGlCount.set(0L)
         keyToGlUsMax.set(0L)
@@ -140,13 +146,29 @@ internal object EmulationDiagnostics {
         val queuedMs = if (sampleRate > 0)
             queuedShorts.toDouble() * 500.0 / sampleRate else 0.0
         val glRate = frames * 1000.0 / spanMs
+        // Consume bucket counters only once each 5s (never sort or allocate
+        // on the GL or audio threads). Millisecond buckets imply ±0.5ms error.
+        val gapCounts = LongArray(glGapMs.length()) { glGapMs.getAndSet(it, 0L) }
+        val gapTotal = gapCounts.sum()
+        fun gapPercentileUs(percent: Int): Long {
+            if (gapTotal <= 0L) return 0L
+            val rank = (gapTotal * percent + 99L) / 100L
+            var seen = 0L
+            for (i in gapCounts.indices) {
+                seen += gapCounts[i]
+                if (seen >= rank) return i * 1000L + 500L
+            }
+            return 65_500L
+        }
         Log.i(TAG, String.format(Locale.ROOT,
             "SAMPLE span_ms=%d gl_callback_fps=%.3f gl_over25=%d gl_over40=%d " +
+                "gl_gap_samples=%d gl_gap_p50_us=%d gl_gap_p95_us=%d gl_gap_p99_us=%d " +
                 "input_down=%d input_next_gl_count=%d input_next_gl_mean_us=%d " +
                 "input_next_gl_max_us=%d audio_chunks=%d audio_pcm_shorts=%d " +
                 "audio_empty=%d audio_jump_candidates=%d audio_queued_ms=%.2f " +
                 "audiotrack_underruns=%d %s",
             spanMs, glRate, glSlow25.getAndSet(0L), glSlow40.getAndSet(0L),
+            gapTotal, gapPercentileUs(50), gapPercentileUs(95), gapPercentileUs(99),
             keys, latencyCount, meanLatencyUs, maxLatencyUs,
             audioChunks.getAndSet(0L), audioSamples.getAndSet(0L),
             audioEmpty.getAndSet(0L), audioGapCandidates.getAndSet(0L),
