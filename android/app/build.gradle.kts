@@ -85,4 +85,6 @@ android {
 dependencies {
     implementation("androidx.core:core:1.13.1")
     testImplementation("junit:junit:4.13.2")
+    // Android's org.json methods are stubbed in local JVM tests.
+    testImplementation("org.json:json:20240303")
 }
