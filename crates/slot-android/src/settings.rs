@@ -236,9 +236,13 @@ impl Settings {
         settings.shader_gba=Shader::Lcd3x;
         settings.shader_gbc=Shader::Lcd3x;
         settings.shader_gb=Shader::Lcd3x;
-        settings.responsive_pacing=true;
-        settings.display_sync_pacing=true;
-        settings.run_ahead_frames=1;
+        // v1.2.2 RC: on-device Wario Land 4 tests found SYNC LAB stable
+        // without Run-Ahead, while Run-Ahead audio remains a 1.2.3 task.
+        // Fresh installs only: never change existing saved user choices.
+        settings.responsive_pacing=false;
+        settings.display_sync_pacing=false;
+        settings.hybrid_pacing=true;
+        settings.run_ahead_frames=0;
         settings
     }
     pub fn load(dir: &Path) -> Self {
@@ -793,7 +797,7 @@ mod tests {
         let old_sync: Settings = serde_json::from_str(
             r#"{"responsive_pacing":true,"display_sync_pacing":true}"#).unwrap();
         assert!(old_sync.display_sync_pacing && !old_sync.hybrid_pacing);
-        assert!(!Settings::first_install_defaults().hybrid_pacing);
+        assert!(Settings::first_install_defaults().hybrid_pacing);
     }
 
     #[test]
@@ -817,10 +821,12 @@ mod tests {
         // GAMEPLAY
         assert_eq!(s.ff_speed,2);
         assert!(s.ff_sound && s.rewind && s.turbo && s.rumble && s.eject_save);
-        // EMULATION: Display Sync is encoded by BOTH pacing flags on.
+        // EMULATION: SYNC LAB is the exclusive hybrid-pacing flag.
+        // Preserve all three legacy serde defaults for old saved JSON.
         assert!(!s.show_fps);
-        assert!(s.responsive_pacing && s.display_sync_pacing);
-        assert_eq!(s.run_ahead_frames,1);
+        assert!(s.hybrid_pacing);
+        assert!(!s.responsive_pacing && !s.display_sync_pacing);
+        assert_eq!(s.run_ahead_frames,0);
     }
     #[test]
     fn missing_settings_file_gets_new_defaults_but_existing_json_is_untouched() {
