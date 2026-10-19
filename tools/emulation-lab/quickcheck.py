@@ -92,6 +92,18 @@ def triage(report: dict, logcat: str, expected_core: str | None = None,
         cautions.append("Compteur d'échecs Run-Ahead absent.")
     elif failures > 0:
         issues.append(f"{failures} échecs Run-Ahead détectés.")
+    # Beta15 physical motion/input regression guard. The 5-second
+    # EmuDiag SAMPLE holds a last-1-second multi-step counter; hence
+    # this is a detection sample, NOT the full-run number of callbacks.
+    # Solo SYNC LAB must commit at most one core frame per GL callback.
+    sync_lab_double_step_samples = sum(
+        int(t.get("emu_step_multi_1s", "0"))
+        for t in samples if t.get("pacing_mode") == "sync_lab"
+        and t.get("linked") == "false"
+    )
+    if sync_lab_double_step_samples > 0:
+        issues.append(f"SYNC LAB: {sync_lab_double_step_samples} double-steps dans les fenêtres "
+                      "de diagnostic (risque de saccades/latence commandes).")
     if not depths:
         cautions.append("Réserve AudioTrack non disponible dans le logcat.")
     elif min(depths) < 1:
@@ -126,6 +138,7 @@ def triage(report: dict, logcat: str, expected_core: str | None = None,
         "gl_callback_fps_mean": (report.get("gl_callback_fps") or {}).get("mean"),
         "gl_over25": report.get("gl_over25_total"),
         "underruns": underruns, "runahead_failures": failures,
+        "sync_lab_double_steps_sampled": sync_lab_double_step_samples,
         "output_min_ms": round(min(depths), 3) if depths else None,
         "output_median_min_ms": round(median(depths), 3) if depths else None,
         "output_median_max_ms": round(median(maximum_depths), 3) if maximum_depths else None,
@@ -170,6 +183,7 @@ def markdown(v: dict) -> str:
         f"- Callbacks GL >25 ms : {fmt(v['gl_over25'])}",
         f"- **Underruns AudioTrack : {fmt(v['underruns'])}**",
         f"- Échecs Run-Ahead : {fmt(v['runahead_failures'])}",
+        f"- Double-steps SYNC LAB détectés (échantillons 1s) : {v['sync_lab_double_steps_sampled']}",
         f"- Réserve AudioTrack minimale : {fmt(v['output_min_ms'])} ms",
         f"- Médiane des minima par fenêtre : {fmt(v['output_median_min_ms'])} ms",
         f"- Médiane des maxima par fenêtre : {fmt(v['output_median_max_ms'])} ms",
