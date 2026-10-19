@@ -91,6 +91,10 @@ class MainActivity : Activity() {
     external fun nativeSurfaceCreated(): Boolean
     external fun nativeSurfaceChanged(width: Int, height: Int)
     external fun nativeDrawFrame()
+    // Beta9 optional actual display present timestamp via EGL. Read-only.
+    external fun nativeEglPresentationReset()
+    external fun nativeEglPresentationTick()
+    external fun nativeEglPresentationReport(): String
     external fun nativeKey(code: Int, pressed: Boolean)
     external fun nativeResetInput()
     external fun nativeExternalReturn()
@@ -205,7 +209,7 @@ class MainActivity : Activity() {
     private lateinit var performanceHud: TextView
     private lateinit var shelfStatus: SlotStatusIndicators
     private var lastPerfPoll = 0L
-    private var displaySyncApplied = false
+    @Volatile private var displaySyncApplied = false
     @Volatile private var latestVsyncFrameNs = 0L
     // RA cached game details can be ready before Slot's seating/CRT sequence
     // has set PLAYING=true. Hold that notice, then reveal it on actual gameplay.
@@ -727,6 +731,7 @@ class MainActivity : Activity() {
                     private var vsyncAgeMaxUs = 0L
                     private var vsyncAgeCount = 0
                     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+                        nativeEglPresentationReset()
                         ready = nativeSurfaceCreated()
                         if (!ready) Log.e(TAG, "Slot GLES initialization failed")
                         else runOnUiThread {
@@ -771,6 +776,12 @@ class MainActivity : Activity() {
                             GLES20.glClearColor(0f, 0f, 0f, 1f)
                             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
                         }
+                        // Beta9: record the ID of the frame swapped AFTER this
+                        // callback and query earlier EGL presentation timestamps.
+                        // Driver can report unsupported; no rendering changes.
+                        if (ready && displaySyncApplied && nativeIsPlaying()) {
+                            nativeEglPresentationTick()
+                        }
                         // Diagnostic-only. EGL swaps after this callback returns:
                         // callback gaps are not true presentation timestamps.
                         if (ready && nativeIsPlaying()) {
@@ -795,6 +806,9 @@ class MainActivity : Activity() {
                                     "native_over_16ms=$nativeOver16ms native_over_33ms=$nativeOver33ms " +
                                     "vsync_gl_age_mean_us=${if (vsyncAgeCount > 0) vsyncAgeTotalUs / vsyncAgeCount else -1} " +
                                     "vsync_gl_age_max_us=$vsyncAgeMaxUs")
+                                if (displaySyncApplied) {
+                                    Log.i(TAG, nativeEglPresentationReport())
+                                }
                                 probeStartNs = a12StartedNs
                                 callbacks = 0
                                 gapOver25ms = 0
