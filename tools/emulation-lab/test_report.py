@@ -54,6 +54,33 @@ class EmulationLabReportTests(unittest.TestCase):
         self.assertEqual(result["emu_step0_1s"]["mean"], 1.5)
         self.assertEqual(result["gl_gap_p95_us"]["n"], 2)
 
+    def test_mixed_runahead_creates_separate_segments(self):
+        old = ("I/SlotEmuDiag: SAMPLE span_ms=5022 core=gpsp "
+               "runahead_requested=0 pacing_mode=standard emu_fps=59.882")
+        new = ("I/SlotEmuDiag: SAMPLE span_ms=5013 core=gpsp "
+               "runahead_requested=1 pacing_mode=standard emu_fps=59.019")
+        result = parse_log(old + "\n" + new, expected_duration_s=60)
+        self.assertEqual(result["windows"], 2)
+        self.assertEqual(result["requested_duration_s"], 60)
+        self.assertEqual(result["requested_runahead"], ["0", "1"])
+        self.assertEqual(len(result["capture_segments"]), 2)
+        self.assertEqual(result["capture_segments"][0]["config"]["runahead_requested"], "0")
+        self.assertEqual(result["capture_segments"][0]["duration_s"], 5.02)
+        self.assertEqual(result["capture_segments"][1]["config"]["runahead_requested"], "1")
+        self.assertEqual(result["capture_segments"][1]["emu_fps_mean"], 59.019)
+        self.assertTrue(any("MIXED CAPTURE" in w for w in result["warnings"]))
+        self.assertTrue(any("PARTIAL CAPTURE" in w for w in result["warnings"]))
+
+    def test_adequate_single_core_capture_has_no_false_warnings(self):
+        sample = ("I/SlotEmuDiag: SAMPLE span_ms=5010 core=mgba "
+                  "runahead_requested=1 pacing_mode=standard emu_fps=59.727")
+        result = parse_log("\n".join([sample] * 11), expected_duration_s=60)
+        self.assertEqual(len(result["capture_segments"]), 1)
+        self.assertEqual(result["capture_segments"][0]["windows"], 11)
+        self.assertEqual(result["capture_segments"][0]["duration_s"], 55.11)
+        self.assertFalse(any("MIXED CAPTURE" in w for w in result["warnings"]))
+        self.assertFalse(any("PARTIAL CAPTURE" in w for w in result["warnings"]))
+
     def test_empty_capture_has_no_fake_success(self):
         r = parse_log("Device started, no game running")
         self.assertEqual(r["windows"], 0)
