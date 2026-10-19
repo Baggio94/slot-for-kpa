@@ -1306,6 +1306,9 @@ class MainActivity : Activity() {
                 Log.w(TAG, "Audio priority unavailable; using default worker priority", error)
             }
             var player: AudioTrack? = null
+            // Do not start the PCM output clock while no libretro samples
+            // exist. On the first chunk, preload into AudioTrack then play.
+            var awaitingFirstPcm = false
             var rate = 0
             var requestedSpeed = 0
             var observedUnderruns = 0
@@ -1356,10 +1359,10 @@ class MainActivity : Activity() {
                         emptyAudioReads = 0
                         playedShorts = 0L
                         audioProbeAt = SystemClock.elapsedRealtime()
-                        player.play()
-                        playbackHeadAtProbe =
-                            player.playbackHeadPosition.toLong() and 0xffffffffL
-                    } else if (player.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                        awaitingFirstPcm = true
+                        playbackHeadAtProbe = 0L
+                    } else if (!awaitingFirstPcm &&
+                        player.playState != AudioTrack.PLAYSTATE_PLAYING) {
                         // A paused legacy buffer is reused when the next game has
                         // the same sample rate; it still must be resumed.
                         player.play()
@@ -1405,11 +1408,28 @@ class MainActivity : Activity() {
                         continue
                     }
                     audioFrameSignal.drainPermits()
-                    val written = player.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
-                    if (written < 0) {
-                        Log.w(TAG, "AudioTrack write error: $written")
-                    } else {
+                    // WRITE_BLOCKING can still return a positive *partial*
+                    // count (e.g. on a route change). Never silently discard
+                    // that PCM suffix, as it would insert an audible gap.
+                    // The helper inlines the lambda: no new hot-path objects.
+                    val written = AudioWritePolicy.writeComplete(samples) { offset, remaining ->
+                        player.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
+                    }
+                    if (written < samples.size && audioRunning.get()) {
+                        Log.w(TAG, "AudioTrack incomplete PCM write: " +
+                            "$written/${samples.size} shorts")
+                    }
+                    if (written > 0) {
                         playedShorts += written.toLong()
+                        if (awaitingFirstPcm) {
+                            // A single existing libretro frame is the entire
+                            // startup prefill; no extra fixed buffer latency.
+                            player.play()
+                            awaitingFirstPcm = false
+                            audioProbeAt = SystemClock.elapsedRealtime()
+                            playbackHeadAtProbe =
+                                player.playbackHeadPosition.toLong() and 0xffffffffL
+                        }
                     }
                     // Diagnostic only; do not modify audio queue, buffer size or
                     // event-driven wakeup. A rise here distinguishes Android
