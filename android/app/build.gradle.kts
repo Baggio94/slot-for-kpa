@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // Experimental 1.2.2-beta3 adds opt-in AVD/KONKR emulator telemetry to beta2 (122).
-        versionCode = 123
-        versionName = "1.2.2-beta3"
+        // Experimental 1.2.2-beta4 adds cartridge shell parity and A/V clock diagnostics.
+        versionCode = 124
+        versionName = "1.2.2-beta4"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
