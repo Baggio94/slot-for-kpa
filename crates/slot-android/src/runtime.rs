@@ -567,6 +567,10 @@ struct Engine {
     perf_rendered: u32,
     perf_emulated: u32,
     perf_catchup: u32,
+    // Read-only cadence: real libretro steps per GL callback, not RA guesses.
+    perf_step0: u32,
+    perf_step1: u32,
+    perf_step_multi: u32,
     external_pending: bool,
     overlay: ShelfOverlay,
     settings: Settings,
@@ -1074,6 +1078,9 @@ impl Engine {
             perf_rendered: 0,
             perf_emulated: 0,
             perf_catchup: 0,
+            perf_step0: 0,
+            perf_step1: 0,
+            perf_step_multi: 0,
             external_pending: false,
             overlay: ShelfOverlay::None,
             settings,
@@ -4379,11 +4386,14 @@ impl Engine {
                     |g| (g.fps, g.core_kind().as_str(), g.linked()));
                 let profile = self.current_emulation();
                 let requested = profile.run_ahead_frames;
+                let pacing_mode = if profile.display_sync_pacing { "display_sync" }
+                    else if profile.responsive_pacing { "responsive" } else { "standard" };
                 let probe = self.game.as_mut()
                     .map(|g| g.take_runahead_probe()).unwrap_or_default();
                 *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
                     Some(format!(
-                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} linked={linked}",
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} emu_step0={} emu_step1={} emu_step_multi={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} linked={linked}",
+                        self.perf_step0, self.perf_step1, self.perf_step_multi,
                         requested, probe.calls, probe.snapshots_us,
                         probe.speculative_us, probe.restores_us, probe.max_us,
                         probe.failures));
@@ -4395,12 +4405,18 @@ impl Engine {
                 self.perf_rendered = 0;
                 self.perf_emulated = 0;
                 self.perf_catchup = 0;
+                self.perf_step0 = 0;
+                self.perf_step1 = 0;
+                self.perf_step_multi = 0;
             }
         } else {
             self.perf_last = now;
             self.perf_rendered = 0;
             self.perf_emulated = 0;
             self.perf_catchup = 0;
+            self.perf_step0 = 0;
+            self.perf_step1 = 0;
+            self.perf_step_multi = 0;
             *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) = None;
             if PERF_ACTIVE.swap(false, Ordering::AcqRel) {
                 *PERF_STATUS.lock().unwrap_or_else(|e|e.into_inner()) = None;
@@ -4789,6 +4805,11 @@ impl Engine {
                 // Predicted video never advances the real saved/RA timeline.
                 session.prepare_runahead(self.buttons, live.turbo,
                     profile.run_ahead_frames);
+            }
+            match stepped {
+                0 => self.perf_step0 = self.perf_step0.saturating_add(1),
+                1 => self.perf_step1 = self.perf_step1.saturating_add(1),
+                _ => self.perf_step_multi = self.perf_step_multi.saturating_add(1),
             }
             if stepped > 1 {
                 self.perf_catchup = self.perf_catchup.saturating_add(1);
