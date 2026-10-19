@@ -6557,6 +6557,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioClockCounters
     result.into_raw()
 }
 
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioQueuedShorts(
     _env: *mut c_void, _this: *mut c_void,
 ) -> jint {
