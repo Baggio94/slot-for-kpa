@@ -236,6 +236,13 @@ impl Probe {
         let status = if self.status == "supported" && !complete {
             "incomplete_timestamps"
         } else { self.status };
+        let gap_mean = if complete && self.gap_count > 0 {
+            (self.gap_sum_us / self.gap_count) as i64
+        } else { -1 };
+        let gap_p95 = if complete { p95 as i64 } else { -1 };
+        let gap_max = if complete { self.gap_max_us as i64 } else { -1 };
+        let over25 = if complete { self.gap_over25 as i64 } else { -1 };
+        let over35 = if complete { self.gap_over35 as i64 } else { -1 };
         let result = format!(
             "EGL presentation: status={} callbacks={} present_samples={} present_fps={:.2} \
              present_fps_valid={} report_span_s={:.3} \
@@ -243,9 +250,7 @@ impl Probe {
              present_over25={} present_over35={} lost={} errors={} \
              probe_us_per_callback={:.2}",
             status, self.ticks, self.present_count, verified_fps,
-            complete, span,
-            if self.gap_count > 0 { self.gap_sum_us / self.gap_count } else { 0 },
-            p95, self.gap_max_us, self.gap_over25, self.gap_over35,
+            complete, span, gap_mean, gap_p95, gap_max, over25, over35,
             self.pending_lost, self.query_errors,
             if self.ticks > 0 { self.query_time_us as f64 / self.ticks as f64 } else { 0.0 },
         );
