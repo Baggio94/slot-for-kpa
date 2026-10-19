@@ -37,6 +37,27 @@ class AudioWritePolicyTest {
         assertEquals(0, AudioWritePolicy.writeComplete(ShortArray(8)) { _, _ -> 9 })
     }
 
+    @Test fun firstPrefillCanDrainOnlyAnInitialPcmSlice() {
+        val samples = ShortArray(20_000)
+        var firstCalls = 0
+        val initial = AudioWritePolicy.writeComplete(
+            samples, start = 0, length = 2048
+        ) { offset, remaining ->
+            firstCalls++
+            assertEquals(0, offset)
+            remaining
+        }
+        assertEquals(2048, initial)
+        assertEquals(1, firstCalls)
+        val rest = AudioWritePolicy.writeComplete(
+            samples, start = initial, length = samples.size - initial
+        ) { offset, remaining ->
+            assertEquals(2048, offset)
+            remaining
+        }
+        assertEquals(samples.size, initial + rest)
+    }
+
     @Test fun emptyBufferAvoidsAudioCalls() {
         var calls = 0
         assertEquals(0, AudioWritePolicy.writeComplete(shortArrayOf()) { _, _ ->
