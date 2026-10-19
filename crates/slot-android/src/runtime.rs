@@ -4776,9 +4776,18 @@ impl Engine {
                     self.game_accum = crate::settings::frame_debt(
                         self.game_accum, f64::from(dt), multiplier, period, fast, responsive);
                 }
+                // Beta15: reactivity-first rollback. A beta14 physical
+                // KONKR test reached zero underruns with 373 callbacks
+                // executing two mGBA frames, but the owner perceived
+                // worse motion smoothness and control response. Restore
+                // strictly one committed frame per solo SYNC LAB callback.
+                // Keep the beta13 causal PCM diagnostics to investigate
+                // audio without concealing a latency regression.
                 let frame_limit = if mgba_cable_pacing { 2 }
                     else if fast { usize::from(live.ff_speed) * 4 }
-                    else if hybrid { 1 }
+                    else if hybrid {
+                        crate::settings::sync_lab_reactivity_first_frame_budget()
+                    }
                     else if responsive { 1 } else { 4 };
                 // A13.1: revert the experimental second-frame budget.
                 // Real-world A13 KONKR/AVD tests suffered repeated Link
