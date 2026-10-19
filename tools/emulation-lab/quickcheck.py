@@ -35,6 +35,7 @@ def triage(report: dict, logcat: str, expected_core: str | None = None,
     capacities = []
     early = []
     egl = []
+    causal = []
     for line in logcat.splitlines():
         if "AudioTrack queue depth:" in line:
             m = values(line.partition("AudioTrack queue depth:")[2])
@@ -57,6 +58,8 @@ def triage(report: dict, logcat: str, expected_core: str | None = None,
                     pass
         if "EGL presentation:" in line:
             egl.append(values(line.partition("EGL presentation:")[2]))
+        if "SYNC LAB causal:" in line:
+            causal.append(values(line.partition("SYNC LAB causal:")[2]))
     configs = {(s.get("core"), s.get("runahead_requested"), s.get("pacing_mode"))
                for s in samples}
     cores = sorted({v[0] for v in configs if v[0]})
@@ -99,6 +102,16 @@ def triage(report: dict, logcat: str, expected_core: str | None = None,
                    or e.get("status") == "incomplete_timestamps"
                    or e.get("present_fps_valid") == "false" for e in egl):
         cautions.append("Timestamps EGL incomplets : FPS de présentation non fiables.")
+    # A per-5s audio diagnostic from beta12 is purely explanatory: its
+    # producer deficit has report-boundary jitter and must never override
+    # actual AudioTrack underruns or claim to measure subjective latency.
+    def causal_sum(key: str) -> int:
+        return sum(int(c.get(key, "0")) for c in causal)
+    def causal_total_float(key: str) -> float:
+        return round(sum(float(c.get(key, "0")) for c in causal), 2)
+    valid_causal = [c for c in causal
+                    if "real_frames" in c and "pcm_produced_shorts" in c]
+    causal = valid_causal
     # Invalid EGL telemetry does NOT automatically make the audio test fail.
     # Only missing/near-empty output queue metrics affect audio confidence.
     audio_cautions = [c for c in cautions if "EGL" not in c]
@@ -120,6 +133,16 @@ def triage(report: dict, logcat: str, expected_core: str | None = None,
         "output_windows_below_1ms": sum(n < 1 for n in depths),
         "output_windows_below_5ms": sum(n < 5 for n in depths),
         "output_windows": len(depths), "early_pcm_wakes": sum(early) if early else None,
+        "causal_windows": len(causal),
+        "causal_callbacks": causal_sum("callbacks"),
+        "causal_real_frames": causal_sum("real_frames"),
+        "causal_no_step_callbacks": causal_sum("no_step_callbacks"),
+        "causal_overdue_callbacks": causal_sum("overdue_callbacks"),
+        "causal_empty_pcm_frames": causal_sum("empty_pcm_frames"),
+        "causal_pcm_produced_ms": causal_total_float("pcm_produced_ms") if causal else None,
+        "causal_producer_deficit_ms": causal_total_float("producer_deficit_ms") if causal else None,
+        "wake_to_read_max_us": max((int(c.get("wake_to_read_max_us", 0))
+                                    for c in causal), default=None),
         "issues": issues, "cautions": cautions,
         "limits": [
             "Ne mesure pas la fluidité perçue ni la latence entrée->écran/son.",
@@ -154,6 +177,13 @@ def markdown(v: dict) -> str:
         f"- Fenêtres avec réserve <1 ms : {v['output_windows_below_1ms']}/{v['output_windows']}",
         f"- Fenêtres avec réserve <5 ms : {v['output_windows_below_5ms']}/{v['output_windows']}",
         f"- Réveils audio anticipés : {fmt(v['early_pcm_wakes'])}",
+        f"- Fenêtres de diagnostic producteur beta12 : {v['causal_windows']}",
+        f"- Callbacks / vraies frames exécutées : {v['causal_callbacks']} / {v['causal_real_frames']}",
+        f"- Callbacks sans frame / backlog restant : {v['causal_no_step_callbacks']} / {v['causal_overdue_callbacks']}",
+        f"- Vraies frames sans PCM : {v['causal_empty_pcm_frames']}",
+        f"- Durée PCM produite, fenêtres alignées (~) : {fmt(v['causal_pcm_produced_ms'])} ms",
+        f"- Écart producteur - temps mesuré (~) : {fmt(v['causal_producer_deficit_ms'])} ms",
+        f"- Réveil PCM vers lecture, maximum observé (non latence réelle) : {fmt(v['wake_to_read_max_us'])} µs",
     ]
     if v["issues"]:
         lines += ["", "**Points bloquants**"] + ["- " + x for x in v["issues"]]
