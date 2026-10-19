@@ -933,7 +933,7 @@ impl Engine {
                                "LCD Grid V2", "Grid V2 + GBA Color", "zfast LCD",
                                "LCD1x", "Simpletex + GBA", "AGB-001",
                                "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
-                               "HYBRID LAB"]
+                               "SYNC LAB"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
@@ -4388,14 +4388,15 @@ impl Engine {
                     |g| (g.fps, g.core_kind().as_str(), g.linked()));
                 let profile = self.current_emulation();
                 let requested = profile.run_ahead_frames;
-                let pacing_mode = if profile.hybrid_pacing { "hybrid_lab" }
+                let pacing_mode = if profile.hybrid_pacing { "sync_lab" }
                     else if profile.display_sync_pacing { "display_sync" }
                     else if profile.responsive_pacing { "responsive" } else { "standard" };
                 let probe = self.game.as_mut()
                     .map(|g| g.take_runahead_probe()).unwrap_or_default();
                 *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
                     Some(format!(
-                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} linked={linked}",
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} linked={linked}",
+                        self.game_accum * 1000.0,
                         self.perf_step0, self.perf_step1, self.perf_step_multi,
                         requested, probe.calls, probe.snapshots_us,
                         probe.speculative_us, probe.restores_us, probe.max_us,
@@ -4680,7 +4681,7 @@ impl Engine {
         // Android's frame callback changes GLSurfaceView renderMode only when
         // an active game explicitly selected DISPLAY SYNC. No engine work or
         // GL resource ownership ever moves away from the GL render thread.
-        // HYBRID LAB uses the same Choreographer frame-request path as
+        // SYNC LAB uses the same Choreographer frame-request path as
         // Display Sync, but its real core frame budget is separate.
         // Linked sessions keep their prior render/pacing configuration.
         DISPLAY_SYNC.store(self.game.is_some()
@@ -4729,8 +4730,9 @@ impl Engine {
                 // and inconsistent input response on the physical KONKR.
                 // STANDARD and fast-forward are not changed.
                 let responsive = profile.responsive_pacing && !fast;
-                // Beta7 experiment: VSync-triggered rendering with at most
-                // two REAL emulation steps to protect PCM after missed vsync.
+                // Beta8 experiment: VSync-triggered rendering, keep overdue
+                // simulation time across callbacks but execute ONE real
+                // core frame per callback. No skipped intermediate pictures.
                 // Never affect Link sessions, FF or the existing three modes.
                 let hybrid = profile.hybrid_pacing && !fast && !session.linked();
                 // A11: this is the *same* double-GBA lockstep on both ends,
@@ -4758,7 +4760,7 @@ impl Engine {
                 }
                 let frame_limit = if mgba_cable_pacing { 2 }
                     else if fast { usize::from(live.ff_speed) * 4 }
-                    else if hybrid { 2 }
+                    else if hybrid { 1 }
                     else if responsive { 1 } else { 4 };
                 // A13.1: revert the experimental second-frame budget.
                 // Real-world A13 KONKR/AVD tests suffered repeated Link
