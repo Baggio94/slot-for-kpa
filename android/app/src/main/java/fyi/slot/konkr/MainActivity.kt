@@ -1442,6 +1442,17 @@ class MainActivity : Activity() {
                     // Immutable reference for the inlined PCM writer. Avoid
                     // capturing a mutable nullable AudioTrack in hot-path lambdas.
                     val track = player ?: continue
+                    // Observe output depth BEFORE writing: post-write depth
+                    // alone hides a playback starvation just before a fresh
+                    // libretro chunk arrives. This is a read-only sample.
+                    if (!awaitingFirstPcm) {
+                        val headBefore = track.playbackHeadPosition.toLong() and 0xffffffffL
+                        val depthBefore = (submittedFramesSinceTrackCreate - headBefore)
+                            .coerceIn(0L, audioBufferBytes.toLong() / 4L)
+                        minimumOutputFrames = minOf(minimumOutputFrames, depthBefore)
+                        maximumOutputFrames = maxOf(maximumOutputFrames, depthBefore)
+                        outputDepthSamples++
+                    }
                     // WRITE_BLOCKING can still return a positive *partial*
                     // count (e.g. on a route change). Never silently discard
                     // that PCM suffix, as it would insert an audible gap.
