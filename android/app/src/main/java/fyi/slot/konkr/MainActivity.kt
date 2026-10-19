@@ -200,6 +200,17 @@ class MainActivity : Activity() {
     @Volatile private var diagnosticAudioUnderruns = 0
     // Prevent an empty-read 8ms sleep from missing a freshly produced frame.
     private val audioFrameSignal = java.util.concurrent.Semaphore(0)
+    // Beta10 experimental: this callback is invoked on GLSurfaceView's GL
+    // thread after a real core frame has queued PCM but BEFORE Run-Ahead's
+    // speculative frames and GLES presentation. Read-only counters below.
+    private val earlyPcmWakes = AtomicInteger(0)
+    @Suppress("unused")
+    private fun onNativePcmReady() {
+        if (audioRunning.get() && audioFrameSignal.availablePermits() == 0) {
+            audioFrameSignal.release()
+            earlyPcmWakes.incrementAndGet()
+        }
+    }
     private val vibrator by lazy { getSystemService(VIBRATOR_SERVICE) as? Vibrator }
     private var lastRumbleAt = 0L
     @Volatile private var resumed = false
@@ -806,7 +817,8 @@ class MainActivity : Activity() {
                                     "gap_us_max=$gapUsMax native_us_max=$nativeUsMax " +
                                     "native_over_16ms=$nativeOver16ms native_over_33ms=$nativeOver33ms " +
                                     "vsync_gl_age_mean_us=${if (vsyncAgeCount > 0) vsyncAgeTotalUs / vsyncAgeCount else -1} " +
-                                    "vsync_gl_age_max_us=$vsyncAgeMaxUs")
+                                    "vsync_gl_age_max_us=$vsyncAgeMaxUs " +
+                                    "early_pcm_wakes_5s=${earlyPcmWakes.getAndSet(0)}")
                                 if (displaySyncApplied) {
                                     Log.i(TAG, nativeEglPresentationReport())
                                 }
