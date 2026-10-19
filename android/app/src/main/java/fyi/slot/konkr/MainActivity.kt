@@ -4,6 +4,7 @@ import android.app.Activity
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.media.AudioTimestamp
 import android.media.PlaybackParams
 import android.os.Handler
 import android.os.Looper
@@ -1360,6 +1361,11 @@ class MainActivity : Activity() {
             var minimumOutputFrames = Long.MAX_VALUE
             var maximumOutputFrames = 0L
             var outputDepthSamples = 0
+            // Beta9: AudioTrack's hardware timestamp describes its playback
+            // clock independently of the emulation and GLSurfaceView clocks.
+            val hardwareTimestamp = AudioTimestamp()
+            var priorHardwareFrame = -1L
+            var priorHardwareTimeNs = -1L
             try {
                 while (audioRunning.get()) {
                     val wanted = nativeAudioSampleRate()
@@ -1406,6 +1412,8 @@ class MainActivity : Activity() {
                         minimumOutputFrames = Long.MAX_VALUE
                         maximumOutputFrames = 0L
                         outputDepthSamples = 0
+                        priorHardwareFrame = -1L
+                        priorHardwareTimeNs = -1L
                     } else if (!awaitingFirstPcm &&
                         player.playState != AudioTrack.PLAYSTATE_PLAYING) {
                         // A paused legacy buffer is reused when the next game has
@@ -1543,6 +1551,26 @@ class MainActivity : Activity() {
                         playbackHeadAtProbe = playbackHead
                         // Report even when there are no underruns, to isolate
                         // PCM producer starvation from AudioTrack HAL behaviour.
+                        var hardwareRatePpm = Double.NaN
+                        var hardwareSpanMs = 0L
+                        if (track.getTimestamp(hardwareTimestamp)) {
+                            if (priorHardwareFrame >= 0L &&
+                                hardwareTimestamp.framePosition > priorHardwareFrame &&
+                                hardwareTimestamp.nanoTime > priorHardwareTimeNs) {
+                                val hardwareFrames = hardwareTimestamp.framePosition - priorHardwareFrame
+                                val hardwareNs = hardwareTimestamp.nanoTime - priorHardwareTimeNs
+                                hardwareSpanMs = hardwareNs / 1_000_000L
+                                hardwareRatePpm = (
+                                    hardwareFrames.toDouble() * 1_000_000_000.0 /
+                                    hardwareNs.toDouble() / wanted.toDouble() - 1.0
+                                ) * 1_000_000.0
+                            }
+                            priorHardwareFrame = hardwareTimestamp.framePosition
+                            priorHardwareTimeNs = hardwareTimestamp.nanoTime
+                        }
+                        Log.i(TAG, "AudioTrack hardware clock: " +
+                            "rate_delta_ppm=${if (hardwareRatePpm.isFinite()) hardwareRatePpm else -1.0} " +
+                            "hardware_span_ms=$hardwareSpanMs")
                         Log.i(TAG, "AudioTrack queue depth: " +
                             "sample_count=$outputDepthSamples " +
                             "minimum_ms=${if (minimumOutputFrames == Long.MAX_VALUE) -1.0 else minimumOutputFrames * 1000.0 / wanted} " +
