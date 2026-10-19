@@ -74,7 +74,7 @@ pub use rebuild::{rebuild_count_face, rebuild_title_face, RebuildScreen};
 pub use refusal::Refusal;
 pub use shelf::{foot_y, rest_y, set_shelf_slack, Shelf};
 pub use shell::{
-    gb_table_shells, gba_shell_for, lookup_order_is_exact_then_family_then_default, shell_for,
+    gb_table_shells, gb_shell_from_header, gba_shell_for, lookup_order_is_exact_then_family_then_default, shell_for,
     shell_presets, table_keys, Finish, Shell, DEFAULT_SHELL, DMG_SHELL, DUAL_MODE_SHELL,
     GB_CLEAR_SHELL,
 };
