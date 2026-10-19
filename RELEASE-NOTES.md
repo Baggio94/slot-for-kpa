@@ -1,28 +1,35 @@
-# slot. for KONKR Pocket Advance — v1.2.1
+# slot. for KONKR Pocket Advance — v1.2.2
 
-This update builds on v1.2.0 to make slot. faster, smarter and easier to use, with several new features and refinements.
+This update focuses on smoother, more reliable emulation, ZIP cartridge support, improved artwork handling, and optional SleepManager status integration.
 
-- **Automatic cartridge artwork downloads** — Missing labels are downloaded and applied automatically in the background while slot. is open.
-- **Smarter artwork matching** — Improved recognition of translated, patched and regional ROMs, shared with Cart Studio.
-- **ROM preloading** — Faster game launches with background preloading.
-- **Built-in software updates** — Check for and install new releases from the About screen, with optional automatic checks.
-- **Performance and UI refinements** — Faster cartridge browsing, smoother navigation and various stability improvements.
+## What's New
 
-## What's new in v1.2.1
+- **SYNC LAB emulation pacing** — A new frame-pacing option tuned and tested on the KONKR Pocket Advance. **New installations start with SYNC LAB and Run-Ahead OFF** for consistent controls and audio. Your existing emulation preferences and per-game profiles are preserved on upgrade.
+- **ZIP cartridges** — Open `.zip` files containing GB, GBC or GBA games directly from your existing ROM folders. Supported games are detected automatically; archives remain unchanged. Save and RetroAchievements handling use the extracted game's identity.
+- **More reliable cartridge artwork** — Retry interrupted or temporary download failures automatically while slot. is open, without overwriting artwork you've customized.
+- **GB/GBC cartridge polish** — Improved original-style cartridge shell selection and Cart Studio compatibility, including games stored in ZIP archives.
+- **Improved mGBA compatibility** — A targeted fix for **Drill Dozer** avoids an incorrect Game Boy Player detection path, without changing other games.
+- **SleepManager 0.7.3 status support** — When you enable integration icons in slot., its SleepManager indicator reads the new read-only status API to distinguish an enabled-and-running service from a stopped one. SleepManager 0.7.2 remains supported through a best-effort legacy fallback.
+- **Emulation stability and diagnostics** — Refined audio startup, protected frame pacing from multi-frame catch-up regressions, strengthened ZIP/save compatibility checks, and added safeguards against missing native Android/JNI methods.
 
-- **12-hour / 24-hour clock** — Choose the preferred time format in **START → Settings → Interface → Time Format**, with AM/PM support and saved preferences. Thanks to [Its-TroyM](https://github.com/Its-TroyM) for [PR #2](https://github.com/Baggio94/slot-for-kpa/pull/2).
-- **UI and reliability refinements** — Cleaner menus and status icons, clearer background progress and dependable artwork downloads.
+## Emulation Defaults & Known Limitations
 
-## Installation & Documentation
+**New installs:** SYNC LAB / Run-Ahead OFF. **Existing installs:** all saved choices remain unchanged.
 
-Download the ARM64 APK below. Install it over the existing version to keep app data and settings. **Do not uninstall the previous version or clear its data.**
+Run-Ahead remains available as an optional per-game setting. Audio behavior with Run-Ahead, particularly mGBA + Run-Ahead 1 on some titles, still needs further optimization; that work is planned for **v1.2.3**. This release does not promise zero audio underruns for every game and configuration.
 
-For instructions, hotkeys and configuration, see the **[README](https://github.com/Baggio94/slot-for-kpa#readme)**.
+## Installation
+
+Download **slot-for-konkr-1.2.2-arm64.apk** from the assets below and install it over your existing slot. for KONKR Pocket Advance app. **Do not uninstall the previous version or clear app data.** The package name and signing certificate are unchanged, so your settings, ROM access permissions, save files and RetroAchievements configuration are preserved on a normal update.
+
+The built-in updater will discover this verified GitHub release once it has been published.
+
+For setup instructions and controls, see the [README](https://github.com/Baggio94/slot-for-kpa#readme).
 
 ## Credits
 
-Based on the original **[slot.](https://slot-cfw.fyi/)** by **[Brandon Kowalski](https://github.com/BrandonKowalski/slot)** and its contributors.
+An unofficial Android port of the original **[slot.](https://slot-cfw.fyi/)** by **[Brandon Kowalski](https://github.com/BrandonKowalski/slot)** and its contributors.
 
-Thanks to **[Its-TroyM](https://github.com/Its-TroyM)** for contributing the 12-hour / 24-hour clock format option in [PR #2](https://github.com/Baggio94/slot-for-kpa/pull/2).
+Thanks to **[Its-TroyM](https://github.com/Its-TroyM)** for the 12-hour / 24-hour clock option introduced in v1.2.1.
 
-This is an unofficial community Android port, distributed under the **GPL-3.0 license**.
+Distributed under the **GPL-3.0 license**.
