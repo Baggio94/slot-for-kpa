@@ -165,17 +165,22 @@ impl Probe {
             if ok == 0 {
                 self.query_errors += 1;
                 self.pending.pop_front();
+                // A missing frame breaks timestamp continuity. Never
+                // attribute the interval across the hole to one frame.
+                self.last_present_ns = 0;
                 continue;
             }
             if result[0] == EGL_TIMESTAMP_PENDING_ANDROID {
                 if self.ticks.saturating_sub(tick) <= 9 { break; }
                 self.pending_lost += 1;
                 self.pending.pop_front();
+                self.last_present_ns = 0;
                 continue;
             }
             self.pending.pop_front();
             if result[0] == EGL_TIMESTAMP_INVALID_ANDROID || result[0] <= 0 {
                 self.pending_lost += 1;
+                self.last_present_ns = 0;
                 continue;
             }
             self.present_count += 1;
@@ -198,6 +203,7 @@ impl Probe {
         while self.pending.len() >= MAX_PENDING {
             self.pending.pop_front();
             self.pending_lost += 1;
+            self.last_present_ns = 0;
         }
         let mut next_frame: u64 = 0;
         if unsafe { (ext.next_id)(ext.display, ext.surface, &mut next_frame) } != 0 {
@@ -217,13 +223,27 @@ impl Probe {
             }).unwrap_or(0)
         };
         let span = self.last_report.elapsed().as_secs_f64();
+        // Do not publish an apparent presentation FPS when the driver has
+        // dropped or rejected frame IDs. This KONKR driver consistently
+        // returns ~5 lost and ~7 errors per 5s; dividing remaining samples
+        // by elapsed time incorrectly claims ~57 FPS on a ~60Hz display.
+        let complete = self.status == "supported"
+            && self.pending_lost == 0 && self.query_errors == 0
+            && self.gap_count >= 5;
+        let verified_fps = if complete && self.gap_sum_us > 0 {
+            self.gap_count as f64 * 1_000_000.0 / self.gap_sum_us as f64
+        } else { -1.0 };
+        let status = if self.status == "supported" && !complete {
+            "incomplete_timestamps"
+        } else { self.status };
         let result = format!(
             "EGL presentation: status={} callbacks={} present_samples={} present_fps={:.2} \
+             present_fps_valid={} report_span_s={:.3} \
              present_gap_mean_us={} present_gap_p95_us={} present_gap_max_us={} \
              present_over25={} present_over35={} lost={} errors={} \
              probe_us_per_callback={:.2}",
-            self.status, self.ticks, self.present_count,
-            if span > 0.0 { self.present_count as f64 / span } else { 0.0 },
+            status, self.ticks, self.present_count, verified_fps,
+            complete, span,
             if self.gap_count > 0 { self.gap_sum_us / self.gap_count } else { 0 },
             p95, self.gap_max_us, self.gap_over25, self.gap_over35,
             self.pending_lost, self.query_errors,
