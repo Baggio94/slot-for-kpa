@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // Experimental 1.2.2-beta5 adds read-only frame pacing and input-timing probes.
-        versionCode = 125
-        versionName = "1.2.2-beta5"
+        // Experimental 1.2.2-beta6 adds bounded PCM startup and short-write recovery.
+        versionCode = 126
+        versionName = "1.2.2-beta6"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
