@@ -146,14 +146,36 @@ jobs:
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
           bash scripts/build-konkr-android.sh
           gradle --no-daemon -p android :app:assembleRelease
+      - name: Verify every MainActivity JNI symbol is exported in shipped ARM64 binary
+        run: |
+          set -euo pipefail
+          SO="$RUNNER_TEMP/libslot_android.so"
+          unzip -p android/app/build/outputs/apk/release/app-release.apk \
+            lib/arm64-v8a/libslot_android.so > "$SO"
+          test -s "$SO"
+          NDK_NM="$ANDROID_SDK_ROOT/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          "$NDK_NM" -D --defined-only "$SO" > "$RUNNER_TEMP/slot-jni-exports.txt"
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          source = Path("android/app/src/main/java/fyi/slot/konkr/MainActivity.kt").read_text()
+          expected = set(re.findall(r"\\bexternal\\s+fun\\s+([A-Za-z0-9_]+)\\s*\\(", source))
+          nm_text = Path(__import__("os").environ["RUNNER_TEMP"], "slot-jni-exports.txt").read_text()
+          exported = set(re.findall(r"\\bJava_fyi_slot_konkr_MainActivity_([A-Za-z0-9_]+)\\b", nm_text))
+          assert len(expected) >= 50, f"Unexpected external declaration count: {len(expected)}"
+          missing = sorted(expected - exported)
+          if missing:
+              raise SystemExit("Missing JNI exports in signed APK: " + ", ".join(missing))
+          print(f"Verified {len(expected)} MainActivity JNI method exports in signed ARM64 APK")
+          PY
       - name: Verify isolated Mac AVD Emulation Lab debug APK
         run: |
           set -euo pipefail
           APK=android/app/build/outputs/apk/debug/app-debug.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/mac-lab-badging.txt"
-          grep -F "package: name='fyi.slot.konkr.diag' versionCode='132'" "$RUNNER_TEMP/mac-lab-badging.txt"
-          grep -F "versionName='1.2.2-beta12-mac-lab'" "$RUNNER_TEMP/mac-lab-badging.txt"
+          grep -F "package: name='fyi.slot.konkr.diag' versionCode='134'" "$RUNNER_TEMP/mac-lab-badging.txt"
+          grep -F "versionName='1.2.2-beta13-mac-lab'" "$RUNNER_TEMP/mac-lab-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify "$APK"
           for core in slot_android mgba_libretro gpsp_libretro; do
             unzip -Z -1 "$APK" | grep -Fx "lib/arm64-v8a/lib${core}.so"
@@ -168,7 +190,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.2.2-beta12-mac-avd-debug
+          name: slot-for-konkr-1.2.2-beta13-mac-avd-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Verify signed ARM64 APK and upgrade compatibility
@@ -177,8 +199,8 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "package: name='fyi.slot.konkr' versionCode='132'" "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "versionName='1.2.2-beta12'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='134'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "versionName='1.2.2-beta13'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
           for core in slot_android mgba_libretro gpsp_libretro; do
@@ -201,7 +223,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.2.2-beta12-arm64-signed
+          name: slot-for-konkr-1.2.2-beta13-arm64-signed
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
@@ -220,7 +242,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: slot-for-konkr-1.2.2-beta12-arm64-signed
+          name: slot-for-konkr-1.2.2-beta13-arm64-signed
           path: release-assets
 
       - name: Validate, create GitHub-verified release commit, and publish
