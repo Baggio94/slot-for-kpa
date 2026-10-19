@@ -2,6 +2,18 @@
 
 This changelog covers the public releases of the dedicated KONKR Pocket Advance Android port. Earlier development experiments are preserved in Git history.
 
+## v1.2.2 — release pending approval
+
+- **SYNC LAB** emulation pacing; new installs default to SYNC LAB with Run-Ahead OFF. Existing settings and per-game overrides remain unchanged.
+- ZIP ROM loading for GBA/GB/GBC with bounded, read-only extraction, stable game identity and RetroArch saves/RetroAchievements compatibility.
+- Retry logic for transient official cartridge label download failures, without overwriting user labels.
+- Improved GB/GBC Cart Studio and shelf cartridge material matching, including ZIP ROMs.
+- Targeted mGBA **Drill Dozer** Game Boy Player mode compatibility fix.
+- SleepManager **0.7.3 Status API v1** support for the shelf indicator, read-only and queried off the graphics thread, with legacy fallback.
+- Better audio startup, additional pacing/audio diagnostics and QA regression coverage; native JNI export validation in signed APK CI.
+- Preserves single-real-frame SYNC LAB display cadence after an experimental double-frame recovery was rejected for its perceived control/visual regression.
+- Run-Ahead audio optimization intentionally deferred to **v1.2.3**.
+
 ## v1.2.1 — 18 October 2026
 
 - Optional saved **12-hour / 24-hour clock** setting in START → Settings → Interface, based on a contribution by [Its-TroyM](https://github.com/Its-TroyM) ([PR #2](https://github.com/Baggio94/slot-for-kpa/pull/2)).
