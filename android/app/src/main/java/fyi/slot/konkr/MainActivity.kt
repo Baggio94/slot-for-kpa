@@ -1215,7 +1215,7 @@ class MainActivity : Activity() {
                 val states = storage.statesRoot?.let(Uri::parse)
                 val shared = RetroArchStorage.target(this, rawUri, core, saves, states,
                     scannedFileName = if (RomSource.isContainer(name))
-                        "${name.substringBeforeLast('.')}.$ext" else null,
+                        RomSource.archiveSaveFilename(name, ext) else null,
                     shareGbaSaves = storage.shareGbaSaves)
                 try {
                     RetroArchStorage.importBeforeLaunch(this@MainActivity, shared)
