@@ -100,6 +100,38 @@ class QuickCheckTests(unittest.TestCase):
         self.assertEqual(result["output_median_max_ms"], 80.0)
         self.assertIn("non latence mesurée", markdown(result))
 
+    def test_beta12_native_pcm_clock_is_summed_without_claiming_latency(self):
+        logs = log()
+        logs += ("\nI/SlotKonkr: SYNC LAB causal: span_ms=5000 "
+                 "callbacks=300 real_frames=299 real_fps=59.8 "
+                 "pcm_produced_shorts=655360 pcm_queued_shorts=655360 "
+                 "pcm_produced_ms=5000.0 producer_deficit_ms=0.0 "
+                 "empty_pcm_frames=0 no_step_callbacks=1 overdue_callbacks=1 "
+                 "wake_to_read_mean_us=450 wake_to_read_max_us=2700 "
+                 "wake_to_read_samples=290")
+        logs += ("\nI/SlotKonkr: SYNC LAB causal: span_ms=5000 "
+                 "callbacks=299 real_frames=297 real_fps=59.4 "
+                 "pcm_produced_shorts=653000 pcm_queued_shorts=653000 "
+                 "pcm_produced_ms=4982.0 producer_deficit_ms=18.0 "
+                 "empty_pcm_frames=0 no_step_callbacks=2 overdue_callbacks=1 "
+                 "wake_to_read_mean_us=800 wake_to_read_max_us=3500 "
+                 "wake_to_read_samples=200")
+        result = triage(report(), logs)
+        self.assertEqual(result["status"], "OK PROVISOIRE")
+        self.assertEqual(result["causal_windows"], 2)
+        self.assertEqual(result["causal_callbacks"], 599)
+        self.assertEqual(result["causal_real_frames"], 596)
+        self.assertEqual(result["causal_no_step_callbacks"], 3)
+        self.assertEqual(result["causal_producer_deficit_ms"], 18.0)
+        self.assertEqual(result["wake_to_read_max_us"], 3500)
+        self.assertIn("non latence réelle", markdown(result))
+
+    def test_legacy_beta10_log_without_causal_metrics_remains_compatible(self):
+        result = triage(report(), log(), "gpsp", 1)
+        self.assertEqual(result["causal_windows"], 0)
+        self.assertIsNone(result["causal_pcm_produced_ms"])
+        self.assertEqual(result["underruns"], 0)
+
     def test_runahead_failures_are_blocking(self):
         result = triage(report(failure=2), log())
         self.assertEqual(result["status"], "A REVOIR")
