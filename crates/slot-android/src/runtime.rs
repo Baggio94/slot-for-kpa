@@ -5121,8 +5121,11 @@ impl Engine {
             self.gpu.draw_list(&commands);
             frame_phases.submit_draw_us = draw_started.elapsed().as_micros() as u64;
             let blit_started = Instant::now();
-            self.gpu.end_frame(self.size);
+            let end_phases = self.gpu.end_frame_profiled(self.size);
             frame_phases.submit_blit_us = blit_started.elapsed().as_micros() as u64;
+            frame_phases.end_setup_us = end_phases.setup_us;
+            frame_phases.end_quad_us = end_phases.quad_us;
+            frame_phases.end_bezel_us = end_phases.bezel_us;
             // The nested setup/build/draw/blit timers are subsets of submit;
             // do not add them a second time in the native residual.
             frame_phases.gpu_submit_us = submit_started.elapsed().as_micros() as u64;
