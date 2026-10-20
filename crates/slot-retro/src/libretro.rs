@@ -385,6 +385,22 @@ unsafe extern "C" fn video_refresh(
     });
 }
 
+// F9: return the last committed PCM Vec to libretro for the next frame.
+// A frame typically contains only ~1–2 KiB of PCM. mem::take() alone forces
+// a new heap allocation on every 59.7Hz callback; this reuses that capacity
+// without changing PCM content, ordering, sample rate, FF or AudioTrack.
+fn recycle_committed_pcm(destination: &mut Vec<i16>, mut buffer: Vec<i16>) {
+    // Never override audio that arrived from a native callback after take.
+    if !destination.is_empty() { return; }
+    // Do not retain an unexpectedly large audio burst forever. Normal GBA
+    // PCM buffers are far below 32,768 shorts (64 KiB).
+    if buffer.capacity() > 32_768 { return; }
+    buffer.clear();
+    if buffer.capacity() > destination.capacity() {
+        *destination = buffer;
+    }
+}
+
 unsafe extern "C" fn audio_sample(left: i16, right: i16) {
     with_host(|h| h.audio.extend_from_slice(&[left, right]));
 }
@@ -857,6 +873,10 @@ impl RetroCore for LibretroCore {
         std::mem::take(&mut self.host.audio)
     }
 
+    fn recycle_audio(&mut self, audio: Vec<i16>) {
+        recycle_committed_pcm(&mut self.host.audio, audio);
+    }
+
     fn discard_audio(&mut self) {
         // Speculative run-ahead audio is intentionally inaudible. Clearing
         // preserves capacity for the next speculative libretro frame.
@@ -1126,6 +1146,29 @@ mod tests {
             assert!(unsafe { set_rumble_state(0, RUMBLE_STRONG, 1234) });
         }
         assert_eq!(motor.strength(), 1234);
+    }
+
+    #[test]
+    fn pcm_capacity_is_reused_without_replaying_samples() {
+        let mut destination = Vec::<i16>::new();
+        let mut frame = Vec::with_capacity(4096);
+        frame.extend_from_slice(&[12, -12, 54, -54]);
+        let ptr = frame.as_ptr();
+        recycle_committed_pcm(&mut destination, frame);
+        assert!(destination.is_empty());
+        assert_eq!(destination.as_ptr(), ptr);
+        assert!(destination.capacity() >= 4096);
+        // Speculative or late audio must not be overwritten by recycling.
+        destination.extend_from_slice(&[42, -42]);
+        recycle_committed_pcm(&mut destination, vec![10, 20, 30]);
+        assert_eq!(destination, vec![42, -42]);
+    }
+
+    #[test]
+    fn oversized_pcm_allocation_is_not_cached() {
+        let mut destination = Vec::<i16>::new();
+        recycle_committed_pcm(&mut destination, Vec::with_capacity(32_769));
+        assert_eq!(destination.capacity(), 0);
     }
 
     fn declaration(key: &str, value: &str) -> (Variable, CString, CString) {
