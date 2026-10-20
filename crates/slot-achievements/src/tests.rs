@@ -122,6 +122,34 @@ fn f10_only_real_frames_trigger_nonblocking_evaluator_wakeup() {
 }
 
 #[test]
+fn f10_online_and_cached_game_preparation_wakes_immediately_without_frames() {
+    let (prepared_tx, prepared_rx) = mpsc::channel();
+    let (wake_tx, wake_rx) = mpsc::sync_channel(1);
+    let prepared = network::Prepared {
+        generation: 42,
+        hash: "0123456789abcdef0123456789abcdef".into(),
+        game: game(),
+        unlocked: Default::default(),
+        cached: false,
+    };
+    network::signal_prepared(&prepared_tx, &wake_tx, prepared);
+    assert_eq!(wake_rx.try_recv(), Ok(()), "online game metadata must wake immediately");
+    let got = prepared_rx.try_recv().expect("network definitions must be available");
+    assert_eq!(got.generation, 42);
+    assert_eq!(got.game.achievements.len(), 1);
+    let cached = network::Prepared {
+        generation: 43,
+        hash: "fedcba9876543210fedcba9876543210".into(),
+        game: game(),
+        unlocked: Default::default(),
+        cached: true,
+    };
+    network::signal_prepared(&prepared_tx, &wake_tx, cached);
+    assert_eq!(wake_rx.try_recv(), Ok(()), "cached HTTP metadata must wake immediately");
+    assert!(prepared_rx.try_recv().unwrap().cached);
+}
+
+#[test]
 fn f10_control_flush_still_completes_when_no_frames_arrive() {
     let root = configured();
     let service = Service::start_with(root.path().into(), Offline);
