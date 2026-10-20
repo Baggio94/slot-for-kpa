@@ -1995,6 +1995,21 @@ impl Engine {
                 // available so a storage issue can be resolved and retried.
                 let with_state = self.live_game_options().eject_save;
                 let eject_saved = match self.game.as_mut() {
+                    Some(session) if session.runahead_rollback_failed() => {
+                        // The in-memory core may be from speculative time.
+                        // First Exit must NEVER persist it; require a second
+                        // explicit Exit to discard and reload from last disk
+                        // checkpoint. This branch has NO SAVE_SYNC event.
+                        if !session.confirm_rollback_discard() {
+                            set_message("Run-Ahead rollback failed. Game frozen to protect saves. Select Save & Eject AGAIN to exit WITHOUT saving.".into());
+                            self.overlay = ShelfOverlay::GameMenu { row: 0 };
+                            self.game_accum = 0.0;
+                            return;
+                        }
+                        crate::game::log_launch_timing(
+                            "Unsafe Run-Ahead core discarded WITHOUT SRAM/state/RetroArch export");
+                        false
+                    }
                     Some(session) => match session.save_for_eject(with_state) {
                         Ok(saved) => saved,
                         Err(error) => {
@@ -4977,6 +4992,20 @@ impl Engine {
                 // Predicted video never advances the real saved/RA timeline.
                 session.prepare_runahead(self.buttons, live.turbo,
                     profile.run_ahead_frames);
+                if session.runahead_rollback_failed() {
+                    // A partially restored speculative core must never tick
+                    // or reach any periodic/manual/eject save path. Stop audio
+                    // and force a visible, retryable unsaved-exit warning.
+                    self.game_accum = 0.0;
+                    self.rewind_held = false;
+                    self.ff_held = false;
+                    self.ff_latched = false;
+                    RUMBLE_STRENGTH.store(0, Ordering::Release);
+                    PLAYING.store(false, Ordering::Release);
+                    AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    self.overlay = ShelfOverlay::GameMenu { row: 0 };
+                    set_message("Run-Ahead restore failed; game paused to protect saves. Exit twice to discard this session WITHOUT saving.".into());
+                }
             }
             match stepped {
                 0 => self.perf_step0 = self.perf_step0.saturating_add(1),
