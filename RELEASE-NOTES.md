@@ -1,35 +1,23 @@
 # slot. for KONKR Pocket Advance — v1.2.2
 
-This update focuses on smoother, more reliable emulation, ZIP cartridge support, improved artwork handling, and optional SleepManager status integration.
+This update brings smoother emulation, better game compatibility, and several quality-of-life improvements.
 
-## What's New
+### What's New
 
-- **SYNC LAB emulation pacing** — A new frame-pacing option tuned and tested on the KONKR Pocket Advance. **New installations start with SYNC LAB and Run-Ahead OFF** for consistent controls and audio. Your existing emulation preferences and per-game profiles are preserved on upgrade.
-- **ZIP cartridges** — Open `.zip` files containing GB, GBC or GBA games directly from your existing ROM folders. Supported games are detected automatically; archives remain unchanged. Save and RetroAchievements handling use the extracted game's identity.
-- **More reliable cartridge artwork** — Retry interrupted or temporary download failures automatically while slot. is open, without overwriting artwork you've customized.
-- **GB/GBC cartridge polish** — Improved original-style cartridge shell selection and Cart Studio compatibility, including games stored in ZIP archives.
-- **Improved mGBA compatibility** — A targeted fix for **Drill Dozer** avoids an incorrect Game Boy Player detection path, without changing other games.
-- **SleepManager 0.7.3 status support** — When you enable integration icons in slot., its SleepManager indicator reads the new read-only status API to distinguish an enabled-and-running service from a stopped one. SleepManager 0.7.2 remains supported through a best-effort legacy fallback.
-- **Emulation stability and diagnostics** — Refined audio startup, protected frame pacing from multi-frame catch-up regressions, strengthened ZIP/save compatibility checks, and added safeguards against missing native Android/JNI methods.
+- **Smoother gameplay** — Improved performance, audio stability, and controller responsiveness. SYNC LAB is now the default, with Run-Ahead turned off for the best overall experience.
+- **Full ZIP support** — Play GB, GBC, and GBA games directly from ZIP files, with saves and RetroAchievements support.
+- **Better cartridge artwork** — More reliable label downloads and improved cartridge designs for GB and GBC games.
+- **Improved game compatibility** — Fixes for titles like *Drill Dozer*, along with various stability improvements.
+- **SleepManager integration** — The status icon now accurately shows whether SleepManager is running or stopped.
 
-## Emulation Defaults & Known Limitations
+### Installation
 
-**New installs:** SYNC LAB / Run-Ahead OFF. **Existing installs:** all saved choices remain unchanged.
+Download the APK below and install it over your existing version. Your games, saves, and settings will be preserved.
 
-Run-Ahead remains available as an optional per-game setting. Audio behavior with Run-Ahead, particularly mGBA + Run-Ahead 1 on some titles, still needs further optimization; that work is planned for **v1.2.3**. This release does not promise zero audio underruns for every game and configuration.
+**Note:** SYNC LAB and Run-Ahead OFF are the defaults for new installations. Existing preferences remain unchanged.
 
-## Installation
+### Credits
 
-Download **slot-for-konkr-1.2.2-arm64.apk** from the assets below and install it over your existing slot. for KONKR Pocket Advance app. **Do not uninstall the previous version or clear app data.** The package name and signing certificate are unchanged, so your settings, ROM access permissions, save files and RetroAchievements configuration are preserved on a normal update.
+An unofficial Android port of [slot.](https://slot-cfw.fyi/) by [Brandon Kowalski](https://github.com/BrandonKowalski/slot) and contributors.
 
-The built-in updater will discover this verified GitHub release once it has been published.
-
-For setup instructions and controls, see the [README](https://github.com/Baggio94/slot-for-kpa#readme).
-
-## Credits
-
-An unofficial Android port of the original **[slot.](https://slot-cfw.fyi/)** by **[Brandon Kowalski](https://github.com/BrandonKowalski/slot)** and its contributors.
-
-Thanks to **[Its-TroyM](https://github.com/Its-TroyM)** for the 12-hour / 24-hour clock option introduced in v1.2.1.
-
-Distributed under the **GPL-3.0 license**.
+Licensed under GPL-3.0.
