@@ -87,7 +87,7 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: Validate pinned speculative-audio patch scripts
-        run: python3 -m py_compile scripts/patch-mgba-speculative-audio.py scripts/patch-gpsp-speculative-audio.py
+        run: python3 -m py_compile scripts/patch-mgba-speculative-audio.py scripts/patch-gpsp-speculative-audio.py scripts/patch-mgba-active-sram.py
       - name: Build mGBA arm64 libretro core
         run: |
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
@@ -174,8 +174,8 @@ jobs:
           APK=android/app/build/outputs/apk/debug/app-debug.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/mac-lab-badging.txt"
-          grep -F "package: name='fyi.slot.konkr.diag' versionCode='141'" "$RUNNER_TEMP/mac-lab-badging.txt"
-          grep -F "versionName='1.2.3-beta3-mac-lab'" "$RUNNER_TEMP/mac-lab-badging.txt"
+          grep -F "package: name='fyi.slot.konkr.diag' versionCode='142'" "$RUNNER_TEMP/mac-lab-badging.txt"
+          grep -F "versionName='1.2.3-beta4-mac-lab'" "$RUNNER_TEMP/mac-lab-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify "$APK"
           for core in slot_android mgba_libretro gpsp_libretro; do
             unzip -Z -1 "$APK" | grep -Fx "lib/arm64-v8a/lib${core}.so"
@@ -190,7 +190,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.2.3-beta3-mac-avd-debug
+          name: slot-for-konkr-1.2.3-beta4-mac-avd-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Verify signed ARM64 APK and upgrade compatibility
@@ -199,8 +199,8 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "package: name='fyi.slot.konkr' versionCode='141'" "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "versionName='1.2.3-beta3'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='142'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "versionName='1.2.3-beta4'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
           for core in slot_android mgba_libretro gpsp_libretro; do
@@ -221,6 +221,7 @@ jobs:
           assert gpsp["revision"] == "5819380c2ffb0900219d700a382ee68c464ebb99"
           assert {"flash-bank-survives-mask.patch",
                   "gb-dmg-palette-follows-option.patch"} <= set(mgba["patches"])
+          assert "patch-mgba-active-sram.py" in mgba["patches"]
           assert "aw-session-reset.patch" in gpsp["patches"]
           assert gpsp["native_aw_harness"] == "asan-passed"
           print("Verified shipping native-core provenance and critical patch list")
@@ -238,7 +239,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.2.3-beta3-arm64-signed
+          name: slot-for-konkr-1.2.3-beta4-arm64-signed
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
@@ -257,7 +258,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: slot-for-konkr-1.2.3-beta3-arm64-signed
+          name: slot-for-konkr-1.2.3-beta4-arm64-signed
           path: release-assets
 
       - name: Validate, create GitHub-verified release commit, and publish
