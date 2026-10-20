@@ -1094,37 +1094,67 @@ impl GameSession {
     }
 
     fn save_sram(&mut self) -> bool {
-        let success = match self.core.save_ram() {
-            Some(bytes) if self.mgba_flash_runahead_guard &&
-                pokemon_flash_complete_bank_count(&bytes) == 0 => {
-                // A Flash erase/program operation can span several GBA
-                // frames. Never publish an incomplete battery image over
-                // the last known-good save or push it into RetroArch SAF.
-                // This does not modify emulator memory and never repairs
-                // corruption silently: the in-game error remains visible.
-                log_launch_timing("mGBA Pokemon FLASH1M: incomplete/corrupt bank; protected existing SRAM, no disk export");
+        match self.save_sram_checked() {
+            Ok(written) => written,
+            Err(error) => {
+                log_launch_timing(&format!("Battery/RTC periodic write failed: {error}"));
                 false
             }
+        }
+    }
+
+    /// The battery and RTC are independent persistent files. The legacy
+    /// boolean used OR, so a successful RTC could hide a failed battery write.
+    /// Return every attempted file write's error to callers that must retain
+    /// the session (Save & Eject); none means the cartridge has no such file.
+    fn save_sram_checked(&mut self) -> Result<bool, String> {
+        let mut wrote = false;
+        let mut error: Option<String> = None;
+        match self.core.save_ram() {
+            Some(bytes) if self.mgba_flash_runahead_guard &&
+                pokemon_flash_complete_bank_count(&bytes) == 0 => {
+                error = Some("Pokémon Flash save is incomplete; previous save protected".into());
+            }
             Some(bytes) => match atomic_write(&self.save, &bytes) {
-                Ok(()) => true,
-                Err(err) => {
-                    eprintln!("slot-konkr: SRAM save failed: {err}");
-                    false
-                }
+                Ok(()) => wrote = true,
+                Err(err) => error = Some(format!("Battery save: {err}")),
             },
-            None => false,
-        };
-        // RTC may exist independently of SRAM on GB/GBC cartridges.
-        let rtc_saved = self.core.save_rtc().is_some_and(|bytes|
+            None => {}
+        }
+        if let Some(bytes) = self.core.save_rtc() {
             match atomic_write(&self.rtc, &bytes) {
-                Ok(()) => true,
+                Ok(()) => wrote = true,
                 Err(err) => {
-                    eprintln!("slot-konkr: RTC save failed: {err}");
-                    false
+                    let reason = format!("RTC save: {err}");
+                    if let Some(previous) = error.as_mut() {
+                        previous.push_str("; ");
+                        previous.push_str(&reason);
+                    } else { error = Some(reason); }
                 }
-            });
+            }
+        }
         self.last_sram = Instant::now();
-        success || rtc_saved
+        error.map_or(Ok(wrote), Err)
+    }
+
+    /// Mandatory ejection checkpoint: do not drop the only live core if its
+    /// primary battery/RTC/state/export cannot be persisted. This never
+    /// rewrites a corrupt battery over a known-good file. An absent battery
+    /// on a ROM that does not implement SRAM is not an I/O failure.
+    pub fn save_for_eject(&mut self, with_state: bool) -> Result<bool, String> {
+        let battery = self.save_sram_checked()?;
+        if !with_state || self.link_touched || self.linked_boot.is_some() {
+            return Ok(battery);
+        }
+        let data = self.core.serialize()
+            .map_err(|e| format!("Auto state capture: {e}"))?;
+        atomic_write(&self.state, &data)
+            .map_err(|e| format!("Auto state write: {e}"))?;
+        let container = retroarch_state::encode(&data)
+            .map_err(|e| format!("RetroArch state encoding: {e}"))?;
+        atomic_write(&self.retroarch_export, &container)
+            .map_err(|e| format!("RetroArch state export: {e}"))?;
+        Ok(true)
     }
 
     pub fn save(&mut self, with_state: bool) -> bool {
