@@ -1107,6 +1107,27 @@ mod tests {
         })
     }
 
+    #[test]
+    fn speculative_rumble_callback_never_leaks_to_real_host_motor() {
+        let mut host = host_with(HashMap::new(), false);
+        // Rumble is Arc-backed, just like the handle MainActivity polls.
+        let motor = host.rumble.clone();
+        assert_eq!(motor.strength(), 0);
+        host.suppress_speculative_rumble = true;
+        {
+            let _guard = Active::bind(&mut host);
+            assert!(unsafe { set_rumble_state(0, RUMBLE_STRONG, u16::MAX) });
+        }
+        assert_eq!(motor.strength(), 0,
+            "a predicted rumble must not survive libretro rollback");
+        host.suppress_speculative_rumble = false;
+        {
+            let _guard = Active::bind(&mut host);
+            assert!(unsafe { set_rumble_state(0, RUMBLE_STRONG, 1234) });
+        }
+        assert_eq!(motor.strength(), 1234);
+    }
+
     fn declaration(key: &str, value: &str) -> (Variable, CString, CString) {
         let key = CString::new(key).unwrap();
         let value = CString::new(value).unwrap();
