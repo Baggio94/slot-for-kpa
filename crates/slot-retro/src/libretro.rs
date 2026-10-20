@@ -416,6 +416,9 @@ unsafe extern "C" fn input_state(port: c_uint, device: c_uint, _index: c_uint, i
 // unchanged: this memory exists only between speculative save and restore.
 type AudioSidecarFn = unsafe extern "C" fn(*mut c_void, usize, bool) -> bool;
 type AudioSidecarSizeFn = unsafe extern "C" fn() -> usize;
+// F5: KPA mGBA read-only active battery snapshot, independent of its
+// possibly stale libretro RETRO_MEMORY_SAVE_RAM mirror after unserialize.
+type ActiveBatteryFn = unsafe extern "C" fn(*mut c_void, usize, *mut usize) -> bool;
 struct AudioSidecar {
     transfer: AudioSidecarFn,
     snapshot: Vec<u8>,
@@ -429,6 +432,7 @@ pub struct LibretroCore {
     is_mgba: bool,
     mgba_audio_exports: Option<(AudioSidecarSizeFn, AudioSidecarFn)>,
     mgba_audio: Option<AudioSidecar>,
+    mgba_active_battery: Option<ActiveBatteryFn>,
     // mGBA's retro_serialize_size() serializes the whole core internally;
     // skip this duplicate work on stable-sized speculative snapshots.
     mgba_runahead_size_age: u16,
@@ -542,6 +546,10 @@ impl LibretroCore {
                 _ => None,
             }
         } else { None };
+        let mgba_active_battery = if is_mgba {
+            unsafe { lib.get::<ActiveBatteryFn>(b"slot_mgba_clone_active_save_ram\0") }
+                .ok().map(|v| *v)
+        } else { None };
         // An unpatched/foreign gpSP must not run speculative frames: core
         // savestates intentionally omit its audio mixer ring.
         let gpsp_audio = if is_gpsp {
@@ -604,6 +612,7 @@ impl LibretroCore {
             is_mgba,
             mgba_audio_exports,
             mgba_audio: None,
+            mgba_active_battery,
             mgba_runahead_size_age: 0,
             host,
             rom: Vec::new(),
@@ -953,6 +962,37 @@ impl RetroCore for LibretroCore {
             return None;
         }
         Some(unsafe { std::slice::from_raw_parts(data as *const u8, len) }.to_vec())
+    }
+
+    fn save_ram_verified(&self) -> Result<Option<Vec<u8>>, CoreError> {
+        if !self.is_mgba {
+            return Ok(self.save_ram());
+        }
+        // Do not silently export a stale libretro mirror if a production
+        // mGBA build lacks our verified active-savedata accessor.
+        let clone = self.mgba_active_battery.ok_or_else(|| {
+            CoreError::Unsupported("mGBA active SRAM snapshot ABI missing".into())
+        })?;
+        const MAX_GBA_BATTERY: usize = 128 * 1024;
+        let mut bytes = vec![0u8; MAX_GBA_BATTERY];
+        let mut written = 0usize;
+        let ok = unsafe {
+            clone(bytes.as_mut_ptr().cast(), bytes.len(), &mut written)
+        };
+        if !ok {
+            return Err(CoreError::State("mGBA active SRAM copy failed; existing save preserved".into()));
+        }
+        if written == usize::MAX {
+            // A GB/GBC ROM uses a different backend: keep its libretro
+            // SRAM/RTC pointer and formats completely unchanged.
+            return Ok(self.save_ram());
+        }
+        if written > MAX_GBA_BATTERY {
+            return Err(CoreError::State("mGBA active SRAM exceeds 128 KiB".into()));
+        }
+        if written == 0 { return Ok(None); }
+        bytes.truncate(written);
+        Ok(Some(bytes))
     }
 
     fn load_save_ram(&mut self, data: &[u8]) -> Result<(), CoreError> {
