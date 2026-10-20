@@ -441,6 +441,7 @@ type AudioSidecarSizeFn = unsafe extern "C" fn() -> usize;
 // F5: KPA mGBA read-only active battery snapshot, independent of its
 // possibly stale libretro RETRO_MEMORY_SAVE_RAM mirror after unserialize.
 type ActiveBatteryFn = unsafe extern "C" fn(*mut c_void, usize, *mut usize) -> bool;
+type GpspBackendFn = unsafe extern "C" fn() -> c_int;
 struct AudioSidecar {
     transfer: AudioSidecarFn,
     snapshot: Vec<u8>,
@@ -451,6 +452,9 @@ pub struct LibretroCore {
     api: Api,
     is_gpsp: bool,
     gpsp_audio: Option<AudioSidecar>,
+    gpsp_backend: Option<GpspBackendFn>,
+    gpsp_last_backend: i32,
+    gpsp_backend_check_frames: u16,
     is_mgba: bool,
     mgba_audio_exports: Option<(AudioSidecarSizeFn, AudioSidecarFn)>,
     mgba_audio: Option<AudioSidecar>,
@@ -572,6 +576,10 @@ impl LibretroCore {
             unsafe { lib.get::<ActiveBatteryFn>(b"slot_mgba_clone_active_save_ram\0") }
                 .ok().map(|v| *v)
         } else { None };
+        let gpsp_backend = if is_gpsp {
+            unsafe { lib.get::<GpspBackendFn>(b"slot_gpsp_backend_is_interpreter\0") }
+                .ok().map(|v| *v)
+        } else { None };
         // An unpatched/foreign gpSP must not run speculative frames: core
         // savestates intentionally omit its audio mixer ring.
         let gpsp_audio = if is_gpsp {
@@ -632,6 +640,9 @@ impl LibretroCore {
             api,
             is_gpsp,
             gpsp_audio,
+            gpsp_backend,
+            gpsp_last_backend: -1,
+            gpsp_backend_check_frames: 0,
             is_mgba,
             mgba_audio_exports,
             mgba_audio: None,
@@ -822,6 +833,8 @@ impl RetroCore for LibretroCore {
             return Err(CoreError::Load(format!("core refused {}", rom.display())));
         }
         self.loaded = true;
+        self.gpsp_last_backend = -1;
+        self.gpsp_backend_check_frames = 0;
         self.mgba_runahead_size_age = 0;
         self.try_init_mgba_audio();
         let mut av = SystemAvInfo::default();
@@ -846,6 +859,21 @@ impl RetroCore for LibretroCore {
         {
             let _a = Active::bind(&mut self.host);
             unsafe { (self.api.run)() };
+        }
+        // Read gpSP execution backend only on the first frame and at long
+        // intervals thereafter. Changing dynarec/JIT policy is intentionally
+        // not allowed here; log transitions for slow-emulation diagnostics.
+        if let Some(backend) = self.gpsp_backend {
+            self.gpsp_backend_check_frames = self.gpsp_backend_check_frames.wrapping_add(1);
+            if self.gpsp_last_backend < 0 || self.gpsp_backend_check_frames >= 300 {
+                self.gpsp_backend_check_frames = 0;
+                let selected = unsafe { backend() };
+                if selected != self.gpsp_last_backend {
+                    eprintln!("slot-gpsp: backend={} (read-only)",
+                        if selected == 0 { "dynarec" } else { "interpreter" });
+                    self.gpsp_last_backend = selected;
+                }
+            }
         }
         // Retry after deferred initialization; never run an mGBA
         // speculative frame without a correctly sized audio snapshot.
