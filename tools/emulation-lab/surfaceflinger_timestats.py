@@ -48,7 +48,7 @@ def parse_timestats(raw: str) -> dict:
         hist_title = re.search(r"presentToPresent\s+histogram\s+is\s+as\s+below\s*:", chunk, re.I)
         bins = {}
         if hist_title:
-            end = re.search(r"\n\s*(?:[\w.]+\s*=|\w+\s+histogram\b)", chunk[hist_title.end():])
+            end = re.search(r"\n\s*(?:[A-Za-z][\w.]*\s*=|[A-Za-z]+To[A-Za-z]+\s+histogram\b)", chunk[hist_title.end():])
             part = chunk[hist_title.end():hist_title.end() + end.start()] if end else chunk[hist_title.end():]
             for bucket, count in BUCKET_RE.findall(part):
                 ms = int(bucket)
