@@ -44,7 +44,7 @@ mkdir -p "$OUT/aw-harness"
 cp "$SRC/serial_proto.c" "$OUT/aw-harness/serial_proto.c"
 "$HOST_CC" -std=gnu11 -O1 -g -fno-omit-frame-pointer \
   -fstack-protector-strong -fsanitize=address \
-  -I "$OUT/aw-harness" -I "$ROOT/cores/gpsp/test" \
+  -I "$OUT/aw-harness" -I "$ROOT/cores/gpsp/test" -I "$SRC" \
   "$ROOT/cores/gpsp/test/awtest.c" -o "$OUT/awtest-asan"
 ASAN_OPTIONS=detect_leaks=0 "$OUT/awtest-asan"
 
