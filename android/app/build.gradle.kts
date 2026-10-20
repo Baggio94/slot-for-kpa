@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // v1.2.3-beta12 F8 read-only GL submission subphase telemetry; public v1.2.2 untouched.
-        versionCode = 150
-        versionName = "1.2.3-beta12"
+        // v1.2.3-beta13 F8 read-only end_frame GLES subphase telemetry; public v1.2.2 untouched.
+        versionCode = 151
+        versionName = "1.2.3-beta13"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
