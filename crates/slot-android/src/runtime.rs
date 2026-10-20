@@ -130,8 +130,8 @@ const SHELF_STATUS_TEXT: [&str; 8] = [
     "CANNOT READ ROM FOLDER", "FOLDER PICKER UNAVAILABLE",
     "FOLDER PERMISSION FAILED",
 ];
-// Original Slot records ten rewind states per second but replays them at
-// display cadence (~6x). Our configurable rewind playback rate is computed
+// Original Slot records ~30 rewind states/sec and replays ~60/sec (~2x).
+// Android v1.2.2 recorded/replayed ~10/sec (~1x). Playback rate is computed
 // by settings::rewind_step_seconds, never confused with capture frequency.
 
 const FF_DOUBLE_TAP_MS: u128 = 320;
@@ -4762,8 +4762,9 @@ impl Engine {
                 // Restore up to 3 historical snapshots per render frame and
                 // never pass rewound audio into the normal AudioTrack.
                 self.game_accum = 0.0;
-                // At 1x this restores 10 snapshots/s; at 5x 50/s.
-                // Native original Slot replays ~60/s. Each restored state
+                // At 1x this restores 10 snapshots/s; at 2x (upstream feel)
+                // 20/s; at 5x, 50/s. Native Slot replays ~60 of its 30
+                // captures per second. Each restored state
                 // refreshes just one video frame, with no forward PCM or
                 // speculative Run-Ahead; keep bounded work per callback.
                 let rewind_period = crate::settings::rewind_step_seconds(live.rewind_speed);
