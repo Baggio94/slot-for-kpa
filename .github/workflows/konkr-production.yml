@@ -210,6 +210,21 @@ jobs:
             echo "::error::Non-KONKR ABI included in production APK"; exit 1
           fi
           unzip -Z -1 "$APK" | grep -Fx 'assets/studio/pkg/slot_cart_studio_bg.wasm'
+          # F11: prevent a future signed build from silently omitting either
+          # mandatory upstream safety patch or selecting a different core.
+          python3 - "$APK" <<'PY'
+          import json, sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              mgba = json.loads(archive.read("assets/core-build-mgba.json"))
+              gpsp = json.loads(archive.read("assets/core-build-gpsp.json"))
+          assert mgba["revision"] == "7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6"
+          assert gpsp["revision"] == "5819380c2ffb0900219d700a382ee68c464ebb99"
+          assert {"flash-bank-survives-mask.patch",
+                  "gb-dmg-palette-follows-option.patch"} <= set(mgba["patches"])
+          assert "aw-session-reset.patch" in gpsp["patches"]
+          assert gpsp["native_aw_harness"] == "asan-passed"
+          print("Verified shipping native-core provenance and critical patch list")
+          PY
           # The signed KONKR APK must not contain AVD keyboard detection or
           # isolated Multiplayer Lab storage behavior from src/debug.
           unzip -Z -1 "$APK" | grep -Eq '^classes([0-9]+)?[.]dex$'
