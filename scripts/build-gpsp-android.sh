@@ -51,6 +51,7 @@ ASAN_OPTIONS=detect_leaks=0 "$OUT/awtest-asan"
 # Preserve only transient mixer data for speculative rollbacks; persistent
 # libretro/RetroArch save-state format stays exactly as pinned upstream.
 python3 "$ROOT/scripts/patch-gpsp-speculative-audio.py" "$SRC"
+python3 "$ROOT/scripts/patch-gpsp-backend-diagnostic.py" "$SRC"
 make -C "$SRC" -j4 platform=arm64 \
   CC="$LLVM/aarch64-linux-android31-clang" \
   CXX="$LLVM/aarch64-linux-android31-clang++" \
@@ -59,7 +60,7 @@ CORE="$SRC/gpsp_libretro.so"
 [ -s "$CORE" ] || { echo "Missing gpSP libretro library" >&2; exit 1; }
 # The sidecar must actually be exported through gpSP's version script.
 SYMBOLS="$("$LLVM/llvm-nm" -D --defined-only "$CORE")"
-for symbol in slot_gpsp_audio_sidecar slot_gpsp_audio_sidecar_size; do
+for symbol in slot_gpsp_audio_sidecar slot_gpsp_audio_sidecar_size slot_gpsp_backend_is_interpreter; do
   grep -q " $symbol$" <<< "$SYMBOLS" || {
     echo "Missing required gpSP speculative-audio symbol: $symbol" >&2
     exit 1
@@ -76,6 +77,6 @@ for license in COPYING LICENSE LICENSE.txt; do
 done
 # F11: ship pinned-core and safety-patch provenance in the release APK.
 cat > "$ROOT/android/app/src/main/assets/core-build-gpsp.json" <<EOF
-{"core":"gpsp","revision":"$PIN","patches":["aw-session-reset.patch","patch-gpsp-speculative-audio.py"],"native_aw_harness":"asan-passed"}
+{"core":"gpsp","revision":"$PIN","patches":["aw-session-reset.patch","patch-gpsp-speculative-audio.py","patch-gpsp-backend-diagnostic.py"],"native_aw_harness":"asan-passed"}
 EOF
 echo "gpSP arm64 core: $DEST/libgpsp_libretro.so"
