@@ -5124,6 +5124,11 @@ impl Engine {
             let end_phases = self.gpu.end_frame_profiled(self.size);
             frame_phases.submit_blit_us = blit_started.elapsed().as_micros() as u64;
             frame_phases.end_setup_us = end_phases.setup_us;
+            frame_phases.end_geometry_us = end_phases.geometry_us;
+            frame_phases.end_bind_us = end_phases.bind_us;
+            frame_phases.end_viewport_us = end_phases.viewport_us;
+            frame_phases.end_clear_us = end_phases.clear_us;
+            frame_phases.end_state_us = end_phases.state_us;
             frame_phases.end_quad_us = end_phases.quad_us;
             frame_phases.end_bezel_us = end_phases.bezel_us;
             // The nested setup/build/draw/blit timers are subsets of submit;
