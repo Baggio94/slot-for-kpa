@@ -33,6 +33,7 @@ struct Host {
     save_dir: CString,
     rumble: Rumble,
     asked_for_rumble: bool,
+    suppress_speculative_rumble: bool,
     netpacket: Option<NetpacketCallback>,
     net: Link,
     net_peer: Option<u16>,
@@ -72,7 +73,12 @@ unsafe fn with_host<R>(f: impl FnOnce(&mut Host) -> R) -> Option<R> {
 unsafe extern "C" fn log_noop(_level: c_uint, _fmt: *const c_char) {}
 
 unsafe extern "C" fn set_rumble_state(port: c_uint, effect: c_uint, strength: u16) -> bool {
-    with_host(|h| h.rumble.set(port, effect, strength)).unwrap_or(false)
+    with_host(|h| {
+        // Speculative input prediction must never change real Android motor
+        // state. The host callback can outlive the predicted video frame.
+        if h.suppress_speculative_rumble { true }
+        else { h.rumble.set(port, effect, strength) }
+    }).unwrap_or(false)
 }
 
 unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
@@ -587,6 +593,7 @@ impl LibretroCore {
             save_dir: cdir(save_dir)?,
             rumble: Rumble::default(),
             asked_for_rumble: false,
+            suppress_speculative_rumble: false,
             netpacket: None,
             net: Link::default(),
             net_peer: None,
@@ -829,6 +836,12 @@ impl RetroCore for LibretroCore {
         if self.is_mgba && self.mgba_audio.is_none() {
             self.try_init_mgba_audio();
         }
+    }
+
+    fn run_speculative_frame(&mut self, input: ButtonMask) {
+        self.host.suppress_speculative_rumble = true;
+        self.run_frame(input);
+        self.host.suppress_speculative_rumble = false;
     }
 
     fn set_frame_skip(&mut self, skip: bool) {
@@ -1083,6 +1096,7 @@ mod tests {
             save_dir: CString::new(".").unwrap(),
             rumble: Rumble::default(),
             asked_for_rumble: false,
+            suppress_speculative_rumble: false,
             netpacket: None,
             net: Link::default(),
             net_peer: None,
