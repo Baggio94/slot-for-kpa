@@ -112,10 +112,11 @@ impl Bezel {
 
 pub const REWIND_SPEEDS: [u8; 4] = [1, 2, 3, 5];
 
-/// Rewind 1x means ten original Slot snapshots a second; 5x means fifty.
+/// Port: 1x means ten stored snapshots/sec, 2x (upstream feel) means twenty,
+/// and 5x means fifty. Upstream captures 30/s, not 10/s.
 /// Hold L2 continuously; the memory meter indicates occupied history, not progress.
 pub fn rewind_step_seconds(speed: u8) -> f32 {
-    0.1 / f32::from(if REWIND_SPEEDS.contains(&speed) { speed } else { 5 })
+    0.1 / f32::from(if REWIND_SPEEDS.contains(&speed) { speed } else { 2 })
 }
 
 fn cycle_rewind_setting(enabled: &mut bool, speed: &mut u8, right: bool) {
@@ -195,7 +196,8 @@ pub struct Settings {
     pub bezel_gba: Bezel, pub bezel_gbc: Bezel, pub bezel_gb: Bezel,
     pub gb_palettes: bool, pub gb_palette: u8, pub rewind: bool,
     // Number of historical rewind snapshots restored per 100 ms of game time.
-    // Prior builds captured 10/s but restored only 10/s; 5 matches upstream feel.
+    // Prior Android builds captured 10/s and replayed 10/s (1x). Original
+    // Slot captures ~30/s and replays ~60/s (2x). Optional 5x is faster.
     pub rewind_speed: u8,
     // X/Y Buttons: true = Slot's original Turbo, false = Y=A and X=B.
     // Existing persisted turbo=false now selects the alternative A/B mapping.
@@ -237,7 +239,7 @@ impl Default for Settings {
             colour_correction_gbc: false,
             bezel_gba: Bezel::None, bezel_gbc: Bezel::Default, bezel_gb: Bezel::Default,
             gb_palettes: false, gb_palette: 1, rewind: true,
-            rewind_speed: 5,
+            rewind_speed: 2,
             turbo: true, eject_save: true,
             show_fps: false, responsive_pacing: false,
             display_sync_pacing: false, hybrid_pacing: false,
@@ -307,7 +309,7 @@ impl Settings {
                 if !Shader::GB.contains(&s.shader_gb) { s.shader_gb = Shader::Off; }
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
                 if s.gb_palette >= 48 { s.gb_palette = 1; }
-                if !REWIND_SPEEDS.contains(&s.rewind_speed) { s.rewind_speed = 5; }
+                if !REWIND_SPEEDS.contains(&s.rewind_speed) { s.rewind_speed = 2; }
                 if s.hybrid_pacing {
                     s.responsive_pacing = false;
                     s.display_sync_pacing = false;
@@ -933,11 +935,11 @@ mod tests {
         let old: Settings = serde_json::from_str(
             r#"{"rewind":true,"ff_speed":4,"shader_gba":"dot","colour_correction_gba":true}"#
         ).unwrap();
-        assert_eq!(old.rewind_speed, 5, "no prior user-facing speed selection");
+        assert_eq!(old.rewind_speed, 2, "match upstream pacing for old profiles");
         assert_eq!(rewind_step_seconds(1), 0.1);
         assert!((rewind_step_seconds(5) - 0.02).abs() < 1e-6);
         let mut s = old.clone();
-        s.change(6, true); assert!(!s.rewind);
+        s.rewind = false;
         for (speed, rate) in [(1, 0.1_f32), (2, 0.05), (3, 1.0/30.0), (5, 0.02)] {
             s.change(6,true);
             assert!(s.rewind);
@@ -950,7 +952,7 @@ mod tests {
         let json=serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(),s);
         let invalid: Settings=serde_json::from_str(r#"{"rewind_speed":255}"#).unwrap();
-        assert_eq!(rewind_step_seconds(invalid.rewind_speed),0.02);
+        assert_eq!(rewind_step_seconds(invalid.rewind_speed),0.05);
     }
 
     #[test]
@@ -975,7 +977,8 @@ mod tests {
         s.change(1, false); assert_eq!(s.shader_gb, Shader::Simpletex);
         s.change(4, false); assert_eq!(s.ff_speed, 6);
         s.change(4, true); assert_eq!(s.ff_speed, 2);
-        for i in [2, 3, 5, 6, 7, 8, 9] { assert!(s.change(i, true)); }
+        for i in [2, 3, 5, 7, 8, 9] { assert!(s.change(i, true)); }
+        for _ in 0..3 { assert!(s.change(6,true)); } // 2x -> 3x -> 5x -> OFF
         assert!(!s.change(16, true));
         assert!(!s.rewind && !s.turbo && !s.eject_save);
         assert!(s.change(10, true) && s.show_fps);
