@@ -772,7 +772,8 @@ impl GameSession {
         // A13: never seed a Pokémon Cable session from a malformed FLASH1M
         // image. The in-memory core can differ from the verified disk save,
         // so check it BEFORE writing the checkpoint or dropping the solo core.
-        let battery = self.core.save_ram();
+        let battery = self.core.save_ram_verified()
+            .map_err(|e| format!("Cannot read active battery before Link: {e}"))?;
         self.ensure_pokemon_flash(battery.as_deref(), "before Link")?;
         let bytes = self.core.serialize().map_err(|e| e.to_string())?;
         crate::linked_storage::validate_solo_snapshot(&bytes)?;
@@ -815,7 +816,8 @@ impl GameSession {
                 .ok_or("Cannot extract local mGBA from SLK1 pair")?
         } else { full };
         crate::linked_storage::validate_solo_snapshot(&snapshot)?;
-        let ram = self.core.save_ram();
+        let ram = self.core.save_ram_verified()
+            .map_err(|e| format!("Cannot read active Link battery: {e}"))?;
         // A13: a corrupt local Link player must never become the solo save,
         // even when its SLK1 snapshot itself deserializes correctly.
         self.ensure_pokemon_flash(ram.as_deref(), "after Link")?;
@@ -899,12 +901,14 @@ impl GameSession {
         }
         // No publication to SOLO unless the new core has the exact local
         // FLASH and at least one complete generation after the transition.
-        self.ensure_pokemon_flash(self.core.save_ram().as_deref(), "before promotion")?;
+        let battery = self.core.save_ram_verified()
+            .map_err(|e| format!("Cannot verify active battery before promotion: {e}"))?;
+        self.ensure_pokemon_flash(battery.as_deref(), "before promotion")?;
         let resumed = self.core.serialize()
             .map_err(|e| format!("Cannot verify resumed solo state: {e}"))?;
         crate::linked_storage::validate_solo_snapshot(&resumed)?;
         if let Some(expected) = rejoin.ram.as_deref() {
-            if self.core.save_ram().as_deref() != Some(expected) {
+            if battery.as_deref() != Some(expected) {
                 return Err("Recovered solo SRAM differs from Link original; refusing promotion".into());
             }
         }
@@ -1114,7 +1118,8 @@ impl GameSession {
     fn save_sram_checked(&mut self) -> Result<bool, String> {
         let mut wrote = false;
         let mut error: Option<String> = None;
-        match self.core.save_ram() {
+        match self.core.save_ram_verified()
+            .map_err(|e| format!("Active battery snapshot: {e}"))? {
             Some(bytes) if self.mgba_flash_runahead_guard &&
                 pokemon_flash_complete_bank_count(&bytes) == 0 => {
                 error = Some("Pokémon Flash save is incomplete; previous save protected".into());
