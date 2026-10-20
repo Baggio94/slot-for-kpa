@@ -780,6 +780,8 @@ impl GameSession {
         if self.linked_boot.is_some() || self.link_touched {
             return Err("Cannot restore a solo checkpoint inside a Link session".into());
         }
+        // A previous real-frame battery copy cannot land after recovery.
+        self.flush_periodic_battery();
         restore_solo_checkpoint_to_core(self.core.as_mut(), saved)?;
         // Clear presentation/input time travel from any pre-recovery state.
         self.runahead_video.clear();
@@ -1085,6 +1087,9 @@ impl GameSession {
     pub fn rewind_step(&mut self) -> bool {
         if self.runahead_rollback_failed || self.link_touched || self.linked_boot.is_some() { return false; }
         self.runahead_video.clear();
+        // Rewind is a real state restoration: finish any older disk snapshot
+        // once before moving the core backward in time.
+        self.flush_periodic_battery();
         let Some(previous) = self.rewind.pop() else { return false; };
         if let Err(error) = self.core.unserialize(&previous) {
             // A failed state restore must never silently eject the cartridge.
@@ -1354,6 +1359,9 @@ impl GameSession {
         if self.link_touched || self.linked_boot.is_some() { return Err("Load State unavailable during Multiplayer".into()); }
         let (bytes, _) = self.ring.read(stamp).map_err(|e|e.to_string())?;
         let prior = self.core.serialize().map_err(|e|e.to_string())?;
+        // Ensure a queued newer-generation battery write cannot race with
+        // this explicit time-travel restore (the game state may move back).
+        self.flush_periodic_battery();
         self.core.unserialize(&bytes).map_err(|e|e.to_string())?;
         self.pending_undo=Some((Instant::now(), PendingUndo::Loaded {prior}));
         Ok(())
@@ -1378,6 +1386,8 @@ impl GameSession {
             self.pending_undo=None;
             return Err("Undo expired (30 seconds)".into());
         }
+        // An undo may restore an earlier memory timeline.
+        self.flush_periodic_battery();
         let (_, pending)=self.pending_undo.take().unwrap();
         match pending {
             PendingUndo::Loaded {prior} =>
