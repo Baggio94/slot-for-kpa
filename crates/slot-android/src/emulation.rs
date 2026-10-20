@@ -55,6 +55,7 @@ impl EmulationProfile {
             colour_correction_override: None,
             gb_palettes_override: None, ff_speed_override: None,
             ff_sound_override: None, rewind_override: None,
+            rewind_speed_override: None,
             turbo_override: None, rumble_override: None,
             eject_save_override: None }
     }
