@@ -20,9 +20,11 @@ anchor = "void* retro_get_memory_data(unsigned id) {"
 symbol = "slot_mgba_clone_active_save_ram"
 if symbol in data:
     assert data.count(symbol) == 1, "duplicate mGBA save helper"
-    print("Already applied: mGBA active SRAM clone export")
-    raise SystemExit(0)
-if data.count(anchor) != 1:
+    # Already-patched runs must still verify/repair link.T below.
+    data_was_patched = True
+else:
+    data_was_patched = False
+if not data_was_patched and data.count(anchor) != 1:
     raise SystemExit("mGBA libretro anchor changed; refusing source mutation")
 export = """/* KPA-only read-only snapshot of the ACTIVE cartridge battery data.
  * retro_get_memory_data(SAVE_RAM) may point to a stale libretro mirror while
@@ -76,5 +78,17 @@ bool slot_mgba_clone_active_save_ram(void* out, size_t capacity, size_t* written
 }
 
 """
-source.write_text(data.replace(anchor, export + anchor))
-print("Applied: KPA read-only active SRAM export (F5)")
+if not data_was_patched:
+    source.write_text(data.replace(anchor, export + anchor))
+# mGBA's libretro linker version script exports only retro_* and symbols
+# explicitly named here. Without this gate the helper compiles but is hidden
+# from dlopen/dlsym, so the signed build must fail rather than use stale SRAM.
+link = Path(sys.argv[1]) / "src/platform/libretro/link.T"
+script = link.read_text()
+export_name = "slot_mgba_clone_active_save_ram;"
+if export_name not in script:
+    expected = "   global: retro_*; slot_mgba_audio_*;"
+    if script.count(expected) != 1:
+        raise SystemExit("mGBA libretro version script changed; refuse unverified export")
+    link.write_text(script.replace(expected, expected + " " + export_name))
+print("Applied: KPA read-only active SRAM export (F5), including dynamic ABI")
