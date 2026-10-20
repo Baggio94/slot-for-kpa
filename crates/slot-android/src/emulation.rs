@@ -24,6 +24,7 @@ pub struct EmulationProfile {
     pub ff_speed_override: Option<u8>,
     pub ff_sound_override: Option<bool>,
     pub rewind_override: Option<bool>,
+    pub rewind_speed_override: Option<u8>,
     pub turbo_override: Option<bool>, // original KONKR "X/Y Buttons"
     pub rumble_override: Option<bool>,
     pub eject_save_override: Option<bool>,
@@ -37,6 +38,7 @@ impl Default for EmulationProfile {
             colour_correction_override: None,
             gb_palettes_override: None, ff_speed_override: None,
             ff_sound_override: None, rewind_override: None,
+            rewind_speed_override: None,
             turbo_override: None, rumble_override: None,
             eject_save_override: None }
     }
@@ -75,6 +77,7 @@ impl EmulationProfile {
         if let Some(value)=self.ff_speed_override { settings.ff_speed=value; }
         if let Some(value)=self.ff_sound_override { settings.ff_sound=value; }
         if let Some(value)=self.rewind_override { settings.rewind=value; }
+        if let Some(speed)=self.rewind_speed_override { settings.rewind_speed=speed; }
         if let Some(value)=self.turbo_override { settings.turbo=value; }
         if let Some(value)=self.rumble_override { settings.rumble=value; }
         if let Some(value)=self.eject_save_override { settings.eject_save=value; }
@@ -112,7 +115,10 @@ impl EmulationProfile {
                 self.gb_palettes_override=Some(view.gb_palettes),
             4 => self.ff_speed_override=Some(view.ff_speed),
             5 => self.ff_sound_override=Some(view.ff_sound),
-            6 => self.rewind_override=Some(view.rewind),
+            6 => {
+                self.rewind_override=Some(view.rewind);
+                self.rewind_speed_override=Some(view.rewind_speed);
+            },
             7 => self.turbo_override=Some(view.turbo),
             8 => self.rumble_override=Some(view.rumble),
             9 => self.eject_save_override=Some(view.eject_save),
@@ -127,6 +133,10 @@ impl EmulationProfile {
             self.display_sync_pacing = false;
         } else if !self.responsive_pacing { self.display_sync_pacing = false; }
         if self.run_ahead_frames > 2 { self.run_ahead_frames = 0; }
+        if self.rewind_speed_override.is_some_and(|speed|
+            !settings::REWIND_SPEEDS.contains(&speed)) {
+            self.rewind_speed_override=None;
+        }
         if !settings::SPEEDS.contains(&self.ff_speed_override.unwrap_or(2)) {
             self.ff_speed_override=None;
         }
@@ -302,6 +312,30 @@ mod tests {
         assert_eq!(profile.show_fps_override, Some(true));
         assert!(profile.change(10, true));
         assert_eq!(profile.show_fps_override, Some(false));
+    }
+
+    #[test]
+    fn rewind_speed_inherits_global_until_per_game_is_customized() {
+        let mut global=Settings::default();
+        global.rewind_speed=3;
+        let mut profile=EmulationProfile::from_settings(&global);
+        let legacy: EmulationProfile=serde_json::from_str(
+            r#"{"rewind_override":true,"ff_speed_override":4}"#).unwrap();
+        assert_eq!(legacy.rewind_speed_override,None);
+        let mut scoped=global.clone();
+        legacy.apply_visual_and_gameplay(&mut scoped,Platform::Gba);
+        assert_eq!(scoped.rewind_speed,3);
+        assert!(profile.change_visual_and_gameplay(&global,Platform::Gba,6,true));
+        assert_eq!(profile.rewind_override,Some(true));
+        assert_eq!(profile.rewind_speed_override,Some(5));
+        assert_eq!(global.rewind_speed,3);
+        let mut scoped=global.clone();
+        profile.apply_visual_and_gameplay(&mut scoped,Platform::Gba);
+        assert_eq!(scoped.rewind_speed,5);
+        assert_eq!(scoped.ff_speed,global.ff_speed);
+        assert_eq!(scoped.run_ahead_frames,global.run_ahead_frames);
+        let json=serde_json::to_string(&profile).unwrap();
+        assert_eq!(serde_json::from_str::<EmulationProfile>(&json).unwrap(),profile);
     }
 
     #[test]
