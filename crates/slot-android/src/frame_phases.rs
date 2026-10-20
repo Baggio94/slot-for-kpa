@@ -21,6 +21,10 @@ pub(crate) struct FramePhaseSample {
     pub submit_build_us: u64,
     pub submit_draw_us: u64,
     pub submit_blit_us: u64,
+    // Beta13: nested inside submit_blit/end_frame. Never count twice.
+    pub end_setup_us: u64,
+    pub end_quad_us: u64,
+    pub end_bezel_us: u64,
     pub native_total_us: u64,
     pub core_steps: u32,
 }
@@ -72,6 +76,9 @@ pub(crate) struct PhaseSummary {
     pub submit_build: PhaseCounter,
     pub submit_draw: PhaseCounter,
     pub submit_blit: PhaseCounter,
+    pub end_setup: PhaseCounter,
+    pub end_quad: PhaseCounter,
+    pub end_bezel: PhaseCounter,
     pub other: PhaseCounter,
     /// Native >16.667 ms, with inner core processing also >16.667 ms.
     pub slow_with_core_over: u32,
@@ -93,6 +100,9 @@ impl PhaseSummary {
         self.submit_build.add(frame.submit_build_us);
         self.submit_draw.add(frame.submit_draw_us);
         self.submit_blit.add(frame.submit_blit_us);
+        self.end_setup.add(frame.end_setup_us);
+        self.end_quad.add(frame.end_quad_us);
+        self.end_bezel.add(frame.end_bezel_us);
         self.other.add(frame.other_us());
         if frame.native_total_us > SLOW_GL_BUDGET_US {
             if frame.core_us > SLOW_GL_BUDGET_US {
@@ -105,7 +115,7 @@ impl PhaseSummary {
     pub(crate) fn report(self) -> String {
         let n = self.callbacks;
         format!(
-            "Native frame phases: callbacks={} core_steps={} native_avg_us={} native_max_us={} native_over16={} core_avg_us={} core_max_us={} core_over16={} rewind_avg_us={} rewind_max_us={} battery_avg_us={} battery_max_us={} speculative_avg_us={} speculative_max_us={} upload_avg_us={} upload_max_us={} submit_avg_us={} submit_max_us={} submit_over16={} submit_setup_avg_us={} submit_setup_max_us={} submit_build_avg_us={} submit_build_max_us={} submit_draw_avg_us={} submit_draw_max_us={} submit_draw_over16={} submit_blit_avg_us={} submit_blit_max_us={} submit_blit_over16={} other_avg_us={} other_max_us={} native_over16_core_over={} native_over16_core_normal={} gpu_execution_and_egl_swap_not_measured=true",
+            "Native frame phases: callbacks={} core_steps={} native_avg_us={} native_max_us={} native_over16={} core_avg_us={} core_max_us={} core_over16={} rewind_avg_us={} rewind_max_us={} battery_avg_us={} battery_max_us={} speculative_avg_us={} speculative_max_us={} upload_avg_us={} upload_max_us={} submit_avg_us={} submit_max_us={} submit_over16={} submit_setup_avg_us={} submit_setup_max_us={} submit_build_avg_us={} submit_build_max_us={} submit_draw_avg_us={} submit_draw_max_us={} submit_draw_over16={} submit_blit_avg_us={} submit_blit_max_us={} submit_blit_over16={} end_setup_avg_us={} end_setup_max_us={} end_setup_over16={} end_quad_avg_us={} end_quad_max_us={} end_quad_over16={} end_bezel_avg_us={} end_bezel_max_us={} other_avg_us={} other_max_us={} native_over16_core_over={} native_over16_core_normal={} gpu_execution_and_egl_swap_not_measured=true",
             n, self.core_steps,
             self.native.mean_us(n), self.native.max_us, self.native.over_budget,
             self.core.mean_us(n), self.core.max_us, self.core.over_budget,
@@ -118,6 +128,9 @@ impl PhaseSummary {
             self.submit_build.mean_us(n), self.submit_build.max_us,
             self.submit_draw.mean_us(n), self.submit_draw.max_us, self.submit_draw.over_budget,
             self.submit_blit.mean_us(n), self.submit_blit.max_us, self.submit_blit.over_budget,
+            self.end_setup.mean_us(n), self.end_setup.max_us, self.end_setup.over_budget,
+            self.end_quad.mean_us(n), self.end_quad.max_us, self.end_quad.over_budget,
+            self.end_bezel.mean_us(n), self.end_bezel.max_us,
             self.other.mean_us(n), self.other.max_us,
             self.slow_with_core_over, self.slow_with_core_normal,
         )
@@ -223,6 +236,26 @@ mod tests {
         assert_eq!(s.submit_blit.total_us, 3_000);
         assert_eq!(s.other.total_us, 1_000);
         assert!(s.report().contains("submit_blit_avg_us=3000"));
+    }
+
+    #[test]
+    fn f8_phase_nested_end_frame_subphases_never_double_count_blit() {
+        let sample = FramePhaseSample {
+            native_total_us: 15_000, core_us: 2_000,
+            gpu_submit_us: 10_000, submit_blit_us: 9_500,
+            end_setup_us: 7_000, end_quad_us: 2_500, end_bezel_us: 0,
+            ..Default::default()
+        };
+        assert_eq!(sample.accounted_us(), 12_000);
+        assert_eq!(sample.other_us(), 3_000);
+        let mut summary = PhaseSummary::default();
+        summary.add(sample);
+        assert_eq!(summary.submit_blit.total_us, 9_500);
+        assert_eq!(summary.end_setup.total_us, 7_000);
+        assert_eq!(summary.end_quad.total_us, 2_500);
+        assert_eq!(summary.end_bezel.total_us, 0);
+        assert_eq!(summary.other.total_us, 3_000);
+        assert!(summary.report().contains("end_setup_avg_us=7000"));
     }
 
 }
