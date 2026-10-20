@@ -39,8 +39,12 @@ bool slot_mgba_clone_active_save_ram(void* out, size_t capacity, size_t* written
         return false;
     }
     *written = 0;
-    if (!core || core->platform(core) != mPLATFORM_GBA) {
+    if (!core) {
         return false;
+    }
+    if (core->platform(core) != mPLATFORM_GBA) {
+        *written = (size_t)-1; /* GB/GBC: preserve standard libretro battery */
+        return true;
     }
     struct GBA* gba = core->board;
     if (!gba || !core->savedataClone) {
