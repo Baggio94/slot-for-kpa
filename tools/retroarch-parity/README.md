@@ -103,6 +103,15 @@ the game manually before each capture**.
 `slot-emulation-summary.json` and sanitized options JSON.** Raw SF/logcat
 and original RA configuration should remain local unless explicitly examined.
 
+## Frame pacing reproduction is explicitly in scope
+
+**RetroArch-like frame pacing is a first-class goal**, alongside Run-Ahead.
+See [FRAME_PACING_PARITY.md](FRAME_PACING_PARITY.md) for the inspected
+RetroArch Android EGL/runloop/audio clock vs slot GLSurfaceView/Choreographer
+paths, target configuration keys, 59.73/60Hz drift and data-preserving A/B
+criteria. Frame-pacing and Run-Ahead modes should be independently switchable,
+since lower input latency is not a substitute for audio/video stability.
+
 ## Gates for implementing parity backends
 
 - **Milestone 1 (this PR):** capture actual RA reference core/settings and
