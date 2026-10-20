@@ -130,7 +130,9 @@ const SHELF_STATUS_TEXT: [&str; 8] = [
     "CANNOT READ ROM FOLDER", "FOLDER PICKER UNAVAILABLE",
     "FOLDER PERMISSION FAILED",
 ];
-const REWIND_STEP_S: f32 = 0.10;  // Original Slot's time-travel HUD + ~10 Hz restoration.
+// Original Slot records ten rewind states per second but replays them at
+// display cadence (~6x). Our configurable rewind playback rate is computed
+// by settings::rewind_step_seconds, never confused with capture frequency.
 
 const FF_DOUBLE_TAP_MS: u128 = 320;
 static MESSAGE: Mutex<Option<String>> = Mutex::new(None);
@@ -503,6 +505,7 @@ struct LiveGameOptions {
     ff_speed: u8,
     ff_sound: bool,
     rewind: bool,
+    rewind_speed: u8,
     turbo: bool, // KONKR X/Y Buttons
     rumble: bool,
     eject_save: bool,
@@ -514,6 +517,7 @@ impl LiveGameOptions {
             ff_speed,
             ff_sound:p.and_then(|v|v.ff_sound_override).unwrap_or(global.ff_sound),
             rewind:p.and_then(|v|v.rewind_override).unwrap_or(global.rewind),
+            rewind_speed:p.and_then(|v|v.rewind_speed_override).unwrap_or(global.rewind_speed),
             turbo:p.and_then(|v|v.turbo_override).unwrap_or(global.turbo),
             rumble:p.and_then(|v|v.rumble_override).unwrap_or(global.rumble),
             eject_save:p.and_then(|v|v.eject_save_override).unwrap_or(global.eject_save),
@@ -951,7 +955,7 @@ impl Engine {
                                "LCD Grid V2", "Grid V2 + GBA Color", "zfast LCD",
                                "LCD1x", "Simpletex + GBA", "AGB-001",
                                "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
-                               "SYNC LAB"]
+                               "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
@@ -1305,10 +1309,22 @@ impl Engine {
                 }, time);
             }
             100 => {
+                let platform=self.current_cart_platform();
+                if self.game_settings().shader_for(platform).includes_gba_color() {
+                    set_message("Color correction is built into this shader".into());
+                    return true;
+                }
                 if self.game.is_some() {
                     self.change_game_screen_or_gameplay(2,true);
-                } else { self.change_setting(2,true); }
-                self.hud.toast(if self.game_settings().colour_correction {
+                } else {
+                    // Global shortcut should toggle the selected platform,
+                    // not the old GBA-only compatibility setting.
+                    let key=match platform {
+                        Platform::Gba=>22, Platform::Gbc=>23, Platform::Gb=>24
+                    };
+                    self.change_setting(key,true);
+                }
+                self.hud.toast(if self.game_settings().colour_for(platform) {
                     Toast::ColourOn
                 } else { Toast::ColourOff }, time);
             }
@@ -2173,7 +2189,12 @@ impl Engine {
                     } else if let Some(since) = self.mode_down_at.take() {
                         if since.elapsed().as_millis() >= 650 {
                             self.mode_last_tap = None;
-                            if self.game.is_some() { self.handle(Input::Exit); }
+                            if self.game.is_some() {
+                                crate::game::log_launch_timing(&format!(
+                                    "Exit requested by MODE key release (rewind_held={})",
+                                    self.rewind_held));
+                                self.handle(Input::Exit);
+                            }
                         } else if self.game.as_ref().is_some_and(GameSession::requires_relaunch) {
                             self.mode_last_tap = None;
                             self.overlay = ShelfOverlay::GameMenu { row: 0 };
@@ -3347,6 +3368,12 @@ impl Engine {
         let Some(uri)=self.selected_rom_uri() else { return };
         let core=self.selected_emulation_core();
         let platform=self.current_cart_platform();
+        if key == 2 && self.game_settings().shader_for(platform).includes_gba_color() {
+            // These two RetroArch presets bake GBA Color into the shader.
+            // Never silently toggle an option that cannot affect the picture.
+            set_message("Color correction is built into this shader".into());
+            return;
+        }
         let linked=self.game.as_ref().is_some_and(GameSession::linked);
         let relaunch=self.game.as_ref().is_some_and(GameSession::requires_relaunch);
         // Shader and color-correction are display-only and safe while linked;
@@ -3731,6 +3758,10 @@ impl Engine {
     }
 
     fn change_setting(&mut self, key: usize, right: bool) {
+        if matches!(key,2|22) && self.settings.shader_gba.includes_gba_color() {
+            set_message("Color correction is built into this shader".into());
+            return;
+        }
         if !self.settings.change(key, right) { return; }
         if key == 5 {
             FF_AUDIO_ENABLED.store(self.settings.ff_sound, Ordering::Release);
@@ -3768,11 +3799,14 @@ impl Engine {
         match key {
             0 => shader(scoped.shader_gba),
             1 => shader(scoped.shader_gb),
-            2 => if scoped.colour_for(self.current_cart_platform()) {4}else{5},
+            2 => if scoped.shader_for(self.current_cart_platform()).includes_gba_color() {42}
+                 else if scoped.colour_for(self.current_cart_platform()) {4}else{5},
             3 => if scoped.gb_palettes { 4 } else { 5 },
             4 => match scoped.ff_speed { 2 => 0, 3 => 1, 4 => 2, _ => 3 },
             5 => if scoped.ff_sound { 4 } else { 5 },
-            6 => if scoped.rewind { 4 } else { 5 },
+            6 => if !scoped.rewind { 5 } else {
+                match scoped.rewind_speed { 1 => 38, 2 => 39, 3 => 40, _ => 41 }
+            },
             7 => if scoped.turbo { 15 } else { 16 },
             8 => if scoped.rumble { 4 } else { 5 },
             9 => if scoped.eject_save { 4 } else { 5 },
@@ -3802,7 +3836,8 @@ impl Engine {
             19 => if self.settings.show_recents {4}else{5},
             20 => if self.settings.show_titles {4}else{5},
             21 => shader(scoped.shader_gbc),
-            22 => if scoped.colour_correction_gba {4}else{5},
+            22 => if scoped.shader_gba.includes_gba_color() { 42 }
+                else if scoped.colour_correction_gba {4}else{5},
             23 => if scoped.colour_correction_gbc {4}else{5},
             24 => if scoped.colour_correction_gb {4}else{5},
             25 => if scoped.bezel_gba==crate::settings::Bezel::None {17}else{19},
@@ -4544,6 +4579,8 @@ impl Engine {
             && self.mode_down_at.is_some_and(|t| t.elapsed().as_millis() >= 650)
         {
             self.mode_down_at = None;
+            crate::game::log_launch_timing(&format!(
+                "Exit requested by held MODE key (rewind_held={})", self.rewind_held));
             self.handle(Input::Exit);
         }
 
@@ -4725,9 +4762,14 @@ impl Engine {
                 // Restore up to 3 historical snapshots per render frame and
                 // never pass rewound audio into the normal AudioTrack.
                 self.game_accum = 0.0;
+                // At 1x this restores 10 snapshots/s; at 5x 50/s.
+                // Native original Slot replays ~60/s. Each restored state
+                // refreshes just one video frame, with no forward PCM or
+                // speculative Run-Ahead; keep bounded work per callback.
+                let rewind_period = crate::settings::rewind_step_seconds(live.rewind_speed);
                 self.rewind_accum = (self.rewind_accum + dt).min(0.30);
-                while self.rewind_accum >= REWIND_STEP_S && stepped < 3 {
-                    self.rewind_accum -= REWIND_STEP_S;
+                while self.rewind_accum >= rewind_period && stepped < 3 {
+                    self.rewind_accum -= rewind_period;
                     if !session.rewind_step() {
                         self.rewind_accum = 0.0;
                         break;
