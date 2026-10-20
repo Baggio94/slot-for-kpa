@@ -82,6 +82,14 @@ jobs:
               assert width > 20 and height == 24, (name, width, height)
               print(f'Verified authentic Slot legend {name}: {width}x{height}')
           PY
+      - name: Test F7 async SRAM/RTC durability, ordering and failures on Linux
+        run: |
+          set -euo pipefail
+          # GameSession itself is Android-only, but this exact disk worker
+          # must be exercised on Ubuntu rather than merely compiled for ARM64.
+          cargo test -p slot-android --lib battery_writer::tests -- --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/f7-battery-tests.log"
+          grep -Eq 'test result: ok\\. 6 passed; 0 failed;' "$RUNNER_TEMP/f7-battery-tests.log"
       - name: Test Android library and shelf selection
         run: cargo test -p slot-android --lib
       - name: Install cargo-ndk
