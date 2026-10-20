@@ -23,6 +23,12 @@ pub(crate) struct FramePhaseSample {
     pub submit_blit_us: u64,
     // Beta13: nested inside submit_blit/end_frame. Never count twice.
     pub end_setup_us: u64,
+    // Nested CPU thread wall times inside end_setup; no double counting.
+    pub end_geometry_us: u64,
+    pub end_bind_us: u64,
+    pub end_viewport_us: u64,
+    pub end_clear_us: u64,
+    pub end_state_us: u64,
     pub end_quad_us: u64,
     pub end_bezel_us: u64,
     pub native_total_us: u64,
@@ -77,6 +83,11 @@ pub(crate) struct PhaseSummary {
     pub submit_draw: PhaseCounter,
     pub submit_blit: PhaseCounter,
     pub end_setup: PhaseCounter,
+    pub end_geometry: PhaseCounter,
+    pub end_bind: PhaseCounter,
+    pub end_viewport: PhaseCounter,
+    pub end_clear: PhaseCounter,
+    pub end_state: PhaseCounter,
     pub end_quad: PhaseCounter,
     pub end_bezel: PhaseCounter,
     pub other: PhaseCounter,
@@ -101,6 +112,11 @@ impl PhaseSummary {
         self.submit_draw.add(frame.submit_draw_us);
         self.submit_blit.add(frame.submit_blit_us);
         self.end_setup.add(frame.end_setup_us);
+        self.end_geometry.add(frame.end_geometry_us);
+        self.end_bind.add(frame.end_bind_us);
+        self.end_viewport.add(frame.end_viewport_us);
+        self.end_clear.add(frame.end_clear_us);
+        self.end_state.add(frame.end_state_us);
         self.end_quad.add(frame.end_quad_us);
         self.end_bezel.add(frame.end_bezel_us);
         self.other.add(frame.other_us());
@@ -115,7 +131,7 @@ impl PhaseSummary {
     pub(crate) fn report(self) -> String {
         let n = self.callbacks;
         format!(
-            "Native frame phases: callbacks={} core_steps={} native_avg_us={} native_max_us={} native_over16={} core_avg_us={} core_max_us={} core_over16={} rewind_avg_us={} rewind_max_us={} battery_avg_us={} battery_max_us={} speculative_avg_us={} speculative_max_us={} upload_avg_us={} upload_max_us={} submit_avg_us={} submit_max_us={} submit_over16={} submit_setup_avg_us={} submit_setup_max_us={} submit_build_avg_us={} submit_build_max_us={} submit_draw_avg_us={} submit_draw_max_us={} submit_draw_over16={} submit_blit_avg_us={} submit_blit_max_us={} submit_blit_over16={} end_setup_avg_us={} end_setup_max_us={} end_setup_over16={} end_quad_avg_us={} end_quad_max_us={} end_quad_over16={} end_bezel_avg_us={} end_bezel_max_us={} other_avg_us={} other_max_us={} native_over16_core_over={} native_over16_core_normal={} gpu_execution_and_egl_swap_not_measured=true",
+            "Native frame phases: callbacks={} core_steps={} native_avg_us={} native_max_us={} native_over16={} core_avg_us={} core_max_us={} core_over16={} rewind_avg_us={} rewind_max_us={} battery_avg_us={} battery_max_us={} speculative_avg_us={} speculative_max_us={} upload_avg_us={} upload_max_us={} submit_avg_us={} submit_max_us={} submit_over16={} submit_setup_avg_us={} submit_setup_max_us={} submit_build_avg_us={} submit_build_max_us={} submit_draw_avg_us={} submit_draw_max_us={} submit_draw_over16={} submit_blit_avg_us={} submit_blit_max_us={} submit_blit_over16={} end_setup_avg_us={} end_setup_max_us={} end_setup_over16={} end_geometry_avg_us={} end_geometry_max_us={} end_bind_avg_us={} end_bind_max_us={} end_bind_over16={} end_viewport_avg_us={} end_viewport_max_us={} end_clear_avg_us={} end_clear_max_us={} end_clear_over16={} end_state_avg_us={} end_state_max_us={} end_state_over16={} end_quad_avg_us={} end_quad_max_us={} end_quad_over16={} end_bezel_avg_us={} end_bezel_max_us={} other_avg_us={} other_max_us={} native_over16_core_over={} native_over16_core_normal={} gpu_execution_and_egl_swap_not_measured=true",
             n, self.core_steps,
             self.native.mean_us(n), self.native.max_us, self.native.over_budget,
             self.core.mean_us(n), self.core.max_us, self.core.over_budget,
@@ -129,6 +145,11 @@ impl PhaseSummary {
             self.submit_draw.mean_us(n), self.submit_draw.max_us, self.submit_draw.over_budget,
             self.submit_blit.mean_us(n), self.submit_blit.max_us, self.submit_blit.over_budget,
             self.end_setup.mean_us(n), self.end_setup.max_us, self.end_setup.over_budget,
+            self.end_geometry.mean_us(n), self.end_geometry.max_us,
+            self.end_bind.mean_us(n), self.end_bind.max_us, self.end_bind.over_budget,
+            self.end_viewport.mean_us(n), self.end_viewport.max_us,
+            self.end_clear.mean_us(n), self.end_clear.max_us, self.end_clear.over_budget,
+            self.end_state.mean_us(n), self.end_state.max_us, self.end_state.over_budget,
             self.end_quad.mean_us(n), self.end_quad.max_us, self.end_quad.over_budget,
             self.end_bezel.mean_us(n), self.end_bezel.max_us,
             self.other.mean_us(n), self.other.max_us,
@@ -256,6 +277,29 @@ mod tests {
         assert_eq!(summary.end_bezel.total_us, 0);
         assert_eq!(summary.other.total_us, 3_000);
         assert!(summary.report().contains("end_setup_avg_us=7000"));
+    }
+
+    #[test]
+    fn f8_phase_beta14_end_setup_gl_calls_are_nested_not_new_native_cost() {
+        let sample = FramePhaseSample {
+            native_total_us: 18_000, core_us: 2_000,
+            gpu_submit_us: 11_000, submit_blit_us: 10_500,
+            end_setup_us: 10_000, end_quad_us: 500,
+            end_geometry_us: 20, end_bind_us: 9_200,
+            end_viewport_us: 5, end_clear_us: 750, end_state_us: 25,
+            ..Default::default()
+        };
+        assert_eq!(sample.accounted_us(), 13_000);
+        assert_eq!(sample.other_us(), 5_000);
+        let mut summary = PhaseSummary::default();
+        summary.add(sample);
+        assert_eq!(summary.end_setup.total_us, 10_000);
+        assert_eq!(summary.end_bind.total_us, 9_200);
+        assert_eq!(summary.end_clear.total_us, 750);
+        assert_eq!(summary.end_geometry.total_us, 20);
+        assert_eq!(summary.other.total_us, 5_000);
+        assert!(summary.report().contains("end_bind_avg_us=9200"));
+        assert!(summary.report().contains("end_clear_avg_us=750"));
     }
 
 }
