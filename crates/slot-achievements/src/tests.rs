@@ -89,6 +89,39 @@ fn f10_disconnected_wakeup_never_panics_or_blocks() {
 }
 
 #[test]
+fn f10_only_real_frames_trigger_nonblocking_evaluator_wakeup() {
+    let (controls, control_rx) = mpsc::channel();
+    let (frames, frame_rx) = mpsc::sync_channel(QUEUE_SIZE);
+    let (wake, wake_rx) = mpsc::sync_channel(1);
+    let (_, notices) = mpsc::channel();
+    let service = Service {
+        controls, frames, wake, notices,
+        enabled: Arc::new(AtomicBool::new(true)),
+        current: Arc::new(AtomicU64::new(0)),
+        flushing: AtomicBool::new(false),
+        flushed: Arc::new(AtomicBool::new(false)),
+        status: Arc::new(Status::default()),
+        stopping: AtomicBool::new(false),
+        evaluator_stopped: Arc::new(AtomicBool::new(false)),
+        http_shutdown: Arc::new(AtomicBool::new(false)),
+        http_stopped: Arc::new(AtomicBool::new(false)),
+    };
+    let mut core = service.wrap(Box::<TestCore>::default());
+    core.load(Path::new("test.gba")).unwrap();
+    assert_eq!(wake_rx.try_recv(), Ok(()), "load must wake");
+    assert!(matches!(control_rx.try_recv(), Ok(Control::Load(_))));
+    core.run_speculative_frame(ButtonMask(0));
+    assert_eq!(wake_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+    assert!(matches!(frame_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    core.run_frame(ButtonMask(1));
+    assert_eq!(wake_rx.try_recv(), Ok(()), "real frame must wake");
+    assert!(frame_rx.try_recv().is_ok(), "real frame must enter bounded queue");
+    drop(core);
+    assert_eq!(wake_rx.try_recv(), Ok(()), "unload must wake");
+    assert!(matches!(control_rx.try_recv(), Ok(Control::Unload(_))));
+}
+
+#[test]
 fn f10_control_flush_still_completes_when_no_frames_arrive() {
     let root = configured();
     let service = Service::start_with(root.path().into(), Offline);
