@@ -54,13 +54,13 @@ pub(crate) struct RunaheadProbe {
     pub failures: u32,
 }
 
-/// F8: WALL time spent inside the core and synchronous rewind snapshot or
+/// F8: WALL time spent inside the core and synchronous rewind work or
 /// optional battery capture on the GL owner, measured once per real step.
 /// Never infer hardware GPU or EGL swap timing from these values.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct FrameStepTimings {
     pub core_us: u64,
-    pub rewind_capture_us: u64,
+    pub rewind_work_us: u64,
     pub periodic_battery_us: u64,
 }
 
@@ -701,7 +701,7 @@ impl GameSession {
                 if let Ok(snapshot) = self.core.serialize() {
                     self.rewind.push(snapshot);
                 }
-                self.last_step_timings.rewind_capture_us =
+                self.last_step_timings.rewind_work_us =
                     capture_started.elapsed().as_micros() as u64;
             }
         } else { self.rewind_frames = 0; }
