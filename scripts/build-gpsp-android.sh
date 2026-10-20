@@ -74,4 +74,8 @@ for license in COPYING LICENSE LICENSE.txt; do
     cp "$SRC/$license" "$ROOT/android/app/src/main/assets/licenses/gpsp-${license}.txt"
   fi
 done
+# F11: ship pinned-core and safety-patch provenance in the release APK.
+cat > "$ROOT/android/app/src/main/assets/core-build-gpsp.json" <<EOF
+{"core":"gpsp","revision":"$PIN","patches":["aw-session-reset.patch","patch-gpsp-speculative-audio.py"],"native_aw_harness":"asan-passed"}
+EOF
 echo "gpSP arm64 core: $DEST/libgpsp_libretro.so"
