@@ -121,7 +121,7 @@ class MainActivity : Activity() {
     external fun nativeDisplaySyncEnabled(): Boolean
     external fun nativeAudioSpeedPermille(): Int
     external fun nativeFastAudioSupported(supported: Boolean)
-    external fun nativeReadAudio(): ShortArray
+    external fun nativeReadAudioInto(samples: ShortArray): Int
     external fun nativePollMessage(): String?
     external fun nativePollRaNotice(): String?
     external fun nativeRaStatus(): String?
@@ -1371,6 +1371,10 @@ class MainActivity : Activity() {
                 Log.w(TAG, "Audio priority unavailable; using default worker priority", error)
             }
             var player: AudioTrack? = null
+            // F9: the worker owns one reusable PCM buffer (8192 bytes). A
+            // JNI read supplies the valid sample count; only that prefix is
+            // submitted to AudioTrack, including on a short final read.
+            val samples = ShortArray(4096)
             // Do not start the PCM output clock while no libretro samples
             // exist. On the first chunk, preload into AudioTrack then play.
             var awaitingFirstPcm = false
@@ -1488,10 +1492,13 @@ class MainActivity : Activity() {
                         }
                     }
                     val beforeReadNs = SystemClock.elapsedRealtimeNanos()
-                    val samples = nativeReadAudio()
+                    val sampleCount = nativeReadAudioInto(samples)
+                    if (sampleCount < 0 || sampleCount > samples.size) {
+                        throw IllegalStateException("Invalid native PCM read count: $sampleCount")
+                    }
                     // Most-recent early-PCM-notification -> native-read start.
                     // Sampling only, NOT end-to-end audio or input latency.
-                    if (samples.isNotEmpty()) {
+                    if (sampleCount > 0) {
                         val readyNs = earlyPcmReadyNs.get()
                         if (readyNs > observedEarlyReadyNs && readyNs <= beforeReadNs) {
                             val delayUs = (beforeReadNs - readyNs) / 1000L
@@ -1503,8 +1510,8 @@ class MainActivity : Activity() {
                             observedEarlyReadyNs = readyNs
                         }
                     }
-                    EmulationDiagnostics.audio(samples)
-                    if (samples.isEmpty()) {
+                    EmulationDiagnostics.audio(samples, sampleCount)
+                    if (sampleCount == 0) {
                         emptyAudioReads++
                         // Event-driven wakeup instead of sleeping blindly for 8ms:
                         // GLSurfaceView signals after each libretro callback.
@@ -1544,8 +1551,8 @@ class MainActivity : Activity() {
                     // interleaved shorts (~15.6ms at 65,536Hz stereo) are
                     // preloaded; remaining samples are drained AFTER play().
                     val firstLength = if (awaitingFirstPcm) {
-                        minOf(samples.size, 2048)
-                    } else samples.size
+                        minOf(sampleCount, 2048)
+                    } else sampleCount
                     val firstWritten = AudioWritePolicy.writeComplete(
                         samples, start = 0, length = firstLength
                     ) { offset, remaining ->
@@ -1560,18 +1567,18 @@ class MainActivity : Activity() {
                             track.playbackHeadPosition.toLong() and 0xffffffffL
                     }
                     val written = if (firstWritten == firstLength &&
-                        samples.size > firstLength && audioRunning.get()) {
+                        sampleCount > firstLength && audioRunning.get()) {
                         firstWritten + AudioWritePolicy.writeComplete(
                             samples, start = firstLength,
-                            length = samples.size - firstLength
+                            length = sampleCount - firstLength
                         ) { offset, remaining ->
                             track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
                                 .also { if (it < 0) throw IllegalStateException("AudioTrack write failed: $it") }
                         }
                     } else firstWritten
-                    if (written < samples.size && audioRunning.get()) {
+                    if (written < sampleCount && audioRunning.get()) {
                         Log.w(TAG, "AudioTrack incomplete PCM write: " +
-                            "$written/${samples.size} shorts")
+                            "$written/${sampleCount} shorts")
                     }
                     playedShorts += written.toLong()
                     submittedFramesSinceTrackCreate += written.toLong() / 2L
