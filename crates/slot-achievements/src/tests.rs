@@ -448,13 +448,14 @@ fn an_unopened_library_is_prepared_automatically_without_starting_sessions() {
 fn sign_out_never_returns_ready_before_local_flush_and_both_workers_stop() {
     let (controls, controls_rx) = mpsc::channel();
     let (frames, _frame_rx) = mpsc::sync_channel(QUEUE_SIZE);
+    let (wake, _wake_rx) = mpsc::sync_channel(1);
     let (_, notices) = mpsc::channel();
     let evaluator_stopped=Arc::new(AtomicBool::new(false));
     let http_stopped=Arc::new(AtomicBool::new(false));
     let http_shutdown=Arc::new(AtomicBool::new(false));
     let flushed=Arc::new(AtomicBool::new(false));
     let service=Service {
-        controls, frames, notices,
+        controls, frames, wake, notices,
         enabled:Arc::new(AtomicBool::new(true)),
         current:Arc::new(AtomicU64::new(0)),
         flushing:AtomicBool::new(false),
@@ -481,10 +482,12 @@ fn sign_out_never_returns_ready_before_local_flush_and_both_workers_stop() {
 fn a_full_worker_queue_cannot_block_the_emulator() {
     let (controls, _controls_rx) = mpsc::channel();
     let (frames, _frames_rx) = mpsc::sync_channel(QUEUE_SIZE);
+    let (wake, _wake_rx) = mpsc::sync_channel(1);
     let (_, notices) = mpsc::channel();
     let service = Service {
         controls,
         frames,
+        wake,
         notices,
         enabled: Arc::new(AtomicBool::new(true)),
         current: Arc::new(AtomicU64::new(1)),
