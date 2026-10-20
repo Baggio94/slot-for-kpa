@@ -4970,7 +4970,9 @@ impl Engine {
                             let mut audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
                             let overflow = audio.len().saturating_add(samples.len()).saturating_sub(96_000);
                             for _ in 0..overflow.min(audio.len()) { audio.pop_front(); }
-                            audio.extend(samples);
+                            // Copy PCM into the bounded queue but retain the
+                            // source Vec for libretro buffer recycling.
+                            audio.extend(samples.iter().copied());
                         }
                         // Beta10 isolated experiment: the legacy Android
                         // notification happens only AFTER speculation + GLES.
