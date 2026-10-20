@@ -1198,7 +1198,12 @@ impl GameSession {
             if let Err(error) = writer.poll() {
                 log_launch_timing(&format!("F7 periodic battery write failed: {error}"));
             }
-            if writer.busy() { return false; }
+            if writer.busy() {
+                // Storage is still busy: throttle the next non-blocking poll
+                // rather than querying the channel on every emulated frame.
+                self.last_sram = Instant::now();
+                return false;
+            }
             let snapshot = match self.periodic_battery_snapshot() {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
@@ -1220,11 +1225,21 @@ impl GameSession {
                     true
                 }
                 Err(error) => {
-                    // Keep the last attempt time bounded if the worker died:
-                    // we will retry after the normal interval, never spam GL.
-                    self.last_sram = Instant::now();
-                    log_launch_timing(&format!("F7 battery enqueue failed: {error}"));
-                    false
+                    // A failed worker must not silently disable 30-second
+                    // checkpoints for the rest of the session. Join it first
+                    // (no stale concurrent write), then use the proven sync
+                    // implementation until this game is closed.
+                    log_launch_timing(&format!(
+                        "F7 battery writer unavailable, falling back to sync: {error}"));
+                    self.battery_writer.take();
+                    match self.save_sram_checked() {
+                        Ok(written) => written,
+                        Err(error) => {
+                            log_launch_timing(&format!(
+                                "Battery/RTC fallback write failed: {error}"));
+                            false
+                        }
+                    }
                 }
             }
         } else {
