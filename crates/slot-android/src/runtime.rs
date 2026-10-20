@@ -140,6 +140,9 @@ static MESSAGE: Mutex<Option<String>> = Mutex::new(None);
 // and forwards bounded, sanitized user-facing notices to Android's main thread.
 static RA_NOTICES: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static RA_STATUS: Mutex<Option<String>> = Mutex::new(None);
+// F10: do not allocate, stringify and lock a new RA JSON status on every
+// 60/120Hz GL draw. Only publish on actual status/progress changes.
+static RA_STATUS_KEY: AtomicU64 = AtomicU64::new(u64::MAX);
 const RA_NOTICE_LIMIT: usize = 8;
 // Up to 96 prepared cartridge faces (~70 MiB worst-case native RGBA artwork).
 // KONKR has 4 GiB shared RAM; the LRU still reuses existing GLES textures.
@@ -4424,17 +4427,23 @@ impl Engine {
         // Only Android's foreground UI displays notices; the worker never
         // touches JNI, an Activity, the renderer or the filesystem here.
         if let Some(service) = self.ra_service.as_ref() {
-            let status = format!("{:?}", service.sync_status());
+            let status = service.sync_status();
             let progress = service.sync_progress();
             let pending = service.sync_pending();
             let unsaved = service.has_unsaved_awards();
-            let snapshot = serde_json::json!({
-                "state": status,
-                "pending": pending,
-                "unsaved": unsaved,
-                "progress": progress,
-            }).to_string();
-            *RA_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot);
+            let key = u64::from(status as u8)
+                | (u64::from(progress.map_or(256u16, u16::from)) << 8)
+                | ((pending as u64) << 24)
+                | ((unsaved as u64) << 25);
+            if RA_STATUS_KEY.swap(key, Ordering::AcqRel) != key {
+                let snapshot = serde_json::json!({
+                    "state": format!("{status:?}"),
+                    "pending": pending,
+                    "unsaved": unsaved,
+                    "progress": progress,
+                }).to_string();
+                *RA_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot);
+            }
             // Bound per-frame overhead and pending Android UI messages.
             for _ in 0..4 {
                 let Some(notice) = service.take_notice() else { break };
@@ -6037,7 +6046,8 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSurfaceCreated(
         let started = Instant::now();
         LIBRARY_UPDATE_SAFE.store(false, Ordering::Release);
         *holder.borrow_mut() = None;
-        *RA_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        RA_STATUS_KEY.store(u64::MAX, Ordering::Release);
+    *RA_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = None;
         RA_NOTICES.lock().unwrap_or_else(|e| e.into_inner()).clear();
         PLAYING.store(false, Ordering::Release);
         CAROUSEL_QUIET.store(false, Ordering::Release);
