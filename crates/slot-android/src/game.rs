@@ -1127,6 +1127,13 @@ impl GameSession {
         self.core.take_audio()
     }
 
+    /// Caller consumed the REAL frame's PCM (or muted fast-forward PCM).
+    /// Return its allocation to the libretro host before the next frame.
+    /// Audio stays owned by the core during speculative Run-Ahead.
+    pub fn recycle_audio(&mut self, audio: Vec<i16>) {
+        self.core.recycle_audio(audio);
+    }
+
     fn save_sram(&mut self) -> bool {
         match self.save_sram_checked() {
             Ok(written) => written,
