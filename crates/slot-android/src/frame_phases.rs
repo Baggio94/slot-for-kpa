@@ -10,7 +10,7 @@ pub(crate) const SLOW_GL_BUDGET_US: u64 = 16_667;
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(crate) struct FramePhaseSample {
     pub core_us: u64,
-    pub rewind_capture_us: u64,
+    pub rewind_work_us: u64,
     pub periodic_battery_us: u64,
     pub speculative_us: u64,
     pub gpu_upload_us: u64,
@@ -21,7 +21,7 @@ pub(crate) struct FramePhaseSample {
 
 impl FramePhaseSample {
     pub(crate) fn accounted_us(self) -> u64 {
-        self.core_us.saturating_add(self.rewind_capture_us)
+        self.core_us.saturating_add(self.rewind_work_us)
             .saturating_add(self.periodic_battery_us)
             .saturating_add(self.speculative_us)
             .saturating_add(self.gpu_upload_us)
@@ -74,7 +74,7 @@ impl PhaseSummary {
         self.core_steps = self.core_steps.saturating_add(u64::from(frame.core_steps));
         self.native.add(frame.native_total_us);
         self.core.add(frame.core_us);
-        self.rewind.add(frame.rewind_capture_us);
+        self.rewind.add(frame.rewind_work_us);
         self.battery.add(frame.periodic_battery_us);
         self.speculative.add(frame.speculative_us);
         self.upload.add(frame.gpu_upload_us);
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn f8_phase_residual_never_underflows_when_elapsed_clock_is_shorter() {
         let frame = FramePhaseSample {
-            core_us: 100, rewind_capture_us: 20, gpu_submit_us: 40,
+            core_us: 100, rewind_work_us: 20, gpu_submit_us: 40,
             native_total_us: 159, ..Default::default()
         };
         assert_eq!(frame.accounted_us(), 160);
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn f8_phase_all_categories_and_core_steps_are_accounted_once() {
         let frame = FramePhaseSample {
-            core_us: 2000, rewind_capture_us: 300, periodic_battery_us: 100,
+            core_us: 2000, rewind_work_us: 300, periodic_battery_us: 100,
             speculative_us: 600, gpu_upload_us: 400, gpu_submit_us: 1500,
             native_total_us: 6000, core_steps: 1,
         };
