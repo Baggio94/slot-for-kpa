@@ -150,6 +150,7 @@ impl Service {
         let (controls, control_rx) = mpsc::channel();
         let (frames, frame_rx) = mpsc::sync_channel(QUEUE_SIZE);
         let (wake, wake_rx) = mpsc::sync_channel(1);
+        let network_signal = wake.clone();
         let (notice_tx, notices) = mpsc::channel();
         let enabled = Arc::new(AtomicBool::new(false));
         let current = Arc::new(AtomicU64::new(0));
@@ -175,6 +176,7 @@ impl Service {
                     control_rx,
                     frame_rx,
                     wake_rx,
+                    network_signal,
                     notice_tx,
                     worker_status,
                     network_stop,
@@ -318,6 +320,7 @@ fn run(
     controls: mpsc::Receiver<Control>,
     frames: mpsc::Receiver<Frame>,
     wake: mpsc::Receiver<()>,
+    wake_network: mpsc::SyncSender<()>,
     notices: mpsc::Sender<Notice>,
     status: Arc<Status>,
     http_shutdown: Arc<AtomicBool>,
@@ -375,6 +378,7 @@ fn run(
                 load_rx,
                 prefetch_rx,
                 prepared_tx,
+                wake_network,
                 network_notices,
                 network_status,
                 network_stop,
