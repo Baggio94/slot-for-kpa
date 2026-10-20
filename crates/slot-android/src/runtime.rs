@@ -189,6 +189,11 @@ static SYNC_LAB_PCM_QUEUED_SHORTS: AtomicU64 = AtomicU64::new(0);
 static SYNC_LAB_EMPTY_PCM_FRAMES: AtomicU64 = AtomicU64::new(0);
 static SYNC_LAB_NO_STEP_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 static SYNC_LAB_OVERDUE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+// F9: loss diagnostics only; never used to pace or drop native PCM.
+// Count all modes, not just solo SYNC LAB. Saturating cumulative atomics
+// are sampled as deltas by the Android audio worker every ~5 seconds.
+static AUDIO_FIFO_OVERFLOW_EVENTS: AtomicU64 = AtomicU64::new(0);
+static AUDIO_FIFO_DROPPED_SHORTS: AtomicU64 = AtomicU64::new(0);
 
 static AUDIO: Mutex<VecDeque<i16>> = Mutex::new(VecDeque::new());
 static PLAYING: AtomicBool = AtomicBool::new(false);
@@ -4968,11 +4973,15 @@ impl Engine {
                         // speculative Run-Ahead MUST never supply audio.
                         {
                             let mut audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
-                            let overflow = audio.len().saturating_add(samples.len()).saturating_sub(96_000);
-                            for _ in 0..overflow.min(audio.len()) { audio.pop_front(); }
-                            // Copy PCM into the bounded queue but retain the
-                            // source Vec for libretro buffer recycling.
-                            audio.extend(samples.iter().copied());
+                            // Extracted, host-tested copy of the beta8 FIFO
+                            // policy. The observed dropped-old count never
+                            // changes ordering, capacity or playback timing.
+                            let dropped = crate::audio_pcm::enqueue_pcm_bounded(
+                                &mut audio, &samples, 96_000);
+                            if dropped > 0 {
+                                AUDIO_FIFO_OVERFLOW_EVENTS.fetch_add(1, Ordering::Relaxed);
+                                AUDIO_FIFO_DROPPED_SHORTS.fetch_add(dropped as u64, Ordering::Relaxed);
+                            }
                         }
                         // Beta10 isolated experiment: the legacy Android
                         // notification happens only AFTER speculation + GLES.
@@ -6681,13 +6690,14 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetMgbaLinkRecover
 #[unsafe(no_mangle)]
 /// Beta12 diagnostic-only counters in this stable order:
 /// callbacks, committed real frames, PCM shorts generated, PCM shorts queued,
-/// no-PCM real frames, zero-step callbacks, overdue-after-callback frames.
+/// no-PCM real frames, zero-step callbacks, overdue-after-callback frames,
+/// PCM FIFO overflow events and discarded-old PCM shorts (all modes).
 /// The GL thread owns libretro. The Android audio thread only reads atomics.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioClockCounters(
     mut env: JNIEnv<'_>, _this: JObject<'_>,
 ) -> jlongArray {
-    let values: [i64; 7] = [
+    let values: [i64; 9] = [
         SYNC_LAB_CALLBACKS.load(Ordering::Relaxed) as i64,
         SYNC_LAB_COMMITTED_FRAMES.load(Ordering::Relaxed) as i64,
         SYNC_LAB_PCM_PRODUCED_SHORTS.load(Ordering::Relaxed) as i64,
@@ -6695,6 +6705,8 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioClockCounters
         SYNC_LAB_EMPTY_PCM_FRAMES.load(Ordering::Relaxed) as i64,
         SYNC_LAB_NO_STEP_CALLBACKS.load(Ordering::Relaxed) as i64,
         SYNC_LAB_OVERDUE_CALLBACKS.load(Ordering::Relaxed) as i64,
+        AUDIO_FIFO_OVERFLOW_EVENTS.load(Ordering::Relaxed) as i64,
+        AUDIO_FIFO_DROPPED_SHORTS.load(Ordering::Relaxed) as i64,
     ];
     let Ok(result) = env.new_long_array(values.len() as i32) else {
         return std::ptr::null_mut();
