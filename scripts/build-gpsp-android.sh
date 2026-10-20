@@ -20,6 +20,27 @@ if [ "$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)" != "$PIN" ]; then
   git -C "$SRC" fetch --depth=1 origin "$PIN"
   git -C "$SRC" checkout --detach -q FETCH_HEAD
 fi
+# An Advance Wars host->join transition may leave a stale serial queue.
+# The tracked patch exists in KPA but v1.2.2 never compiled it into gpSP.
+# Apply safely/idempotently or stop; never silently ship a vulnerable core.
+AW_PATCH="$ROOT/cores/gpsp/aw-session-reset.patch"
+if git -C "$SRC" apply --reverse --check "$AW_PATCH" >/dev/null 2>&1; then
+  echo "Already applied: aw-session-reset.patch"
+elif git -C "$SRC" apply --check "$AW_PATCH"; then
+  git -C "$SRC" apply "$AW_PATCH"
+  echo "Applied: aw-session-reset.patch"
+else
+  echo "gpSP Advance Wars safety patch mismatch; aborting" >&2
+  exit 1
+fi
+# Mandatory native regression on the very same patched gpSP source that will
+# be cross-compiled into the APK. ASAN validates queue-length safety.
+HOST_CC="${CC_HOST:-cc}"
+"$HOST_CC" -std=gnu11 -O1 -g -fno-omit-frame-pointer \
+  -fstack-protector-strong -fsanitize=address \
+  -I "$SRC" "$ROOT/cores/gpsp/test/awtest.c" -o "$OUT/awtest-asan"
+ASAN_OPTIONS=detect_leaks=0 "$OUT/awtest-asan"
+
 # Preserve only transient mixer data for speculative rollbacks; persistent
 # libretro/RetroArch save-state format stays exactly as pinned upstream.
 python3 "$ROOT/scripts/patch-gpsp-speculative-audio.py" "$SRC"
