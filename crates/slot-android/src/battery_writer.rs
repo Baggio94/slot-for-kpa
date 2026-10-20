@@ -148,6 +148,21 @@ mod tests {
     }
 
     #[test]
+    fn newer_mandatory_checkpoint_cannot_be_overwritten_by_prior_async_job() {
+        let root = root();
+        let mut writer = BatteryWriter::spawn().unwrap();
+        writer.enqueue(job(&root, 0x11)).unwrap();
+        // This is the exact ordering used by Save & Eject / Suspend / Link.
+        writer.flush().unwrap();
+        atomic_write(&root.join("game.srm"), &vec![0xAA; 8192]).unwrap();
+        atomic_write(&root.join("game.rtc"), &vec![0xBB; 32]).unwrap();
+        drop(writer);
+        assert_eq!(fs::read(root.join("game.srm")).unwrap(), vec![0xAA; 8192]);
+        assert_eq!(fs::read(root.join("game.rtc")).unwrap(), vec![0xBB; 32]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn single_pending_generation_never_queues_stale_second_write() {
         let root = root();
         let mut writer = BatteryWriter::spawn().unwrap();
