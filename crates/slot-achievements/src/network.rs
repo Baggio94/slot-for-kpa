@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::storage::{self, Auth, Config, Game, Store, Unlock};
-use crate::{Notice, Status, SyncStatus};
+use crate::{wake_evaluator, Notice, Status, SyncStatus};
 
 const API: &str = "https://retroachievements.org/dorequest.php";
 const VERSION: &str = "12.2.1";
@@ -24,6 +24,19 @@ pub(crate) struct Prepared {
     pub game: Game,
     pub unlocked: BTreeSet<u32>,
     pub cached: bool,
+}
+
+/// F10 responsiveness: cached and online game definitions must activate as
+/// soon as HTTP has prepared them. A silent game may have NO new frames to
+/// signal the evaluator, so do not defer this to the 250ms idle watchdog.
+pub(crate) fn signal_prepared(
+    prepared: &mpsc::Sender<Prepared>,
+    wake: &mpsc::SyncSender<()>,
+    item: Prepared,
+) {
+    if prepared.send(item).is_ok() {
+        wake_evaluator(wake);
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -396,6 +409,7 @@ pub(crate) fn run(
     loads: mpsc::Receiver<Option<Load>>,
     smart_hashes: mpsc::Receiver<(String, u32)>,
     prepared: mpsc::Sender<Prepared>,
+    wake: mpsc::SyncSender<()>,
     notices: mpsc::Sender<Notice>,
     status: Arc<Status>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
@@ -470,7 +484,7 @@ pub(crate) fn run(
                         if let Ok((data, ids)) = storage::read::<(Game, BTreeSet<u32>)>(&cache) {
                             if data.console == game.console {
                                 badges.enqueue(&data);
-                                let _ = prepared.send(Prepared {
+                                signal_prepared(&prepared, &wake, Prepared {
                                     generation: game.generation,
                                     hash: game.hash.clone(),
                                     game: data,
@@ -615,7 +629,7 @@ pub(crate) fn run(
                             .map_err(|_| Failure::Invalid)?;
                         badges.enqueue(&data);
                         ping(&mut http, auth, &status, game, &data)?;
-                        let _ = prepared.send(Prepared {
+                        signal_prepared(&prepared, &wake, Prepared {
                             generation: game.generation,
                             hash: game.hash.clone(),
                             game: data,
