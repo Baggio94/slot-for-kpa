@@ -11,6 +11,13 @@ pub struct EndFrameCpuPhases {
     /// Wall time for geometry/setup, binding the default framebuffer and
     /// preparing/clearing its GL state; includes potential GLES driver waits.
     pub setup_us: u64,
+    // Beta14: these five CPU-thread wall timers nest inside setup_us, never
+    // additional native callback work. Individual calls can wait on the driver.
+    pub geometry_us: u64,
+    pub bind_us: u64,
+    pub viewport_us: u64,
+    pub clear_us: u64,
+    pub state_us: u64,
     /// Wall time to submit the final framebuffer quad(s) through GLES.
     pub quad_us: u64,
     /// Optional bezel GL submission wall time (zero without an active bezel).
@@ -299,16 +306,41 @@ impl Compositor {
             0
         };
         y -= drop;
+        if let (Some(started), Some(p)) = (setup_started, profile.as_deref_mut()) {
+            p.geometry_us = started.elapsed().as_micros() as u64;
+        }
+
+        let bind_started = profile.is_some().then(Instant::now);
+        unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, 0) };
+        if let (Some(started), Some(p)) = (bind_started, profile.as_deref_mut()) {
+            p.bind_us = started.elapsed().as_micros() as u64;
+        }
+
+        let viewport_started = profile.is_some().then(Instant::now);
+        unsafe { gl::Viewport(0, 0, window.0 as i32, window.1 as i32) };
+        if let (Some(started), Some(p)) = (viewport_started, profile.as_deref_mut()) {
+            p.viewport_us = started.elapsed().as_micros() as u64;
+        }
+
+        let clear_started = profile.is_some().then(Instant::now);
         unsafe {
-            gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
-            gl::Viewport(0, 0, window.0 as i32, window.1 as i32);
             gl::ClearColor(0.0, 0.0, 0.0, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
+        }
+        if let (Some(started), Some(p)) = (clear_started, profile.as_deref_mut()) {
+            p.clear_us = started.elapsed().as_micros() as u64;
+        }
+
+        let state_started = profile.is_some().then(Instant::now);
+        unsafe {
             gl::UseProgram(self.blit);
             gl::ActiveTexture(gl::TEXTURE0);
             gl::Uniform3f(self.u_gain, self.gain[0], self.gain[1], self.gain[2]);
+            gl::BindTexture(gl::TEXTURE_2D, self.tex);
         }
-        unsafe { gl::BindTexture(gl::TEXTURE_2D, self.tex) };
+        if let (Some(started), Some(p)) = (state_started, profile.as_deref_mut()) {
+            p.state_us = started.elapsed().as_micros() as u64;
+        }
         if let (Some(started), Some(p)) = (setup_started, profile.as_deref_mut()) {
             p.setup_us = started.elapsed().as_micros() as u64;
         }
