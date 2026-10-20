@@ -5121,13 +5121,16 @@ impl Engine {
             self.gpu.draw_list(&commands);
             frame_phases.submit_draw_us = draw_started.elapsed().as_micros() as u64;
             let blit_started = Instant::now();
-            let end_phases = self.gpu.end_frame_profiled(self.size);
+            // Beta15 B arm: KONKR-only clear-skipping applies to this active
+            // game GL path, never shelf/menu/compositor callers.
+            let end_phases = self.gpu.end_frame_profiled_fullscreen_clear_ab(self.size);
             frame_phases.submit_blit_us = blit_started.elapsed().as_micros() as u64;
             frame_phases.end_setup_us = end_phases.setup_us;
             frame_phases.end_geometry_us = end_phases.geometry_us;
             frame_phases.end_bind_us = end_phases.bind_us;
             frame_phases.end_viewport_us = end_phases.viewport_us;
             frame_phases.end_clear_us = end_phases.clear_us;
+            frame_phases.end_clear_skipped = end_phases.clear_skipped;
             frame_phases.end_state_us = end_phases.state_us;
             frame_phases.end_quad_us = end_phases.quad_us;
             frame_phases.end_bezel_us = end_phases.bezel_us;
