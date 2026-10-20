@@ -51,6 +51,24 @@ class ConfigExtractionTests(unittest.TestCase):
         self.assertNotIn("video_vsync", data)
         self.assertEqual("disabled", data["mgba_frameskip"])
 
+    def test_frame_pacing_controls_are_verified_safe_scalar_keys(self):
+        data = parse_cfg('''
+            video_threaded = "false"
+            video_threaded_present_repeat = "true"
+            video_threaded_display_pacing = "true"
+            video_scanline_sync = "false"
+            video_scanline_sync_offset = "0"
+            vrr_runloop_enable = "false"
+            video_frame_delay_auto = "true"
+            audio_rate_control = "true"
+            audio_rate_control_delta = "0.005"
+            video_swap_interval = "1"
+        ''')
+        self.assertEqual("true", data["video_threaded_display_pacing"])
+        self.assertEqual("false", data["vrr_runloop_enable"])
+        self.assertEqual("0.005", data["audio_rate_control_delta"])
+        self.assertEqual("1", data["video_swap_interval"])
+
     def test_missing_configuration_is_explicitly_unknown(self):
         result = summarize(None, None, "mgba")
         self.assertEqual({}, result["settings"])
