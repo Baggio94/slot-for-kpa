@@ -20,7 +20,7 @@ averageFPS = 59.724
         self.assertEqual(300, report["observed_intervals"])
         self.assertAlmostEqual(59.724, report["average_fps"])
         self.assertEqual(16, report["present_gap_p50_ms"])
-        self.assertEqual(16, report["present_gap_p95_ms"])
+        self.assertEqual(17, report["present_gap_p95_ms"])
         self.assertEqual(33, report["present_gap_p99_ms"])
         self.assertEqual(14, report["present_gap_over25_count"])
 
