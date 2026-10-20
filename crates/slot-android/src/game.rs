@@ -9,6 +9,9 @@ use slot_store::{atomic_write, Core, Platform, StateEntry, StateRing, stamp_now,
 use crate::thumb;
 use crate::retroarch_state;
 use crate::rewind::{RewindThread, REWIND_BYTES};
+#[path = "battery_writer.rs"]
+mod battery_writer;
+use battery_writer::{BatterySnapshot, BatteryWriter};
 use std::path::{Path, PathBuf};
 use std::io::{Read, Seek, SeekFrom};
 use std::time::{Duration, Instant};
@@ -185,6 +188,8 @@ pub struct GameSession {
     core_kind: Core,
     pending_undo: Option<(Instant, PendingUndo)>,
     last_sram: Instant,
+    // F7: owns at most one immutable periodic SRAM/RTC write per solo session.
+    battery_writer: Option<BatteryWriter>,
     pub sample_rate: i32,
     pub fps: f64,
 }
@@ -621,6 +626,19 @@ impl GameSession {
         if sma4_guard {
             log_launch_timing("Super Mario Advance 4: Run-Ahead OFF for mGBA/gpSP to protect SRAM");
         }
+        // A worker only owns immutable copies of SOLO battery files. Private
+        // Link sessions retain their existing synchronous checkpointing.
+        // Thread startup failure safely falls back to the old GL writes.
+        let battery_writer = if linked_boot.is_none() {
+            match BatteryWriter::spawn() {
+                Ok(worker) => Some(worker),
+                Err(error) => {
+                    log_launch_timing(&format!(
+                        "F7 async battery unavailable; using synchronous writes: {error}"));
+                    None
+                }
+            }
+        } else { None };
         Ok(Self {
             core, link: None, link_touched: false, linked_boot, gpsp_serial,
             rom_path: rom.to_path_buf(), rom_stem: rom_stem.to_owned(),
@@ -634,7 +652,7 @@ impl GameSession {
             runahead_probe: RunaheadProbe::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
-            pending_undo: None, last_sram: Instant::now(),
+            pending_undo: None, last_sram: Instant::now(), battery_writer,
             sample_rate: sample_rate.clamp(8_000, 96_000),
             fps,
         })
@@ -777,6 +795,9 @@ impl GameSession {
         if self.linked_boot.is_some() || self.link_touched {
             return Err("Only a clean solo game can start mGBA Link".into());
         }
+        // A periodic save must not complete after this Link checkpoint and
+        // replace the fresh solo state with an earlier battery generation.
+        self.flush_periodic_battery();
         // A13: never seed a Pokémon Cable session from a malformed FLASH1M
         // image. The in-memory core can differ from the verified disk save,
         // so check it BEFORE writing the checkpoint or dropping the solo core.
@@ -1134,12 +1155,81 @@ impl GameSession {
         self.core.recycle_audio(audio);
     }
 
+    /// Build immutable real-core data on GL, but never do the 30-second
+    /// fsync/rename on a frame callback. No speculative data crosses to disk.
+    fn periodic_battery_snapshot(&self) -> Result<BatterySnapshot, String> {
+        if self.runahead_rollback_failed {
+            return Err("Unsafe Run-Ahead timeline; periodic save blocked".into());
+        }
+        let ram = self.core.save_ram_verified()
+            .map_err(|error| format!("Active battery snapshot: {error}"))?;
+        if self.mgba_flash_runahead_guard && ram.as_ref().is_some_and(|bytes|
+            pokemon_flash_complete_bank_count(bytes) == 0) {
+            return Err("Pokémon Flash save incomplete; prior checkpoint protected".into());
+        }
+        Ok(BatterySnapshot {
+            save: self.save.clone(), rtc_path: self.rtc.clone(),
+            ram, rtc: self.core.save_rtc(),
+        })
+    }
+
+    /// Order all earlier optional writes before any newer mandatory write.
+    /// Errors are logged; a fresh checked checkpoint below must still be
+    /// attempted, because it can repair an earlier storage failure.
+    fn flush_periodic_battery(&mut self) {
+        if let Some(writer) = self.battery_writer.as_mut() {
+            if let Err(error) = writer.flush() {
+                log_launch_timing(&format!(
+                    "F7 periodic checkpoint failed before mandatory save: {error}"));
+            }
+        }
+    }
+
     fn save_sram(&mut self) -> bool {
-        match self.save_sram_checked() {
-            Ok(written) => written,
-            Err(error) => {
-                log_launch_timing(&format!("Battery/RTC periodic write failed: {error}"));
-                false
+        if let Some(writer) = self.battery_writer.as_mut() {
+            // Poll only every ~30 seconds; one pending snapshot maximum.
+            // When disk is slow, skip this OPTIONAL generation, never wait
+            // for an fsync on the GL callback or enqueue stale copies.
+            if let Err(error) = writer.poll() {
+                log_launch_timing(&format!("F7 periodic battery write failed: {error}"));
+            }
+            if writer.busy() { return false; }
+            let snapshot = match self.periodic_battery_snapshot() {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    self.last_sram = Instant::now();
+                    log_launch_timing(&format!("F7 battery snapshot rejected: {error}"));
+                    return false;
+                }
+            };
+            let has_data = snapshot.ram.is_some() || snapshot.rtc.is_some();
+            if !has_data {
+                self.last_sram = Instant::now();
+                return false;
+            }
+            let outcome = self.battery_writer.as_mut()
+                .expect("writer previously verified").enqueue(snapshot);
+            match outcome {
+                Ok(()) => {
+                    self.last_sram = Instant::now();
+                    true
+                }
+                Err(error) => {
+                    // Keep the last attempt time bounded if the worker died:
+                    // we will retry after the normal interval, never spam GL.
+                    self.last_sram = Instant::now();
+                    log_launch_timing(&format!("F7 battery enqueue failed: {error}"));
+                    false
+                }
+            }
+        } else {
+            // No worker can be started, or the core is a private Link sandbox.
+            match self.save_sram_checked() {
+                Ok(written) => written,
+                Err(error) => {
+                    log_launch_timing(&format!("Battery/RTC periodic write failed: {error}"));
+                    false
+                }
             }
         }
     }
@@ -1149,6 +1239,9 @@ impl GameSession {
     /// Return every attempted file write's error to callers that must retain
     /// the session (Save & Eject); none means the cartridge has no such file.
     fn save_sram_checked(&mut self) -> Result<bool, String> {
+        // Mandatory suspend/eject: wait for all older periodic generations
+        // before writing fresh SRAM/RTC and optionally a matching state.
+        self.flush_periodic_battery();
         if self.runahead_rollback_failed {
             return Err("Run-Ahead rollback failed; unsafe timeline cannot be saved".into());
         }
