@@ -40,7 +40,7 @@ jobs:
           mkdir -p retroarch-parity-kit/tools/retroarch-parity
           mkdir -p retroarch-parity-kit/tools/emulation-lab
           cp tools/retroarch-parity/*.py tools/retroarch-parity/*.sh \
-             tools/retroarch-parity/README.md retroarch-parity-kit/tools/retroarch-parity/
+             tools/retroarch-parity/*.md retroarch-parity-kit/tools/retroarch-parity/
           cp tools/emulation-lab/report.py retroarch-parity-kit/tools/emulation-lab/
           chmod +x retroarch-parity-kit/tools/retroarch-parity/*.sh
           test -s retroarch-parity-kit/tools/emulation-lab/report.py
