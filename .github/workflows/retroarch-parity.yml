@@ -37,9 +37,14 @@ jobs:
       - name: Package ready-to-run Mac/Linux lab
         run: |
           set -euo pipefail
-          mkdir -p retroarch-parity-kit
-          cp tools/retroarch-parity/*.py tools/retroarch-parity/*.sh tools/retroarch-parity/README.md retroarch-parity-kit/
-          chmod +x retroarch-parity-kit/*.sh
+          mkdir -p retroarch-parity-kit/tools/retroarch-parity
+          mkdir -p retroarch-parity-kit/tools/emulation-lab
+          cp tools/retroarch-parity/*.py tools/retroarch-parity/*.sh \
+             tools/retroarch-parity/README.md retroarch-parity-kit/tools/retroarch-parity/
+          cp tools/emulation-lab/report.py retroarch-parity-kit/tools/emulation-lab/
+          chmod +x retroarch-parity-kit/tools/retroarch-parity/*.sh
+          test -s retroarch-parity-kit/tools/emulation-lab/report.py
+          # README commands are relative to the extracted kit root.
           tar -czf retroarch-parity-kit.tar.gz retroarch-parity-kit
       - name: Upload validated parity kit
         uses: actions/upload-artifact@v4
