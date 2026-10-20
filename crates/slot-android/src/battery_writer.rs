@@ -194,6 +194,26 @@ mod tests {
     }
 
     #[test]
+    fn battery_failure_is_not_masked_by_a_successful_rtc_write() {
+        let root = root();
+        let mut writer = BatteryWriter::spawn().unwrap();
+        let mut broken = job(&root, 0x31);
+        // Reproducible missing-parent error without platform-specific chmod.
+        broken.save = root.join("missing-parent").join("game.srm");
+        writer.enqueue(broken).unwrap();
+        let error = writer.flush().unwrap_err();
+        assert!(error.contains("Battery save"), "{error}");
+        assert_eq!(fs::read(root.join("game.rtc")).unwrap(), vec![0x31; 32]);
+        // A later, fully valid generation must supersede that partial write.
+        writer.enqueue(job(&root, 0x42)).unwrap();
+        writer.flush().unwrap();
+        assert_eq!(fs::read(root.join("game.srm")).unwrap(), vec![0x42; 8192]);
+        assert_eq!(fs::read(root.join("game.rtc")).unwrap(), vec![0x42; 32]);
+        drop(writer);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn dropping_session_waits_for_queued_write() {
         let root = root();
         {
