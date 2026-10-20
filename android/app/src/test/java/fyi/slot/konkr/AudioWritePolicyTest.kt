@@ -58,6 +58,40 @@ class AudioWritePolicyTest {
         assertEquals(samples.size, initial + rest)
     }
 
+    @Test fun reusedBufferShortReadNeverWritesStaleSuffix() {
+        val reusable = shortArrayOf(1, 2, 3, 4, 5, 6, 99, 98, 97, 96)
+        val captured = ArrayList<Short>()
+        val validCount = 6 // JNI explicitly returned 6 of 10 shorts.
+        val written = AudioWritePolicy.writeComplete(
+            reusable, start = 0, length = validCount
+        ) { offset, remaining ->
+            for (i in offset until offset + remaining) captured.add(reusable[i])
+            remaining
+        }
+        assertEquals(validCount, written)
+        assertEquals(listOf<Short>(1, 2, 3, 4, 5, 6), captured)
+    }
+
+    @Test fun reusedBufferFirstPreloadAndShortTailRespectValidCount() {
+        val reusable = ShortArray(4096) { index -> index.toShort() }
+        val validCount = 2061 // 2048 initial shorts, then 13 after play().
+        val chunks = ArrayList<Pair<Int, Int>>()
+        val first = AudioWritePolicy.writeComplete(
+            reusable, start = 0, length = minOf(validCount, 2048)
+        ) { offset, remaining ->
+            chunks.add(offset to remaining)
+            remaining
+        }
+        val second = AudioWritePolicy.writeComplete(
+            reusable, start = first, length = validCount - first
+        ) { offset, remaining ->
+            chunks.add(offset to remaining)
+            remaining
+        }
+        assertEquals(validCount, first + second)
+        assertEquals(listOf(0 to 2048, 2048 to 13), chunks)
+    }
+
     @Test fun emptyBufferAvoidsAudioCalls() {
         var calls = 0
         assertEquals(0, AudioWritePolicy.writeComplete(shortArrayOf()) { _, _ ->
