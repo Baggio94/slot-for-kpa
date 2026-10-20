@@ -9,7 +9,7 @@ package fyi.slot.konkr
  * input-to-audio latency from these values.
  */
 internal object AudioClockWindow {
-    const val COUNTERS = 7
+    const val COUNTERS = 9
 
     data class Delta(
         val callbacks: Long,
@@ -19,6 +19,8 @@ internal object AudioClockWindow {
         val emptyPcmFrames: Long,
         val noStepCallbacks: Long,
         val overdueCallbacks: Long,
+        val fifoOverflowEvents: Long,
+        val fifoDroppedShorts: Long,
         val spanMs: Long,
         val sampleRate: Int,
     ) {
@@ -38,6 +40,6 @@ internal object AudioClockWindow {
             delta[index] = after[index] - before[index]
         }
         return Delta(delta[0], delta[1], delta[2], delta[3],
-            delta[4], delta[5], delta[6], spanMs, sampleRate)
+            delta[4], delta[5], delta[6], delta[7], delta[8], spanMs, sampleRate)
     }
 }
