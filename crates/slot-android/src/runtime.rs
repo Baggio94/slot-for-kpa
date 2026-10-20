@@ -4455,6 +4455,10 @@ impl Engine {
         self.menu_repeat_dispatch=false;
     }
     fn draw(&mut self, mut on_pcm_ready: impl FnMut()) {
+        // Includes Slot-side input/menu/RA/status preparation in "other_us".
+        // The enclosing JNI caller's library gate and later EGL swap remain
+        // outside the scope; Kotlin times the broader nativeDrawFrame call.
+        let phase_native_started = Instant::now();
         self.tick_menu_repeat();
         self.refresh_system_status();
         // Poll the already-running achievement evaluator without blocking GL.
@@ -5113,7 +5117,7 @@ impl Engine {
             self.gpu.draw_list(&commands);
             self.gpu.end_frame(self.size);
             frame_phases.gpu_submit_us = submit_started.elapsed().as_micros() as u64;
-            frame_phases.native_total_us = a12_native_started.elapsed().as_micros() as u64;
+            frame_phases.native_total_us = phase_native_started.elapsed().as_micros() as u64;
             FRAME_PHASE_PROBE.with(|probe| {
                 let mut probe = probe.borrow_mut();
                 let window = probe.get_or_insert_with(crate::frame_phases::PhaseWindow::new);
