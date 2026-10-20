@@ -173,6 +173,10 @@ pub struct GameSession {
     // Preserve the libretro state allocation across speculative frames.
     runahead_state: Vec<u8>,
     runahead_unavailable: bool,
+    // A failed rollback after speculative frames poisons the current core.
+    // Never advance/save it; require explicit unsaved exit or full reinit.
+    runahead_rollback_failed: bool,
+    runahead_discard_confirm: bool,
     runahead_probe: RunaheadProbe,
     // Keep mGBA speculative frames away from Pokémon Gen III FLASH1M.
     mgba_flash_runahead_guard: bool,
@@ -625,6 +629,8 @@ impl GameSession {
             frame_count: 0, palette_live, core_kind: which,
             runahead_video: Vec::new(), runahead_state: Vec::new(),
             runahead_unavailable: false,
+            runahead_rollback_failed: false,
+            runahead_discard_confirm: false,
             runahead_probe: RunaheadProbe::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
@@ -637,6 +643,7 @@ impl GameSession {
     /// False while cable lockstep is awaiting the other player. The caller
     /// must not subtract an emulated-frame budget until this returns true.
     pub fn advance(&mut self, buttons: u16, turbo: bool, record_rewind: bool) -> bool {
+        if self.runahead_rollback_failed { return false; }
         // A suspended or ended Multiplayer session must not fall through
         // to core.run_frame() merely because self.link became None. This
         // also handles Android onPause outside the Multiplayer overlay.
@@ -766,6 +773,7 @@ impl GameSession {
     /// Save the solo state before replacing the entire libretro core with
     /// the linked dual-GBA engine. Abort rather than discard solo progress.
     pub fn preserve_solo_for_link(&mut self) -> Result<Vec<u8>, String> {
+        if self.runahead_rollback_failed { return Err("Unsafe Run-Ahead state; Link checkpoint blocked".into()); }
         if self.linked_boot.is_some() || self.link_touched {
             return Err("Only a clean solo game can start mGBA Link".into());
         }
@@ -961,6 +969,18 @@ impl GameSession {
     pub fn mgba_flash_runahead_blocked(&self) -> bool { self.mgba_flash_runahead_guard }
     pub fn sma4_runahead_blocked(&self) -> bool { self.sma4_runahead_guard }
 
+    /// True only after prediction has mutated the core and full restoration
+    /// failed. Treat all save paths as unsafe until a fresh session is loaded.
+    pub fn runahead_rollback_failed(&self) -> bool { self.runahead_rollback_failed }
+
+    /// Require two deliberate Exit actions before discarding a poisoned
+    /// in-memory session. Do not touch existing on-disk checkpoints.
+    pub fn confirm_rollback_discard(&mut self) -> bool {
+        if !self.runahead_rollback_failed { return false; }
+        if self.runahead_discard_confirm { true }
+        else { self.runahead_discard_confirm = true; false }
+    }
+
     pub fn runahead_supported(&self) -> bool {
         !self.mgba_flash_runahead_guard && !self.sma4_runahead_guard
             && self.linked_boot.is_none() && !self.link_touched
@@ -978,7 +998,7 @@ impl GameSession {
     pub fn prepare_runahead(&mut self, buttons: u16, turbo: bool, frames: u8) {
         let started = Instant::now();
         self.runahead_video.clear();
-        if frames == 0 || frames > 2 || self.mgba_flash_runahead_guard ||
+        if frames == 0 || frames > 2 || self.runahead_rollback_failed || self.mgba_flash_runahead_guard ||
             self.sma4_runahead_guard ||
             self.runahead_unavailable || self.link_touched || self.linked_boot.is_some() { return; }
         if !self.core.speculative_audio_supported() {
@@ -1026,17 +1046,23 @@ impl GameSession {
             started.elapsed().as_micros() as u64);
         if let Err(error) = restored {
             self.runahead_probe.failures += 1;
-            // Never display a frame if the core could not restore its real state.
+            // A speculative frame HAS mutated the core. Disabling Run-Ahead
+            // alone would continue gameplay and silently overwrite a valid
+            // save with the wrong timeline. Fail CLOSED: freeze the session,
+            // reject every automatic/export/manual/periodic save and only
+            // allow a separately confirmed discard without writing.
             self.runahead_video.clear();
             self.runahead_unavailable = true;
-            log_launch_timing(&format!("Run-Ahead disabled: restore failed: {error}"));
+            self.runahead_rollback_failed = true;
+            log_launch_timing(&format!(
+                "Run-Ahead ROLLBACK FAILED: session quarantined, ALL saves disabled: {error}"));
             return;
         }
 
     }
 
     pub fn rewind_step(&mut self) -> bool {
-        if self.link_touched || self.linked_boot.is_some() { return false; }
+        if self.runahead_rollback_failed || self.link_touched || self.linked_boot.is_some() { return false; }
         self.runahead_video.clear();
         let Some(previous) = self.rewind.pop() else { return false; };
         if let Err(error) = self.core.unserialize(&previous) {
@@ -1116,6 +1142,9 @@ impl GameSession {
     /// Return every attempted file write's error to callers that must retain
     /// the session (Save & Eject); none means the cartridge has no such file.
     fn save_sram_checked(&mut self) -> Result<bool, String> {
+        if self.runahead_rollback_failed {
+            return Err("Run-Ahead rollback failed; unsafe timeline cannot be saved".into());
+        }
         let mut wrote = false;
         let mut error: Option<String> = None;
         match self.core.save_ram_verified()
@@ -1151,6 +1180,9 @@ impl GameSession {
     /// rewrites a corrupt battery over a known-good file. An absent battery
     /// on a ROM that does not implement SRAM is not an I/O failure.
     pub fn save_for_eject(&mut self, with_state: bool) -> Result<bool, String> {
+        if self.runahead_rollback_failed {
+            return Err("Run-Ahead rollback failed; exit without saving instead".into());
+        }
         let battery = self.save_sram_checked()?;
         if !with_state || self.link_touched || self.linked_boot.is_some() {
             return Ok(battery);
@@ -1182,6 +1214,7 @@ impl GameSession {
     /// Original Slot ring: 10 timestamped states per ROM/core, each with
     /// a 240×160 PNG thumbnail. Independent from RetroArch's manual slots.
     pub fn save_manual(&mut self) -> Result<String, String> {
+        if self.runahead_rollback_failed { return Err("Unsafe Run-Ahead state; manual save blocked".into()); }
         if self.link_touched || self.linked_boot.is_some() { return Err("Save States unavailable for Multiplayer sessions".into()); }
         let state = self.core.serialize().map_err(|e|e.to_string())?;
         let preview = thumb::png(self.core.video_xrgb8888()).unwrap_or_default();
@@ -1217,6 +1250,7 @@ impl GameSession {
     }
 
     pub fn load_manual(&mut self, stamp:&str) -> Result<(), String> {
+        if self.runahead_rollback_failed { return Err("Run-Ahead state unsafe; restart from disk".into()); }
         if self.link_touched || self.linked_boot.is_some() { return Err("Load State unavailable during Multiplayer".into()); }
         let (bytes, _) = self.ring.read(stamp).map_err(|e|e.to_string())?;
         let prior = self.core.serialize().map_err(|e|e.to_string())?;
@@ -1237,6 +1271,7 @@ impl GameSession {
     }
 
     pub fn undo_manual(&mut self)->Result<(),String> {
+        if self.runahead_rollback_failed { return Err("Run-Ahead state unsafe; restart from disk".into()); }
         if self.link_touched || self.linked_boot.is_some() { return Err("Undo unavailable during Multiplayer".into()); }
         let Some((since,_))=&self.pending_undo else { return Err("Nothing to undo".into())};
         if since.elapsed()>UNDO_WINDOW {
