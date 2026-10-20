@@ -89,7 +89,7 @@ jobs:
           # must be exercised on Ubuntu rather than merely compiled for ARM64.
           cargo test -p slot-android --lib battery_writer::tests -- --nocapture 2>&1 \
             | tee "$RUNNER_TEMP/f7-battery-tests.log"
-          grep -Eq 'test result: ok\\. 6 passed; 0 failed;' "$RUNNER_TEMP/f7-battery-tests.log"
+          grep -Eq 'test result: ok\. 6 passed; 0 failed;' "$RUNNER_TEMP/f7-battery-tests.log"
       - name: Test Android library and shelf selection
         run: cargo test -p slot-android --lib
       - name: Install cargo-ndk
