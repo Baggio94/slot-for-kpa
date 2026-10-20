@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // v1.2.3-beta4 isolated QA: rewind and color UI compatibility fixes; keep published v1.2.2 untouched.
-        versionCode = 142
-        versionName = "1.2.3-beta4"
+        // v1.2.3-beta5 isolated QA: rewind and color UI compatibility fixes; keep published v1.2.2 untouched.
+        versionCode = 143
+        versionName = "1.2.3-beta5"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
