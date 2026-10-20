@@ -136,3 +136,56 @@ impl RewindThread {
         self.fill.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(n: u32) -> Vec<u8> {
+        // Real save states contain slowly changing areas plus bursts of
+        // entropy; deliberately fill the very small test history budget.
+        let mut out=vec![0u8;8192];
+        let mut seed=n.wrapping_mul(747796405).wrapping_add(2891336453);
+        for b in out[1000..5000].iter_mut() {
+            seed=seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            *b=(seed>>24) as u8;
+        }
+        out[..4].copy_from_slice(&n.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn a_full_rewind_meter_evicts_history_without_ending_the_session() {
+        // The displayed 100% is compressed ring usage, NOT a signal to
+        // eject, unload the core, exit slot., or reset the ROM.
+        let mut rewind=Rewind::new(32*1024);
+        for i in 0..250 {rewind.push(&state(i));}
+        assert!(rewind.fill()>=90);
+        assert!(rewind.bytes_used()<=32*1024);
+        let mut kept=0usize;
+        while let Some(frame)=rewind.pop() {
+            if kept==0 { assert_eq!(frame,state(249)); }
+            kept+=1;
+        }
+        assert!(kept>1 && kept<250, "compressed budget must evict old entries");
+        assert_eq!(rewind.fill(),0);
+        assert_eq!(rewind.depth(),0);
+        // The game can resume capturing after exhausting its rewind history.
+        rewind.push(&state(300));
+        rewind.push(&state(301));
+        assert_eq!(rewind.pop(),Some(state(301)));
+        assert_eq!(rewind.pop(),Some(state(300)));
+        assert_eq!(rewind.pop(),None);
+    }
+
+    #[test]
+    fn changing_rewind_state_size_drops_only_incompatible_history() {
+        let mut rewind=Rewind::new(REWIND_BYTES);
+        rewind.push(&state(1));
+        rewind.push(&state(2));
+        let different=vec![7u8;4500];
+        rewind.push(&different);
+        assert_eq!(rewind.pop(),Some(different));
+        assert_eq!(rewind.pop(),None);
+    }
+}
