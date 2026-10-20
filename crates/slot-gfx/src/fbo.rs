@@ -17,6 +17,9 @@ pub struct EndFrameCpuPhases {
     pub bind_us: u64,
     pub viewport_us: u64,
     pub clear_us: u64,
+    // Beta15: true only when glClear was skipped behind the KONKR-only
+    // full-panel opaque-blit guard; no new draw or driver sync introduced.
+    pub clear_skipped: bool,
     pub state_us: u64,
     /// Wall time to submit the final framebuffer quad(s) through GLES.
     pub quad_us: u64,
@@ -281,14 +284,25 @@ impl Compositor {
     }
 
     pub fn end_frame(&mut self, window: (u32, u32)) {
-        self.end_frame_inner(window, None);
+        self.end_frame_inner(window, None, false);
     }
 
     /// Read-only diagnostic, no glFinish/glFlush/fence or extra draw.
     /// Values measure CPU-thread wall time, *not* GPU execution or EGL swap.
     pub fn end_frame_profiled(&mut self, window: (u32, u32)) -> EndFrameCpuPhases {
         let mut phases = EndFrameCpuPhases::default();
-        self.end_frame_inner(window, Some(&mut phases));
+        self.end_frame_inner(window, Some(&mut phases), false);
+        phases
+    }
+
+    /// Beta15 controlled KONKR game-only A/B candidate.
+    /// Never skips clear for non-960x640 panels, partial rectangles, shake,
+    /// split, 4:3 or bezel; the final fullscreen BLIT_FRAG writes alpha=1.
+    pub fn end_frame_profiled_fullscreen_clear_ab(
+        &mut self, window: (u32, u32)
+    ) -> EndFrameCpuPhases {
+        let mut phases = EndFrameCpuPhases::default();
+        self.end_frame_inner(window, Some(&mut phases), true);
         phases
     }
 
@@ -296,6 +310,7 @@ impl Compositor {
         &mut self,
         window: (u32, u32),
         mut profile: Option<&mut EndFrameCpuPhases>,
+        allow_fullcover_skip: bool,
     ) {
         let setup_started = profile.is_some().then(Instant::now);
         let framed = crate::bezel::framed(window);
@@ -306,6 +321,13 @@ impl Compositor {
             0
         };
         y -= drop;
+        let skip_clear = allow_fullcover_skip
+            && crate::clear_policy::skip_default_framebuffer_clear(
+                window, (x, y, w, h), framed, self.split.is_some(), self.shake,
+            );
+        if let Some(p) = profile.as_deref_mut() {
+            p.clear_skipped = skip_clear;
+        }
         if let (Some(started), Some(p)) = (setup_started, profile.as_deref_mut()) {
             p.geometry_us = started.elapsed().as_micros() as u64;
         }
@@ -324,8 +346,13 @@ impl Compositor {
 
         let clear_started = profile.is_some().then(Instant::now);
         unsafe {
+            // Preserve the previous clear color GL state in both A and B.
             gl::ClearColor(0.0, 0.0, 0.0, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT);
+            // Only the full-panel opaque single-blit KONKR game path can skip
+            // this redundant clear. Every other renderer call still clears.
+            if !skip_clear {
+                gl::Clear(gl::COLOR_BUFFER_BIT);
+            }
         }
         if let (Some(started), Some(p)) = (clear_started, profile.as_deref_mut()) {
             p.clear_us = started.elapsed().as_micros() as u64;
