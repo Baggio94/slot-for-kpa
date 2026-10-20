@@ -5085,6 +5085,8 @@ impl Engine {
             let submit_started = Instant::now();
             self.gpu.fit(self.size);
             self.gpu.begin_frame();
+            frame_phases.submit_setup_us = submit_started.elapsed().as_micros() as u64;
+            let build_started = Instant::now();
             let mut commands = Vec::new();
             if self.screen_power < 1.0 {
                 // Native Slot v1.7 draws the seated cart and slot behind the
@@ -5114,8 +5116,15 @@ impl Engine {
                 });
             }
             self.hud.draw(self.born.elapsed().as_millis() as u64, &mut commands);
+            frame_phases.submit_build_us = build_started.elapsed().as_micros() as u64;
+            let draw_started = Instant::now();
             self.gpu.draw_list(&commands);
+            frame_phases.submit_draw_us = draw_started.elapsed().as_micros() as u64;
+            let blit_started = Instant::now();
             self.gpu.end_frame(self.size);
+            frame_phases.submit_blit_us = blit_started.elapsed().as_micros() as u64;
+            // The nested setup/build/draw/blit timers are subsets of submit;
+            // do not add them a second time in the native residual.
             frame_phases.gpu_submit_us = submit_started.elapsed().as_micros() as u64;
             frame_phases.native_total_us = phase_native_started.elapsed().as_micros() as u64;
             FRAME_PHASE_PROBE.with(|probe| {
