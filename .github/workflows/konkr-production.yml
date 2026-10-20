@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p slot-achievements --lib f10_ -- --nocapture 2>&1 | tee "$RUNNER_TEMP/f10-ra-tests.log"
-          grep -Eq 'test result: ok\. 4 passed; 0 failed;' "$RUNNER_TEMP/f10-ra-tests.log"
+          grep -Eq 'test result: ok\. 5 passed; 0 failed;' "$RUNNER_TEMP/f10-ra-tests.log"
       - name: Test native RetroAchievements evaluator and offline queue
         run: cargo test -p slot-achievements -p slot-retro
       - name: Test KONKR 3:2 scaling
