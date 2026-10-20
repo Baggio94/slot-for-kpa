@@ -36,9 +36,16 @@ fi
 # Mandatory native regression on the very same patched gpSP source that will
 # be cross-compiled into the APK. ASAN validates queue-length safety.
 HOST_CC="${CC_HOST:-cc}"
+# The standalone AW harness intentionally supplies a small test/common.h,
+# which conflicts with the production source/common.h if compiled in-place.
+# Copy the *already-patched* serial_proto.c into an isolated include root,
+# so both the harness and included protocol use the same test stubs.
+mkdir -p "$OUT/aw-harness"
+cp "$SRC/serial_proto.c" "$OUT/aw-harness/serial_proto.c"
 "$HOST_CC" -std=gnu11 -O1 -g -fno-omit-frame-pointer \
   -fstack-protector-strong -fsanitize=address \
-  -I "$SRC" "$ROOT/cores/gpsp/test/awtest.c" -o "$OUT/awtest-asan"
+  -I "$OUT/aw-harness" -I "$ROOT/cores/gpsp/test" \
+  "$ROOT/cores/gpsp/test/awtest.c" -o "$OUT/awtest-asan"
 ASAN_OPTIONS=detect_leaks=0 "$OUT/awtest-asan"
 
 # Preserve only transient mixer data for speculative rollbacks; persistent
