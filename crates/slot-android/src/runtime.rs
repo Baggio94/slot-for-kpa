@@ -4971,6 +4971,11 @@ impl Engine {
                             on_pcm_ready();
                         }
                     }
+                    // The only consumer has already queued/muted these samples.
+                    // Retain its Vec allocation for the next committed frame.
+                    // No changes to packet contents, audio scheduling or
+                    // speculative Run-Ahead frame ordering.
+                    session.recycle_audio(samples);
                 }
             }
             // Observe whether sync-lab callbacks had sufficient accumulated
