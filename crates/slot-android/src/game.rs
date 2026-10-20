@@ -1162,25 +1162,17 @@ impl GameSession {
     }
 
     pub fn save(&mut self, with_state: bool) -> bool {
-        let saved_sram = self.save_sram();
-        let mut state_written = false;
-        // Exporting a single-core state during linked play would silently
-        // corrupt the shared timeline. SRAM/RTC can still be saved safely.
-        if with_state && !self.link_touched && self.linked_boot.is_none() {
-            if let Ok(data) = self.core.serialize() {
-                if let Err(err) = atomic_write(&self.state, &data) {
-                    eprintln!("slot-konkr: state save failed: {err}");
-                }
-                match retroarch_state::encode(&data) {
-                    Ok(container) => match atomic_write(&self.retroarch_export, &container) {
-                        Ok(()) => state_written = true,
-                        Err(error) => eprintln!("slot-konkr: RetroArch state export failed: {error}"),
-                    },
-                    Err(error) => eprintln!("slot-konkr: RetroArch container error: {error}"),
-                }
+        // Suspend/Android lifecycle also requires a fully durable generation
+        // before requesting RetroArch SAF export. It must not treat an RTC
+        // success as proof that SRAM/state writes succeeded.
+        match self.save_for_eject(with_state) {
+            Ok(saved) => saved,
+            Err(error) => {
+                log_launch_timing(&format!(
+                    "Save failed; keeping existing on-disk checkpoint: {error}"));
+                false
             }
         }
-        saved_sram || state_written
     }
     /// Original Slot ring: 10 timestamped states per ROM/core, each with
     /// a 240×160 PNG thumbnail. Independent from RetroArch's manual slots.
