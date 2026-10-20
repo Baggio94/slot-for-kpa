@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""slot. quick check: one-command safe ADB capture + offline audio/video triage.
+
+Examples (from the beta3 test-kit root, game already running):
+    python3 quickcheck.py --serial BW0308N250009576 --seconds 180
+    python3 quickcheck.py --existing emulation-lab-results/2026...-run/
+No settings, emulator cores, input, ROMs, saves or app data are changed.
+Requires Python 3.9+; only Python stdlib plus existing capture.sh/report.py.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from statistics import median
+
+PAIR = re.compile(r"([a-z][a-z0-9_]+)=([^\s]+)")
+SAFE = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+
+def values(line: str) -> dict[str, str]:
+    return dict(PAIR.findall(line))
+
+
+def triage(report: dict, logcat: str, expected_core: str | None = None,
+           expected_ra: int | None = None) -> dict:
+    samples = [values(s.partition("SAMPLE ")[2]) for s in logcat.splitlines()
+               if "SlotEmuDiag" in s and "SAMPLE " in s]
+    depths = []
+    maximum_depths = []
+    capacities = []
+    early = []
+    egl = []
+    causal = []
+    for line in logcat.splitlines():
+        if "AudioTrack queue depth:" in line:
+            m = values(line.partition("AudioTrack queue depth:")[2])
+            try:
+                depth = float(m["minimum_ms"])
+                if depth >= 0:
+                    depths.append(depth)
+                if "maximum_ms" in m:
+                    maximum_depths.append(float(m["maximum_ms"]))
+                if "buffer_capacity_ms" in m:
+                    capacities.append(float(m["buffer_capacity_ms"]))
+            except (KeyError, ValueError):
+                pass
+        if "GL callback pacing:" in line:
+            m = values(line.partition("GL callback pacing:")[2])
+            if "early_pcm_wakes_5s" in m:
+                try:
+                    early.append(int(m["early_pcm_wakes_5s"]))
+                except ValueError:
+                    pass
+        if "EGL presentation:" in line:
+            egl.append(values(line.partition("EGL presentation:")[2]))
+        if "SYNC LAB causal:" in line:
+            causal.append(values(line.partition("SYNC LAB causal:")[2]))
+    configs = {(s.get("core"), s.get("runahead_requested"), s.get("pacing_mode"))
+               for s in samples}
+    cores = sorted({v[0] for v in configs if v[0]})
+    ras = sorted({v[1] for v in configs if v[1]})
+    modes = sorted({v[2] for v in configs if v[2]})
+    issues = []
+    cautions = []
+    expected_duration = report.get("requested_duration_s")
+    try:
+        actual_duration = float(report.get("duration_s", 0))
+    except (TypeError, ValueError):
+        actual_duration = 0.0
+    if not samples:
+        issues.append("Aucun jeu mesuré : démarrer le jeu avant la capture.")
+    if len(configs) > 1:
+        issues.append("Réglages modifiés pendant la capture : essai non comparable.")
+    if expected_core is not None and cores != [expected_core]:
+        issues.append(f"Core attendu {expected_core} ; trouvé {cores or 'aucun'}.")
+    if expected_ra is not None and ras != [str(expected_ra)]:
+        issues.append(f"Run-Ahead attendu {expected_ra} ; trouvé {ras or 'aucun'}.")
+    if expected_duration and actual_duration < float(expected_duration) * 0.8:
+        issues.append("Capture partielle : durée mesurée insuffisante.")
+    underruns = report.get("audiotrack_underruns_delta")
+    failures = report.get("runahead_failures_total")
+    if underruns is None:
+        issues.append("Compteur d'underruns absent.")
+    elif underruns > 0:
+        issues.append(f"{underruns} underruns AudioTrack confirmés.")
+    if failures is None:
+        cautions.append("Compteur d'échecs Run-Ahead absent.")
+    elif failures > 0:
+        issues.append(f"{failures} échecs Run-Ahead détectés.")
+    # Beta15 physical motion/input regression guard. The 5-second
+    # EmuDiag SAMPLE holds a last-1-second multi-step counter; hence
+    # this is a detection sample, NOT the full-run number of callbacks.
+    # Solo SYNC LAB must commit at most one core frame per GL callback.
+    sync_lab_double_step_samples = sum(
+        int(t.get("emu_step_multi_1s", "0"))
+        for t in samples if t.get("pacing_mode") == "sync_lab"
+        and t.get("linked") == "false"
+    )
+    if sync_lab_double_step_samples > 0:
+        issues.append(f"SYNC LAB: {sync_lab_double_step_samples} double-steps dans les fenêtres "
+                      "de diagnostic (risque de saccades/latence commandes).")
+    if not depths:
+        cautions.append("Réserve AudioTrack non disponible dans le logcat.")
+    elif min(depths) < 1:
+        cautions.append("Réserve AudioTrack <1 ms : risque sur une session prolongée.")
+    elif min(depths) < 5:
+        cautions.append("Réserve AudioTrack <5 ms : marge faible.")
+    if egl and any(int(e.get("errors", "0")) or int(e.get("lost", "0"))
+                   or e.get("status") == "incomplete_timestamps"
+                   or e.get("present_fps_valid") == "false" for e in egl):
+        cautions.append("Timestamps EGL incomplets : FPS de présentation non fiables.")
+    # A per-5s audio diagnostic from beta12 is purely explanatory: its
+    # producer deficit has report-boundary jitter and must never override
+    # actual AudioTrack underruns or claim to measure subjective latency.
+    def causal_sum(key: str) -> int:
+        return sum(int(c.get(key, "0")) for c in causal)
+    def causal_total_float(key: str) -> float:
+        return round(sum(float(c.get(key, "0")) for c in causal), 2)
+    valid_causal = [c for c in causal
+                    if "real_frames" in c and "pcm_produced_shorts" in c]
+    causal = valid_causal
+    # Invalid EGL telemetry does NOT automatically make the audio test fail.
+    # Only missing/near-empty output queue metrics affect audio confidence.
+    audio_cautions = [c for c in cautions if "EGL" not in c]
+    if not issues:
+        status = "SURVEILLER" if audio_cautions else "OK PROVISOIRE"
+    else:
+        status = "A REVOIR"
+    return {
+        "status": status, "core": cores, "runahead": ras, "pacing": modes,
+        "duration_s": actual_duration, "windows": len(samples),
+        "emu_fps_mean": (report.get("emu_fps") or {}).get("mean"),
+        "gl_callback_fps_mean": (report.get("gl_callback_fps") or {}).get("mean"),
+        "gl_over25": report.get("gl_over25_total"),
+        "underruns": underruns, "runahead_failures": failures,
+        "sync_lab_double_steps_sampled": sync_lab_double_step_samples,
+        "output_min_ms": round(min(depths), 3) if depths else None,
+        "output_median_min_ms": round(median(depths), 3) if depths else None,
+        "output_median_max_ms": round(median(maximum_depths), 3) if maximum_depths else None,
+        "output_capacity_ms": round(median(capacities), 3) if capacities else None,
+        "output_windows_below_1ms": sum(n < 1 for n in depths),
+        "output_windows_below_5ms": sum(n < 5 for n in depths),
+        "output_windows": len(depths), "early_pcm_wakes": sum(early) if early else None,
+        "causal_windows": len(causal),
+        "causal_callbacks": causal_sum("callbacks"),
+        "causal_real_frames": causal_sum("real_frames"),
+        "causal_no_step_callbacks": causal_sum("no_step_callbacks"),
+        "causal_overdue_callbacks": causal_sum("overdue_callbacks"),
+        "causal_empty_pcm_frames": causal_sum("empty_pcm_frames"),
+        "causal_pcm_produced_ms": causal_total_float("pcm_produced_ms") if causal else None,
+        "causal_producer_deficit_ms": causal_total_float("producer_deficit_ms") if causal else None,
+        "wake_to_read_max_us": max((int(c.get("wake_to_read_max_us", 0))
+                                    for c in causal), default=None),
+        "issues": issues, "cautions": cautions,
+        "limits": [
+            "Ne mesure pas la fluidité perçue ni la latence entrée->écran/son.",
+            "Les FPS GL ne mesurent pas les images réellement affichées.",
+            "Un essai sans underrun n'assure pas une stabilité infinie.",
+            "audio_empty_total et queued_shorts ne mesurent pas les underruns AudioTrack.",
+            "Ne remplace pas les tests sauvegardes, audio audible, lien et RetroAchievements.",
+        ],
+    }
+
+
+def markdown(v: dict) -> str:
+    fmt = lambda x: "n/d" if x is None else str(x)
+    lines = [
+        "# slot. — bilan automatique du test",
+        "",
+        f"**Résultat : {v['status']}**",
+        "",
+        f"- Configuration mesurée : {', '.join(v['core']) or '?'} / "
+        f"Run-Ahead {', '.join(v['runahead']) or '?'} / "
+        f"{', '.join(v['pacing']) or '?'}",
+        f"- Durée : {v['duration_s']} s ; {v['windows']} fenêtres",
+        f"- FPS émulation moyen (échantillonné) : {fmt(v['emu_fps_mean'])}",
+        f"- FPS callbacks GL moyen : {fmt(v['gl_callback_fps_mean'])}",
+        f"- Callbacks GL >25 ms : {fmt(v['gl_over25'])}",
+        f"- **Underruns AudioTrack : {fmt(v['underruns'])}**",
+        f"- Échecs Run-Ahead : {fmt(v['runahead_failures'])}",
+        f"- Double-steps SYNC LAB détectés (échantillons 1s) : {v['sync_lab_double_steps_sampled']}",
+        f"- Réserve AudioTrack minimale : {fmt(v['output_min_ms'])} ms",
+        f"- Médiane des minima par fenêtre : {fmt(v['output_median_min_ms'])} ms",
+        f"- Médiane des maxima par fenêtre : {fmt(v['output_median_max_ms'])} ms",
+        f"- Capacité tampon AudioTrack (non latence mesurée) : {fmt(v['output_capacity_ms'])} ms",
+        f"- Fenêtres avec réserve <1 ms : {v['output_windows_below_1ms']}/{v['output_windows']}",
+        f"- Fenêtres avec réserve <5 ms : {v['output_windows_below_5ms']}/{v['output_windows']}",
+        f"- Réveils audio anticipés : {fmt(v['early_pcm_wakes'])}",
+        f"- Fenêtres de diagnostic producteur beta12 : {v['causal_windows']}",
+        f"- Callbacks / vraies frames exécutées : {v['causal_callbacks']} / {v['causal_real_frames']}",
+        f"- Callbacks sans frame / backlog restant : {v['causal_no_step_callbacks']} / {v['causal_overdue_callbacks']}",
+        f"- Vraies frames sans PCM : {v['causal_empty_pcm_frames']}",
+        f"- Durée PCM produite, fenêtres alignées (~) : {fmt(v['causal_pcm_produced_ms'])} ms",
+        f"- Écart producteur - temps mesuré (~) : {fmt(v['causal_producer_deficit_ms'])} ms",
+        f"- Réveil PCM vers lecture, maximum observé (non latence réelle) : {fmt(v['wake_to_read_max_us'])} µs",
+    ]
+    if v["issues"]:
+        lines += ["", "**Points bloquants**"] + ["- " + x for x in v["issues"]]
+    if v["cautions"]:
+        lines += ["", "**À surveiller**"] + ["- " + x for x in v["cautions"]]
+    lines += ["", "**Limites**"] + ["- " + x for x in v["limits"]]
+    return "\n".join(lines) + "\n"
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--serial", default="BW0308N250009576")
+    p.add_argument("--seconds", type=int, default=180)
+    p.add_argument("--kit", type=Path, default=Path.cwd(),
+                   help="Dossier qui contient tools/emulation-lab/capture.sh")
+    p.add_argument("--existing", type=Path,
+                   help="Analyser un dossier de capture existant, sans lancer ADB")
+    p.add_argument("--expect-core", choices=["mgba", "gpsp"])
+    p.add_argument("--expect-ra", type=int, choices=[0, 1, 2])
+    args = p.parse_args()
+    if args.existing:
+        out = args.existing.resolve()
+    else:
+        if not SAFE.fullmatch(args.serial):
+            p.error("Numéro de série ADB invalide.")
+        if not 10 <= args.seconds <= 600:
+            p.error("Durée autorisée : 10 à 600 secondes.")
+        kit = args.kit.expanduser().resolve()
+        capture = kit / "tools" / "emulation-lab" / "capture.sh"
+        if not capture.is_file():
+            p.error(f"capture.sh absent : {capture}")
+        unique = datetime.now(timezone.utc).strftime("auto_%Y%m%dT%H%M%SZ")
+        print(f"Capture en cours : {args.seconds}s, jeu déjà lancé sur {args.serial}", flush=True)
+        completed = subprocess.run(["bash", str(capture), args.serial, unique,
+                                    str(args.seconds)], cwd=kit)
+        if completed.returncode:
+            return completed.returncode
+        candidates = sorted((kit / "emulation-lab-results").glob("*-" + unique))
+        if len(candidates) != 1:
+            print("Dossier de capture introuvable/ambigu.", file=sys.stderr)
+            return 2
+        out = candidates[0]
+    try:
+        report = json.loads((out / "report.json").read_text(encoding="utf8"))
+        logcat = (out / "logcat.txt").read_text(encoding="utf8", errors="replace")
+        if not report.get("requested_duration_s"):
+            if args.existing:
+                metadata = out / "metadata.txt"
+                if metadata.exists():
+                    m = re.search(r"^duration_s=(\d+)\s*$", metadata.read_text(), re.M)
+                    if m:
+                        report["requested_duration_s"] = int(m.group(1))
+            else:
+                report["requested_duration_s"] = args.seconds
+    except (OSError, ValueError) as exc:
+        print(f"Données de capture invalides : {exc}", file=sys.stderr)
+        return 2
+    result = triage(report, logcat, args.expect_core, args.expect_ra)
+    (out / "quickcheck.json").write_text(
+        json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf8")
+    report_md = markdown(result)
+    (out / "quickcheck.md").write_text(report_md, encoding="utf8")
+    print("\n" + report_md)
+    print(f"Rapport enregistré : {out / 'quickcheck.md'}")
+    # Failure is a signal for automation, not a claim about audible quality.
+    return 1 if result["issues"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

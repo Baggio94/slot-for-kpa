@@ -183,6 +183,10 @@ pub struct Settings {
     // Choreographer-driven display callbacks, with a single real core
     // frame maximum per callback and fractional frame time carryover.
     pub display_sync_pacing: bool,
+    // Beta8 experimental: preserve overdue emulation time but never run multiple
+    // real steps per VSync callback. Legacy beta7 flag remains readable.
+    // Old JSON stays on its prior mode because serde(default) makes this false.
+    pub hybrid_pacing: bool,
     pub run_ahead_frames: u8,
     // Opt-in only. Old builds enabled these by default; the migration
     // below must not interpret those historical booleans as explicit consent.
@@ -213,7 +217,7 @@ impl Default for Settings {
             gb_palettes: false, gb_palette: 1, rewind: true,
             turbo: true, eject_save: true,
             show_fps: false, responsive_pacing: false,
-            display_sync_pacing: false,
+            display_sync_pacing: false, hybrid_pacing: false,
             run_ahead_frames: 0,
             show_wifi: false, show_bluetooth: false, show_integrations: false,
             time_format: TimeFormat::TwentyFourHour,
@@ -232,9 +236,13 @@ impl Settings {
         settings.shader_gba=Shader::Lcd3x;
         settings.shader_gbc=Shader::Lcd3x;
         settings.shader_gb=Shader::Lcd3x;
-        settings.responsive_pacing=true;
-        settings.display_sync_pacing=true;
-        settings.run_ahead_frames=1;
+        // v1.2.2 RC: on-device Wario Land 4 tests found SYNC LAB stable
+        // without Run-Ahead, while Run-Ahead audio remains a 1.2.3 task.
+        // Fresh installs only: never change existing saved user choices.
+        settings.responsive_pacing=false;
+        settings.display_sync_pacing=false;
+        settings.hybrid_pacing=true;
+        settings.run_ahead_frames=0;
         settings
     }
     pub fn load(dir: &Path) -> Self {
@@ -276,7 +284,10 @@ impl Settings {
                 if !Shader::GB.contains(&s.shader_gb) { s.shader_gb = Shader::Off; }
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
                 if s.gb_palette >= 48 { s.gb_palette = 1; }
-                if !s.responsive_pacing { s.display_sync_pacing = false; }
+                if s.hybrid_pacing {
+                    s.responsive_pacing = false;
+                    s.display_sync_pacing = false;
+                } else if !s.responsive_pacing { s.display_sync_pacing = false; }
                 if s.run_ahead_frames > 2 { s.run_ahead_frames = 0; }
                 // Before this version all three toggles defaulted ON.
                 // A previously written settings file therefore isn't proof
@@ -378,7 +389,8 @@ impl Settings {
             8 => self.rumble = !self.rumble,
             9 => self.eject_save = !self.eject_save,
             10 => self.show_fps = !self.show_fps,
-            11 => cycle_pacing(&mut self.responsive_pacing, &mut self.display_sync_pacing, right),
+            11 => cycle_pacing(&mut self.responsive_pacing,
+                &mut self.display_sync_pacing, &mut self.hybrid_pacing, right),
             12 => self.run_ahead_frames = cycle_u8(self.run_ahead_frames, 2, right),
             13 => self.show_wifi = !self.show_wifi,
             14 => self.show_bluetooth = !self.show_bluetooth,
@@ -393,16 +405,36 @@ impl Settings {
             .unwrap_or(GbPalette::DEFAULT).core_name()
     }
 }
-/// Three explicit states; persisted Beta 5 profiles with responsive=true
-/// remain RESPONSIVE, not DISPLAY SYNC, after upgrade.
-pub fn cycle_pacing(responsive: &mut bool, display_sync: &mut bool, right: bool) {
-    let modes = [(false, false), (true, false), (true, true)];
-    let current = modes.iter().position(|&(r, d)| r == *responsive && d == *display_sync)
-        .unwrap_or(0);
+/// Keep old three choices unchanged; reuse the experimental fourth slot
+/// for beta8 SYNC LAB. The serialized flag is backward compatible.
+/// Mutually exclusive flags preserve all previously persisted profiles.
+pub fn cycle_pacing(
+    responsive: &mut bool, display_sync: &mut bool, hybrid: &mut bool, right: bool
+) {
+    let modes = [(false, false, false), (true, false, false),
+        (true, true, false), (false, false, true)];
+    let current = modes.iter().position(|&(r, d, h)|
+        r == *responsive && d == *display_sync && h == *hybrid).unwrap_or(0);
     let next = if right { (current + 1) % modes.len() }
         else { (current + modes.len() - 1) % modes.len() };
-    (*responsive, *display_sync) = modes[next];
+    (*responsive, *display_sync, *hybrid) = modes[next];
 }
+
+/// SYNC LAB (experimental): the Display Sync implementation discards
+/// accumulated time at 1.95 frame periods even on short missed VSyncs.
+/// Retain a bounded FOUR-frame backlog for subsequent spare 60Hz callbacks,
+/// while the caller emits MAX ONE real video/audio frame each callback.
+/// No synthesized PCM, no duplicated simulation, no unbounded lag after
+/// Android suspension. Backlog is deliberately visible in diagnostics.
+pub fn frame_debt_hybrid(prev: f64, elapsed: f64, speed: f64, period: f64) -> f64 {
+    (prev + elapsed * speed).clamp(0.0, period * 4.0)
+}
+
+/// Preserve SYNC LAB's one committed frame per Choreographer callback.
+/// A beta14 experiment allowed a second frame to rescue AudioTrack, but
+/// physical KONKR testing confirmed unacceptable motion/input regression.
+/// Do not silently trade presentation cadence or controls for zero underruns.
+pub fn sync_lab_reactivity_first_frame_budget() -> usize { 1 }
 pub fn cycle_u8(value: u8, max: u8, right: bool) -> u8 {
     if right { if value >= max { 0 } else { value + 1 } }
     else if value == 0 || value > max { max } else { value - 1 }
@@ -684,6 +716,60 @@ mod tests {
     }
 
     #[test]
+    fn beta15_rejects_multi_frame_sync_lab_catchup_after_physical_regression() {
+        assert_eq!(sync_lab_reactivity_first_frame_budget(), 1);
+        let period = 1.0 / 59.728;
+        let debt = frame_debt_hybrid(0.0, period * 4.0, 1.0, period);
+        assert_eq!(debt, period * 4.0);
+        // Even a full four-frame backlog must not execute more than one
+        // frame on the display callback. The debt stays for future draws.
+        let remaining = debt - period * sync_lab_reactivity_first_frame_budget() as f64;
+        assert!((remaining - period * 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sync_lab_retains_missed_vsync_debt_but_steps_once() {
+        let p = 1.0 / 59.7275;
+        assert!((frame_debt_hybrid(0.0, 1.0 / 60.0, 1.0, p)
+            - 1.0 / 60.0).abs() < 1e-9);
+        assert!((frame_debt_hybrid(0.0, 0.1, 1.0, p)
+            - p * 4.0).abs() < 1e-9);
+        // Two missed frame periods must not be discarded at 1.95p.
+        let mut debt = frame_debt_hybrid(0.0, 3.0 * p, 1.0, p);
+        assert!((debt - 3.0 * p).abs() < 1e-9);
+        debt -= p; // one real libretro step; never skip intermediate video
+        assert!((debt - 2.0 * p).abs() < 1e-9);
+        assert!(debt > p); // late simulation remains queued for later vsyncs
+        // Short-term debt recovery is bounded; absurd delay cannot
+        // accumulate seconds of input/audio latency.
+        assert_eq!(frame_debt_hybrid(debt, 10.0, 1.0, p), 4.0 * p);
+    }
+
+    #[test]
+    fn sync_lab_recovers_more_real_frames_than_display_sync_without_bursts() {
+        let p = 1.0 / 59.7275;
+        let mut old_debt = 0.0;
+        let mut lab_debt = 0.0;
+        let mut old_frames = 0;
+        let mut lab_frames = 0;
+        // Synthetic 60Hz Choreographer callbacks, occasionally one is
+        // missed (so the next draw receives 33.3ms of wall-clock time).
+        // Only one true simulation step is allowed per GL callback.
+        for i in 0..6000 {
+            let dt = if i % 320 == 41 { 2.0 / 60.0 } else { 1.0 / 60.0 };
+            old_debt = frame_debt_display_sync(old_debt, dt, 1.0, p);
+            lab_debt = frame_debt_hybrid(lab_debt, dt, 1.0, p);
+            if old_debt >= p { old_frames += 1; old_debt -= p; }
+            if lab_debt >= p { lab_frames += 1; lab_debt -= p; }
+            assert!(lab_debt >= 0.0 && lab_debt <= p * 4.0);
+        }
+        assert!(lab_frames >= old_frames + 8,
+            "retained debt must recover otherwise dropped real frames");
+        assert!(lab_frames <= 6000,
+            "no callback may emit more than one real core step");
+    }
+
+    #[test]
     fn display_sync_drops_large_hitches_without_overrunning_input() {
         let period = 1.0 / 59.7275;
         let debt = frame_debt_display_sync(
@@ -693,19 +779,25 @@ mod tests {
     }
 
     #[test]
-    fn frame_pacing_cycles_three_modes_without_changing_legacy_defaults() {
+    fn frame_pacing_cycles_four_modes_without_changing_legacy_defaults() {
         let mut s = Settings::default();
         assert!(!s.responsive_pacing && !s.display_sync_pacing);
         assert!(s.change(11, true));
         assert!(s.responsive_pacing && !s.display_sync_pacing);
         assert!(s.change(11, true));
-        assert!(s.responsive_pacing && s.display_sync_pacing);
+        assert!(s.responsive_pacing && s.display_sync_pacing && !s.hybrid_pacing);
         assert!(s.change(11, true));
-        assert!(!s.responsive_pacing && !s.display_sync_pacing);
+        assert!(s.hybrid_pacing && !s.responsive_pacing && !s.display_sync_pacing);
+        assert!(s.change(11, true));
+        assert!(!s.responsive_pacing && !s.display_sync_pacing && !s.hybrid_pacing);
         assert!(s.change(11, false));
-        assert!(s.responsive_pacing && s.display_sync_pacing);
+        assert!(s.hybrid_pacing && !s.responsive_pacing && !s.display_sync_pacing);
         let old: Settings = serde_json::from_str(r#"{"responsive_pacing":true}"#).unwrap();
-        assert!(old.responsive_pacing && !old.display_sync_pacing);
+        assert!(old.responsive_pacing && !old.display_sync_pacing && !old.hybrid_pacing);
+        let old_sync: Settings = serde_json::from_str(
+            r#"{"responsive_pacing":true,"display_sync_pacing":true}"#).unwrap();
+        assert!(old_sync.display_sync_pacing && !old_sync.hybrid_pacing);
+        assert!(Settings::first_install_defaults().hybrid_pacing);
     }
 
     #[test]
@@ -729,10 +821,12 @@ mod tests {
         // GAMEPLAY
         assert_eq!(s.ff_speed,2);
         assert!(s.ff_sound && s.rewind && s.turbo && s.rumble && s.eject_save);
-        // EMULATION: Display Sync is encoded by BOTH pacing flags on.
+        // EMULATION: SYNC LAB is the exclusive hybrid-pacing flag.
+        // Preserve all three legacy serde defaults for old saved JSON.
         assert!(!s.show_fps);
-        assert!(s.responsive_pacing && s.display_sync_pacing);
-        assert_eq!(s.run_ahead_frames,1);
+        assert!(s.hybrid_pacing);
+        assert!(!s.responsive_pacing && !s.display_sync_pacing);
+        assert_eq!(s.run_ahead_frames,0);
     }
     #[test]
     fn missing_settings_file_gets_new_defaults_but_existing_json_is_untouched() {

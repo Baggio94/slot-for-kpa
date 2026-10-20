@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // Verified KONKR 1.2.1 stable upgrades 1.2.0 (114) and betas 115-119.
-        versionCode = 120
-        versionName = "1.2.1"
+        // v1.2.2 stable candidate: SYNC LAB/RA0 fresh-install defaults, immutable existing settings, SleepManager API v1.
+        versionCode = 138
+        versionName = "1.2.2"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
@@ -24,6 +24,16 @@ android {
     // suppress only Play's expired-target submission check, not other lint.
     lint {
         disable += "ExpiredTargetSdkVersion"
+    }
+
+    // An AVD Emulation Lab must never overwrite the official KONKR
+    // installation, its preferences, ROM grants or native save folder.
+    buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".diag"
+            versionNameSuffix = "-mac-lab"
+            isDebuggable = true
+        }
     }
 
     // A stable signing key can be provided by GitHub Actions secrets or a
@@ -75,4 +85,6 @@ android {
 dependencies {
     implementation("androidx.core:core:1.13.1")
     testImplementation("junit:junit:4.13.2")
+    // Android's org.json methods are stubbed in local JVM tests.
+    testImplementation("org.json:json:20240303")
 }

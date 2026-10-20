@@ -8,6 +8,7 @@ import android.view.KeyEvent
  * side-by-side multiplayer QA install. Not packaged in the release APK.
  */
 internal object SlotBuildBehavior {
+    fun verboseEmulationInput(): Boolean = true
     private val isAndroidEmulator by lazy {
         val fingerprint = Build.FINGERPRINT.lowercase()
         val hardware = Build.HARDWARE.lowercase()
@@ -34,7 +35,7 @@ internal object SlotBuildBehavior {
     }
 
     private fun isolatedLab(packageName: String): Boolean =
-        packageName == "fyi.slot.konkr.lab"
+        packageName == "fyi.slot.konkr.lab" || packageName == "fyi.slot.konkr.diag"
 
     fun storagePolicy(
         packageName: String,
@@ -47,6 +48,6 @@ internal object SlotBuildBehavior {
 
     fun externalFolderRestrictionMessage(packageName: String): String? =
         if (isolatedLab(packageName))
-            "Multiplayer Lab: external save folders disabled to protect Slot saves."
+            "Emulation Lab: external saves/states disabled to protect Slot data."
         else null
 }

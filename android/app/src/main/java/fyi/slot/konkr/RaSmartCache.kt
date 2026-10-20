@@ -29,18 +29,20 @@ internal object RaSmartCache {
             cached.size == size && cached.modified == modified &&
             cached.md5.length == 32 && cached.md5.all { it in '0'..'9' || it in 'a'..'f' }
 
-    private fun hashRom(context: Context, uri: Uri): String {
+    private fun hashRom(context: Context, uri: Uri, filename: String): String {
         val digest = MessageDigest.getInstance("MD5") // RA's ROM identity, not for security
         var consumed = 0L
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            val buffer = ByteArray(64 * 1024)
-            while (true) {
-                if (Thread.currentThread().isInterrupted) throw InterruptedException()
-                val length = input.read(buffer)
-                if (length < 0) break
-                consumed += length
-                require(consumed <= MAX_ROM_BYTES) { "GBA ROM is too large" }
-                digest.update(buffer, 0, length)
+        context.contentResolver.openInputStream(uri)?.use { source ->
+            RomSource.useRom(source, filename) { input, _ ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    if (Thread.currentThread().isInterrupted) throw InterruptedException()
+                    val length = input.read(buffer)
+                    if (length < 0) break
+                    consumed += length
+                    require(consumed <= MAX_ROM_BYTES) { "GBA ROM is too large" }
+                    digest.update(buffer, 0, length)
+                }
             }
         } ?: error("Cannot open ROM through Android SAF")
         require(consumed >= 0x150) { "GBA ROM is too small" }
@@ -128,7 +130,10 @@ internal object RaSmartCache {
             try {
                 val hash = existing[uriText]?.takeIf {
                     canReuse(it, size, modified)
-                }?.md5 ?: hashRom(context, Uri.parse(uriText)).also {
+                }?.md5 ?: hashRom(context, Uri.parse(uriText),
+                    item.optString("filename").ifBlank {
+                        Uri.parse(uriText).lastPathSegment.orEmpty()
+                    }).also {
                     updated[uriText] = Fingerprint(size, modified, it)
                     fresh++
                 }

@@ -56,6 +56,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+      - name: Test offline Emulation Lab telemetry parser
+        run: python3 -m unittest discover -s tools/emulation-lab -p 'test_*.py' -v
       - name: Test native RetroAchievements evaluator and offline queue
         run: cargo test -p slot-achievements -p slot-retro
       - name: Test KONKR 3:2 scaling
@@ -144,14 +146,61 @@ jobs:
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
           bash scripts/build-konkr-android.sh
           gradle --no-daemon -p android :app:assembleRelease
+      - name: Verify every MainActivity JNI symbol is exported in shipped ARM64 binary
+        run: |
+          set -euo pipefail
+          SO="$RUNNER_TEMP/libslot_android.so"
+          unzip -p android/app/build/outputs/apk/release/app-release.apk \
+            lib/arm64-v8a/libslot_android.so > "$SO"
+          test -s "$SO"
+          NDK_NM="$ANDROID_SDK_ROOT/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          "$NDK_NM" -D --defined-only "$SO" > "$RUNNER_TEMP/slot-jni-exports.txt"
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          source = Path("android/app/src/main/java/fyi/slot/konkr/MainActivity.kt").read_text()
+          expected = set(re.findall(r"\bexternal\s+fun\s+([A-Za-z0-9_]+)\s*\(", source))
+          nm_text = Path(__import__("os").environ["RUNNER_TEMP"], "slot-jni-exports.txt").read_text()
+          exported = set(re.findall(r"\bJava_fyi_slot_konkr_MainActivity_([A-Za-z0-9_]+)\b", nm_text))
+          assert len(expected) >= 50, f"Unexpected external declaration count: {len(expected)}"
+          missing = sorted(expected - exported)
+          if missing:
+              raise SystemExit("Missing JNI exports in signed APK: " + ", ".join(missing))
+          print(f"Verified {len(expected)} MainActivity JNI method exports in signed ARM64 APK")
+          PY
+      - name: Verify isolated Mac AVD Emulation Lab debug APK
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/mac-lab-badging.txt"
+          grep -F "package: name='fyi.slot.konkr.diag' versionCode='138'" "$RUNNER_TEMP/mac-lab-badging.txt"
+          grep -F "versionName='1.2.2-mac-lab'" "$RUNNER_TEMP/mac-lab-badging.txt"
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify "$APK"
+          for core in slot_android mgba_libretro gpsp_libretro; do
+            unzip -Z -1 "$APK" | grep -Fx "lib/arm64-v8a/lib${core}.so"
+          done
+          unzip -Z -1 "$APK" | grep -Fx 'assets/studio/pkg/slot_cart_studio_bg.wasm'
+          if unzip -Z -1 "$APK" | grep -Eq '^lib/(x86_64|x86|armeabi-v7a)/'; then
+            echo "::error::Lab APK must remain ARM64 for Apple Silicon AVD"; exit 1
+          fi
+          # The manifest must be side-by-side safe: own FileProvider authority.
+          unzip -Z -1 "$APK" | grep -Fx 'AndroidManifest.xml'
+          grep -F 'fyi.slot.konkr.diag' "$RUNNER_TEMP/mac-lab-badging.txt"
+          sha256sum "$APK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slot-for-konkr-1.2.2-mac-avd-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
       - name: Verify signed ARM64 APK and upgrade compatibility
         run: |
           set -euo pipefail
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "package: name='fyi.slot.konkr' versionCode='120'" "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "versionName='1.2.1'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='138'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "versionName='1.2.2'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
           for core in slot_android mgba_libretro gpsp_libretro; do
@@ -174,7 +223,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.2.1-arm64-signed
+          name: slot-for-konkr-1.2.2-arm64-signed
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
@@ -184,7 +233,7 @@ jobs:
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      startsWith(github.event.head_commit.message, 'release: slot. for KONKR Pocket Advance v1.2.1')
+      startsWith(github.event.head_commit.message, 'release: slot. for KONKR Pocket Advance v1.2.2')
     needs: arm64-apk
     runs-on: ubuntu-latest
     permissions:
@@ -193,7 +242,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: slot-for-konkr-1.2.1-arm64-signed
+          name: slot-for-konkr-1.2.2-arm64-signed
           path: release-assets
 
       - name: Validate, create GitHub-verified release commit, and publish
@@ -201,8 +250,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag=konkr-v1.2.1
-          file=slot-for-konkr-1.2.1-arm64.apk
+          tag=konkr-v1.2.2
+          file=slot-for-konkr-1.2.2-arm64.apk
           test "$GITHUB_REF" = "refs/heads/main"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -s release-assets/app-release.apk
@@ -226,7 +275,7 @@ jobs:
           }
           tree="$(git rev-parse 'HEAD^{tree}')"
           jq -nc --arg tree "$tree" --arg parent "$GITHUB_SHA" \
-            --arg message "chore: signed v1.2.1 release reference" \
+            --arg message "chore: signed v1.2.2 release reference" \
             '{message:$message,tree:$tree,parents:[$parent]}' \
             | gh api --method POST "repos/$GITHUB_REPOSITORY/git/commits" --input - \
             > "$RUNNER_TEMP/signed-commit.json"
@@ -246,7 +295,7 @@ jobs:
 
           gh release create "$tag" "release-assets/$file" release-assets/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
-            --title "slot. for KONKR Pocket Advance v1.2.1" \
+            --title "slot. for KONKR Pocket Advance v1.2.2" \
             --notes-file RELEASE-NOTES.md
 
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
@@ -260,4 +309,4 @@ jobs:
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
             --dir "$RUNNER_TEMP/check-published-assets"
           (cd "$RUNNER_TEMP/check-published-assets" && sha256sum -c SHA256SUMS.txt)
-          echo "Published stable verified v1.2.1 tag at $sha"
+          echo "Published stable verified v1.2.2 tag at $sha"

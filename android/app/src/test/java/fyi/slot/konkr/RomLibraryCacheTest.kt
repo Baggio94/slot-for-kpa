@@ -6,10 +6,10 @@ import org.junit.Test
 
 class RomLibraryCacheTest {
     @Test fun scanAcceptsSupportedExtensionsIndependentOfParentFolder() {
-        for (ext in listOf("gba", "gb", "gbc", "GBA", "GBC")) {
+        for (ext in listOf("gba", "gb", "gbc", "zip", "GBA", "GBC", "ZIP")) {
             assertTrue(RomLibrary.isSupportedRomExtension(ext))
         }
-        for (ext in listOf("ps2", "psp", "zip", "7z", "sav", "")) {
+        for (ext in listOf("ps2", "psp", "7z", "sav", "")) {
             assertFalse(RomLibrary.isSupportedRomExtension(ext))
         }
     }
@@ -26,6 +26,18 @@ class RomLibraryCacheTest {
         org.junit.Assert.assertFalse(RomLibrary.equivalentEntries(
             listOf(a), listOf(a.copy(modified=1700000001L))))
         org.junit.Assert.assertFalse(RomLibrary.equivalentEntries(listOf(a, a), listOf(a, b)))
+    }
+
+    @Test fun newlyIndexedGbHeaderRefreshesLegacyShelfOnce() {
+        val legacy = RomLibrary.IndexEntry(
+            "content://rom/red", "Pokémon Red", "Pokemon Red.gb", "GB",
+            "", false, 524288L, 1700000000L)
+        val upgraded = legacy.copy(
+            gbTitle = "POKEMON RED", gbCode = "", gbJapan = false, gbCgbFlag = 0)
+        assertFalse(RomLibrary.equivalentEntries(listOf(legacy), listOf(upgraded)))
+        assertTrue(RomLibrary.equivalentEntries(listOf(upgraded), listOf(upgraded.copy())))
+        assertFalse(RomLibrary.equivalentEntries(
+            listOf(upgraded), listOf(upgraded.copy(gbCgbFlag = 0xc0))))
     }
 
     @Test fun unchangedFileReusesHeaderSafely() {

@@ -42,12 +42,36 @@ const SRAM_PERIOD: Duration = Duration::from_secs(30);
 const REWIND_CAPTURE_FRAMES: u8 = 6; // 10 states/second at the original GBA FPS
 const UNDO_WINDOW: Duration = Duration::from_secs(30);
 
+/// Read/reset on the renderer's GL thread only; no extra ROM/core work.
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct RunaheadProbe {
+    pub calls: u32,
+    pub snapshots_us: u64,
+    pub speculative_us: u64,
+    pub restores_us: u64,
+    pub max_us: u64,
+    pub failures: u32,
+}
+
 /// Cartridge header code, not a localized filename: FireRed, LeafGreen,
 /// Emerald, Ruby and Sapphire, across original game-code regions.
 fn pokemon_gen3_flash_code(code: &[u8; 4]) -> bool {
     [b"BPR", b"BPG", b"BPE", b"AXV", b"AXP"]
         .iter().any(|prefix| code.starts_with(*prefix))
 }
+/// Drill Dozer has its own cartridge rumble motor. Forcing Game Boy Player
+/// rumble for this ROM can interfere with mGBA's one-frame speculative path.
+/// Limit the experimental bypass to physical cartridge header V49*, not titles
+/// or filenames; gpSP and all other mGBA games retain their current options.
+fn drill_dozer_mgba_gbp_bypass(rom: &Path, which: Core, platform: Platform) -> bool {
+    if which != Core::Mgba || platform != Platform::Gba { return false; }
+    let Ok(mut file) = std::fs::File::open(rom) else { return false; };
+    if file.seek(SeekFrom::Start(0xAC)).is_err() { return false; }
+    let mut code = [0u8; 4];
+    file.read_exact(&mut code).is_ok()
+        && code.starts_with(b"V49") && code[3].is_ascii_uppercase()
+}
+
 fn sma4_runahead_guard(rom: &Path, platform: Platform) -> bool {
     if platform != Platform::Gba { return false; }
     let Ok(mut file) = std::fs::File::open(rom) else { return false; };
@@ -149,6 +173,7 @@ pub struct GameSession {
     // Preserve the libretro state allocation across speculative frames.
     runahead_state: Vec<u8>,
     runahead_unavailable: bool,
+    runahead_probe: RunaheadProbe,
     // Keep mGBA speculative frames away from Pokémon Gen III FLASH1M.
     mgba_flash_runahead_guard: bool,
     sma4_runahead_guard: bool,
@@ -392,7 +417,13 @@ impl GameSession {
                 core.set_option("mgba_use_bios", "ON");
                 core.set_option("mgba_skip_bios", "OFF");
                 core.set_option("mgba_sgb_borders", "OFF");
-                core.set_option("mgba_force_gbp", "ON");
+                // Drill Dozer's built-in rumble is not Game Boy Player
+                // hardware. Keep normal mGBA behavior for all other ROMs.
+                let force_gbp = !drill_dozer_mgba_gbp_bypass(rom, which, platform);
+                core.set_option("mgba_force_gbp", if force_gbp { "ON" } else { "OFF" });
+                if !force_gbp {
+                    log_launch_timing("Drill Dozer mGBA: GBP rumble OFF; Run-Ahead remains enabled for testing");
+                }
                 if let Some(name) = gb_palette.filter(|_| dmg_only) {
                     core.set_option("mgba_gb_model", "Game Boy");
                     core.set_option("mgba_gb_colors_preset", "0");
@@ -594,6 +625,7 @@ impl GameSession {
             frame_count: 0, palette_live, core_kind: which,
             runahead_video: Vec::new(), runahead_state: Vec::new(),
             runahead_unavailable: false,
+            runahead_probe: RunaheadProbe::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
             pending_undo: None, last_sram: Instant::now(),
@@ -932,28 +964,39 @@ impl GameSession {
             && self.core.speculative_audio_supported()
     }
 
+    /// Reset after each telemetry interval without touching persistent game state.
+    pub(crate) fn take_runahead_probe(&mut self) -> RunaheadProbe {
+        std::mem::take(&mut self.runahead_probe)
+    }
+
     /// Roll back both standard libretro state and core-specific transient
     /// audio: gpSP's sound ring, or mGBA's converter/filter/queue sidecar.
     pub fn prepare_runahead(&mut self, buttons: u16, turbo: bool, frames: u8) {
+        let started = Instant::now();
         self.runahead_video.clear();
         if frames == 0 || frames > 2 || self.mgba_flash_runahead_guard ||
             self.sma4_runahead_guard ||
             self.runahead_unavailable || self.link_touched || self.linked_boot.is_some() { return; }
         if !self.core.speculative_audio_supported() {
+            self.runahead_probe.failures += 1;
             self.runahead_unavailable = true;
             log_launch_timing("Run-Ahead disabled: core has no safe speculative audio support");
             return;
         }
         if let Err(error) = self.core.serialize_into(&mut self.runahead_state) {
+            self.runahead_probe.failures += 1;
             self.runahead_unavailable = true;
             log_launch_timing(&format!("Run-Ahead disabled: serialize failed: {error}"));
             return;
         }
         if let Err(error) = self.core.capture_speculative_audio() {
+            self.runahead_probe.failures += 1;
             self.runahead_unavailable = true;
             log_launch_timing(&format!("Run-Ahead disabled: audio snapshot failed: {error}"));
             return;
         }
+        let snapshot_us = started.elapsed().as_micros() as u64;
+        let predicted = Instant::now();
         let pressed = ButtonMask(buttons);
         let mapped = xy_buttons(pressed, turbo, self.frame_count);
         for _ in 0..frames {
@@ -962,9 +1005,19 @@ impl GameSession {
             self.core.discard_audio();
         }
         self.runahead_video.extend_from_slice(self.core.video_xrgb8888());
+        let speculative_us = predicted.elapsed().as_micros() as u64;
+        let restore_started = Instant::now();
         let restored = self.core.restore_speculative_state(&self.runahead_state)
             .and_then(|_| self.core.restore_speculative_audio());
+        let restore_us = restore_started.elapsed().as_micros() as u64;
+        self.runahead_probe.calls = self.runahead_probe.calls.saturating_add(1);
+        self.runahead_probe.snapshots_us += snapshot_us;
+        self.runahead_probe.speculative_us += speculative_us;
+        self.runahead_probe.restores_us += restore_us;
+        self.runahead_probe.max_us = self.runahead_probe.max_us.max(
+            started.elapsed().as_micros() as u64);
         if let Err(error) = restored {
+            self.runahead_probe.failures += 1;
             // Never display a frame if the core could not restore its real state.
             self.runahead_video.clear();
             self.runahead_unavailable = true;
@@ -1209,6 +1262,29 @@ mod pokemon_flash_guard_tests {
         assert_eq!(pokemon_flash_complete_bank_count(&image), 0);
         image.truncate(65536);
         assert_eq!(pokemon_flash_complete_bank_count(&image), 0);
+    }
+
+    #[test]
+    fn drill_dozer_disables_only_forced_mgba_gbp_rumble() {
+        let dir = std::env::temp_dir().join(format!("slot-drill-dozer-gbp-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("game-renamed-unrelated.gba");
+        for code in [*b"V49E", *b"V49J", *b"V49P"] {
+            let mut rom = vec![0u8; 192];
+            rom[0xAC..0xB0].copy_from_slice(&code);
+            std::fs::write(&path, rom).unwrap();
+            assert!(drill_dozer_mgba_gbp_bypass(&path, Core::Mgba, Platform::Gba));
+            assert!(!drill_dozer_mgba_gbp_bypass(&path, Core::Gpsp, Platform::Gba));
+            assert!(!drill_dozer_mgba_gbp_bypass(&path, Core::Mgba, Platform::Gb));
+        }
+        for code in [*b"AX4E", *b"BPGE", *b"V48E", *b"V49-"] {
+            let mut rom = vec![0u8; 192];
+            rom[0xAC..0xB0].copy_from_slice(&code);
+            std::fs::write(&path, rom).unwrap();
+            assert!(!drill_dozer_mgba_gbp_bypass(&path, Core::Mgba, Platform::Gba));
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

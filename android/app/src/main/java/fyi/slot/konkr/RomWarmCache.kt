@@ -21,9 +21,15 @@ internal object RomWarmCache {
     fun prepare(context: Context, rawUri: String, shouldContinue: () -> Boolean) {
         if (!rawUri.startsWith("content://") || !shouldContinue()) return
         val uri = Uri.parse(rawUri)
-        val ext = uri.lastPathSegment.orEmpty().lowercase()
-            .substringAfterLast('.', "")
-        if (ext !in setOf("gba", "gbc", "gb")) return
+        val name = uri.lastPathSegment.orEmpty()
+        if (!RomSource.isAcceptedFile(name)) return
+        val ext = if (RomSource.isContainer(name)) {
+            try {
+                context.contentResolver.openInputStream(uri)?.use {
+                    RomSource.inspect(it, name).extension
+                } ?: return
+            } catch (_: Exception) { return }
+        } else name.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(rawUri.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it.toInt() and 0xff) }
@@ -37,17 +43,21 @@ internal object RomWarmCache {
             val source = context.contentResolver.openInputStream(uri) ?: return
             var count = 0L
             source.use { input ->
-                temporary.outputStream().buffered().use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        if (!shouldContinue() || Thread.currentThread().isInterrupted) return
-                        val n = input.read(buffer)
-                        if (n < 0) break
-                        count += n
-                        if (count > MAX_ROM) return
-                        output.write(buffer, 0, n)
-                        // Yield gently to core, audio, UI and cartridge artwork.
-                        if ((count and 0x7ffffL) == 0L) Thread.sleep(1L)
+                RomSource.useRom(input, name) { raw, embeddedExt ->
+                    require(embeddedExt == ext) { "Cartridge archive entry changed" }
+                    temporary.outputStream().buffered().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            if (!shouldContinue() || Thread.currentThread().isInterrupted)
+                                throw InterruptedException()
+                            val n = raw.read(buffer)
+                            if (n < 0) break
+                            count += n
+                            require(count <= MAX_ROM) { "ROM exceeds cache size limit" }
+                            output.write(buffer, 0, n)
+                            // Yield gently to core, audio, UI and cartridge artwork.
+                            if ((count and 0x7ffffL) == 0L) Thread.sleep(1L)
+                        }
                     }
                 }
             }

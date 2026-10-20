@@ -98,6 +98,8 @@ mod game;
 mod cart_render;
 #[cfg(target_os = "android")]
 mod runtime;
+#[cfg(target_os = "android")]
+mod egl_presentation;
 
 // Reuse upstream Slot's unmodified mechanical core picker: 420ms open,
 // 180ms chip hop, 320ms close and refusal shake.

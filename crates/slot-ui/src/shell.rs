@@ -96,9 +96,15 @@ pub fn gba_shell_for(code: &str) -> Shell {
 }
 
 fn gb_shell_for(rom: &Path) -> Shell {
-    let Some(h) = slot_store::gb::header(rom) else {
+    let Some(header) = slot_store::gb::header(rom) else {
         return flag_shell(slot_store::gb::class(rom));
     };
+    gb_shell_from_header(&header)
+}
+
+/// Canonical automatic GB/GBC cartridge material for both direct ROM files and
+/// Android SAF/ZIP indexes. Uses the same Nintendo header as Cart Studio.
+pub fn gb_shell_from_header(h: &slot_store::gb::Header) -> Shell {
     let by_title = || {
         GB_OVERSEAS_TITLES
             .iter()

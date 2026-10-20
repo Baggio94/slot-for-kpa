@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_void, CString};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use crate::game::GameSession;
 use crate::settings::Settings;
 use crate::emulation::EmulationProfile;
@@ -12,7 +12,7 @@ use crate::core_selection;
 use crate::cart_render::CartRender;
 use crate::core_picker::{CorePicker, Press};
 use slot_retro::ButtonMask;
-use jni::{JNIEnv, objects::{JObject, JString}, sys::{jint, jboolean, jshortArray, jstring}};
+use jni::{JNIEnv, objects::{JObject, JString}, sys::{jint, jboolean, jshortArray, jlongArray, jstring}};
 use std::sync::Mutex;
 use std::time::Instant;
 use std::net::Ipv4Addr;
@@ -167,6 +167,24 @@ fn queue_ra_notice(queue: &mut VecDeque<String>, payload: String) {
 }
 
 static PATHS: Mutex<Option<(PathBuf, PathBuf)>> = Mutex::new(None);
+/// Beta10 opt-in: only SOLO SYNC LAB with a speculative frame can
+/// signal PCM early. Every pre-existing mode retains its legacy wake path.
+fn early_pcm_wake_allowed(sync_lab: bool, runahead: u8, fast: bool,
+                          linked: bool, committed_pcm: bool) -> bool {
+    sync_lab && runahead > 0 && !fast && !linked && committed_pcm
+}
+
+// Beta12 read-only solo SYNC LAB production counters. Read by the existing
+// Android audio worker every ~5s. Cumulative atomics deliberately survive
+// report-boundary jitter; no extra libretro frames or thread ownership change.
+static SYNC_LAB_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_COMMITTED_FRAMES: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_PCM_PRODUCED_SHORTS: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_PCM_QUEUED_SHORTS: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_EMPTY_PCM_FRAMES: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_NO_STEP_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+static SYNC_LAB_OVERDUE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+
 static AUDIO: Mutex<VecDeque<i16>> = Mutex::new(VecDeque::new());
 static PLAYING: AtomicBool = AtomicBool::new(false);
 static SAMPLE_RATE: AtomicI32 = AtomicI32::new(0);
@@ -189,6 +207,8 @@ static RUMBLE_STRENGTH: AtomicI32 = AtomicI32::new(0);
 // Updated once per second by the GL thread; read-only and optional on Android.
 static PERF_STATUS: Mutex<Option<String>> = Mutex::new(None);
 static PERF_ACTIVE: AtomicBool = AtomicBool::new(false);
+// Read-only 1 Hz emulator telemetry, independent of Show Stats UI.
+static EMULATION_DIAGNOSTICS: Mutex<Option<String>> = Mutex::new(None);
 // Read-only status bar snapshot for Android's upper shelf overlays.
 // Updated on the GL thread alongside the *existing* Slot footer gate.
 static SHELF_INDICATOR_FLAGS: AtomicI32 = AtomicI32::new(0);
@@ -565,6 +585,10 @@ struct Engine {
     perf_rendered: u32,
     perf_emulated: u32,
     perf_catchup: u32,
+    // Read-only cadence: real libretro steps per GL callback, not RA guesses.
+    perf_step0: u32,
+    perf_step1: u32,
+    perf_step_multi: u32,
     external_pending: bool,
     overlay: ShelfOverlay,
     settings: Settings,
@@ -857,7 +881,7 @@ impl Engine {
             (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
         };
         let onboarding_note = {
-            let face = onboarding_note_face("(UNZIPPED ROMS ONLY)");
+            let face = onboarding_note_face("(ZIP ROMS SUPPORTED)");
             (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
         };
         let shelf_status_faces = SHELF_STATUS_TEXT.map(|label| {
@@ -926,7 +950,8 @@ impl Engine {
                               "Dark", "Light", "Low", "Medium", "High", "Custom",
                                "LCD Grid V2", "Grid V2 + GBA Color", "zfast LCD",
                                "LCD1x", "Simpletex + GBA", "AGB-001",
-                               "AGS-001", "Sharp Bilinear", "12 HR", "24 HR"]
+                               "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
+                               "SYNC LAB"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
@@ -1072,6 +1097,9 @@ impl Engine {
             perf_rendered: 0,
             perf_emulated: 0,
             perf_catchup: 0,
+            perf_step0: 0,
+            perf_step1: 0,
+            perf_step_multi: 0,
             external_pending: false,
             overlay: ShelfOverlay::None,
             settings,
@@ -3749,7 +3777,8 @@ impl Engine {
             8 => if scoped.rumble { 4 } else { 5 },
             9 => if scoped.eject_save { 4 } else { 5 },
             10 => if profile.show_fps { 4 } else { 5 },
-            11 => if profile.display_sync_pacing { 14 }
+            11 => if profile.hybrid_pacing { 37 }
+                else if profile.display_sync_pacing { 14 }
                 else if profile.responsive_pacing { 11 } else { 10 },
             12 => match profile.run_ahead_frames { 1 => 12, 2 => 13, _ => 5 },
             13 => if self.settings.show_wifi { 4 } else { 5 },
@@ -4321,7 +4350,7 @@ impl Engine {
         self.handle(Input::Key(key,true));
         self.menu_repeat_dispatch=false;
     }
-    fn draw(&mut self) {
+    fn draw(&mut self, mut on_pcm_ready: impl FnMut()) {
         self.tick_menu_repeat();
         self.refresh_system_status();
         // Poll the already-running achievement evaluator without blocking GL.
@@ -4355,10 +4384,16 @@ impl Engine {
         let dt = (now - self.last).as_secs_f32().min(0.05);
         self.last = now;
 
-        // FPS is a *real* libretro simulation measurement, not the display
-        // refresh rate; the separate draw rate reveals missed vsyncs.
-        if self.game.is_some() && self.current_emulation().show_fps {
-            PERF_ACTIVE.store(true, Ordering::Release);
+        // Measure real libretro simulation FPS independently of the optional
+        // performance HUD. No display toggles or simulation timing changes.
+        // The 1Hz snapshot is read on Android's existing 100ms UI heartbeat.
+        if self.game.is_some() {
+            let show_fps = self.current_emulation().show_fps;
+            if show_fps {
+                PERF_ACTIVE.store(true, Ordering::Release);
+            } else if PERF_ACTIVE.swap(false, Ordering::AcqRel) {
+                *PERF_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
             self.perf_rendered += 1;
             let span = self.perf_last.elapsed().as_secs_f64();
             if span >= 1.0 {
@@ -4366,21 +4401,47 @@ impl Engine {
                 let render = self.perf_rendered as f64 / span;
                 let catchup = 100.0 * self.perf_catchup as f64 /
                     self.perf_rendered.max(1) as f64;
-                let target = self.game.as_ref().map_or(60.0, |g| g.fps);
-                *PERF_STATUS.lock().unwrap_or_else(|e| e.into_inner()) =
-                    Some(format!("EMU {emu:.1}/{target:.1} | DISPLAY {render:.1} | CATCHUP {catchup:.0}%"));
+                let (target, core, linked) = self.game.as_ref().map_or(
+                    (60.0, "none", false),
+                    |g| (g.fps, g.core_kind().as_str(), g.linked()));
+                let profile = self.current_emulation();
+                let requested = profile.run_ahead_frames;
+                let pacing_mode = if profile.hybrid_pacing { "sync_lab" }
+                    else if profile.display_sync_pacing { "display_sync" }
+                    else if profile.responsive_pacing { "responsive" } else { "standard" };
+                let probe = self.game.as_mut()
+                    .map(|g| g.take_runahead_probe()).unwrap_or_default();
+                *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
+                    Some(format!(
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} linked={linked}",
+                        self.game_accum * 1000.0,
+                        self.perf_step0, self.perf_step1, self.perf_step_multi,
+                        requested, probe.calls, probe.snapshots_us,
+                        probe.speculative_us, probe.restores_us, probe.max_us,
+                        probe.failures));
+                if show_fps {
+                    *PERF_STATUS.lock().unwrap_or_else(|e|e.into_inner()) =
+                        Some(format!("EMU {emu:.1}/{target:.1} | DISPLAY {render:.1} | CATCHUP {catchup:.0}%"));
+                }
                 self.perf_last = now;
                 self.perf_rendered = 0;
                 self.perf_emulated = 0;
                 self.perf_catchup = 0;
+                self.perf_step0 = 0;
+                self.perf_step1 = 0;
+                self.perf_step_multi = 0;
             }
         } else {
             self.perf_last = now;
             self.perf_rendered = 0;
             self.perf_emulated = 0;
             self.perf_catchup = 0;
+            self.perf_step0 = 0;
+            self.perf_step1 = 0;
+            self.perf_step_multi = 0;
+            *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) = None;
             if PERF_ACTIVE.swap(false, Ordering::AcqRel) {
-                *PERF_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *PERF_STATUS.lock().unwrap_or_else(|e|e.into_inner()) = None;
             }
         }
 
@@ -4638,7 +4699,13 @@ impl Engine {
         // Android's frame callback changes GLSurfaceView renderMode only when
         // an active game explicitly selected DISPLAY SYNC. No engine work or
         // GL resource ownership ever moves away from the GL render thread.
-        DISPLAY_SYNC.store(self.game.is_some() && profile.display_sync_pacing,
+        // SYNC LAB uses the same Choreographer frame-request path as
+        // Display Sync, but its real core frame budget is separate.
+        // Linked sessions keep their prior render/pacing configuration.
+        DISPLAY_SYNC.store(self.game.is_some()
+            && (profile.display_sync_pacing || profile.hybrid_pacing)
+            && !(profile.hybrid_pacing && self.game.as_ref()
+                .is_some_and(GameSession::linked)),
             Ordering::Release);
         // Grab clear-cart textures before borrowing the mutable emulator
         // session. They are used only for the 220ms CRT start transition.
@@ -4681,6 +4748,11 @@ impl Engine {
                 // and inconsistent input response on the physical KONKR.
                 // STANDARD and fast-forward are not changed.
                 let responsive = profile.responsive_pacing && !fast;
+                // Beta8 experiment: VSync-triggered rendering, keep overdue
+                // simulation time across callbacks but execute ONE real
+                // core frame per callback. No skipped intermediate pictures.
+                // Never affect Link sessions, FF or the existing three modes.
+                let hybrid = profile.hybrid_pacing && !fast && !session.linked();
                 // A11: this is the *same* double-GBA lockstep on both ends,
                 // even for equal ROMs. One late packet must not make gameplay
                 // and audio permanently lose an emulated frame. Restrict
@@ -4694,6 +4766,9 @@ impl Engine {
                 if mgba_cable_pacing {
                     self.game_accum = crate::settings::frame_debt_mgba_cable(
                         self.game_accum, f64::from(dt), period);
+                } else if hybrid {
+                    self.game_accum = crate::settings::frame_debt_hybrid(
+                        self.game_accum, f64::from(dt), multiplier, period);
                 } else if profile.display_sync_pacing && responsive {
                     self.game_accum = crate::settings::frame_debt_display_sync(
                         self.game_accum, f64::from(dt), multiplier, period);
@@ -4701,8 +4776,18 @@ impl Engine {
                     self.game_accum = crate::settings::frame_debt(
                         self.game_accum, f64::from(dt), multiplier, period, fast, responsive);
                 }
+                // Beta15: reactivity-first rollback. A beta14 physical
+                // KONKR test reached zero underruns with 373 callbacks
+                // executing two mGBA frames, but the owner perceived
+                // worse motion smoothness and control response. Restore
+                // strictly one committed frame per solo SYNC LAB callback.
+                // Keep the beta13 causal PCM diagnostics to investigate
+                // audio without concealing a latency regression.
                 let frame_limit = if mgba_cable_pacing { 2 }
                     else if fast { usize::from(live.ff_speed) * 4 }
+                    else if hybrid {
+                        crate::settings::sync_lab_reactivity_first_frame_budget()
+                    }
                     else if responsive { 1 } else { 4 };
                 // A13.1: revert the experimental second-frame budget.
                 // Real-world A13 KONKR/AVD tests suffered repeated Link
@@ -4750,14 +4835,54 @@ impl Engine {
                     self.game_accum -= period;
                     stepped += 1;
                     let samples = session.take_audio();
-                    if (!fast || (live.ff_sound &&
+                    let queue_pcm = (!fast || (live.ff_sound &&
                         FF_AUDIO_SUPPORTED.load(Ordering::Acquire)))
-                        && !samples.is_empty() {
-                        let mut audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
-                        let overflow = audio.len().saturating_add(samples.len()).saturating_sub(96_000);
-                        for _ in 0..overflow.min(audio.len()) { audio.pop_front(); }
-                        audio.extend(samples);
+                        && !samples.is_empty();
+                    if hybrid {
+                        SYNC_LAB_COMMITTED_FRAMES.fetch_add(1, Ordering::Relaxed);
+                        SYNC_LAB_PCM_PRODUCED_SHORTS
+                            .fetch_add(samples.len() as u64, Ordering::Relaxed);
+                        if samples.is_empty() {
+                            SYNC_LAB_EMPTY_PCM_FRAMES.fetch_add(1, Ordering::Relaxed);
+                        }
+                        if queue_pcm {
+                            SYNC_LAB_PCM_QUEUED_SHORTS
+                                .fetch_add(samples.len() as u64, Ordering::Relaxed);
+                        }
                     }
+                    if queue_pcm {
+                        // Only the committed timeline's PCM is forwarded.
+                        // Drop AUDIO's lock before waking its Java writer;
+                        // speculative Run-Ahead MUST never supply audio.
+                        {
+                            let mut audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
+                            let overflow = audio.len().saturating_add(samples.len()).saturating_sub(96_000);
+                            for _ in 0..overflow.min(audio.len()) { audio.pop_front(); }
+                            audio.extend(samples);
+                        }
+                        // Beta10 isolated experiment: the legacy Android
+                        // notification happens only AFTER speculation + GLES.
+                        // Wake AudioTrack immediately after committed PCM
+                        // exists, so its writer can run during speculation.
+                        // VSync, input and saved-state ownership are unchanged.
+                        if early_pcm_wake_allowed(hybrid, profile.run_ahead_frames, fast,
+                            session.linked(), true) {
+                            on_pcm_ready();
+                        }
+                    }
+                }
+            }
+            // Observe whether sync-lab callbacks had sufficient accumulated
+            // game time to run a committed frame, and how often the one-frame
+            // budget leaves a real backlog. These counters NEVER change debt.
+            if profile.hybrid_pacing && !self.ff_held && !self.ff_latched
+                && !session.linked() && !self.rewind_held {
+                SYNC_LAB_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+                if stepped == 0 {
+                    SYNC_LAB_NO_STEP_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+                }
+                if self.game_accum >= 1.0 / session.fps {
+                    SYNC_LAB_OVERDUE_CALLBACKS.fetch_add(1, Ordering::Relaxed);
                 }
             }
             if stepped > 0 && !self.rewind_held && !self.ff_held && !self.ff_latched
@@ -4766,6 +4891,11 @@ impl Engine {
                 // Predicted video never advances the real saved/RA timeline.
                 session.prepare_runahead(self.buttons, live.turbo,
                     profile.run_ahead_frames);
+            }
+            match stepped {
+                0 => self.perf_step0 = self.perf_step0.saturating_add(1),
+                1 => self.perf_step1 = self.perf_step1.saturating_add(1),
+                _ => self.perf_step_multi = self.perf_step_multi.saturating_add(1),
             }
             if stepped > 1 {
                 self.perf_catchup = self.perf_catchup.saturating_add(1);
@@ -5676,6 +5806,21 @@ mod ui_feedback_tests {
     }
 
     #[test]
+    fn beta10_early_audio_wake_is_solo_sync_lab_runahead_only() {
+        assert!(early_pcm_wake_allowed(true, 1, false, false, true));
+        assert!(early_pcm_wake_allowed(true, 2, false, false, true));
+        for (sync, ra, ff, linked, pcm) in [
+            (false, 1, false, false, true), // Standard and Display Sync
+            (true, 0, false, false, true),  // no RA: stable original path
+            (true, 1, true, false, true),   // fast forward
+            (true, 1, false, true, true),   // multiplayer link
+            (true, 1, false, false, false), // no committed PCM
+        ] {
+            assert!(!early_pcm_wake_allowed(sync, ra, ff, linked, pcm));
+        }
+    }
+
+    #[test]
     fn original_settings_menu_rows_are_on_screen_and_outside_footer() {
         for rows in [3, 5, 6, 7] {
             let top = settings_row_top(rows);
@@ -5886,8 +6031,8 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeReloadVisualAssets
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
-    _env: *mut c_void,
-    _activity: *mut c_void,
+    mut env: JNIEnv<'_>,
+    activity: JObject<'_>,
 ) {
     ENGINE.with(|holder| {
         let safe = holder.borrow().as_ref().is_some_and(|e|
@@ -5936,7 +6081,16 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
                 Err(error) => eprintln!("slot-konkr: could not reload library: {error}"),
             }
         }
-        if let Some(engine) = holder.borrow_mut().as_mut() { engine.draw(); }
+        if let Some(engine) = holder.borrow_mut().as_mut() {
+            engine.draw(|| {
+                // One callback per committed core frame maximum; SYNC LAB
+                // itself runs only one real frame per GL callback. Never
+                // invoke Java while holding the native PCM queue mutex.
+                if env.call_method(&activity, "onNativePcmReady", "()V", &[]).is_err() {
+                    let _ = env.exception_clear();
+                }
+            });
+        }
         let now_safe = holder.borrow().as_ref().is_some_and(|e|
             may_apply_library_update(e.game.is_some(), e.inserted, e.awaiting_game));
         LIBRARY_UPDATE_SAFE.store(now_safe, Ordering::Release);
@@ -6144,6 +6298,17 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDisplaySyncEnabled
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeShelfIndicatorFlags(
     _env: *mut c_void, _this: *mut c_void,
 ) -> jint { SHELF_INDICATOR_FLAGS.load(Ordering::Acquire) }
+
+/// Read-only libretro FPS and speculative timing, irrespective of on-screen FPS settings.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeEmulationDiagnostics(
+    env: JNIEnv<'_>, _this: JObject<'_>,
+) -> jstring {
+    EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|line| env.new_string(line).ok())
+        .map_or(std::ptr::null_mut(), |text| text.into_raw())
+}
 
 /// Null when show-FPS is OFF, the game is not running or measurement isn't ready.
 #[unsafe(no_mangle)]
@@ -6374,6 +6539,31 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetMgbaLinkRecover
     } else {
         "A12 Link recovery setting: legacy"
     });
+}
+
+#[unsafe(no_mangle)]
+/// Beta12 diagnostic-only counters in this stable order:
+/// callbacks, committed real frames, PCM shorts generated, PCM shorts queued,
+/// no-PCM real frames, zero-step callbacks, overdue-after-callback frames.
+/// The GL thread owns libretro. The Android audio thread only reads atomics.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioClockCounters(
+    mut env: JNIEnv<'_>, _this: JObject<'_>,
+) -> jlongArray {
+    let values: [i64; 7] = [
+        SYNC_LAB_CALLBACKS.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_COMMITTED_FRAMES.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_PCM_PRODUCED_SHORTS.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_PCM_QUEUED_SHORTS.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_EMPTY_PCM_FRAMES.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_NO_STEP_CALLBACKS.load(Ordering::Relaxed) as i64,
+        SYNC_LAB_OVERDUE_CALLBACKS.load(Ordering::Relaxed) as i64,
+    ];
+    let Ok(result) = env.new_long_array(values.len() as i32) else {
+        return std::ptr::null_mut();
+    };
+    let _ = env.set_long_array_region(&result, 0, &values);
+    result.into_raw()
 }
 
 #[unsafe(no_mangle)]

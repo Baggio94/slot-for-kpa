@@ -87,6 +87,11 @@ internal class SlotAutoLabelIndicator(context: Context, rail: LinearLayout) {
     }
 
     fun finished(saved: Int) {
+        // No new labels is normal on subsequent launches. Keep the shelf quiet.
+        if (saved <= 0) {
+            hide()
+            return
+        }
         if (root.visibility != View.VISIBLE) return
         spinner.visibility = View.GONE
         caption.text = String.format(Locale.ROOT, "%d LABELS ADDED",

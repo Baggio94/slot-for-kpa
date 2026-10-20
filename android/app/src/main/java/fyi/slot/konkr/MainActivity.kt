@@ -4,6 +4,7 @@ import android.app.Activity
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.media.AudioTimestamp
 import android.media.PlaybackParams
 import android.os.Handler
 import android.os.Looper
@@ -91,10 +92,15 @@ class MainActivity : Activity() {
     external fun nativeSurfaceCreated(): Boolean
     external fun nativeSurfaceChanged(width: Int, height: Int)
     external fun nativeDrawFrame()
+    // Beta9 optional actual display present timestamp via EGL. Read-only.
+    external fun nativeEglPresentationReset()
+    external fun nativeEglPresentationTick()
+    external fun nativeEglPresentationReport(): String
     external fun nativeKey(code: Int, pressed: Boolean)
     external fun nativeResetInput()
     external fun nativeExternalReturn()
     external fun nativePerformanceStats(): String?
+    external fun nativeEmulationDiagnostics(): String?
     external fun nativeShelfIndicatorFlags(): Int
     external fun nativeSetShelfStatus(code: Int)
     external fun nativeSetLibrary(json: String): Int
@@ -108,6 +114,7 @@ class MainActivity : Activity() {
     external fun nativeCarouselQuiet(): Boolean
     external fun nativeWarmRomCandidate(): String?
     external fun nativeCanRefreshLibrary(): Boolean
+    external fun nativeAudioClockCounters(): LongArray
     external fun nativeAudioSampleRate(): Int
     external fun nativeAudioQueuedShorts(): Int
     external fun nativeSetMgbaLinkRecoveryEnabled(enabled: Boolean)
@@ -190,8 +197,25 @@ class MainActivity : Activity() {
     }
     private val audioRunning = AtomicBoolean(false)
     // A single pending wakeup is enough. GLSurfaceView never waits for audio.
+    private var lastEmulationReportPollAt = 0L
+    @Volatile private var diagnosticAudioUnderruns = 0
     // Prevent an empty-read 8ms sleep from missing a freshly produced frame.
     private val audioFrameSignal = java.util.concurrent.Semaphore(0)
+    // Beta10 experimental: this callback is invoked on GLSurfaceView's GL
+    // thread after a real core frame has queued PCM but BEFORE Run-Ahead's
+    // speculative frames and GLES presentation. Read-only counters below.
+    private val earlyPcmWakes = AtomicInteger(0)
+    // The latest committed-PCM wake timestamp is diagnostic only. The audio
+    // worker reads it without ever blocking or calling into the GL core.
+    private val earlyPcmReadyNs = java.util.concurrent.atomic.AtomicLong(0L)
+    @Suppress("unused")
+    private fun onNativePcmReady() {
+        if (audioRunning.get()) earlyPcmReadyNs.set(SystemClock.elapsedRealtimeNanos())
+        if (audioRunning.get() && audioFrameSignal.availablePermits() == 0) {
+            audioFrameSignal.release()
+            earlyPcmWakes.incrementAndGet()
+        }
+    }
     private val vibrator by lazy { getSystemService(VIBRATOR_SERVICE) as? Vibrator }
     private var lastRumbleAt = 0L
     @Volatile private var resumed = false
@@ -202,7 +226,8 @@ class MainActivity : Activity() {
     private lateinit var performanceHud: TextView
     private lateinit var shelfStatus: SlotStatusIndicators
     private var lastPerfPoll = 0L
-    private var displaySyncApplied = false
+    @Volatile private var displaySyncApplied = false
+    @Volatile private var latestVsyncFrameNs = 0L
     // RA cached game details can be ready before Slot's seating/CRT sequence
     // has set PLAYING=true. Hold that notice, then reveal it on actual gameplay.
     // Distinguish that legitimate startup from a stale notice after eject.
@@ -211,11 +236,12 @@ class MainActivity : Activity() {
     private var raWasPlaying = false
     private var raPendingGameNotice: RaAchievementOverlay.Notice? = null
 
-    // Only attach the Choreographer callback while DISPLAY SYNC is selected.
-    // Normal RESPONSIVE and STANDARD add no extra work to every UI vsync.
+    // Only attach Choreographer while DISPLAY SYNC or SYNC LAB is active.
+    // STANDARD and RESPONSIVE retain their original render policy.
     private val vsyncCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!displaySyncApplied || !resumed || isDestroyed) return
+            latestVsyncFrameNs = frameTimeNanos
             view.requestRender()
             Choreographer.getInstance().postFrameCallback(this)
         }
@@ -533,6 +559,15 @@ class MainActivity : Activity() {
                 releaseLinkMulticast()
             }
             val nowPerf = android.os.SystemClock.uptimeMillis()
+            if (resumed && nowPerf - lastEmulationReportPollAt >= 1_000L) {
+                lastEmulationReportPollAt = nowPerf
+                val playing = nativeIsPlaying()
+                EmulationDiagnostics.report(playing,
+                    if (playing) nativeEmulationDiagnostics() else null,
+                    if (playing) nativeAudioQueuedShorts() else 0,
+                    if (playing) nativeAudioSampleRate() else 0,
+                    diagnosticAudioUnderruns)
+            }
             if (resumed && nowPerf - lastPerfPoll >= 250) {
                 lastPerfPoll = nowPerf
                 val value = nativePerformanceStats()
@@ -709,7 +744,11 @@ class MainActivity : Activity() {
                     private var nativeUsMax = 0L
                     private var nativeOver16ms = 0
                     private var nativeOver33ms = 0
+                    private var vsyncAgeTotalUs = 0L
+                    private var vsyncAgeMaxUs = 0L
+                    private var vsyncAgeCount = 0
                     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+                        nativeEglPresentationReset()
                         ready = nativeSurfaceCreated()
                         if (!ready) Log.e(TAG, "Slot GLES initialization failed")
                         else runOnUiThread {
@@ -722,6 +761,18 @@ class MainActivity : Activity() {
                     }
                     override fun onDrawFrame(gl: GL10?) {
                         val a12StartedNs = SystemClock.elapsedRealtimeNanos()
+                        // Beta8 observer: age of last Choreographer timestamp
+                        // when GL starts, not a measured display-present time.
+                        val vsyncStamp = latestVsyncFrameNs
+                        if (nativeIsPlaying() && vsyncStamp > 0) {
+                            val ageUs = (System.nanoTime() - vsyncStamp) / 1000L
+                            if (ageUs in 0L..200_000L) {
+                                vsyncAgeTotalUs += ageUs
+                                vsyncAgeMaxUs = maxOf(vsyncAgeMaxUs, ageUs)
+                                vsyncAgeCount++
+                            }
+                        }
+                        if (nativeIsPlaying()) EmulationDiagnostics.frame()
                         var a12NativeUs = 0L
                         if (ready) {
                             val beginNativeNs = SystemClock.elapsedRealtimeNanos()
@@ -741,6 +792,12 @@ class MainActivity : Activity() {
                         } else {
                             GLES20.glClearColor(0f, 0f, 0f, 1f)
                             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                        }
+                        // Beta9: record the ID of the frame swapped AFTER this
+                        // callback and query earlier EGL presentation timestamps.
+                        // Driver can report unsupported; no rendering changes.
+                        if (ready && displaySyncApplied && nativeIsPlaying()) {
+                            nativeEglPresentationTick()
                         }
                         // Diagnostic-only. EGL swaps after this callback returns:
                         // callback gaps are not true presentation timestamps.
@@ -763,7 +820,13 @@ class MainActivity : Activity() {
                                 Log.i(TAG, "GL callback pacing: callbacks=$callbacks fps_x10=$fpsX10 " +
                                     "gap_over_25ms=$gapOver25ms gap_over_40ms=$gapOver40ms " +
                                     "gap_us_max=$gapUsMax native_us_max=$nativeUsMax " +
-                                    "native_over_16ms=$nativeOver16ms native_over_33ms=$nativeOver33ms")
+                                    "native_over_16ms=$nativeOver16ms native_over_33ms=$nativeOver33ms " +
+                                    "vsync_gl_age_mean_us=${if (vsyncAgeCount > 0) vsyncAgeTotalUs / vsyncAgeCount else -1} " +
+                                    "vsync_gl_age_max_us=$vsyncAgeMaxUs " +
+                                    "early_pcm_wakes_5s=${earlyPcmWakes.getAndSet(0)}")
+                                if (displaySyncApplied) {
+                                    Log.i(TAG, nativeEglPresentationReport())
+                                }
                                 probeStartNs = a12StartedNs
                                 callbacks = 0
                                 gapOver25ms = 0
@@ -772,6 +835,9 @@ class MainActivity : Activity() {
                                 nativeUsMax = 0L
                                 nativeOver16ms = 0
                                 nativeOver33ms = 0
+                                vsyncAgeTotalUs = 0L
+                                vsyncAgeMaxUs = 0L
+                                vsyncAgeCount = 0
                             }
                         } else {
                             probeStartNs = 0L
@@ -945,6 +1011,7 @@ class MainActivity : Activity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         SlotBuildBehavior.emulatorButton(keyCode)?.let { button ->
+            EmulationDiagnostics.input(keyCode, true, event, button)
             if (event.repeatCount == 0) {
                 warmedCandidate.set(null)
                 wakeCarouselRender()
@@ -972,6 +1039,7 @@ class MainActivity : Activity() {
             return super.onKeyDown(keyCode, event)
         }
         if (event.repeatCount == 0) {
+            EmulationDiagnostics.input(keyCode, true, event, keyCode)
             warmedCandidate.set(null)
             wakeCarouselRender()
             nativeKey(keyCode, true)
@@ -981,6 +1049,7 @@ class MainActivity : Activity() {
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         SlotBuildBehavior.emulatorButton(keyCode)?.let { button ->
+            EmulationDiagnostics.input(keyCode, false, event, button)
             warmedCandidate.set(null)
             wakeCarouselRender()
             nativeKey(button, false)
@@ -991,6 +1060,7 @@ class MainActivity : Activity() {
             Log.i(TAG, "KONKR MENU BTN_MODE up: Android code=" + keyCode)
         }
         if (keyCode !in BUTTONS) return super.onKeyUp(keyCode, event)
+        EmulationDiagnostics.input(keyCode, false, event, keyCode)
         warmedCandidate.set(null)
         wakeCarouselRender()
         nativeKey(keyCode, false)
@@ -1092,13 +1162,19 @@ class MainActivity : Activity() {
                 Log.i(TAG, "Slot launch queue delay: ${queueWait}ms (waiting for preceding save exports)")
             }
             try {
-                val name = uri.lastPathSegment.orEmpty().lowercase()
-                val ext = when {
-                    name.endsWith(".gba") -> "gba"
-                    name.endsWith(".gbc") -> "gbc"
-                    name.endsWith(".gb") -> "gb"
-                    else -> error("Unsupported ROM type")
-                }
+                // Document-provider IDs may contain the complete tree path:
+                // keep only the terminal basename before using it for a
+                // RetroArch save target, never a provider path or colon prefix.
+                val name = uri.lastPathSegment.orEmpty().substringAfterLast('/')
+                // SAF ZIPs contain an actual cartridge, not a libretro ZIP
+                // input. Inspect the embedded extension before selecting a
+                // core, a save target or a private cache extension.
+                val ext = if (RomSource.isContainer(name)) {
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        RomSource.inspect(input, name).extension
+                    } ?: error("Cannot inspect cartridge ZIP")
+                } else name.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
+                require(ext in setOf("gba", "gbc", "gb")) { "Unsupported ROM type" }
                 val digest = MessageDigest.getInstance("SHA-256")
                     .digest(rawUri.toByteArray(Charsets.UTF_8))
                     .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
@@ -1109,17 +1185,22 @@ class MainActivity : Activity() {
                     val temp = File(dir, "$digest.tmp")
                     try {
                         contentResolver.openInputStream(uri)?.use { input ->
-                            temp.outputStream().buffered().use { output ->
-                                val buffer = ByteArray(64 * 1024)
-                                var copied = 0L
-                                while (true) {
-                                    val n = input.read(buffer)
-                                    if (n < 0) break
-                                    copied += n
-                                    require(copied <= 64L * 1024 * 1024) { "ROM exceeds 64 MiB" }
-                                    output.write(buffer, 0, n)
+                            RomSource.useRom(input, name) { raw, embeddedExt ->
+                                require(embeddedExt == ext) { "ZIP cartridge type changed" }
+                                temp.outputStream().buffered().use { output ->
+                                    val buffer = ByteArray(64 * 1024)
+                                    var copied = 0L
+                                    while (true) {
+                                        val n = raw.read(buffer)
+                                        if (n < 0) break
+                                        copied += n
+                                        require(copied <= RomSource.MAX_ROM_BYTES) {
+                                            "ROM exceeds 64 MiB"
+                                        }
+                                        output.write(buffer, 0, n)
+                                    }
+                                    require(copied >= RomSource.MIN_ROM_BYTES) { "ROM too small" }
                                 }
-                                require(copied >= 0x150) { "ROM too small" }
                             }
                         } ?: error("Cannot read this ROM")
                         check(temp.renameTo(target)) { "Cannot cache ROM" }
@@ -1138,6 +1219,8 @@ class MainActivity : Activity() {
                 val saves = storage.savesRoot?.let(Uri::parse)
                 val states = storage.statesRoot?.let(Uri::parse)
                 val shared = RetroArchStorage.target(this, rawUri, core, saves, states,
+                    scannedFileName = if (RomSource.isContainer(name))
+                        RomSource.archiveSaveFilename(name, ext) else null,
                     shareGbaSaves = storage.shareGbaSaves)
                 try {
                     RetroArchStorage.importBeforeLaunch(this@MainActivity, shared)
@@ -1276,6 +1359,9 @@ class MainActivity : Activity() {
                 Log.w(TAG, "Audio priority unavailable; using default worker priority", error)
             }
             var player: AudioTrack? = null
+            // Do not start the PCM output clock while no libretro samples
+            // exist. On the first chunk, preload into AudioTrack then play.
+            var awaitingFirstPcm = false
             var rate = 0
             var requestedSpeed = 0
             var observedUnderruns = 0
@@ -1283,6 +1369,28 @@ class MainActivity : Activity() {
             var emptyAudioReads = 0
             var playedShorts = 0L
             var audioBufferBytes = 0
+            // Diagnostic only: how fast AudioTrack's own playback-head clock
+            // advances relative to submitted PCM. No buffer or DSP changes.
+            var playbackHeadAtProbe = 0L
+            // Read-only beta8 AudioTrack output headroom probe. Capacity is
+            // not occupancy; use cumulative submitted frames - playback head.
+            var submittedFramesSinceTrackCreate = 0L
+            var minimumOutputFrames = Long.MAX_VALUE
+            var maximumOutputFrames = 0L
+            var outputDepthSamples = 0
+            // Beta12: sync-lab committed frames and PCM generated by the
+            // GL owner are sampled on this SAME 5s audio-clock window.
+            // These observations never alter the AudioTrack write path.
+            var nativeClockBaseline = LongArray(0)
+            var observedEarlyReadyNs = 0L
+            var earlyReadyToReadCount = 0L
+            var earlyReadyToReadTotalUs = 0L
+            var earlyReadyToReadMaxUs = 0L
+            // Beta9: AudioTrack's hardware timestamp describes its playback
+            // clock independently of the emulation and GLSurfaceView clocks.
+            val hardwareTimestamp = AudioTimestamp()
+            var priorHardwareFrame = -1L
+            var priorHardwareTimeNs = -1L
             try {
                 while (audioRunning.get()) {
                     val wanted = nativeAudioSampleRate()
@@ -1319,11 +1427,25 @@ class MainActivity : Activity() {
                         rate = wanted
                         requestedSpeed = 0
                         observedUnderruns = 0
+                        diagnosticAudioUnderruns = 0
                         emptyAudioReads = 0
                         playedShorts = 0L
                         audioProbeAt = SystemClock.elapsedRealtime()
-                        player.play()
-                    } else if (player.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                        awaitingFirstPcm = true
+                        playbackHeadAtProbe = 0L
+                        submittedFramesSinceTrackCreate = 0L
+                        minimumOutputFrames = Long.MAX_VALUE
+                        maximumOutputFrames = 0L
+                        outputDepthSamples = 0
+                        nativeClockBaseline = nativeAudioClockCounters()
+                        observedEarlyReadyNs = earlyPcmReadyNs.get()
+                        earlyReadyToReadCount = 0L
+                        earlyReadyToReadTotalUs = 0L
+                        earlyReadyToReadMaxUs = 0L
+                        priorHardwareFrame = -1L
+                        priorHardwareTimeNs = -1L
+                    } else if (!awaitingFirstPcm &&
+                        player.playState != AudioTrack.PLAYSTATE_PLAYING) {
                         // A paused legacy buffer is reused when the next game has
                         // the same sample rate; it still must be resumed.
                         player.play()
@@ -1352,7 +1474,23 @@ class MainActivity : Activity() {
                             } catch (_: Exception) { }
                         }
                     }
+                    val beforeReadNs = SystemClock.elapsedRealtimeNanos()
                     val samples = nativeReadAudio()
+                    // Most-recent early-PCM-notification -> native-read start.
+                    // Sampling only, NOT end-to-end audio or input latency.
+                    if (samples.isNotEmpty()) {
+                        val readyNs = earlyPcmReadyNs.get()
+                        if (readyNs > observedEarlyReadyNs && readyNs <= beforeReadNs) {
+                            val delayUs = (beforeReadNs - readyNs) / 1000L
+                            if (delayUs in 0L..200_000L) {
+                                earlyReadyToReadCount++
+                                earlyReadyToReadTotalUs += delayUs
+                                earlyReadyToReadMaxUs = maxOf(earlyReadyToReadMaxUs, delayUs)
+                            }
+                            observedEarlyReadyNs = readyNs
+                        }
+                    }
+                    EmulationDiagnostics.audio(samples)
                     if (samples.isEmpty()) {
                         emptyAudioReads++
                         // Event-driven wakeup instead of sleeping blindly for 8ms:
@@ -1368,18 +1506,75 @@ class MainActivity : Activity() {
                         continue
                     }
                     audioFrameSignal.drainPermits()
-                    val written = player.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
-                    if (written < 0) {
-                        Log.w(TAG, "AudioTrack write error: $written")
-                    } else {
-                        playedShorts += written.toLong()
+                    // Immutable reference for the inlined PCM writer. Avoid
+                    // capturing a mutable nullable AudioTrack in hot-path lambdas.
+                    val track = player ?: continue
+                    // Observe output depth BEFORE writing: post-write depth
+                    // alone hides a playback starvation just before a fresh
+                    // libretro chunk arrives. This is a read-only sample.
+                    if (!awaitingFirstPcm) {
+                        val headBefore = track.playbackHeadPosition.toLong() and 0xffffffffL
+                        val depthBefore = (submittedFramesSinceTrackCreate - headBefore)
+                            .coerceIn(0L, audioBufferBytes.toLong() / 4L)
+                        minimumOutputFrames = minOf(minimumOutputFrames, depthBefore)
+                        maximumOutputFrames = maxOf(maximumOutputFrames, depthBefore)
+                        outputDepthSamples++
                     }
+                    // WRITE_BLOCKING can still return a positive *partial*
+                    // count (e.g. on a route change). Never silently discard
+                    // that PCM suffix, as it would insert an audible gap.
+                    // The helper inlines the lambda: no new hot-path objects.
+                    // A WRITE_BLOCKING write before play() must never be
+                    // larger than the dormant track can hold: an oversized
+                    // first burst could deadlock waiting for a playback clock
+                    // we have intentionally not started yet. At most 2048
+                    // interleaved shorts (~15.6ms at 65,536Hz stereo) are
+                    // preloaded; remaining samples are drained AFTER play().
+                    val firstLength = if (awaitingFirstPcm) {
+                        minOf(samples.size, 2048)
+                    } else samples.size
+                    val firstWritten = AudioWritePolicy.writeComplete(
+                        samples, start = 0, length = firstLength
+                    ) { offset, remaining ->
+                        track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
+                    }
+                    if (awaitingFirstPcm && firstWritten > 0) {
+                        track.play()
+                        awaitingFirstPcm = false
+                        audioProbeAt = SystemClock.elapsedRealtime()
+                        playbackHeadAtProbe =
+                            track.playbackHeadPosition.toLong() and 0xffffffffL
+                    }
+                    val written = if (firstWritten == firstLength &&
+                        samples.size > firstLength && audioRunning.get()) {
+                        firstWritten + AudioWritePolicy.writeComplete(
+                            samples, start = firstLength,
+                            length = samples.size - firstLength
+                        ) { offset, remaining ->
+                            track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
+                        }
+                    } else firstWritten
+                    if (written < samples.size && audioRunning.get()) {
+                        Log.w(TAG, "AudioTrack incomplete PCM write: " +
+                            "$written/${samples.size} shorts")
+                    }
+                    playedShorts += written.toLong()
+                    submittedFramesSinceTrackCreate += written.toLong() / 2L
+                    // Sampling after each successful PCM submission is
+                    // diagnostic only. No changed writes, latency or clock.
+                    val outputHead = track.playbackHeadPosition.toLong() and 0xffffffffL
+                    val outputDepth = (submittedFramesSinceTrackCreate - outputHead)
+                        .coerceIn(0L, audioBufferBytes.toLong() / 4L)
+                    minimumOutputFrames = minOf(minimumOutputFrames, outputDepth)
+                    maximumOutputFrames = maxOf(maximumOutputFrames, outputDepth)
+                    outputDepthSamples++
                     // Diagnostic only; do not modify audio queue, buffer size or
                     // event-driven wakeup. A rise here distinguishes Android
                     // playback underruns from mGBA mixer discontinuities.
                     val probeNow = SystemClock.elapsedRealtime()
                     if (probeNow - audioProbeAt >= 5_000L) {
                         val underflows = player.underrunCount
+                        diagnosticAudioUnderruns = underflows
                         if (underflows > observedUnderruns) {
                             Log.i(TAG, "AudioTrack underruns: +${underflows - observedUnderruns}" +
                                 " over 5s (total=$underflows, rate=$wanted Hz)")
@@ -1393,14 +1588,73 @@ class MainActivity : Activity() {
                         }
                         val spanMs = (probeNow - audioProbeAt).coerceAtLeast(1L)
                         val expected = wanted.toLong() * 2L * spanMs / 1000L
+                        val nativeClockNow = nativeAudioClockCounters()
+                        val nativeWindow = AudioClockWindow.between(
+                            nativeClockBaseline, nativeClockNow, spanMs, wanted)
+                        nativeClockBaseline = nativeClockNow
+                        val playbackHead = player.playbackHeadPosition.toLong() and 0xffffffffL
+                        // Playback position is 32-bit and can wrap. Count actual
+                        // advanced frames, not wall-clock guesses. On certain HALs
+                        // this freezes during underrun, which is useful evidence.
+                        val playbackFrames = (playbackHead - playbackHeadAtProbe) and 0xffffffffL
+                        playbackHeadAtProbe = playbackHead
                         // Report even when there are no underruns, to isolate
                         // PCM producer starvation from AudioTrack HAL behaviour.
+                        var hardwareRatePpm = Double.NaN
+                        var hardwareSpanMs = 0L
+                        if (track.getTimestamp(hardwareTimestamp)) {
+                            if (priorHardwareFrame >= 0L &&
+                                hardwareTimestamp.framePosition > priorHardwareFrame &&
+                                hardwareTimestamp.nanoTime > priorHardwareTimeNs) {
+                                val hardwareFrames = hardwareTimestamp.framePosition - priorHardwareFrame
+                                val hardwareNs = hardwareTimestamp.nanoTime - priorHardwareTimeNs
+                                hardwareSpanMs = hardwareNs / 1_000_000L
+                                hardwareRatePpm = (
+                                    hardwareFrames.toDouble() * 1_000_000_000.0 /
+                                    hardwareNs.toDouble() / wanted.toDouble() - 1.0
+                                ) * 1_000_000.0
+                            }
+                            priorHardwareFrame = hardwareTimestamp.framePosition
+                            priorHardwareTimeNs = hardwareTimestamp.nanoTime
+                        }
+                        Log.i(TAG, "AudioTrack hardware clock: " +
+                            "rate_delta_ppm=${if (hardwareRatePpm.isFinite()) hardwareRatePpm else -1.0} " +
+                            "hardware_span_ms=$hardwareSpanMs")
+                        Log.i(TAG, "AudioTrack queue depth: " +
+                            "sample_count=$outputDepthSamples " +
+                            "minimum_ms=${if (minimumOutputFrames == Long.MAX_VALUE) -1.0 else minimumOutputFrames * 1000.0 / wanted} " +
+                            "maximum_ms=${maximumOutputFrames * 1000.0 / wanted} " +
+                            "buffer_capacity_ms=${audioBufferBytes * 250.0 / wanted}")
                         Log.i(TAG, "A12 PCM pacing: rate=$wanted span_ms=$spanMs " +
                             "written_shorts=$playedShorts expected_shorts=$expected " +
+                            "playback_frames=$playbackFrames submitted_frames=${playedShorts / 2L} " +
+                            "speed_permille=$requestedSpeed " +
                             "empty_reads=$emptyAudioReads queued_shorts=${nativeAudioQueuedShorts()} " +
                             "underruns=${underflows - observedUnderruns}")
+                        if (nativeWindow != null && nativeWindow.callbacks > 0L) {
+                            Log.i(TAG, "SYNC LAB causal: " +
+                                "span_ms=$spanMs callbacks=${nativeWindow.callbacks} " +
+                                "real_frames=${nativeWindow.committedFrames} " +
+                                "real_fps=${"%.3f".format(java.util.Locale.ROOT, nativeWindow.frameRate)} " +
+                                "pcm_produced_shorts=${nativeWindow.pcmProducedShorts} " +
+                                "pcm_queued_shorts=${nativeWindow.pcmQueuedShorts} " +
+                                "pcm_produced_ms=${"%.3f".format(java.util.Locale.ROOT, nativeWindow.producedPcmMs)} " +
+                                "producer_deficit_ms=${"%.3f".format(java.util.Locale.ROOT, nativeWindow.producerDeficitMs)} " +
+                                "empty_pcm_frames=${nativeWindow.emptyPcmFrames} " +
+                                "no_step_callbacks=${nativeWindow.noStepCallbacks} " +
+                                "overdue_callbacks=${nativeWindow.overdueCallbacks} " +
+                                "wake_to_read_mean_us=${if (earlyReadyToReadCount > 0) earlyReadyToReadTotalUs / earlyReadyToReadCount else -1} " +
+                                "wake_to_read_max_us=$earlyReadyToReadMaxUs " +
+                                "wake_to_read_samples=$earlyReadyToReadCount")
+                        }
+                        earlyReadyToReadCount = 0L
+                        earlyReadyToReadTotalUs = 0L
+                        earlyReadyToReadMaxUs = 0L
                         observedUnderruns = underflows
                         playedShorts = 0L
+                        minimumOutputFrames = Long.MAX_VALUE
+                        maximumOutputFrames = 0L
+                        outputDepthSamples = 0
                         emptyAudioReads = 0
                         audioProbeAt = probeNow
                     }
@@ -1517,7 +1771,11 @@ class MainActivity : Activity() {
                         !nativeIsPlaying() && !cartStudioOpening) {
                         // A pause between bounded batches prevents continuous
                         // ROM reads and leaves the carousel's render thread free.
-                        uiHandler.postDelayed({ startAutoCartLabels() }, 4_000L)
+                        // Wait until the earliest bounded network/DAT
+                        // retry is due. Fresh unchecked ROMs still use the
+                        // original gentle 4s spacing between small batches.
+                        uiHandler.postDelayed({ startAutoCartLabels() },
+                            AutoCartLabels.nextBatchDelayMs())
                     }
                 }
             }
