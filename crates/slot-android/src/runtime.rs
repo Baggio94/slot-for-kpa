@@ -230,6 +230,9 @@ struct SystemStatus {
 static SYSTEM_STATUS: Mutex<SystemStatus> = Mutex::new(SystemStatus {
     clock: String::new(), battery: None,
 });
+// Android's existing status push owns the generation. The GL loop should not
+// clone a String, acquire SYSTEM_STATUS, or reformat the clock every frame.
+static SYSTEM_STATUS_REV: AtomicU64 = AtomicU64::new(1);
 
 fn controls(code: i32) -> u16 {
     match code {
@@ -660,6 +663,7 @@ struct Engine {
     polaroid_title_texture: Option<slot_gfx::TexId>,
     hud: Hud,
     clock_text: String,
+    last_system_status_rev: u64,
     clock_texture: Option<slot_gfx::TexId>,
     clock_face: Printed,
     battery_percent: Option<u8>,
@@ -1169,6 +1173,7 @@ impl Engine {
             polaroid_title_texture: None,
             hud,
             clock_text: String::new(),
+            last_system_status_rev: 0,
             clock_texture: None,
             clock_face: Printed::default(),
             battery_percent: None,
@@ -1214,7 +1219,10 @@ impl Engine {
     }
 
     fn refresh_system_status(&mut self) {
+        let revision = SYSTEM_STATUS_REV.load(Ordering::Acquire);
+        if self.last_system_status_rev == revision { return; }
         let status = SYSTEM_STATUS.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        self.last_system_status_rev = revision;
         let clock = self.settings.time_format.format_clock(&status.clock);
         if clock != self.clock_text {
             self.clock_text = clock;
@@ -3813,6 +3821,9 @@ impl Engine {
             return;
         }
         if !self.settings.change(key, right) { return; }
+        // Clock formatting can change independently of Android's next
+        // status event. Force one re-render of the existing clock value.
+        if key == 28 { self.last_system_status_rev = 0; }
         if key == 5 {
             FF_AUDIO_ENABLED.store(self.settings.ff_sound, Ordering::Release);
             AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -6570,7 +6581,10 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSystemStatus(
         Some(Battery { percent: percent as u8,
             charge: if charging != 0 { Charge::Charging } else { Charge::Discharging } })
     } else { None };
-    *SYSTEM_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = SystemStatus { clock, battery };
+    {
+        *SYSTEM_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = SystemStatus { clock, battery };
+    }
+    SYSTEM_STATUS_REV.fetch_add(1, Ordering::Release);
 }
 
 /// App-private files directory and nativeLibraryDir (where mGBA is packaged).
