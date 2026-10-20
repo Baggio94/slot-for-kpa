@@ -1987,6 +1987,24 @@ impl Engine {
                 AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
             }
             Input::Exit => {
+                // A failed battery/RTC/auto-state write must not destroy the
+                // only live emulator state. Keep gameplay and the save menu
+                // available so a storage issue can be resolved and retried.
+                let with_state = self.live_game_options().eject_save;
+                let eject_saved = match self.game.as_mut() {
+                    Some(session) => match session.save_for_eject(with_state) {
+                        Ok(saved) => saved,
+                        Err(error) => {
+                            crate::game::log_launch_timing(&format!(
+                                "Save & Eject cancelled; core preserved: {error}"));
+                            set_message(format!("Save failed: {error}. Try Save & Eject again."));
+                            self.overlay = ShelfOverlay::GameMenu { row: 0 };
+                            self.game_accum = 0.0;
+                            return;
+                        }
+                    },
+                    None => false,
+                };
                 self.hud.set_link(LinkBadge::Off);
                 self.cancel_link_discovery();
                 self.link_identity = None;
@@ -2000,9 +2018,11 @@ impl Engine {
                 }
                 // The reversed cart animation will emit the original eject sound.
                 if self.progress > 0.0 || self.inserted { self.eject_sound_armed = true; }
-                if let Some(mut session) = self.game.take() {
-                    let saved = session.save(self.live_game_options().eject_save);
-                    if saved && !session.is_link_sandbox() {
+                if let Some(session) = self.game.take() {
+                    // A durable checkpoint was verified BEFORE taking/drop-
+                    // ping the session. Never report a false success from a
+                    // battery error masked by an unrelated RTC/state write.
+                    if eject_saved && !session.is_link_sandbox() {
                         if let Some(uri) = self.requested_uri.as_deref() {
                             let paths = PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone();
                             let core = paths.as_ref().map(|(storage, _)| {
