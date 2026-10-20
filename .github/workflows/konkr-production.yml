@@ -82,6 +82,25 @@ jobs:
               assert width > 20 and height == 24, (name, width, height)
               print(f'Verified authentic Slot legend {name}: {width}x{height}')
           PY
+      - name: Test F9 reused PCM FIFO order and bounded native JNI transfer on Linux
+        run: |
+          set -euo pipefail
+          cargo test -p slot-android --lib audio_pcm::tests -- --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/f9-pcm-tests.log"
+          grep -Eq 'test result: ok\. 5 passed; 0 failed;' "$RUNNER_TEMP/f9-pcm-tests.log"
+      - name: Verify old allocating JNI audio reader is gone
+        run: |
+          set -euo pipefail
+          grep -F 'external fun nativeReadAudioInto(samples: ShortArray): Int' android/app/src/main/java/fyi/slot/konkr/MainActivity.kt
+          grep -F 'fn Java_fyi_slot_konkr_MainActivity_nativeReadAudioInto(' crates/slot-android/src/runtime.rs
+          if grep -Fq 'external fun nativeReadAudio(): ShortArray' android/app/src/main/java/fyi/slot/konkr/MainActivity.kt; then
+            echo '::error::Allocating audio JNI entrypoint restored'
+            exit 1
+          fi
+          if grep -Fq 'fn Java_fyi_slot_konkr_MainActivity_nativeReadAudio(' crates/slot-android/src/runtime.rs; then
+            echo '::error::Allocating native audio reader restored'
+            exit 1
+          fi
       - name: Test F7 async SRAM/RTC durability, ordering and failures on Linux
         run: |
           set -euo pipefail
@@ -182,8 +201,8 @@ jobs:
           APK=android/app/build/outputs/apk/debug/app-debug.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/mac-lab-badging.txt"
-          grep -F "package: name='fyi.slot.konkr.diag' versionCode='144'" "$RUNNER_TEMP/mac-lab-badging.txt"
-          grep -F "versionName='1.2.3-beta6-mac-lab'" "$RUNNER_TEMP/mac-lab-badging.txt"
+          grep -F "package: name='fyi.slot.konkr.diag' versionCode='145'" "$RUNNER_TEMP/mac-lab-badging.txt"
+          grep -F "versionName='1.2.3-beta7-mac-lab'" "$RUNNER_TEMP/mac-lab-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify "$APK"
           for core in slot_android mgba_libretro gpsp_libretro; do
             unzip -Z -1 "$APK" | grep -Fx "lib/arm64-v8a/lib${core}.so"
@@ -198,7 +217,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.2.3-beta6-mac-avd-debug
+          name: slot-for-konkr-1.2.3-beta7-mac-avd-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Verify signed ARM64 APK and upgrade compatibility
@@ -207,8 +226,8 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "package: name='fyi.slot.konkr' versionCode='144'" "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "versionName='1.2.3-beta6'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='145'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "versionName='1.2.3-beta7'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
           for core in slot_android mgba_libretro gpsp_libretro; do
@@ -248,7 +267,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.2.3-beta6-arm64-signed
+          name: slot-for-konkr-1.2.3-beta7-arm64-signed
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
@@ -267,7 +286,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: slot-for-konkr-1.2.3-beta6-arm64-signed
+          name: slot-for-konkr-1.2.3-beta7-arm64-signed
           path: release-assets
 
       - name: Validate, create GitHub-verified release commit, and publish
