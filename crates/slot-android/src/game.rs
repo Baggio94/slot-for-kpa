@@ -9,9 +9,7 @@ use slot_store::{atomic_write, Core, Platform, StateEntry, StateRing, stamp_now,
 use crate::thumb;
 use crate::retroarch_state;
 use crate::rewind::{RewindThread, REWIND_BYTES};
-#[path = "battery_writer.rs"]
-mod battery_writer;
-use battery_writer::{BatterySnapshot, BatteryWriter};
+use crate::battery_writer::{BatterySnapshot, BatteryWriter};
 use std::path::{Path, PathBuf};
 use std::io::{Read, Seek, SeekFrom};
 use std::time::{Duration, Instant};
