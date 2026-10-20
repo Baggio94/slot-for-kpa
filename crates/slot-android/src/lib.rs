@@ -13,6 +13,9 @@ mod pokemon_flash;
 // the Linux CI host. Android production shares this exact implementation.
 #[cfg(any(test, target_os = "android"))]
 mod battery_writer;
+// F9: both Linux CI tests and Android JNI use one PCM drain implementation.
+#[cfg(any(test, target_os = "android"))]
+mod audio_pcm;
 // Directly compile the original Cart Studio No-Intro DAT matching code and tests.
 // Pinned verbatim at third_party/slot-cart-studio, never reinterpret CRCs.
 #[allow(dead_code)]
