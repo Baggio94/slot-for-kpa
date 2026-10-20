@@ -15,13 +15,13 @@ from pathlib import Path
 RA_KEYS = (
     "run_ahead_enabled", "run_ahead_frames", "run_ahead_secondary_instance",
     "runahead_enabled", "runahead_frames", "runahead_secondary_instance",
-    "preempt_frames_enable", "preempt_frames",
+    "preemptive_frames_enable", "run_ahead_hide_warnings",
     "video_driver", "video_vsync", "video_swap_interval",
     "video_max_swapchain_images", "video_hard_sync", "video_hard_sync_frames",
     "video_frame_delay", "video_frame_delay_auto", "video_threaded",
     "video_refresh_rate", "video_refresh_rate_auto", "video_smooth",
     "video_shader_enable", "video_filter", "video_black_frame_insertion",
-    "audio_driver", "audio_sync", "audio_latency", "audio_rate_control",
+    "audio_driver", "audio_sync", "audio_latency", "audio_latency_floor", "audio_rate_control",
     "audio_rate_control_delta", "audio_max_timing_skew", "audio_out_rate",
     "input_driver", "input_poll_type_behavior", "rewind_enable",
     "fastforward_ratio", "video_frame_delay_auto"
