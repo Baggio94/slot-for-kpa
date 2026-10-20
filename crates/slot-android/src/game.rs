@@ -54,6 +54,16 @@ pub(crate) struct RunaheadProbe {
     pub failures: u32,
 }
 
+/// F8: WALL time spent inside the core and synchronous rewind snapshot or
+/// optional battery capture on the GL owner, measured once per real step.
+/// Never infer hardware GPU or EGL swap timing from these values.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FrameStepTimings {
+    pub core_us: u64,
+    pub rewind_capture_us: u64,
+    pub periodic_battery_us: u64,
+}
+
 /// Cartridge header code, not a localized filename: FireRed, LeafGreen,
 /// Emerald, Ruby and Sapphire, across original game-code regions.
 fn pokemon_gen3_flash_code(code: &[u8; 4]) -> bool {
@@ -179,6 +189,7 @@ pub struct GameSession {
     runahead_rollback_failed: bool,
     runahead_discard_confirm: bool,
     runahead_probe: RunaheadProbe,
+    last_step_timings: FrameStepTimings,
     // Keep mGBA speculative frames away from Pokémon Gen III FLASH1M.
     mgba_flash_runahead_guard: bool,
     sma4_runahead_guard: bool,
@@ -648,6 +659,7 @@ impl GameSession {
             runahead_rollback_failed: false,
             runahead_discard_confirm: false,
             runahead_probe: RunaheadProbe::default(),
+            last_step_timings: FrameStepTimings::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
             pending_undo: None, last_sram: Instant::now(), battery_writer,
@@ -659,6 +671,7 @@ impl GameSession {
     /// False while cable lockstep is awaiting the other player. The caller
     /// must not subtract an emulated-frame budget until this returns true.
     pub fn advance(&mut self, buttons: u16, turbo: bool, record_rewind: bool) -> bool {
+        self.last_step_timings = FrameStepTimings::default();
         if self.runahead_rollback_failed { return false; }
         // A suspended or ended Multiplayer session must not fall through
         // to core.run_frame() merely because self.link became None. This
@@ -669,29 +682,40 @@ impl GameSession {
         self.runahead_video.clear();
         let pressed = ButtonMask(buttons);
         let mapped = xy_buttons(pressed, turbo, self.frame_count);
-        if let Some(link) = self.link.as_mut() {
-            match link.frame(self.core.as_mut(), mapped) {
-                LinkFrame::Advanced => {},
-                LinkFrame::Waiting | LinkFrame::Failed(_) => return false,
-            }
+        let core_started = Instant::now();
+        let advanced = if let Some(link) = self.link.as_mut() {
+            matches!(link.frame(self.core.as_mut(), mapped), LinkFrame::Advanced)
         } else {
             self.core.run_frame(mapped);
-        }
+            true
+        };
+        self.last_step_timings.core_us = core_started.elapsed().as_micros() as u64;
+        if !advanced { return false; }
         self.frame_count = self.frame_count.wrapping_add(1);
         if record_rewind && !self.link_touched {
             self.rewind_frames += 1;
             if self.rewind_frames >= REWIND_CAPTURE_FRAMES {
                 self.rewind_frames = 0;
                 // Original XOR/LZ4 history; never export it to RetroArch.
+                let capture_started = Instant::now();
                 if let Ok(snapshot) = self.core.serialize() {
                     self.rewind.push(snapshot);
                 }
+                self.last_step_timings.rewind_capture_us =
+                    capture_started.elapsed().as_micros() as u64;
             }
         } else { self.rewind_frames = 0; }
         if self.last_sram.elapsed() >= SRAM_PERIOD {
+            let battery_started = Instant::now();
             self.save_sram();
+            self.last_step_timings.periodic_battery_us =
+                battery_started.elapsed().as_micros() as u64;
         }
         true
+    }
+
+    pub(crate) fn last_step_timings(&self) -> FrameStepTimings {
+        self.last_step_timings
     }
 
     /// The pinned mGBA libretro core is SINGLE-PLAYER (it ignores controller
