@@ -121,7 +121,13 @@ impl RewindThread {
     }
 
     pub fn push(&self, state: Vec<u8>) {
-        let _ = self.tx.send(Msg::Push(state));
+        // Compression lives on a worker but the old bounded send could block
+        // the GL/libretro thread once four snapshots were queued. A rewind
+        // snapshot is optional history, never save data: skip an overloaded
+        // capture rather than freeze gameplay/audio waiting for compression.
+        // Pop remains ordered/synchronous so the player only sees completed
+        // and fully restored historical states.
+        let _ = self.tx.try_send(Msg::Push(state));
     }
 
     pub fn pop(&self) -> Option<Vec<u8>> {
