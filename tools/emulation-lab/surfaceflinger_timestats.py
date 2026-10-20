@@ -45,14 +45,25 @@ def parse_timestats(raw: str) -> dict:
         total = TOTAL_RE.search(chunk)
         fps = FPS_RE.search(chunk)
         # In the same layer block, isolate only present-to-present bins.
-        hist_title = re.search(r"presentToPresent\s+histogram\s+is\s+as\s+below\s*:", chunk, re.I)
+        # Android vendors use both "presentToPresent" (documented) and
+        # "present2present" (KONKR Android 12) for the SAME histogram.
+        # Parse only the contiguous bucket lines immediately after this header:
+        # later latch2present/acquire2present histograms must never leak in.
+        hist_title = re.search(
+            r"(?:presentToPresent|present2present)\s+histogram\s+is\s+as\s+below\s*:",
+            chunk, re.I,
+        )
         bins = {}
         if hist_title:
-            end = re.search(r"\n\s*(?:[A-Za-z][\w.]*\s*=|[A-Za-z]+To[A-Za-z]+\s+histogram\b)", chunk[hist_title.end():])
-            part = chunk[hist_title.end():hist_title.end() + end.start()] if end else chunk[hist_title.end():]
-            for bucket, count in BUCKET_RE.findall(part):
-                ms = int(bucket)
-                bins[ms] = bins.get(ms, 0) + int(count)
+            for line in chunk[hist_title.end():].splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if not re.fullmatch(r"(?:\d+ms\s*=\s*\d+\s*)+", line):
+                    break
+                for bucket, count in BUCKET_RE.findall(line):
+                    ms = int(bucket)
+                    bins[ms] = bins.get(ms, 0) + int(count)
         candidates.append({
             "layer": label,
             "total_frames": int(total.group(1)) if total else None,
