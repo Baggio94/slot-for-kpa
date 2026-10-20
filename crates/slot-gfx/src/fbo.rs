@@ -4,6 +4,18 @@ use crate::pipeline::GamePass;
 use crate::quad::Quad;
 use crate::shaders::{BEZEL_FRAG, BLIT_FRAG, BLIT_VERT};
 use crate::surface::{blit_rect, GfxError, Surface, OUT_H, OUT_W};
+use std::time::Instant;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EndFrameCpuPhases {
+    /// Wall time for geometry/setup, binding the default framebuffer and
+    /// preparing/clearing its GL state; includes potential GLES driver waits.
+    pub setup_us: u64,
+    /// Wall time to submit the final framebuffer quad(s) through GLES.
+    pub quad_us: u64,
+    /// Optional bezel GL submission wall time (zero without an active bezel).
+    pub bezel_us: u64,
+}
 
 pub const BACKDROP: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
@@ -262,6 +274,23 @@ impl Compositor {
     }
 
     pub fn end_frame(&mut self, window: (u32, u32)) {
+        self.end_frame_inner(window, None);
+    }
+
+    /// Read-only diagnostic, no glFinish/glFlush/fence or extra draw.
+    /// Values measure CPU-thread wall time, *not* GPU execution or EGL swap.
+    pub fn end_frame_profiled(&mut self, window: (u32, u32)) -> EndFrameCpuPhases {
+        let mut phases = EndFrameCpuPhases::default();
+        self.end_frame_inner(window, Some(&mut phases));
+        phases
+    }
+
+    fn end_frame_inner(
+        &mut self,
+        window: (u32, u32),
+        mut profile: Option<&mut EndFrameCpuPhases>,
+    ) {
+        let setup_started = profile.is_some().then(Instant::now);
         let framed = crate::bezel::framed(window);
         let (x, mut y, w, h) = blit_rect(window, self.shake);
         let drop = if framed {
@@ -280,6 +309,10 @@ impl Compositor {
             gl::Uniform3f(self.u_gain, self.gain[0], self.gain[1], self.gain[2]);
         }
         unsafe { gl::BindTexture(gl::TEXTURE_2D, self.tex) };
+        if let (Some(started), Some(p)) = (setup_started, profile.as_deref_mut()) {
+            p.setup_us = started.elapsed().as_micros() as u64;
+        }
+        let quad_started = profile.is_some().then(Instant::now);
         let cut = self
             .split
             .filter(|_| framed && drop == 0)
@@ -305,9 +338,13 @@ impl Compositor {
             }
             None => self.blit_part(x, y, w, h, [0.0, 0.0, 1.0, 1.0]),
         }
+        if let (Some(started), Some(p)) = (quad_started, profile.as_deref_mut()) {
+            p.quad_us = started.elapsed().as_micros() as u64;
+        }
         let Some(bezel) = self.bezel.filter(|_| framed && self.screen > 0.0) else {
             return;
         };
+        let bezel_started = profile.is_some().then(Instant::now);
         let alpha = self.screen.clamp(0.0, 1.0);
         unsafe {
             gl::Viewport(0, -drop, window.0 as i32, window.1 as i32);
@@ -320,6 +357,9 @@ impl Compositor {
         }
         self.quad.draw();
         unsafe { gl::Disable(gl::BLEND) };
+        if let (Some(started), Some(p)) = (bezel_started, profile.as_deref_mut()) {
+            p.bezel_us = started.elapsed().as_micros() as u64;
+        }
     }
 }
 
