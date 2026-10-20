@@ -9,6 +9,10 @@ mod favorites;
 mod selection;
 mod emulation;
 mod pokemon_flash;
+// F11: compile and EXECUTE F7's pure-Rust durability and ordering tests on
+// the Linux CI host. Android production shares this exact implementation.
+#[cfg(any(test, target_os = "android"))]
+mod battery_writer;
 // Directly compile the original Cart Studio No-Intro DAT matching code and tests.
 // Pinned verbatim at third_party/slot-cart-studio, never reinterpret CRCs.
 #[allow(dead_code)]
