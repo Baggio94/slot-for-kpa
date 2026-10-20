@@ -70,6 +70,35 @@ fn toml_config_accepts_comments_and_literal_credentials_without_leaking_errors()
     assert!(!service.enabled.load(Ordering::Acquire));
 }
 
+#[test]
+fn f10_wakeup_coalesces_without_blocking_frame_or_ui_thread() {
+    let (sender, receiver) = mpsc::sync_channel::<()>(1);
+    for _ in 0..1_000 { wake_evaluator(&sender); }
+    // Sending a thousand notifications cannot accumulate work or block.
+    assert_eq!(receiver.try_recv(), Ok(()));
+    assert_eq!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty));
+    wake_evaluator(&sender);
+    assert_eq!(receiver.try_recv(), Ok(()));
+}
+
+#[test]
+fn f10_disconnected_wakeup_never_panics_or_blocks() {
+    let (sender, receiver) = mpsc::sync_channel::<()>(1);
+    drop(receiver);
+    wake_evaluator(&sender);
+}
+
+#[test]
+fn f10_control_flush_still_completes_when_no_frames_arrive() {
+    let root = configured();
+    let service = Service::start_with(root.path().into(), Offline);
+    wait_for(|| service.enabled.load(Ordering::Acquire));
+    // No core or frame ever exists in this test. The worker must consume the
+    // Flush control using the wake channel, without a gameplay event.
+    wait_for(|| service.flush_ready());
+    assert!(!service.has_unsaved_awards());
+}
+
 struct Offline;
 impl network::Transport for Offline {
     fn call(&mut self, _: &[(&str, String)]) -> Result<Value, network::Failure> {
