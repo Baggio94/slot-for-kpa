@@ -13,9 +13,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // v1.2.3-beta6 isolated F7 async battery QA; keep published v1.2.2 untouched.
-        versionCode = 144
-        versionName = "1.2.3-beta6"
+        // v1.2.3-beta7 isolated F9 reusable audio PCM JNI; keep published v1.2.2 untouched.
+        versionCode = 145
+        versionName = "1.2.3-beta7"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
