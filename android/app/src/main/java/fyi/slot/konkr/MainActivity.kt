@@ -1614,6 +1614,15 @@ class MainActivity : Activity() {
                         val nativeWindow = AudioClockWindow.between(
                             nativeClockBaseline, nativeClockNow, spanMs, wanted)
                         nativeClockBaseline = nativeClockNow
+                        // F9 beta9: report the exact source of FIFO sample loss,
+                        // even when SYNC LAB is disabled (zero callbacks).
+                        // This is one 5s log line, never a per-audio-read probe.
+                        if (nativeWindow != null) {
+                            Log.i(TAG, "Audio FIFO loss: " +
+                                "overflow_events=${nativeWindow.fifoOverflowEvents} " +
+                                "dropped_shorts=${nativeWindow.fifoDroppedShorts} " +
+                                "queued_now_shorts=${nativeAudioQueuedShorts()}")
+                        }
                         val playbackHead = player.playbackHeadPosition.toLong() and 0xffffffffL
                         // Playback position is 32-bit and can wrap. Count actual
                         // advanced frames, not wall-clock guesses. On certain HALs
