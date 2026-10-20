@@ -998,8 +998,12 @@ impl GameSession {
         let snapshot_us = started.elapsed().as_micros() as u64;
         let predicted = Instant::now();
         let pressed = ButtonMask(buttons);
-        let mapped = xy_buttons(pressed, turbo, self.frame_count);
-        for _ in 0..frames {
+        // Turbo flips every three REAL frames. Each predicted frame must
+        // sample its own future phase; reusing one mask for all offsets
+        // predicts incorrect key presses across a three-frame boundary.
+        for future in 0..frames {
+            let mapped = xy_buttons(pressed, turbo,
+                self.frame_count.wrapping_add(u32::from(future)));
             self.core.run_speculative_frame(mapped);
             // Discard predicted audio without reallocating libretro's buffer.
             self.core.discard_audio();
