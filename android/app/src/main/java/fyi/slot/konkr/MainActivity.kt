@@ -196,6 +196,10 @@ class MainActivity : Activity() {
         }
     }
     private val audioRunning = AtomicBoolean(false)
+    // Each AudioTrack worker owns a unique generation; a stopped or crashed
+    // worker must never resume because a newer game has set audioRunning=true.
+    private val audioWorkerGeneration = AtomicInteger(0)
+    private val audioRetryNotBeforeMs = java.util.concurrent.atomic.AtomicLong(0L)
     // A single pending wakeup is enough. GLSurfaceView never waits for audio.
     private var lastEmulationReportPollAt = 0L
     @Volatile private var diagnosticAudioUnderruns = 0
@@ -1349,7 +1353,9 @@ class MainActivity : Activity() {
     }
 
     private fun startAudio() {
+        if (SystemClock.elapsedRealtime() < audioRetryNotBeforeMs.get()) return
         if (!audioRunning.compareAndSet(false, true)) return
+        val myGeneration = audioWorkerGeneration.incrementAndGet()
         audioFrameSignal.drainPermits()
         audioThread = Thread({
             // Android's streaming AudioTrack is fed from this app-owned
@@ -1398,7 +1404,8 @@ class MainActivity : Activity() {
             var priorHardwareFrame = -1L
             var priorHardwareTimeNs = -1L
             try {
-                while (audioRunning.get()) {
+                while (audioRunning.get() &&
+                    audioWorkerGeneration.get() == myGeneration) {
                     val wanted = nativeAudioSampleRate()
                     if (wanted <= 0) {
                         player?.pause()
@@ -1543,6 +1550,7 @@ class MainActivity : Activity() {
                         samples, start = 0, length = firstLength
                     ) { offset, remaining ->
                         track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
+                            .also { if (it < 0) throw IllegalStateException("AudioTrack write failed: $it") }
                     }
                     if (awaitingFirstPcm && firstWritten > 0) {
                         track.play()
@@ -1558,6 +1566,7 @@ class MainActivity : Activity() {
                             length = samples.size - firstLength
                         ) { offset, remaining ->
                             track.write(samples, offset, remaining, AudioTrack.WRITE_BLOCKING)
+                                .also { if (it < 0) throw IllegalStateException("AudioTrack write failed: $it") }
                         }
                     } else firstWritten
                     if (written < samples.size && audioRunning.get()) {
@@ -1666,15 +1675,30 @@ class MainActivity : Activity() {
                     }
                 }
             } catch (error: Exception) {
-                Log.e(TAG, "Android AudioTrack error", error)
+                if (audioRunning.get() && audioWorkerGeneration.get() == myGeneration) {
+                    // A fatal negative write, route loss or stream exception
+                    // gets a bounded 1s recovery delay. No UI-thread join or
+                    // expanded PCM buffers; the existing heartbeat restarts it.
+                    audioRetryNotBeforeMs.set(SystemClock.elapsedRealtime() + 1_000L)
+                    Log.e(TAG, "Android AudioTrack error; worker will recover", error)
+                }
             } finally {
-                player?.stop()
-                player?.release()
+                runCatching { player?.stop() }.onFailure {
+                    Log.w(TAG, "AudioTrack stop cleanup failed", it)
+                }
+                runCatching { player?.release() }.onFailure {
+                    Log.w(TAG, "AudioTrack release cleanup failed", it)
+                }
+                if (audioWorkerGeneration.get() == myGeneration) {
+                    audioRunning.set(false)
+                    audioThread = null
+                }
             }
         }, "SlotKONKR-Audio").apply { isDaemon = true; start() }
     }
 
     private fun stopAudio() {
+        audioWorkerGeneration.incrementAndGet() // revoke previous thread ownership
         audioRunning.set(false)
         // Unblock the audio worker if it is waiting on a video frame.
         audioFrameSignal.release()
