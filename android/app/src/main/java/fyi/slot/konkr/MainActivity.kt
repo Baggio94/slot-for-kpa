@@ -250,6 +250,12 @@ class MainActivity : Activity() {
         if (!::view.isInitialized) return
         val enabled = resumed && nativeIsPlaying() && nativeDisplaySyncEnabled()
         if (enabled == displaySyncApplied) return
+        // Diagnostic-only event: a switch from continuous GL rendering to
+        // Choreographer during the first 100ms of gameplay could explain
+        // an isolated startup hitch. Do not change frame scheduling here.
+        Log.i(TAG, "Game display pacing transition: " +
+            (if (enabled) "Choreographer" else "Continuous") +
+            ", playing=${nativeIsPlaying()}")
         displaySyncApplied = enabled
         if (enabled) {
             view.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
