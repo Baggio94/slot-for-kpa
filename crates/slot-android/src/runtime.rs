@@ -3145,7 +3145,19 @@ impl Engine {
                         started.elapsed().as_millis(),
                         self.insert_started.map_or(0, |at| at.elapsed().as_millis())
                     ));
+                    // Keep launch bookkeeping INSIDE the cartridge seated
+                    // hold, not the first visible gameplay frame. Recording
+                    // the selected game performs synchronous focus/Recents
+                    // writes and can rebuild the carousel rack on the GL
+                    // thread. That caused avoidable work right when the CRT
+                    // first switched on. A failed core launch never reaches
+                    // this point, so failed games are not recorded.
                     self.pending_game = Some(session);
+                    let recents_started = Instant::now();
+                    self.record_recent();
+                    crate::game::log_launch_timing(&format!(
+                        "Recents staged during cartridge hold: {}ms",
+                        recents_started.elapsed().as_millis()));
                 }
                 Err(error) => {
                     set_message(format!("{}: {error}", core.text()));
@@ -4618,7 +4630,9 @@ impl Engine {
                     self.buttons = 0;
                     SAMPLE_RATE.store(session.sample_rate, Ordering::Release);
                     self.game = Some(session);
-                    self.record_recent();
+                    // Focus and Recents were persisted during core
+                    // preparation; avoid synchronous IO/rebuilding the
+                    // carousel in the first game-frame callback.
                     self.game_accum = 0.0;
                     self.gpu.set_screen_effect(self.game_shader().effect());
                     // The exact Slot upstream geometry: GB/GBC 160x144
