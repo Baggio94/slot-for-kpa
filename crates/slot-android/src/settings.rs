@@ -110,6 +110,25 @@ impl Bezel {
     }
 }
 
+pub const REWIND_SPEEDS: [u8; 4] = [1, 2, 3, 5];
+
+/// Rewind 1x means ten original Slot snapshots a second; 5x means fifty.
+/// Hold L2 continuously; the memory meter indicates occupied history, not progress.
+pub fn rewind_step_seconds(speed: u8) -> f32 {
+    0.1 / f32::from(if REWIND_SPEEDS.contains(&speed) { speed } else { 5 })
+}
+
+fn cycle_rewind_setting(enabled: &mut bool, speed: &mut u8, right: bool) {
+    // Five values on the existing six-row Gameplay screen: OFF, 1x, 2x, 3x, 5x.
+    // No new row means original Slot's menu geometry and keycaps are preserved.
+    let at = if !*enabled { 0 } else {
+        REWIND_SPEEDS.iter().position(|v| *v == *speed).map_or(4, |i| i + 1)
+    };
+    let next = if right { (at + 1) % 5 } else { (at + 4) % 5 };
+    *enabled = next != 0;
+    if *enabled { *speed = REWIND_SPEEDS[next-1]; }
+}
+
 pub const SPEEDS: [u8; 4] = [2, 3, 4, 6];
 const NAME: &str = "slot-konkr-settings.json";
 
@@ -175,6 +194,9 @@ pub struct Settings {
     pub colour_correction_gbc: bool,
     pub bezel_gba: Bezel, pub bezel_gbc: Bezel, pub bezel_gb: Bezel,
     pub gb_palettes: bool, pub gb_palette: u8, pub rewind: bool,
+    // Number of historical rewind snapshots restored per 100 ms of game time.
+    // Prior builds captured 10/s but restored only 10/s; 5 matches upstream feel.
+    pub rewind_speed: u8,
     // X/Y Buttons: true = Slot's original Turbo, false = Y=A and X=B.
     // Existing persisted turbo=false now selects the alternative A/B mapping.
     pub turbo: bool, pub eject_save: bool,
@@ -215,6 +237,7 @@ impl Default for Settings {
             colour_correction_gbc: false,
             bezel_gba: Bezel::None, bezel_gbc: Bezel::Default, bezel_gb: Bezel::Default,
             gb_palettes: false, gb_palette: 1, rewind: true,
+            rewind_speed: 5,
             turbo: true, eject_save: true,
             show_fps: false, responsive_pacing: false,
             display_sync_pacing: false, hybrid_pacing: false,
@@ -284,6 +307,7 @@ impl Settings {
                 if !Shader::GB.contains(&s.shader_gb) { s.shader_gb = Shader::Off; }
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
                 if s.gb_palette >= 48 { s.gb_palette = 1; }
+                if !REWIND_SPEEDS.contains(&s.rewind_speed) { s.rewind_speed = 5; }
                 if s.hybrid_pacing {
                     s.responsive_pacing = false;
                     s.display_sync_pacing = false;
@@ -384,7 +408,7 @@ impl Settings {
                 self.ff_speed = SPEEDS[if right { (at + 1) % 4 } else { (at + 3) % 4 }];
             }
             5 => self.ff_sound = !self.ff_sound,
-            6 => self.rewind = !self.rewind,
+            6 => cycle_rewind_setting(&mut self.rewind, &mut self.rewind_speed, right),
             7 => self.turbo = !self.turbo,
             8 => self.rumble = !self.rumble,
             9 => self.eject_save = !self.eject_save,
@@ -904,6 +928,46 @@ mod tests {
         assert_eq!(s.shader_gbc,Shader::Lcd3x);
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn rewind_speed_steps_and_legacy_upgrade_do_not_change_unrelated_options() {
+        let old: Settings = serde_json::from_str(
+            r#"{"rewind":true,"ff_speed":4,"shader_gba":"dot","colour_correction_gba":true}"#
+        ).unwrap();
+        assert_eq!(old.rewind_speed, 5, "no prior user-facing speed selection");
+        assert_eq!(rewind_step_seconds(1), 0.1);
+        assert!((rewind_step_seconds(5) - 0.02).abs() < 1e-6);
+        let mut s = old.clone();
+        s.change(6, true); assert!(!s.rewind);
+        for (speed, rate) in [(1, 0.1_f32), (2, 0.05), (3, 1.0/30.0), (5, 0.02)] {
+            s.change(6,true);
+            assert!(s.rewind);
+            assert_eq!(s.rewind_speed,speed);
+            assert!((rewind_step_seconds(speed)-rate).abs()<1e-6);
+        }
+        assert_eq!(s.ff_speed,old.ff_speed);
+        assert_eq!(s.shader_gba,old.shader_gba);
+        assert_eq!(s.colour_correction_gba,old.colour_correction_gba);
+        let json=serde_json::to_string(&s).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(),s);
+        let invalid: Settings=serde_json::from_str(r#"{"rewind_speed":255}"#).unwrap();
+        assert_eq!(rewind_step_seconds(invalid.rewind_speed),0.02);
+    }
+
+    #[test]
+    fn shader_color_pipeline_never_applies_mgba_correction_twice() {
+        for shader in Shader::GBA {
+            for wanted in [false,true] {
+                let core=shader.core_colour(wanted);
+                assert!(!(core && shader.includes_gba_color()));
+                if !shader.includes_gba_color() { assert_eq!(core,wanted); }
+            }
+        }
+        for shader in Shader::GB {
+            assert!(!shader.includes_gba_color());
+            assert!(shader.core_colour(true));
+        }
+    }
+
     #[test]
     fn screen_gameplay_original_choices_cycle() {
         let mut s = Settings::default();
