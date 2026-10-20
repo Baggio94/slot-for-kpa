@@ -56,8 +56,24 @@ do
     exit 1
   fi
 done
-# Keep the transient audio rollback ABI on top of the Multiplayer patch.
-# Persistent RetroArch state format is unchanged.
+# Port upstream fixes absent from the v1.2.2 Android build. A restored
+# FLASH1M savestate must preserve its active bank through mask/unmask; the
+# DMG palette must follow a live option change and savestate restoration.
+# Apply strictly: never continue on a mismatched or half-patched checkout.
+for patch in flash-bank-survives-mask.patch gb-dmg-palette-follows-option.patch; do
+  patch_file="$ROOT/cores/mgba/$patch"
+  if git -C "$SRC" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+    echo "Already applied: $patch"
+  elif git -C "$SRC" apply --check "$patch_file"; then
+    git -C "$SRC" apply "$patch_file"
+    echo "Applied: $patch"
+  else
+    echo "Patch mismatch (refusing to use unsafe mGBA source): $patch" >&2
+    exit 1
+  fi
+done
+# Keep transient audio rollback ABI after upstream safety fixes.
+# Persistent RetroArch state format and RA saves remain unchanged.
 python3 "$ROOT/scripts/patch-mgba-speculative-audio.py" "$SRC"
 cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
