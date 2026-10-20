@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn f8_beta15_clear_skip_is_counted_once_and_does_not_change_native_residual() {
+    fn f8_phase_beta15_clear_skip_is_counted_once_and_does_not_change_native_residual() {
         let frame = FramePhaseSample {
             native_total_us: 4_000, core_us: 2_000, gpu_submit_us: 1_000,
             submit_blit_us: 700, end_setup_us: 600, end_clear_us: 0,
