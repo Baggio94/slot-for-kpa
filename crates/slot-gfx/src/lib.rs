@@ -1,4 +1,5 @@
 mod bezel;
+mod clear_policy;
 mod draw;
 mod fbdev;
 mod fbo;
