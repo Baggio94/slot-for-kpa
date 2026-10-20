@@ -1031,9 +1031,16 @@ impl GameSession {
         if self.link_touched || self.linked_boot.is_some() { return false; }
         self.runahead_video.clear();
         let Some(previous) = self.rewind.pop() else { return false; };
-        if self.core.unserialize(&previous).is_err() { return false; }
-        // Most libretro cores only refresh video after retro_run. Run a single
-        // input-free frame so the renderer shows the restored moment.
+        if let Err(error) = self.core.unserialize(&previous) {
+            // A failed state restore must never silently eject the cartridge.
+            // Leave the game alive and surface a diagnostic for real-device QA.
+            log_launch_timing(&format!(
+                "Rewind state restore was refused; staying in game: {error}"));
+            return false;
+        }
+        // Match original Slot's rewind: force frame rendering (never inherit
+        // an FF/speculative frame-skip state) before refreshing the picture.
+        self.core.set_frame_skip(false);
         self.core.run_frame(ButtonMask(0));
         let _ = self.core.take_audio();
         self.rewind_frames = 0;
