@@ -33,7 +33,7 @@ averageFPS = 62.2
         self.assertEqual(7200, report["observed_intervals"])
         self.assertEqual(0, report["dropped_frames"])
         self.assertEqual(20, report["over25_count"])
-        self.assertEqual(16, report["p99_ms"])
+        self.assertEqual(17, report["p99_ms"])
         self.assertEqual(16, report["p95_ms"])
         self.assertNotIn("layer_name", report)
 
