@@ -232,6 +232,13 @@ class MainActivity : Activity() {
     private var lastPerfPoll = 0L
     @Volatile private var displaySyncApplied = false
     @Volatile private var latestVsyncFrameNs = 0L
+    // Beta10 read-only Choreographer delivery telemetry (UI thread).
+    // These are UI callbacks, never confirmed display-present timestamps.
+    @Volatile private var latestVsyncSequence = 0L
+    private var previousUiVsyncFrameNs = 0L
+    private val uiVsyncCallbacks = java.util.concurrent.atomic.AtomicLong(0L)
+    private val uiVsyncOver25ms = java.util.concurrent.atomic.AtomicLong(0L)
+    private val uiVsyncOver40ms = java.util.concurrent.atomic.AtomicLong(0L)
     // RA cached game details can be ready before Slot's seating/CRT sequence
     // has set PLAYING=true. Hold that notice, then reveal it on actual gameplay.
     // Distinguish that legitimate startup from a stale notice after eject.
@@ -245,7 +252,18 @@ class MainActivity : Activity() {
     private val vsyncCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!displaySyncApplied || !resumed || isDestroyed) return
+            // One fixed-time record per UI-vsync; avoid allocations,
+            // network calls, EGL queries and render-policy changes.
+            val previous = previousUiVsyncFrameNs
+            if (previous > 0L && frameTimeNanos > previous) {
+                val uiGap = frameTimeNanos - previous
+                if (uiGap > 25_000_000L) uiVsyncOver25ms.incrementAndGet()
+                if (uiGap > 40_000_000L) uiVsyncOver40ms.incrementAndGet()
+            }
+            previousUiVsyncFrameNs = frameTimeNanos
             latestVsyncFrameNs = frameTimeNanos
+            latestVsyncSequence++
+            uiVsyncCallbacks.incrementAndGet()
             view.requestRender()
             Choreographer.getInstance().postFrameCallback(this)
         }
@@ -266,6 +284,7 @@ class MainActivity : Activity() {
             Choreographer.getInstance().postFrameCallback(vsyncCallback)
         } else {
             Choreographer.getInstance().removeFrameCallback(vsyncCallback)
+            previousUiVsyncFrameNs = 0L
             view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         }
     }
@@ -757,9 +776,11 @@ class MainActivity : Activity() {
                     private var vsyncAgeTotalUs = 0L
                     private var vsyncAgeMaxUs = 0L
                     private var vsyncAgeCount = 0
+                    private val glPacingCorrelation = FramePacingCorrelation()
                     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
                         nativeEglPresentationReset()
                         ready = nativeSurfaceCreated()
+                        glPacingCorrelation.reset()
                         if (!ready) Log.e(TAG, "Slot GLES initialization failed")
                         else runOnUiThread {
                             // Wait for the renderer to exist before revealing the shelf.
@@ -813,13 +834,17 @@ class MainActivity : Activity() {
                         // callback gaps are not true presentation timestamps.
                         if (ready && nativeIsPlaying()) {
                             if (probeStartNs == 0L) probeStartNs = a12StartedNs
+                            var correlationGlGapUs = 0L
                             if (lastDrawNs != 0L) {
                                 val gapUs = (a12StartedNs - lastDrawNs) / 1000L
+                                correlationGlGapUs = gapUs
                                 gapUsMax = maxOf(gapUsMax, gapUs)
                                 if (gapUs > 25_000L) gapOver25ms++
                                 if (gapUs > 40_000L) gapOver40ms++
                             }
                             lastDrawNs = a12StartedNs
+                            glPacingCorrelation.record(correlationGlGapUs, a12NativeUs,
+                                if (displaySyncApplied) latestVsyncSequence else 0L)
                             callbacks++
                             nativeUsMax = maxOf(nativeUsMax, a12NativeUs)
                             if (a12NativeUs > 16_667L) nativeOver16ms++
@@ -834,6 +859,18 @@ class MainActivity : Activity() {
                                     "vsync_gl_age_mean_us=${if (vsyncAgeCount > 0) vsyncAgeTotalUs / vsyncAgeCount else -1} " +
                                     "vsync_gl_age_max_us=$vsyncAgeMaxUs " +
                                     "early_pcm_wakes_5s=${earlyPcmWakes.getAndSet(0)}")
+                                val frameCorrelation = glPacingCorrelation.snapshotAndReset()
+                                Log.i(TAG, "GL vsync correlation: " +
+                                    "ui_vsync_callbacks=${uiVsyncCallbacks.getAndSet(0L)} " +
+                                    "ui_vsync_over25=${uiVsyncOver25ms.getAndSet(0L)} " +
+                                    "ui_vsync_over40=${uiVsyncOver40ms.getAndSet(0L)} " +
+                                    "gl_gap_over25=${frameCorrelation.slowGaps} " +
+                                    "gl_gap_prior_native_over16=${frameCorrelation.slowGapsAfterExpensiveNative} " +
+                                    "gl_gap_prior_native_normal=${frameCorrelation.slowGapsAfterNormalNative} " +
+                                    "gl_gap_current_native_over16=${frameCorrelation.slowGapsWithExpensiveCurrentNative} " +
+                                    "gl_reused_vsync=${frameCorrelation.glCallbacksWithRepeatedVsync} " +
+                                    "ui_vsync_without_gl=${frameCorrelation.vsyncCallbacksWithoutGl} " +
+                                    "not_actual_present_time=true")
                                 if (displaySyncApplied) {
                                     Log.i(TAG, nativeEglPresentationReport())
                                 }
@@ -852,6 +889,10 @@ class MainActivity : Activity() {
                         } else {
                             probeStartNs = 0L
                             lastDrawNs = 0L
+                            glPacingCorrelation.reset()
+                            uiVsyncCallbacks.getAndSet(0L)
+                            uiVsyncOver25ms.getAndSet(0L)
+                            uiVsyncOver40ms.getAndSet(0L)
                         }
                     }
                 })
