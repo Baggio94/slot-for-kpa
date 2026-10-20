@@ -15,6 +15,12 @@ pub(crate) struct FramePhaseSample {
     pub speculative_us: u64,
     pub gpu_upload_us: u64,
     pub gpu_submit_us: u64,
+    // Beta12: nested subsets of gpu_submit_us. Excluded from accounted_us
+    // to prevent double-counting the same wall duration.
+    pub submit_setup_us: u64,
+    pub submit_build_us: u64,
+    pub submit_draw_us: u64,
+    pub submit_blit_us: u64,
     pub native_total_us: u64,
     pub core_steps: u32,
 }
@@ -62,6 +68,10 @@ pub(crate) struct PhaseSummary {
     pub speculative: PhaseCounter,
     pub upload: PhaseCounter,
     pub submit: PhaseCounter,
+    pub submit_setup: PhaseCounter,
+    pub submit_build: PhaseCounter,
+    pub submit_draw: PhaseCounter,
+    pub submit_blit: PhaseCounter,
     pub other: PhaseCounter,
     /// Native >16.667 ms, with inner core processing also >16.667 ms.
     pub slow_with_core_over: u32,
@@ -79,6 +89,10 @@ impl PhaseSummary {
         self.speculative.add(frame.speculative_us);
         self.upload.add(frame.gpu_upload_us);
         self.submit.add(frame.gpu_submit_us);
+        self.submit_setup.add(frame.submit_setup_us);
+        self.submit_build.add(frame.submit_build_us);
+        self.submit_draw.add(frame.submit_draw_us);
+        self.submit_blit.add(frame.submit_blit_us);
         self.other.add(frame.other_us());
         if frame.native_total_us > SLOW_GL_BUDGET_US {
             if frame.core_us > SLOW_GL_BUDGET_US {
@@ -91,7 +105,7 @@ impl PhaseSummary {
     pub(crate) fn report(self) -> String {
         let n = self.callbacks;
         format!(
-            "Native frame phases: callbacks={} core_steps={} native_avg_us={} native_max_us={} native_over16={} core_avg_us={} core_max_us={} core_over16={} rewind_avg_us={} rewind_max_us={} battery_avg_us={} battery_max_us={} speculative_avg_us={} speculative_max_us={} upload_avg_us={} upload_max_us={} submit_avg_us={} submit_max_us={} submit_over16={} other_avg_us={} other_max_us={} native_over16_core_over={} native_over16_core_normal={} gpu_execution_and_egl_swap_not_measured=true",
+            "Native frame phases: callbacks={} core_steps={} native_avg_us={} native_max_us={} native_over16={} core_avg_us={} core_max_us={} core_over16={} rewind_avg_us={} rewind_max_us={} battery_avg_us={} battery_max_us={} speculative_avg_us={} speculative_max_us={} upload_avg_us={} upload_max_us={} submit_avg_us={} submit_max_us={} submit_over16={} submit_setup_avg_us={} submit_setup_max_us={} submit_build_avg_us={} submit_build_max_us={} submit_draw_avg_us={} submit_draw_max_us={} submit_draw_over16={} submit_blit_avg_us={} submit_blit_max_us={} submit_blit_over16={} other_avg_us={} other_max_us={} native_over16_core_over={} native_over16_core_normal={} gpu_execution_and_egl_swap_not_measured=true",
             n, self.core_steps,
             self.native.mean_us(n), self.native.max_us, self.native.over_budget,
             self.core.mean_us(n), self.core.max_us, self.core.over_budget,
@@ -100,6 +114,10 @@ impl PhaseSummary {
             self.speculative.mean_us(n), self.speculative.max_us,
             self.upload.mean_us(n), self.upload.max_us,
             self.submit.mean_us(n), self.submit.max_us, self.submit.over_budget,
+            self.submit_setup.mean_us(n), self.submit_setup.max_us,
+            self.submit_build.mean_us(n), self.submit_build.max_us,
+            self.submit_draw.mean_us(n), self.submit_draw.max_us, self.submit_draw.over_budget,
+            self.submit_blit.mean_us(n), self.submit_blit.max_us, self.submit_blit.over_budget,
             self.other.mean_us(n), self.other.max_us,
             self.slow_with_core_over, self.slow_with_core_normal,
         )
@@ -144,6 +162,7 @@ mod tests {
             core_us: 2000, rewind_work_us: 300, periodic_battery_us: 100,
             speculative_us: 600, gpu_upload_us: 400, gpu_submit_us: 1500,
             native_total_us: 6000, core_steps: 1,
+            ..Default::default()
         };
         assert_eq!(frame.other_us(), 1100);
         let mut s = PhaseSummary::default();
@@ -187,4 +206,23 @@ mod tests {
         assert!(window.add(FramePhaseSample { core_us: 200,
             native_total_us: 300, ..Default::default() }).is_none());
     }
+    #[test]
+    fn f8_phase_nested_gl_subtimes_never_double_count_submit_or_residual() {
+        let sample = FramePhaseSample {
+            core_us: 2_000, gpu_submit_us: 8_000, native_total_us: 11_000,
+            submit_setup_us: 300, submit_build_us: 700,
+            submit_draw_us: 4_000, submit_blit_us: 3_000,
+            ..Default::default()
+        };
+        assert_eq!(sample.accounted_us(), 10_000);
+        assert_eq!(sample.other_us(), 1_000);
+        let mut s = PhaseSummary::default();
+        s.add(sample);
+        assert_eq!(s.submit.total_us, 8_000);
+        assert_eq!(s.submit_draw.total_us, 4_000);
+        assert_eq!(s.submit_blit.total_us, 3_000);
+        assert_eq!(s.other.total_us, 1_000);
+        assert!(s.report().contains("submit_blit_avg_us=3000"));
+    }
+
 }
