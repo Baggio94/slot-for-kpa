@@ -12,7 +12,7 @@ use crate::core_selection;
 use crate::cart_render::CartRender;
 use crate::core_picker::{CorePicker, Press};
 use slot_retro::ButtonMask;
-use jni::{JNIEnv, objects::{JObject, JString}, sys::{jint, jboolean, jshortArray, jlongArray, jstring}};
+use jni::{JNIEnv, objects::{JObject, JString, JShortArray}, sys::{jint, jboolean, jlongArray, jstring}};
 use std::sync::Mutex;
 use std::time::Instant;
 use std::net::Ipv4Addr;
@@ -6716,18 +6716,29 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioSampleRate(
     _env: *mut c_void, _this: *mut c_void,
 ) -> jint { SAMPLE_RATE.load(Ordering::Acquire) }
 
+/// F9: Kotlin owns a single reused PCM16 buffer for the lifetime of each
+/// AudioTrack worker. Copy <=4096 interleaved shorts from the FIFO into a
+/// fixed stack array, release AUDIO's mutex, then fill that same Java array.
+/// Returning the valid count avoids replaying the unused tail of a short read.
+/// No Vec/ShortArray allocation occurs on the normal per-chunk JNI path.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeReadAudio(
-    mut env: JNIEnv<'_>, _this: JObject<'_>,
-) -> jshortArray {
-    let samples: Vec<i16> = {
-        let mut audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
-        let n = audio.len().min(4096);
-        audio.drain(..n).collect()
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeReadAudioInto(
+    mut env: JNIEnv<'_>, _this: JObject<'_>, out: JShortArray<'_>,
+) -> jint {
+    let capacity = match env.get_array_length(&out) {
+        Ok(length) if length >= 0 => length as usize,
+        _ => return -1,
     };
-    let Ok(out) = env.new_short_array(samples.len() as i32) else { return std::ptr::null_mut(); };
-    let _ = env.set_short_array_region(&out, 0, &samples);
-    out.into_raw()
+    let mut chunk = [0i16; crate::audio_pcm::PCM_READ_MAX_SHORTS];
+    let count = {
+        let mut audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
+        let available = capacity.min(chunk.len());
+        crate::audio_pcm::drain_pcm_into(&mut audio, &mut chunk[..available])
+    };
+    if count > 0 && env.set_short_array_region(&out, 0, &chunk[..count]).is_err() {
+        return -1;
+    }
+    count as jint
 }
 
 #[unsafe(no_mangle)]
