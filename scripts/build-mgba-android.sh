@@ -124,4 +124,9 @@ mkdir -p "$ROOT/android/app/src/main/assets/licenses"
 if [ -f "$SRC/LICENSE" ]; then
   cp "$SRC/LICENSE" "$ROOT/android/app/src/main/assets/licenses/mgba-LICENSE.txt"
 fi
+# F11: machine-readable provenance shipped INSIDE the APK. These fields
+# record the exact pinned source and safety patches used in this binary.
+cat > "$ROOT/android/app/src/main/assets/core-build-mgba.json" <<EOF
+{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","patch-mgba-speculative-audio.py"]}
+EOF
 echo "mGBA arm64 libretro: $DEST/libmgba_libretro.so"
