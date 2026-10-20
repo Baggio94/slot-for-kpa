@@ -330,6 +330,9 @@ impl A12DrawProbe {
 }
 thread_local! {
     static A12_DRAW_PROBE: RefCell<Option<A12DrawProbe>> = const { RefCell::new(None) };
+    // GL-owner only, no atomics, Java JNI roundtrip or per-frame logging.
+    static FRAME_PHASE_PROBE: RefCell<Option<crate::frame_phases::PhaseWindow>> =
+        const { RefCell::new(None) };
 }
 fn a12_draw_sample(linked: bool, steps: usize, native_us: u64, recovery: bool) {
     A12_DRAW_PROBE.with(|probe| {
@@ -4822,6 +4825,7 @@ impl Engine {
         // session. They are used only for the 220ms CRT start transition.
         let (transition_back, transition_front) = self.clear_layers();
         let a12_native_started = Instant::now();
+        let mut frame_phases = crate::frame_phases::FramePhaseSample::default();
         if let Some(session) = self.game.as_mut() {
             // Resume only after the remote has also left its pause menu;
             // LinkPlay::frame holds either core while peer_paused is true.
@@ -4845,7 +4849,11 @@ impl Engine {
                 self.rewind_accum = (self.rewind_accum + dt).min(0.30);
                 while self.rewind_accum >= rewind_period && stepped < 3 {
                     self.rewind_accum -= rewind_period;
-                    if !session.rewind_step() {
+                    let rewind_started = Instant::now();
+                    let rewound = session.rewind_step();
+                    frame_phases.rewind_work_us = frame_phases.rewind_work_us
+                        .saturating_add(rewind_started.elapsed().as_micros() as u64);
+                    if !rewound {
                         self.rewind_accum = 0.0;
                         break;
                     }
@@ -4914,8 +4922,16 @@ impl Engine {
                     // Cable lockstep must not consume emulation time while
                     // the remote frame has not arrived. NEVER invent a solo
                     // frame or perform speculative Run-Ahead on a held link.
-                    if !session.advance(self.buttons, live.turbo,
-                        live.rewind && !session.linked()) {
+                    let advanced = session.advance(self.buttons, live.turbo,
+                        live.rewind && !session.linked());
+                    let timing = session.last_step_timings();
+                    frame_phases.core_us = frame_phases.core_us
+                        .saturating_add(timing.core_us);
+                    frame_phases.rewind_work_us = frame_phases.rewind_work_us
+                        .saturating_add(timing.rewind_work_us);
+                    frame_phases.periodic_battery_us = frame_phases.periodic_battery_us
+                        .saturating_add(timing.periodic_battery_us);
+                    if !advanced {
                         // A waiting mGBA Cable frame is NOT an emulated frame.
                         // Retain at most two frames of debt; only real remote
                         // inputs can advance them later. Never preserve debt
@@ -4949,6 +4965,7 @@ impl Engine {
                         break;
                     }
                     self.perf_emulated = self.perf_emulated.saturating_add(1);
+                    frame_phases.core_steps = frame_phases.core_steps.saturating_add(1);
                     self.game_accum -= period;
                     stepped += 1;
                     let samples = session.take_audio();
@@ -5017,8 +5034,10 @@ impl Engine {
                 && profile.run_ahead_frames > 0 {
                 // The normal frames and their audio are already consumed.
                 // Predicted video never advances the real saved/RA timeline.
+                let speculation_started = Instant::now();
                 session.prepare_runahead(self.buttons, live.turbo,
                     profile.run_ahead_frames);
+                frame_phases.speculative_us = speculation_started.elapsed().as_micros() as u64;
                 if session.runahead_rollback_failed() {
                     // A partially restored speculative core must never tick
                     // or reach any periodic/manual/eject save path. Stop audio
@@ -5047,7 +5066,9 @@ impl Engine {
                     self.select_tap_frames = self.select_tap_frames.saturating_sub(stepped as u8);
                     if self.select_tap_frames == 0 { self.buttons &= !ButtonMask::SELECT; }
                 }
+                let upload_started = Instant::now();
                 self.gpu.upload_game(session.frame());
+                frame_phases.gpu_upload_us = upload_started.elapsed().as_micros() as u64;
                 RUMBLE_STRENGTH.store(
                     if live.rumble && !self.rewind_held {
                         i32::from(session.rumble_strength())
@@ -5055,6 +5076,9 @@ impl Engine {
                     Ordering::Release,
                 );
             }
+            // CPU wall time issuing the GL draw work. This is NOT asynchronous
+            // GPU execution and excludes Android's later eglSwapBuffers.
+            let submit_started = Instant::now();
             self.gpu.fit(self.size);
             self.gpu.begin_frame();
             let mut commands = Vec::new();
@@ -5088,6 +5112,16 @@ impl Engine {
             self.hud.draw(self.born.elapsed().as_millis() as u64, &mut commands);
             self.gpu.draw_list(&commands);
             self.gpu.end_frame(self.size);
+            frame_phases.gpu_submit_us = submit_started.elapsed().as_micros() as u64;
+            frame_phases.native_total_us = a12_native_started.elapsed().as_micros() as u64;
+            FRAME_PHASE_PROBE.with(|probe| {
+                let mut probe = probe.borrow_mut();
+                let window = probe.get_or_insert_with(crate::frame_phases::PhaseWindow::new);
+                if let Some(summary) = window.add(frame_phases) {
+                    // Exactly one log entry per ~5s; never stringify each draw.
+                    crate::game::log_launch_timing(&summary.report());
+                }
+            });
             a12_draw_sample(session.linked() && session.core_kind() == Core::Mgba,
                 stepped, a12_native_started.elapsed().as_micros() as u64,
                 MGBA_CABLE_RECOVERY.load(Ordering::Acquire));
@@ -5111,6 +5145,8 @@ impl Engine {
             return;
         }
 
+        // Shelf mode is not emulation: do not merge idle UI into game phases.
+        FRAME_PHASE_PROBE.with(|probe| *probe.borrow_mut() = None);
         let ms = self.born.elapsed().as_millis() as u64;
         let repeated_letter = if !self.inserted && matches!(self.overlay,ShelfOverlay::None) {
             self.shelves[self.active].tick(ms)
