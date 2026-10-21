@@ -14,6 +14,7 @@ pub struct EmulationProfile {
     pub responsive_pacing: bool,
     pub display_sync_pacing: bool,
     pub hybrid_pacing: bool,
+    pub retroarch_clock_pacing: bool,
     pub run_ahead_frames: u8,
     // U1 pause menus: all are optional and inherit the corresponding
     // global preference until this specific ROM+core is edited.
@@ -33,7 +34,7 @@ impl Default for EmulationProfile {
     fn default() -> Self {
         Self { show_fps: false, show_fps_override: None,
             responsive_pacing: false, display_sync_pacing: false,
-            hybrid_pacing: false, run_ahead_frames: 0,
+            hybrid_pacing: false, retroarch_clock_pacing: false, run_ahead_frames: 0,
             screen_shader: None, screen_bezel: None,
             colour_correction_override: None,
             gb_palettes_override: None, ff_speed_override: None,
@@ -50,6 +51,7 @@ impl EmulationProfile {
             responsive_pacing: settings.responsive_pacing,
             display_sync_pacing: settings.display_sync_pacing,
             hybrid_pacing: settings.hybrid_pacing,
+            retroarch_clock_pacing: settings.retroarch_clock_pacing,
             run_ahead_frames: settings.run_ahead_frames,
             screen_shader: None, screen_bezel: None,
             colour_correction_override: None,
@@ -129,7 +131,11 @@ impl EmulationProfile {
     }
 
     pub fn sanitize(mut self) -> Self {
-        if self.hybrid_pacing {
+        if self.retroarch_clock_pacing {
+            self.responsive_pacing = false;
+            self.display_sync_pacing = false;
+            self.hybrid_pacing = false;
+        } else if self.hybrid_pacing {
             self.responsive_pacing = false;
             self.display_sync_pacing = false;
         } else if !self.responsive_pacing { self.display_sync_pacing = false; }
@@ -151,7 +157,8 @@ impl EmulationProfile {
                 self.show_fps_override = Some(self.show_fps);
             },
             11 => settings::cycle_pacing(&mut self.responsive_pacing,
-                &mut self.display_sync_pacing, &mut self.hybrid_pacing, right),
+                &mut self.display_sync_pacing, &mut self.hybrid_pacing,
+                &mut self.retroarch_clock_pacing, right),
             12 => self.run_ahead_frames =
                 settings::cycle_u8(self.run_ahead_frames, 2, right),
             _ => return false,
@@ -256,8 +263,10 @@ mod tests {
         assert!(changed.change(11, true));
         assert!(changed.hybrid_pacing && !changed.responsive_pacing);
         assert!(changed.change(11, true));
-        assert!(!changed.hybrid_pacing && !changed.responsive_pacing
-            && !changed.display_sync_pacing);
+        assert!(changed.retroarch_clock_pacing && !changed.hybrid_pacing);
+        assert!(changed.change(11, true));
+        assert!(!changed.hybrid_pacing && !changed.retroarch_clock_pacing
+            && !changed.responsive_pacing && !changed.display_sync_pacing);
     }
 
     #[test]
@@ -279,7 +288,7 @@ mod tests {
         assert!(!globals.hybrid_pacing);
         let legacy: EmulationProfile = serde_json::from_str(
             r#"{"responsive_pacing":true,"display_sync_pacing":true}"#).unwrap();
-        assert!(!legacy.hybrid_pacing);
+        assert!(!legacy.hybrid_pacing && !legacy.retroarch_clock_pacing);
     }
 
     #[test]

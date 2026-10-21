@@ -91,7 +91,7 @@ class MainActivity : Activity() {
 
     external fun nativeSurfaceCreated(): Boolean
     external fun nativeSurfaceChanged(width: Int, height: Int)
-    external fun nativeDrawFrame()
+    external fun nativeDrawFrame(vsyncFrameNs: Long)
     // Beta9 optional actual display present timestamp via EGL. Read-only.
     external fun nativeEglPresentationReset()
     external fun nativeEglPresentationTick()
@@ -807,7 +807,7 @@ class MainActivity : Activity() {
                         var a12NativeUs = 0L
                         if (ready) {
                             val beginNativeNs = SystemClock.elapsedRealtimeNanos()
-                            nativeDrawFrame()
+                            nativeDrawFrame(if (displaySyncApplied) latestVsyncFrameNs else 0L)
                             a12NativeUs = (SystemClock.elapsedRealtimeNanos() - beginNativeNs) / 1000L
                             // Notify the existing AudioTrack worker that libretro
                             // may have produced samples. Never block GL on audio.

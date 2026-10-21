@@ -599,6 +599,7 @@ struct Engine {
     requested_uri: Option<String>,
     prepared_rom: Option<String>,
     game_accum: f64,
+    ra_clock: crate::ra_clock_lab::Clock,
     perf_last: Instant,
     perf_rendered: u32,
     perf_emulated: u32,
@@ -970,7 +971,8 @@ impl Engine {
                                "LCD Grid V2", "Grid V2 + GBA Color", "zfast LCD",
                                "LCD1x", "Simpletex + GBA", "AGB-001",
                                "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
-                               "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN"]
+                               "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN",
+                               "RA CLOCK LAB"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
@@ -1112,6 +1114,7 @@ impl Engine {
             requested_uri: None,
             prepared_rom: None,
             game_accum: 0.0,
+            ra_clock: crate::ra_clock_lab::Clock::default(),
             perf_last: now,
             perf_rendered: 0,
             perf_emulated: 0,
@@ -3526,6 +3529,7 @@ impl Engine {
         // timing policy, and discard any prior predictive video/audio frame.
         // The core stays alive; edits take effect on the first resumed frame.
         self.game_accum = 0.0;
+        self.ra_clock.reset();
         AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
     fn reset_game_emulation(&mut self) {
@@ -3880,7 +3884,8 @@ impl Engine {
             8 => if scoped.rumble { 4 } else { 5 },
             9 => if scoped.eject_save { 4 } else { 5 },
             10 => if profile.show_fps { 4 } else { 5 },
-            11 => if profile.hybrid_pacing { 37 }
+            11 => if profile.retroarch_clock_pacing { 43 }
+                else if profile.hybrid_pacing { 37 }
                 else if profile.display_sync_pacing { 14 }
                 else if profile.responsive_pacing { 11 } else { 10 },
             12 => match profile.run_ahead_frames { 1 => 12, 2 => 13, _ => 5 },
@@ -4454,7 +4459,7 @@ impl Engine {
         self.handle(Input::Key(key,true));
         self.menu_repeat_dispatch=false;
     }
-    fn draw(&mut self, mut on_pcm_ready: impl FnMut()) {
+    fn draw(&mut self, vsync_frame_ns: i64, mut on_pcm_ready: impl FnMut()) {
         // Includes Slot-side input/menu/RA/status preparation in "other_us".
         // The enclosing JNI caller's library gate and later EGL swap remain
         // outside the scope; Kotlin times the broader nativeDrawFrame call.
@@ -4520,7 +4525,8 @@ impl Engine {
                     |g| (g.fps, g.core_kind().as_str(), g.linked()));
                 let profile = self.current_emulation();
                 let requested = profile.run_ahead_frames;
-                let pacing_mode = if profile.hybrid_pacing { "sync_lab" }
+                let pacing_mode = if profile.retroarch_clock_pacing { "ra_clock_lab" }
+                    else if profile.hybrid_pacing { "sync_lab" }
                     else if profile.display_sync_pacing { "display_sync" }
                     else if profile.responsive_pacing { "responsive" } else { "standard" };
                 let probe = self.game.as_mut()
@@ -4821,9 +4827,10 @@ impl Engine {
         // Display Sync, but its real core frame budget is separate.
         // Linked sessions keep their prior render/pacing configuration.
         DISPLAY_SYNC.store(self.game.is_some()
-            && (profile.display_sync_pacing || profile.hybrid_pacing)
-            && !(profile.hybrid_pacing && self.game.as_ref()
-                .is_some_and(GameSession::linked)),
+            && (profile.display_sync_pacing || profile.hybrid_pacing
+                || profile.retroarch_clock_pacing)
+            && !((profile.hybrid_pacing || profile.retroarch_clock_pacing)
+                && self.game.as_ref().is_some_and(GameSession::linked)),
             Ordering::Release);
         // Grab clear-cart textures before borrowing the mutable emulator
         // session. They are used only for the 220ms CRT start transition.
@@ -4840,6 +4847,7 @@ impl Engine {
             let mut stepped = 0;
             let mut peer_unplugged = None;
             if self.rewind_held {
+                self.ra_clock.reset();
                 // Rewind is mutually exclusive with forward libretro frames.
                 // Restore up to 3 historical snapshots per render frame and
                 // never pass rewound audio into the normal AudioTrack.
@@ -4882,6 +4890,14 @@ impl Engine {
                 // core frame per callback. No skipped intermediate pictures.
                 // Never affect Link sessions, FF or the existing three modes.
                 let hybrid = profile.hybrid_pacing && !fast && !session.linked();
+                // Only the opt-in mode uses UI VSync instead of GL wall time.
+                let ra_clock = profile.retroarch_clock_pacing && !fast && !session.linked();
+                let ra_elapsed = if ra_clock {
+                    self.ra_clock.sample(vsync_frame_ns, f64::from(dt))
+                } else {
+                    self.ra_clock.reset();
+                    f64::from(dt)
+                };
                 // A11: this is the *same* double-GBA lockstep on both ends,
                 // even for equal ROMs. One late packet must not make gameplay
                 // and audio permanently lose an emulated frame. Restrict
@@ -4895,6 +4911,9 @@ impl Engine {
                 if mgba_cable_pacing {
                     self.game_accum = crate::settings::frame_debt_mgba_cable(
                         self.game_accum, f64::from(dt), period);
+                } else if ra_clock {
+                    self.game_accum = crate::settings::frame_debt_ra_clock(
+                        self.game_accum, ra_elapsed, multiplier, period);
                 } else if hybrid {
                     self.game_accum = crate::settings::frame_debt_hybrid(
                         self.game_accum, f64::from(dt), multiplier, period);
@@ -4914,7 +4933,7 @@ impl Engine {
                 // audio without concealing a latency regression.
                 let frame_limit = if mgba_cable_pacing { 2 }
                     else if fast { usize::from(live.ff_speed) * 4 }
-                    else if hybrid {
+                    else if hybrid || ra_clock {
                         crate::settings::sync_lab_reactivity_first_frame_budget()
                     }
                     else if responsive { 1 } else { 4 };
@@ -5166,6 +5185,8 @@ impl Engine {
             return;
         }
 
+        // Shelf mode clears the opt-in clock between cartridges.
+        self.ra_clock.reset();
         // Shelf mode is not emulation: do not merge idle UI into game phases.
         FRAME_PHASE_PROBE.with(|probe| *probe.borrow_mut() = None);
         let ms = self.born.elapsed().as_millis() as u64;
@@ -6233,6 +6254,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeReloadVisualAssets
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
     mut env: JNIEnv<'_>,
     activity: JObject<'_>,
+    vsync_frame_ns: jni::sys::jlong,
 ) {
     ENGINE.with(|holder| {
         let safe = holder.borrow().as_ref().is_some_and(|e|
@@ -6282,7 +6304,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
             }
         }
         if let Some(engine) = holder.borrow_mut().as_mut() {
-            engine.draw(|| {
+            engine.draw(vsync_frame_ns, || {
                 // One callback per committed core frame maximum; SYNC LAB
                 // itself runs only one real frame per GL callback. Never
                 // invoke Java while holding the native PCM queue mutex.

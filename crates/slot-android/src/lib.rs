@@ -8,6 +8,8 @@ mod recents;
 mod favorites;
 mod selection;
 mod emulation;
+// VSync-clock experiment: host-tested, Android-only active mode.
+mod ra_clock_lab;
 mod pokemon_flash;
 // F11: compile and EXECUTE F7's pure-Rust durability and ordering tests on
 // the Linux CI host. Android production shares this exact implementation.

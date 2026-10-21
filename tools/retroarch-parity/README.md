@@ -105,6 +105,10 @@ and original RA configuration should remain local unless explicitly examined.
 
 ## Frame pacing reproduction is explicitly in scope
 
+Stage 2A: see [RA CLOCK LAB experiment](RA_CLOCK_LAB.md). This opt-in
+VSync-clock experiment is **not** the requested Vulkan backend itself.
+
+
 **RetroArch-like frame pacing is a first-class goal**, alongside Run-Ahead.
 See [FRAME_PACING_PARITY.md](FRAME_PACING_PARITY.md) for the inspected
 RetroArch Android EGL/runloop/audio clock vs slot GLSurfaceView/Choreographer

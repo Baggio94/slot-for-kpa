@@ -211,6 +211,8 @@ pub struct Settings {
     // real steps per VSync callback. Legacy beta7 flag remains readable.
     // Old JSON stays on its prior mode because serde(default) makes this false.
     pub hybrid_pacing: bool,
+    // Experimental timestamp-sourced mode, false for every legacy profile.
+    pub retroarch_clock_pacing: bool,
     pub run_ahead_frames: u8,
     // Opt-in only. Old builds enabled these by default; the migration
     // below must not interpret those historical booleans as explicit consent.
@@ -243,6 +245,7 @@ impl Default for Settings {
             turbo: true, eject_save: true,
             show_fps: false, responsive_pacing: false,
             display_sync_pacing: false, hybrid_pacing: false,
+            retroarch_clock_pacing: false,
             run_ahead_frames: 0,
             show_wifi: false, show_bluetooth: false, show_integrations: false,
             time_format: TimeFormat::TwentyFourHour,
@@ -310,7 +313,11 @@ impl Settings {
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
                 if s.gb_palette >= 48 { s.gb_palette = 1; }
                 if !REWIND_SPEEDS.contains(&s.rewind_speed) { s.rewind_speed = 2; }
-                if s.hybrid_pacing {
+                if s.retroarch_clock_pacing {
+                    s.responsive_pacing = false;
+                    s.display_sync_pacing = false;
+                    s.hybrid_pacing = false;
+                } else if s.hybrid_pacing {
                     s.responsive_pacing = false;
                     s.display_sync_pacing = false;
                 } else if !s.responsive_pacing { s.display_sync_pacing = false; }
@@ -416,7 +423,8 @@ impl Settings {
             9 => self.eject_save = !self.eject_save,
             10 => self.show_fps = !self.show_fps,
             11 => cycle_pacing(&mut self.responsive_pacing,
-                &mut self.display_sync_pacing, &mut self.hybrid_pacing, right),
+                &mut self.display_sync_pacing, &mut self.hybrid_pacing,
+                &mut self.retroarch_clock_pacing, right),
             12 => self.run_ahead_frames = cycle_u8(self.run_ahead_frames, 2, right),
             13 => self.show_wifi = !self.show_wifi,
             14 => self.show_bluetooth = !self.show_bluetooth,
@@ -431,19 +439,20 @@ impl Settings {
             .unwrap_or(GbPalette::DEFAULT).core_name()
     }
 }
-/// Keep old three choices unchanged; reuse the experimental fourth slot
-/// for beta8 SYNC LAB. The serialized flag is backward compatible.
-/// Mutually exclusive flags preserve all previously persisted profiles.
+/// Existing modes preserve their serialized meaning; the fifth is opt-in.
 pub fn cycle_pacing(
-    responsive: &mut bool, display_sync: &mut bool, hybrid: &mut bool, right: bool
+    responsive: &mut bool, display_sync: &mut bool, hybrid: &mut bool,
+    ra_clock: &mut bool, right: bool
 ) {
-    let modes = [(false, false, false), (true, false, false),
-        (true, true, false), (false, false, true)];
-    let current = modes.iter().position(|&(r, d, h)|
-        r == *responsive && d == *display_sync && h == *hybrid).unwrap_or(0);
+    let modes = [(false, false, false, false), (true, false, false, false),
+        (true, true, false, false), (false, false, true, false),
+        (false, false, false, true)];
+    let current = modes.iter().position(|&(r, d, h, v)|
+        r == *responsive && d == *display_sync && h == *hybrid && v == *ra_clock)
+        .unwrap_or(0);
     let next = if right { (current + 1) % modes.len() }
         else { (current + modes.len() - 1) % modes.len() };
-    (*responsive, *display_sync, *hybrid) = modes[next];
+    (*responsive, *display_sync, *hybrid, *ra_clock) = modes[next];
 }
 
 /// SYNC LAB (experimental): the Display Sync implementation discards
@@ -453,6 +462,12 @@ pub fn cycle_pacing(
 /// No synthesized PCM, no duplicated simulation, no unbounded lag after
 /// Android suspension. Backlog is deliberately visible in diagnostics.
 pub fn frame_debt_hybrid(prev: f64, elapsed: f64, speed: f64, period: f64) -> f64 {
+    (prev + elapsed * speed).clamp(0.0, period * 4.0)
+}
+
+/// RA CLOCK LAB accumulates fractional GBA time using Choreographer VSync
+/// deltas, not jitter between GL callbacks. Still one real frame per callback.
+pub fn frame_debt_ra_clock(prev: f64, elapsed: f64, speed: f64, period: f64) -> f64 {
     (prev + elapsed * speed).clamp(0.0, period * 4.0)
 }
 
@@ -805,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_pacing_cycles_four_modes_without_changing_legacy_defaults() {
+    fn frame_pacing_cycles_five_modes_without_changing_legacy_defaults() {
         let mut s = Settings::default();
         assert!(!s.responsive_pacing && !s.display_sync_pacing);
         assert!(s.change(11, true));
@@ -815,15 +830,22 @@ mod tests {
         assert!(s.change(11, true));
         assert!(s.hybrid_pacing && !s.responsive_pacing && !s.display_sync_pacing);
         assert!(s.change(11, true));
-        assert!(!s.responsive_pacing && !s.display_sync_pacing && !s.hybrid_pacing);
+        assert!(s.retroarch_clock_pacing && !s.hybrid_pacing);
+        assert!(s.change(11, true));
+        assert!(!s.retroarch_clock_pacing && !s.responsive_pacing && !s.display_sync_pacing && !s.hybrid_pacing);
         assert!(s.change(11, false));
-        assert!(s.hybrid_pacing && !s.responsive_pacing && !s.display_sync_pacing);
+        assert!(s.retroarch_clock_pacing && !s.hybrid_pacing);
+        assert!(s.change(11, false));
+        assert!(s.hybrid_pacing && !s.retroarch_clock_pacing);
         let old: Settings = serde_json::from_str(r#"{"responsive_pacing":true}"#).unwrap();
         assert!(old.responsive_pacing && !old.display_sync_pacing && !old.hybrid_pacing);
         let old_sync: Settings = serde_json::from_str(
             r#"{"responsive_pacing":true,"display_sync_pacing":true}"#).unwrap();
         assert!(old_sync.display_sync_pacing && !old_sync.hybrid_pacing);
         assert!(Settings::first_install_defaults().hybrid_pacing);
+        assert!(!Settings::first_install_defaults().retroarch_clock_pacing);
+        let legacy: Settings = serde_json::from_str(r#"{\"hybrid_pacing\":true}"#).unwrap();
+        assert!(legacy.hybrid_pacing && !legacy.retroarch_clock_pacing);
     }
 
     #[test]
