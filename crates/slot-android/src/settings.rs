@@ -844,7 +844,7 @@ mod tests {
         assert!(old_sync.display_sync_pacing && !old_sync.hybrid_pacing);
         assert!(Settings::first_install_defaults().hybrid_pacing);
         assert!(!Settings::first_install_defaults().retroarch_clock_pacing);
-        let legacy: Settings = serde_json::from_str(r#"{\"hybrid_pacing\":true}"#).unwrap();
+        let legacy: Settings = serde_json::from_str(r#"{"hybrid_pacing":true}"#).unwrap();
         assert!(legacy.hybrid_pacing && !legacy.retroarch_clock_pacing);
     }
 
