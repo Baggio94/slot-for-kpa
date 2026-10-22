@@ -282,7 +282,8 @@ jobs:
           assert mgba["revision"] == "7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6"
           assert gpsp["revision"] == "5819380c2ffb0900219d700a382ee68c464ebb99"
           assert {"flash-bank-survives-mask.patch",
-                  "gb-dmg-palette-follows-option.patch"} <= set(mgba["patches"])
+                  "gb-dmg-palette-follows-option.patch",
+                  "543a19758-mbc2-sram-bank.patch"} <= set(mgba["patches"])
           assert "patch-mgba-active-sram.py" in mgba["patches"]
           assert "aw-session-reset.patch" in gpsp["patches"]
           assert "patch-gpsp-backend-diagnostic.py" in gpsp["patches"]
