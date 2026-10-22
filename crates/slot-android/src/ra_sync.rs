@@ -170,6 +170,71 @@ fn bessel_i0(x: f64) -> f64 {
     sum
 }
 
+/// Largest Frame Delay: half a 60Hz refresh, as RetroArch advises.
+pub const FRAME_DELAY_MAX_NS: i64 = 8_000_000;
+/// Time kept free before the next refresh for GPU work and the swap.
+const FRAME_DELAY_SAFETY_NS: i64 = 4_000_000;
+/// Refreshes measured before the delay may grow (1s at 60Hz).
+const FRAME_DELAY_WINDOW: u32 = 60;
+const FRAME_DELAY_STEP_NS: i64 = 1_000_000;
+const FRAME_DELAY_BACKOFF_NS: i64 = 2_000_000;
+
+/// RetroArch's automatic Frame Delay. Each display callback waits this long
+/// after VSync before reading the buttons and running the core, so input is
+/// sampled later for the same picture. The delay grows by 1ms every second
+/// while the slowest frame still leaves `FRAME_DELAY_SAFETY_NS` free, shrinks
+/// at once when the frames get slower, and backs off 2ms (then holds for 3s)
+/// whenever a refresh is missed.
+#[derive(Default, Debug)]
+pub struct FrameDelay {
+    delay_ns: i64,
+    worst_cost_ns: i64,
+    frames: u32,
+    /// Windows left before the delay may grow again after a miss.
+    hold: u32,
+}
+
+impl FrameDelay {
+    pub fn reset(&mut self) { *self = Self::default(); }
+
+    pub fn delay_ns(&self) -> i64 { self.delay_ns }
+
+    /// `cost_ns`: time from VSync to the end of the frame's work, minus the
+    /// delay itself. `missed`: a refresh went by without a frame.
+    pub fn observe(&mut self, cost_ns: i64, missed: bool, period_ns: i64) {
+        if missed {
+            self.delay_ns = (self.delay_ns - FRAME_DELAY_BACKOFF_NS).max(0);
+            self.hold = 3;
+            self.frames = 0;
+            self.worst_cost_ns = 0;
+            return;
+        }
+        self.worst_cost_ns = self.worst_cost_ns.max(cost_ns.max(0));
+        self.frames += 1;
+        if self.frames < FRAME_DELAY_WINDOW { return; }
+        let room = (period_ns - self.worst_cost_ns - FRAME_DELAY_SAFETY_NS).max(0);
+        let cap = FRAME_DELAY_MAX_NS.min(period_ns / 2).min(room);
+        if self.delay_ns > cap {
+            self.delay_ns = cap;
+        } else if self.hold == 0 {
+            self.delay_ns = (self.delay_ns + FRAME_DELAY_STEP_NS).min(cap);
+        } else {
+            self.hold -= 1;
+        }
+        self.frames = 0;
+        self.worst_cost_ns = 0;
+    }
+}
+
+/// CLOCK_MONOTONIC in nanoseconds: the clock of Choreographer's
+/// frameTimeNanos (System.nanoTime) on Android.
+pub fn monotonic_ns() -> i64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: valid out-pointer; CLOCK_MONOTONIC is always available.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as i64 * 1_000_000_000 + ts.tv_nsec as i64
+}
+
 /// Output frames per input frame for a core whose audio is produced at
 /// `core_rate` per emulated second while running at `display_hz` frames per
 /// real second, before Dynamic Rate Control.
@@ -336,6 +401,45 @@ mod tests {
         assert!((out.len() as f64 / 2.0 - 48_000.0).abs() < 2.0);
         let alias = level_at(&out, 48_000.0 - 30_000.0, 48_000.0);
         assert!(alias < 60.0, "30kHz folded back at level {alias}");
+    }
+
+    const P60: i64 = 16_666_667;
+
+    #[test]
+    fn ra_sync_frame_delay_grows_only_into_real_headroom() {
+        let mut d = FrameDelay::default();
+        // A light GBA frame: 3ms of work leaves room for the full 8ms.
+        for _ in 0..FRAME_DELAY_WINDOW * 20 { d.observe(3_000_000, false, P60); }
+        assert_eq!(d.delay_ns(), FRAME_DELAY_MAX_NS);
+        // Run-Ahead 2 makes frames 9ms: shrink at once to 16.7 - 9 - 4 ms.
+        for _ in 0..FRAME_DELAY_WINDOW { d.observe(9_000_000, false, P60); }
+        assert_eq!(d.delay_ns(), P60 - 9_000_000 - 4_000_000);
+        // Frames heavier than the whole budget get no delay at all.
+        for _ in 0..FRAME_DELAY_WINDOW { d.observe(15_000_000, false, P60); }
+        assert_eq!(d.delay_ns(), 0);
+    }
+
+    #[test]
+    fn ra_sync_frame_delay_backs_off_and_holds_after_a_missed_refresh() {
+        let mut d = FrameDelay::default();
+        for _ in 0..FRAME_DELAY_WINDOW * 10 { d.observe(2_000_000, false, P60); }
+        assert_eq!(d.delay_ns(), FRAME_DELAY_MAX_NS);
+        d.observe(0, true, P60);
+        assert_eq!(d.delay_ns(), FRAME_DELAY_MAX_NS - 2_000_000);
+        // Held for three windows, then free to grow again.
+        for _ in 0..FRAME_DELAY_WINDOW * 3 { d.observe(2_000_000, false, P60); }
+        assert_eq!(d.delay_ns(), FRAME_DELAY_MAX_NS - 2_000_000);
+        for _ in 0..FRAME_DELAY_WINDOW { d.observe(2_000_000, false, P60); }
+        assert_eq!(d.delay_ns(), FRAME_DELAY_MAX_NS - 1_000_000);
+    }
+
+    #[test]
+    fn ra_sync_frame_delay_never_exceeds_half_a_fast_refresh() {
+        let mut d = FrameDelay::default();
+        let p120 = 8_333_333;
+        for _ in 0..FRAME_DELAY_WINDOW * 20 { d.observe(0, false, p120); }
+        assert_eq!(d.delay_ns(), (p120 - 4_000_000).min(p120 / 2));
+        assert!(monotonic_ns() > 0);
     }
 
     #[test]

@@ -15,6 +15,13 @@ panel: VSync on, "Sync to Exact Content Framerate" off, Dynamic Rate Control on.
   half-full buffer, as RetroArch's `audio_rate_control_delta = 0.005`.
   This absorbs the +0.46% speed-up and the drift between the audio and
   display clocks, which is what caused underruns in the other modes.
+- **Frame Delay (automatic):** while the display clocks the core, each
+  callback waits after VSync before reading the buttons, so the frame shown
+  at the next refresh uses fresher input (RetroArch `video_frame_delay_auto`).
+  The delay starts at 0, grows by 1ms per second up to 8ms while the slowest
+  frame still leaves 4ms before the next refresh, shrinks at once when frames
+  get heavier (Run-Ahead, gpSP JIT flushes), and drops 2ms after any missed
+  refresh. It is off in menus, fast-forward, rewind and Link sessions.
 - **Fallbacks:** if the panel is more than 5% away from the core rate
   (RetroArch's `audio_max_timing_skew`, e.g. 90/120Hz), the mode uses the
   RA CLOCK LAB clock but keeps resampling and rate control. Link sessions keep
@@ -22,7 +29,8 @@ panel: VSync on, "Sync to Exact Content Framerate" off, Dynamic Rate Control on.
 
 Run-Ahead, saves, RTC, achievements and the cores are unchanged.
 The 1Hz diagnostics line reports `pacing_mode=retroarch` and
-`ra_sync_rate_adjust` (1.00000 = buffer exactly half full).
+`ra_sync_rate_adjust` (1.00000 = buffer exactly half full) and
+`frame_delay_ms` (the automatic Frame Delay in use).
 
 ## Acceptance test (hardware required)
 
@@ -32,3 +40,5 @@ Pass criteria: fewer SurfaceFlinger gaps >25ms than SYNC LAB, emulated FPS
 ≈ display FPS, zero AudioTrack underruns after the first second,
 `ra_sync_rate_adjust` staying within 0.995..1.005, and no perceived change in
 pitch or control response. Then repeat with gpSP and Run-Ahead 1/2.
+`frame_delay_ms` should settle between 4 and 8 with Run-Ahead OFF and must
+not make the SurfaceFlinger gap count worse than with it pinned at 0.

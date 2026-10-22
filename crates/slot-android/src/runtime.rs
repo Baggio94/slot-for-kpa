@@ -613,6 +613,12 @@ struct Engine {
     ra_resampler: crate::ra_sync::Resampler,
     ra_resampled: Vec<i16>,
     ra_adjust: f64,
+    /// RETROARCH mode's automatic Frame Delay; `frame_delay_used_ns` is the
+    /// wait applied in this callback and `frame_delay_missed` records that a
+    /// refresh went by without a frame.
+    frame_delay: crate::ra_sync::FrameDelay,
+    frame_delay_used_ns: Option<i64>,
+    frame_delay_missed: bool,
     perf_last: Instant,
     perf_rendered: u32,
     perf_emulated: u32,
@@ -1133,6 +1139,9 @@ impl Engine {
             ra_resampler: crate::ra_sync::Resampler::default(),
             ra_resampled: Vec::with_capacity(4096),
             ra_adjust: 1.0,
+            frame_delay: crate::ra_sync::FrameDelay::default(),
+            frame_delay_used_ns: None,
+            frame_delay_missed: false,
             perf_last: now,
             perf_rendered: 0,
             perf_emulated: 0,
@@ -3423,6 +3432,31 @@ impl Engine {
         }
     }
 
+    /// The Frame Delay to apply in this callback: only while a solo game
+    /// runs at 1x in RETROARCH mode with the display clocking the core.
+    fn frame_delay_wanted(&self, vsync_frame_ns: i64) -> Option<i64> {
+        let session = self.game.as_ref()?;
+        let display_hz = f64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire)) / 1000.0;
+        let clocked = vsync_frame_ns > 0
+            && matches!(self.overlay, ShelfOverlay::None)
+            && !self.exiting_screen && !self.rewind_held
+            && !self.ff_held && !self.ff_latched && !session.linked()
+            && self.current_emulation().retroarch_sync_pacing
+            && crate::ra_sync::display_can_clock_core(display_hz, session.fps);
+        clocked.then(|| self.frame_delay.delay_ns())
+    }
+
+    /// Called once the frame is drawn: feeds this callback's cost (VSync to
+    /// now, minus the delay) back into the automatic Frame Delay.
+    fn observe_frame_delay(&mut self, vsync_frame_ns: i64) {
+        let missed = std::mem::take(&mut self.frame_delay_missed);
+        let Some(delay) = self.frame_delay_used_ns.take() else { return };
+        let millihz = i64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire));
+        if millihz <= 0 { return; }
+        let cost = crate::ra_sync::monotonic_ns() - vsync_frame_ns - delay;
+        self.frame_delay.observe(cost, missed, 1_000_000_000_000 / millihz);
+    }
+
     fn current_emulation(&self) -> EmulationProfile {
         let mut profile = self.game_emulation
             .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
@@ -3556,6 +3590,7 @@ impl Engine {
         self.game_accum = 0.0;
         self.ra_clock.reset();
         self.ra_sync_steps.reset();
+        self.frame_delay.reset();
         AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
     fn reset_game_emulation(&mut self) {
@@ -4587,12 +4622,13 @@ impl Engine {
                     .map(|g| g.take_runahead_probe()).unwrap_or_default();
                 *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
                     Some(format!(
-                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} runahead_second_instance_calls={} ra_sync_rate_adjust={:.5} linked={linked}",
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} runahead_second_instance_calls={} ra_sync_rate_adjust={:.5} frame_delay_ms={:.1} linked={linked}",
                         self.game_accum * 1000.0,
                         self.perf_step0, self.perf_step1, self.perf_step_multi,
                         requested, probe.calls, probe.snapshots_us,
                         probe.speculative_us, probe.restores_us, probe.max_us,
-                        probe.failures, probe.second_instance_calls, self.ra_adjust));
+                        probe.failures, probe.second_instance_calls, self.ra_adjust,
+                        self.frame_delay.delay_ns() as f64 / 1e6));
                 if show_fps {
                     *PERF_STATUS.lock().unwrap_or_else(|e|e.into_inner()) =
                         Some(format!("EMU {emu:.1}/{target:.1} | DISPLAY {render:.1} | CATCHUP {catchup:.0}%"));
@@ -4619,6 +4655,13 @@ impl Engine {
             }
         }
 
+        // RetroArch Frame Delay: wait after VSync before reading the buttons,
+        // so the core runs on fresher input for the same refresh.
+        self.frame_delay_used_ns = self.frame_delay_wanted(vsync_frame_ns);
+        if let Some(delay) = self.frame_delay_used_ns {
+            let wait = (vsync_frame_ns + delay - crate::ra_sync::monotonic_ns()).min(delay);
+            if wait > 0 { std::thread::sleep(Duration::from_nanos(wait as u64)); }
+        }
         let events: Vec<Input> = INPUT
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -5017,6 +5060,7 @@ impl Engine {
                 if ra_display_clocked {
                     // No fractional debt: run exactly the refreshes that elapsed.
                     let refreshes = self.ra_sync_steps.steps(vsync_frame_ns, display_hz);
+                    self.frame_delay_missed |= refreshes > 1;
                     self.game_accum = period * refreshes as f64;
                 } else if mgba_cable_pacing {
                     self.ra_sync_steps.reset();
@@ -5307,6 +5351,7 @@ impl Engine {
         // Shelf mode clears the opt-in clock between cartridges.
         self.ra_clock.reset();
         self.ra_sync_steps.reset();
+        self.frame_delay.reset();
         // Shelf mode is not emulation: do not merge idle UI into game phases.
         FRAME_PHASE_PROBE.with(|probe| *probe.borrow_mut() = None);
         let ms = self.born.elapsed().as_millis() as u64;
@@ -6512,6 +6557,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
                     let _ = env.exception_clear();
                 }
             });
+            engine.observe_frame_delay(vsync_frame_ns);
         }
         let now_safe = holder.borrow().as_ref().is_some_and(|e|
             may_apply_library_update(e.game.is_some(), e.inserted, e.awaiting_game));
