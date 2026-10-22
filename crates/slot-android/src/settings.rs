@@ -213,6 +213,9 @@ pub struct Settings {
     pub hybrid_pacing: bool,
     // Experimental timestamp-sourced mode, false for every legacy profile.
     pub retroarch_clock_pacing: bool,
+    // RETROARCH: one core frame per display refresh with dynamic audio rate
+    // control. Opt-in; false for every legacy profile.
+    pub retroarch_sync_pacing: bool,
     pub run_ahead_frames: u8,
     // Opt-in only. Old builds enabled these by default; the migration
     // below must not interpret those historical booleans as explicit consent.
@@ -246,6 +249,7 @@ impl Default for Settings {
             show_fps: false, responsive_pacing: false,
             display_sync_pacing: false, hybrid_pacing: false,
             retroarch_clock_pacing: false,
+            retroarch_sync_pacing: false,
             run_ahead_frames: 0,
             show_wifi: false, show_bluetooth: false, show_integrations: false,
             time_format: TimeFormat::TwentyFourHour,
@@ -313,7 +317,12 @@ impl Settings {
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
                 if s.gb_palette >= 48 { s.gb_palette = 1; }
                 if !REWIND_SPEEDS.contains(&s.rewind_speed) { s.rewind_speed = 2; }
-                if s.retroarch_clock_pacing {
+                if s.retroarch_sync_pacing {
+                    s.retroarch_clock_pacing = false;
+                    s.responsive_pacing = false;
+                    s.display_sync_pacing = false;
+                    s.hybrid_pacing = false;
+                } else if s.retroarch_clock_pacing {
                     s.responsive_pacing = false;
                     s.display_sync_pacing = false;
                     s.hybrid_pacing = false;
@@ -424,7 +433,7 @@ impl Settings {
             10 => self.show_fps = !self.show_fps,
             11 => cycle_pacing(&mut self.responsive_pacing,
                 &mut self.display_sync_pacing, &mut self.hybrid_pacing,
-                &mut self.retroarch_clock_pacing, right),
+                &mut self.retroarch_clock_pacing, &mut self.retroarch_sync_pacing, right),
             12 => self.run_ahead_frames = cycle_u8(self.run_ahead_frames, 2, right),
             13 => self.show_wifi = !self.show_wifi,
             14 => self.show_bluetooth = !self.show_bluetooth,
@@ -439,20 +448,22 @@ impl Settings {
             .unwrap_or(GbPalette::DEFAULT).core_name()
     }
 }
-/// Existing modes preserve their serialized meaning; the fifth is opt-in.
+/// Existing modes preserve their serialized meaning; the fifth and sixth
+/// (RA CLOCK LAB, RETROARCH) are opt-in.
 pub fn cycle_pacing(
     responsive: &mut bool, display_sync: &mut bool, hybrid: &mut bool,
-    ra_clock: &mut bool, right: bool
+    ra_clock: &mut bool, ra_sync: &mut bool, right: bool
 ) {
-    let modes = [(false, false, false, false), (true, false, false, false),
-        (true, true, false, false), (false, false, true, false),
-        (false, false, false, true)];
-    let current = modes.iter().position(|&(r, d, h, v)|
-        r == *responsive && d == *display_sync && h == *hybrid && v == *ra_clock)
+    let modes = [(false, false, false, false, false), (true, false, false, false, false),
+        (true, true, false, false, false), (false, false, true, false, false),
+        (false, false, false, true, false), (false, false, false, false, true)];
+    let current = modes.iter().position(|&(r, d, h, v, a)|
+        r == *responsive && d == *display_sync && h == *hybrid && v == *ra_clock
+            && a == *ra_sync)
         .unwrap_or(0);
     let next = if right { (current + 1) % modes.len() }
         else { (current + modes.len() - 1) % modes.len() };
-    (*responsive, *display_sync, *hybrid, *ra_clock) = modes[next];
+    (*responsive, *display_sync, *hybrid, *ra_clock, *ra_sync) = modes[next];
 }
 
 /// SYNC LAB (experimental): the Display Sync implementation discards
@@ -820,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_pacing_cycles_five_modes_without_changing_legacy_defaults() {
+    fn frame_pacing_cycles_six_modes_without_changing_legacy_defaults() {
         let mut s = Settings::default();
         assert!(!s.responsive_pacing && !s.display_sync_pacing);
         assert!(s.change(11, true));
@@ -832,7 +843,12 @@ mod tests {
         assert!(s.change(11, true));
         assert!(s.retroarch_clock_pacing && !s.hybrid_pacing);
         assert!(s.change(11, true));
-        assert!(!s.retroarch_clock_pacing && !s.responsive_pacing && !s.display_sync_pacing && !s.hybrid_pacing);
+        assert!(s.retroarch_sync_pacing && !s.retroarch_clock_pacing);
+        assert!(s.change(11, true));
+        assert!(!s.retroarch_sync_pacing && !s.retroarch_clock_pacing && !s.responsive_pacing
+            && !s.display_sync_pacing && !s.hybrid_pacing);
+        assert!(s.change(11, false));
+        assert!(s.retroarch_sync_pacing && !s.retroarch_clock_pacing);
         assert!(s.change(11, false));
         assert!(s.retroarch_clock_pacing && !s.hybrid_pacing);
         assert!(s.change(11, false));
@@ -846,6 +862,8 @@ mod tests {
         assert!(!Settings::first_install_defaults().retroarch_clock_pacing);
         let legacy: Settings = serde_json::from_str(r#"{"hybrid_pacing":true}"#).unwrap();
         assert!(legacy.hybrid_pacing && !legacy.retroarch_clock_pacing);
+        assert!(!legacy.retroarch_sync_pacing);
+        assert!(!Settings::first_install_defaults().retroarch_sync_pacing);
     }
 
     #[test]

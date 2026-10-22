@@ -120,6 +120,9 @@ class MainActivity : Activity() {
     external fun nativeCanRefreshLibrary(): Boolean
     external fun nativeAudioClockCounters(): LongArray
     external fun nativeAudioSampleRate(): Int
+    // RETROARCH pacing: panel refresh (mHz) and AudioTrack fill for rate control.
+    external fun nativeSetDisplayRefresh(millihz: Int)
+    external fun nativeSetAudioOutputDepth(queuedFrames: Int, capacityFrames: Int)
     external fun nativeAudioQueuedShorts(): Int
     external fun nativeSetMgbaLinkRecoveryEnabled(enabled: Boolean)
     external fun nativeDisplaySyncEnabled(): Boolean
@@ -275,10 +278,17 @@ class MainActivity : Activity() {
         latestVsyncSequence++
         uiVsyncCallbacks.incrementAndGet()
     }
+    // RETROARCH pacing clocks the core from the panel, so it needs the
+    // current refresh rate (it can change with the display mode).
+    private fun publishDisplayRefresh() {
+        val hz = display?.refreshRate ?: 0f
+        nativeSetDisplayRefresh(if (hz > 0f) (hz * 1000f).toInt() else 0)
+    }
     private fun updateDisplaySyncMode() {
         if (!::view.isInitialized) return
         val enabled = resumed && nativeIsPlaying() && nativeDisplaySyncEnabled()
         if (enabled == displaySyncApplied) return
+        if (enabled) publishDisplayRefresh()
         // Diagnostic-only event: a switch from continuous GL rendering to
         // Choreographer during the first 100ms of gameplay could explain
         // an isolated startup hitch. Do not change frame scheduling here.
@@ -1496,6 +1506,7 @@ class MainActivity : Activity() {
                         // Preserve the validated low-latency legacy AudioTrack buffer.
                         val bufferBytes = maxOf(16384, minBytes * 2)
                         audioBufferBytes = bufferBytes
+                        nativeSetAudioOutputDepth(0, bufferBytes / 4)
                         Log.i(TAG, "Audio diagnostic: rate=$wanted Hz, " +
                             "minBuffer=$minBytes bytes, allocated=$bufferBytes bytes")
                         player = AudioTrack.Builder()
@@ -1607,6 +1618,8 @@ class MainActivity : Activity() {
                         minimumOutputFrames = minOf(minimumOutputFrames, depthBefore)
                         maximumOutputFrames = maxOf(maximumOutputFrames, depthBefore)
                         outputDepthSamples++
+                        // RETROARCH dynamic rate control reads this fill level.
+                        nativeSetAudioOutputDepth(depthBefore.toInt(), audioBufferBytes / 4)
                     }
                     // WRITE_BLOCKING can still return a positive *partial*
                     // count (e.g. on a route change). Never silently discard
@@ -2787,6 +2800,7 @@ class MainActivity : Activity() {
             nativeExternalReturn()
         }
         resumed = true
+        publishDisplayRefresh()
         synchronized(raSmartForeground) { raSmartForeground.notifyAll() }
         carouselDozing = false
         view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY

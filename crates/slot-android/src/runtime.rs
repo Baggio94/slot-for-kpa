@@ -198,6 +198,11 @@ static AUDIO_FIFO_DROPPED_SHORTS: AtomicU64 = AtomicU64::new(0);
 static AUDIO: Mutex<VecDeque<i16>> = Mutex::new(VecDeque::new());
 static PLAYING: AtomicBool = AtomicBool::new(false);
 static SAMPLE_RATE: AtomicI32 = AtomicI32::new(0);
+// RETROARCH pacing inputs from Kotlin: the panel refresh rate (mHz) and the
+// AudioTrack queue depth/capacity in frames, sampled by the audio worker.
+static DISPLAY_REFRESH_MILLIHZ: AtomicI32 = AtomicI32::new(0);
+static AUDIO_OUT_QUEUED_FRAMES: AtomicI32 = AtomicI32::new(0);
+static AUDIO_OUT_CAPACITY_FRAMES: AtomicI32 = AtomicI32::new(0);
 static DISPLAY_SYNC: AtomicBool = AtomicBool::new(false);
 // Updated by the GL owner after an entirely settled, fully preloaded shelf frame.
 // Kotlin may switch the idle carousel to requestRender without affecting games.
@@ -600,6 +605,10 @@ struct Engine {
     prepared_rom: Option<String>,
     game_accum: f64,
     ra_clock: crate::ra_clock_lab::Clock,
+    ra_sync_steps: crate::ra_sync::VsyncSteps,
+    ra_resampler: crate::ra_sync::Resampler,
+    ra_resampled: Vec<i16>,
+    ra_adjust: f64,
     perf_last: Instant,
     perf_rendered: u32,
     perf_emulated: u32,
@@ -973,7 +982,7 @@ impl Engine {
                                "LCD1x", "Simpletex + GBA", "AGB-001",
                                "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
                                "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN",
-                               "RA CLOCK LAB"]
+                               "RA CLOCK LAB", "RETROARCH"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
@@ -1116,6 +1125,10 @@ impl Engine {
             prepared_rom: None,
             game_accum: 0.0,
             ra_clock: crate::ra_clock_lab::Clock::default(),
+            ra_sync_steps: crate::ra_sync::VsyncSteps::default(),
+            ra_resampler: crate::ra_sync::Resampler::default(),
+            ra_resampled: Vec::with_capacity(4096),
+            ra_adjust: 1.0,
             perf_last: now,
             perf_rendered: 0,
             perf_emulated: 0,
@@ -3531,6 +3544,7 @@ impl Engine {
         // The core stays alive; edits take effect on the first resumed frame.
         self.game_accum = 0.0;
         self.ra_clock.reset();
+        self.ra_sync_steps.reset();
         AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
     fn reset_game_emulation(&mut self) {
@@ -3885,7 +3899,8 @@ impl Engine {
             8 => if scoped.rumble { 4 } else { 5 },
             9 => if scoped.eject_save { 4 } else { 5 },
             10 => if profile.show_fps { 4 } else { 5 },
-            11 => if profile.retroarch_clock_pacing { 43 }
+            11 => if profile.retroarch_sync_pacing { 44 }
+                else if profile.retroarch_clock_pacing { 43 }
                 else if profile.hybrid_pacing { 37 }
                 else if profile.display_sync_pacing { 14 }
                 else if profile.responsive_pacing { 11 } else { 10 },
@@ -4527,7 +4542,8 @@ impl Engine {
                     |g| (g.fps, g.core_kind().as_str(), g.linked()));
                 let profile = self.current_emulation();
                 let requested = profile.run_ahead_frames;
-                let pacing_mode = if profile.retroarch_clock_pacing { "ra_clock_lab" }
+                let pacing_mode = if profile.retroarch_sync_pacing { "retroarch" }
+                    else if profile.retroarch_clock_pacing { "ra_clock_lab" }
                     else if profile.hybrid_pacing { "sync_lab" }
                     else if profile.display_sync_pacing { "display_sync" }
                     else if profile.responsive_pacing { "responsive" } else { "standard" };
@@ -4535,12 +4551,12 @@ impl Engine {
                     .map(|g| g.take_runahead_probe()).unwrap_or_default();
                 *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
                     Some(format!(
-                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} linked={linked}",
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} ra_sync_rate_adjust={:.5} linked={linked}",
                         self.game_accum * 1000.0,
                         self.perf_step0, self.perf_step1, self.perf_step_multi,
                         requested, probe.calls, probe.snapshots_us,
                         probe.speculative_us, probe.restores_us, probe.max_us,
-                        probe.failures));
+                        probe.failures, self.ra_adjust));
                 if show_fps {
                     *PERF_STATUS.lock().unwrap_or_else(|e|e.into_inner()) =
                         Some(format!("EMU {emu:.1}/{target:.1} | DISPLAY {render:.1} | CATCHUP {catchup:.0}%"));
@@ -4703,7 +4719,13 @@ impl Engine {
                         self.insert_started.map_or(0, |at| at.elapsed().as_millis())
                     ));
                     self.buttons = 0;
-                    SAMPLE_RATE.store(session.sample_rate, Ordering::Release);
+                    // RETROARCH resamples to 48kHz; open AudioTrack there once.
+                    let ra_sync = self.current_emulation().retroarch_sync_pacing
+                        && !session.linked();
+                    SAMPLE_RATE.store(if ra_sync { crate::ra_sync::OUTPUT_RATE }
+                        else { session.sample_rate }, Ordering::Release);
+                    self.ra_resampler.reset();
+                    self.ra_sync_steps.reset();
                     self.game = Some(session);
                     // Focus and Recents were persisted during core
                     // preparation; avoid synchronous IO/rebuilding the
@@ -4830,8 +4852,9 @@ impl Engine {
         // Linked sessions keep their prior render/pacing configuration.
         DISPLAY_SYNC.store(self.game.is_some()
             && (profile.display_sync_pacing || profile.hybrid_pacing
-                || profile.retroarch_clock_pacing)
-            && !((profile.hybrid_pacing || profile.retroarch_clock_pacing)
+                || profile.retroarch_clock_pacing || profile.retroarch_sync_pacing)
+            && !((profile.hybrid_pacing || profile.retroarch_clock_pacing
+                || profile.retroarch_sync_pacing)
                 && self.game.as_ref().is_some_and(GameSession::linked)),
             Ordering::Release);
         // Grab clear-cart textures before borrowing the mutable emulator
@@ -4850,6 +4873,7 @@ impl Engine {
             let mut peer_unplugged = None;
             if self.rewind_held {
                 self.ra_clock.reset();
+                self.ra_sync_steps.reset();
                 // Rewind is mutually exclusive with forward libretro frames.
                 // Restore up to 3 historical snapshots per render frame and
                 // never pass rewound audio into the normal AudioTrack.
@@ -4892,8 +4916,44 @@ impl Engine {
                 // core frame per callback. No skipped intermediate pictures.
                 // Never affect Link sessions, FF or the existing three modes.
                 let hybrid = profile.hybrid_pacing && !fast && !session.linked();
-                // Only the opt-in mode uses UI VSync instead of GL wall time.
-                let ra_clock = profile.retroarch_clock_pacing && !fast && !session.linked();
+                // RETROARCH: the display refresh clocks the core whenever the
+                // panel is within RetroArch's 5% timing skew of the core rate.
+                // Audio is always resampled to 48kHz in this mode (also while
+                // fast-forwarding) so the AudioTrack is never rebuilt.
+                let ra_sync = profile.retroarch_sync_pacing && !session.linked();
+                let display_hz = f64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire)) / 1000.0;
+                let ra_display_clocked = ra_sync && !fast
+                    && crate::ra_sync::display_can_clock_core(display_hz, session.fps);
+                let wanted_rate = if ra_sync { crate::ra_sync::OUTPUT_RATE } else { session.sample_rate };
+                let current_rate = SAMPLE_RATE.load(Ordering::Acquire);
+                if current_rate != 0 && current_rate != wanted_rate {
+                    // Mode switched mid-game: never play PCM at the wrong rate.
+                    SAMPLE_RATE.store(wanted_rate, Ordering::Release);
+                    AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    AUDIO_OUT_QUEUED_FRAMES.store(0, Ordering::Release);
+                    self.ra_resampler.reset();
+                }
+                let ra_ratio = if ra_sync {
+                    let core_rate = f64::from(session.sample_rate);
+                    let base = if ra_display_clocked {
+                        crate::ra_sync::base_ratio(core_rate, session.fps, display_hz)
+                    } else { f64::from(crate::ra_sync::OUTPUT_RATE) / core_rate };
+                    self.ra_adjust = if fast { 1.0 } else {
+                        let fifo_frames = AUDIO.lock().unwrap_or_else(|e| e.into_inner()).len() / 2;
+                        let track = AUDIO_OUT_QUEUED_FRAMES.load(Ordering::Acquire).max(0) as usize;
+                        let capacity = AUDIO_OUT_CAPACITY_FRAMES.load(Ordering::Acquire).max(0) as usize;
+                        crate::ra_sync::rate_control_adjust(fifo_frames + track, capacity)
+                    };
+                    base * self.ra_adjust
+                } else {
+                    self.ra_adjust = 1.0;
+                    self.ra_resampler.reset();
+                    1.0
+                };
+                // Only the opt-in modes use UI VSync instead of GL wall time.
+                // RETROARCH falls back to it when the panel cannot clock the core.
+                let ra_clock = (profile.retroarch_clock_pacing || (ra_sync && !ra_display_clocked))
+                    && !fast && !session.linked();
                 let ra_elapsed = if ra_clock {
                     self.ra_clock.sample(vsync_frame_ns, f64::from(dt))
                 } else {
@@ -4910,7 +4970,12 @@ impl Engine {
                 // Preserve a little more fractional game time in the
                 // opt-in DISPLAY SYNC mode ONLY. No extra libretro frames
                 // can run in any single callback; Beta 4 catch-up stays gone.
-                if mgba_cable_pacing {
+                if ra_display_clocked {
+                    // No fractional debt: run exactly the refreshes that elapsed.
+                    let refreshes = self.ra_sync_steps.steps(vsync_frame_ns, display_hz);
+                    self.game_accum = period * refreshes as f64;
+                } else if mgba_cable_pacing {
+                    self.ra_sync_steps.reset();
                     self.game_accum = crate::settings::frame_debt_mgba_cable(
                         self.game_accum, f64::from(dt), period);
                 } else if ra_clock {
@@ -4933,7 +4998,8 @@ impl Engine {
                 // strictly one committed frame per solo SYNC LAB callback.
                 // Keep the beta13 causal PCM diagnostics to investigate
                 // audio without concealing a latency regression.
-                let frame_limit = if mgba_cable_pacing { 2 }
+                let frame_limit = if ra_display_clocked { 2 }
+                    else if mgba_cable_pacing { 2 }
                     else if fast { usize::from(live.ff_speed) * 4 }
                     else if hybrid || ra_clock {
                         crate::settings::sync_lab_reactivity_first_frame_budget()
@@ -5018,8 +5084,13 @@ impl Engine {
                             // Extracted, host-tested copy of the beta8 FIFO
                             // policy. The observed dropped-old count never
                             // changes ordering, capacity or playback timing.
+                            let pcm: &[i16] = if ra_sync {
+                                self.ra_resampled.clear();
+                                self.ra_resampler.process(&samples, ra_ratio, &mut self.ra_resampled);
+                                &self.ra_resampled
+                            } else { &samples };
                             let dropped = crate::audio_pcm::enqueue_pcm_bounded(
-                                &mut audio, &samples, 96_000);
+                                &mut audio, pcm, 96_000);
                             if dropped > 0 {
                                 AUDIO_FIFO_OVERFLOW_EVENTS.fetch_add(1, Ordering::Relaxed);
                                 AUDIO_FIFO_DROPPED_SHORTS.fetch_add(dropped as u64, Ordering::Relaxed);
@@ -5030,8 +5101,8 @@ impl Engine {
                         // Wake AudioTrack immediately after committed PCM
                         // exists, so its writer can run during speculation.
                         // VSync, input and saved-state ownership are unchanged.
-                        if early_pcm_wake_allowed(hybrid, profile.run_ahead_frames, fast,
-                            session.linked(), true) {
+                        if (ra_sync && !fast) || early_pcm_wake_allowed(hybrid,
+                            profile.run_ahead_frames, fast, session.linked(), true) {
                             on_pcm_ready();
                         }
                     }
@@ -5041,6 +5112,8 @@ impl Engine {
                     // speculative Run-Ahead frame ordering.
                     session.recycle_audio(samples);
                 }
+                // RETROARCH never carries fractional time between refreshes.
+                if ra_display_clocked { self.game_accum = 0.0; }
             }
             // Observe whether sync-lab callbacks had sufficient accumulated
             // game time to run a committed frame, and how often the one-frame
@@ -5189,6 +5262,7 @@ impl Engine {
 
         // Shelf mode clears the opt-in clock between cartridges.
         self.ra_clock.reset();
+        self.ra_sync_steps.reset();
         // Shelf mode is not emulation: do not merge idle UI into game phases.
         FRAME_PHASE_PROBE.with(|probe| *probe.borrow_mut() = None);
         let ms = self.born.elapsed().as_millis() as u64;
@@ -6194,6 +6268,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSurfaceCreated(
             engine.last = Instant::now();
             engine.game_accum = 0.0;
             engine.ra_clock.reset();
+            engine.ra_sync_steps.reset();
             crate::game::log_launch_timing(&format!(
                 "Graphics recovered in {}ms; retained UI pixels={} bytes",
                 started.elapsed().as_millis(), engine.gpu.recovery_bytes()));
@@ -6254,6 +6329,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePresentationResume
             engine.last = Instant::now();
             engine.game_accum = 0.0;
             engine.ra_clock.reset();
+            engine.ra_sync_steps.reset();
             engine.perf_last = Instant::now();
             engine.perf_rendered = 0;
             engine.perf_emulated = 0;
@@ -6880,6 +6956,23 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioQueuedShorts(
 ) -> jint {
     AUDIO.lock().unwrap_or_else(|e| e.into_inner())
         .len().min(i32::MAX as usize) as jint
+}
+
+/// RETROARCH pacing: the panel refresh rate, in mHz (0 = unknown).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetDisplayRefresh(
+    _env: *mut c_void, _this: *mut c_void, millihz: jint,
+) { DISPLAY_REFRESH_MILLIHZ.store(millihz.max(0), Ordering::Release); }
+
+/// RETROARCH pacing: AudioTrack frames waiting to play and the size of its
+/// buffer, sampled by the audio worker before each write. Read-only for
+/// every other mode.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetAudioOutputDepth(
+    _env: *mut c_void, _this: *mut c_void, queued_frames: jint, capacity_frames: jint,
+) {
+    AUDIO_OUT_QUEUED_FRAMES.store(queued_frames.max(0), Ordering::Release);
+    AUDIO_OUT_CAPACITY_FRAMES.store(capacity_frames.max(0), Ordering::Release);
 }
 
 #[unsafe(no_mangle)]
