@@ -396,7 +396,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 117] = [
+const MENU_TEXT: [&str; 118] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -436,7 +436,7 @@ const MENU_TEXT: [&str; 117] = [
     "GB Palettes",                      // 36
     "Rewind",                           // 37
     "X/Y Buttons",                       // 38
-    "Auto Save on Eject",               // 39
+    "Save State on Eject",              // 39, original Slot 1.8.1 name
     "",                                 // 40 retired
     "",                                 // 41 retired
     "",                                 // 42 retired
@@ -514,7 +514,12 @@ const MENU_TEXT: [&str; 117] = [
     "DOWNLOADING...",                    // 114
     "AVAILABLE",                         // 115
     "Time Format",                       // 116, Its-TroyM PR #2
+    "Load State on Insert",              // 117, original Slot 1.8.1
 ];
+
+/// Gameplay page labels and the Settings keys they change, in row order.
+const GAMEPLAY_ROWS: [usize; 7] = [27, 28, 37, 38, 30, 39, 117];
+const GAMEPLAY_KEYS: [usize; 7] = [4, 5, 6, 7, 8, 9, 29];
 
 const INTERFACE_ROWS: [usize; 4] = [63, 64, 65, 116];
 const INTERFACE_KEYS: [usize; 4] = [13, 14, 15, 28];
@@ -2515,9 +2520,9 @@ impl Engine {
                             },
                             ShelfOverlay::PauseGameplaySettings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::PauseGameplaySettings {
-                                    row: move_menu_row(row,code,6),
+                                    row: move_menu_row(row,code,GAMEPLAY_KEYS.len()),
                                 },
-                                21 | 22 => self.change_game_screen_or_gameplay(row+4,code==22),
+                                21 | 22 => self.change_game_screen_or_gameplay(GAMEPLAY_KEYS[row],code==22),
                                 97 => self.overlay = ShelfOverlay::PauseSettings { row: 1 },
                                 _ => {}
                             },
@@ -2588,6 +2593,8 @@ impl Engine {
                         return;
                     }
                     if code == 105 {
+                        // Fast Forward Off (original Slot 1.8.1): R2 does nothing.
+                        if pressed && self.live_game_options().ff_speed == 0 { return; }
                         if pressed {
                             if self.ff_latched {
                                 self.ff_latched = false;
@@ -2786,9 +2793,9 @@ impl Engine {
                             },
                             ShelfOverlay::GameplaySettings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::GameplaySettings {
-                                    row: move_menu_row(row, code, 6),
+                                    row: move_menu_row(row, code, GAMEPLAY_KEYS.len()),
                                 },
-                                21 | 22 => self.change_setting(row + 4, code == 22),
+                                21 | 22 => self.change_setting(GAMEPLAY_KEYS[row], code == 22),
                                 97 => self.overlay = ShelfOverlay::Settings { row: 2 },
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
@@ -3201,7 +3208,7 @@ impl Engine {
             let resume_preference = NEXT_RESUME_MODE.swap(-1, Ordering::AcqRel);
             let wants_state = match resume_preference {
                 0 => false, 1 => true,
-                _ => effective_settings.eject_save && !self.fresh_launch,
+                _ => effective_settings.load_state_on_insert() && !self.fresh_launch,
             };
             match GameSession::open(Path::new(local), &core_file, &storage,
                 core, platform, wants_state,
@@ -3895,7 +3902,7 @@ impl Engine {
             2 => if scoped.shader_for(self.current_cart_platform()).includes_gba_color() {42}
                  else if scoped.colour_for(self.current_cart_platform()) {4}else{5},
             3 => if scoped.gb_palettes { 4 } else { 5 },
-            4 => match scoped.ff_speed { 2 => 0, 3 => 1, 4 => 2, _ => 3 },
+            4 => match scoped.ff_speed { 0 => 5, 2 => 0, 3 => 1, 4 => 2, _ => 3 },
             5 => if scoped.ff_sound { 4 } else { 5 },
             6 => if !scoped.rewind { 5 } else {
                 match scoped.rewind_speed { 1 => 38, 2 => 39, 3 => 40, _ => 41 }
@@ -3903,6 +3910,7 @@ impl Engine {
             7 => if scoped.turbo { 15 } else { 16 },
             8 => if scoped.rumble { 4 } else { 5 },
             9 => if scoped.eject_save { 4 } else { 5 },
+            29 => if scoped.load_state_on_insert() { 4 } else { 5 },
             10 => if profile.show_fps { 4 } else { 5 },
             11 => if profile.retroarch_sync_pacing { 44 }
                 else if profile.retroarch_clock_pacing { 43 }
@@ -4213,8 +4221,8 @@ impl Engine {
                 self.draw_setting_values(row,Self::screen_keys(platform),out);
             }
             ShelfOverlay::GameplaySettings { row } => {
-                self.draw_original_style_menu(33, &[27, 28, 37, 38, 30, 39], row, out);
-                self.draw_setting_values(row, &[4, 5, 6, 7, 8, 9], out);
+                self.draw_original_style_menu(33, &GAMEPLAY_ROWS, row, out);
+                self.draw_setting_values(row, &GAMEPLAY_KEYS, out);
             }
             ShelfOverlay::About { row } => {
                 // The native KONKR sticker stays intact, shifted up to make room
@@ -4308,8 +4316,8 @@ impl Engine {
                 self.draw_setting_values(row,&keys,out);
             }
             ShelfOverlay::PauseGameplaySettings { row } => {
-                self.draw_original_style_menu(33, &[27,28,37,38,30,39], row, out);
-                self.draw_setting_values(row,&[4,5,6,7,8,9],out);
+                self.draw_original_style_menu(33, &GAMEPLAY_ROWS, row, out);
+                self.draw_setting_values(row, &GAMEPLAY_KEYS, out);
             }
             ShelfOverlay::Multiplayer => self.draw_multiplayer(out),
             ShelfOverlay::Core => {
@@ -4637,7 +4645,7 @@ impl Engine {
             ShelfOverlay::PauseSettings { row } => (13u8, row, self.pause_settings_rows().len()),
             ShelfOverlay::PauseScreenSettings { row } =>
                 (14u8, row, self.pause_screen_rows().len()),
-            ShelfOverlay::PauseGameplaySettings { row } => (15u8, row, 6usize),
+            ShelfOverlay::PauseGameplaySettings { row } => (15u8, row, GAMEPLAY_KEYS.len()),
             ShelfOverlay::Multiplayer => (11u8, 0, 0usize),
             ShelfOverlay::Settings { row } => (4u8, row, 5usize),
             ShelfOverlay::GeneralSettings { row } =>
@@ -4649,7 +4657,7 @@ impl Engine {
             ShelfOverlay::ScreenSettings { row } => (5u8, row, 3usize),
             ShelfOverlay::ScreenSystemSettings { platform,row } =>
                 (16u8,row,Self::screen_rows(platform).len()),
-            ShelfOverlay::GameplaySettings { row } => (6u8, row, 6usize),
+            ShelfOverlay::GameplaySettings { row } => (6u8, row, GAMEPLAY_KEYS.len()),
             _ => (0, 0, 0),
         };
         if kind != self.menu_seen {
@@ -4874,6 +4882,14 @@ impl Engine {
         let bezel=self.game_bezel(); // resolved before mutably borrowing GameSession
         let live=self.live_game_options(); // Copy, zero allocations on 60/120Hz callback
         FF_AUDIO_ENABLED.store(live.ff_sound,Ordering::Release);
+        if live.ff_speed == 0 && (self.ff_held || self.ff_latched) {
+            // Fast Forward was set to Off while held or latched: a 0x
+            // multiplier would freeze the game, so drop back to 1x.
+            self.ff_held = false;
+            self.ff_latched = false;
+            AUDIO_SPEED_PERMILLE.store(1000, Ordering::Release);
+            self.hud.set_ff(FfState::Off);
+        }
         // Android's frame callback changes GLSurfaceView renderMode only when
         // an active game explicitly selected DISPLAY SYNC. No engine work or
         // GL resource ownership ever moves away from the GL render thread.

@@ -130,7 +130,8 @@ fn cycle_rewind_setting(enabled: &mut bool, speed: &mut u8, right: bool) {
     if *enabled { *speed = REWIND_SPEEDS[next-1]; }
 }
 
-pub const SPEEDS: [u8; 4] = [2, 3, 4, 6];
+/// Original Slot 1.8.1 (#123): 0 means Fast Forward Off.
+pub const SPEEDS: [u8; 5] = [0, 2, 3, 4, 6];
 const NAME: &str = "slot-konkr-settings.json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +203,11 @@ pub struct Settings {
     // X/Y Buttons: true = Slot's original Turbo, false = Y=A and X=B.
     // Existing persisted turbo=false now selects the alternative A/B mapping.
     pub turbo: bool, pub eject_save: bool,
+    /// Original Slot 1.8.1 "Load State on Insert" (#130). None until the
+    /// row is first changed: older installs keep loading their state on
+    /// insert exactly when they save one on eject, as before.
+    #[serde(default)]
+    pub auto_load: Option<bool>,
     // Optional one-line FPS display and latency settings.
     pub show_fps: bool, pub responsive_pacing: bool,
     // Choreographer-driven display callbacks, with a single real core
@@ -245,7 +251,7 @@ impl Default for Settings {
             bezel_gba: Bezel::None, bezel_gbc: Bezel::Default, bezel_gb: Bezel::Default,
             gb_palettes: false, gb_palette: 1, rewind: true,
             rewind_speed: 2,
-            turbo: true, eject_save: true,
+            turbo: true, eject_save: true, auto_load: None,
             show_fps: false, responsive_pacing: false,
             display_sync_pacing: false, hybrid_pacing: false,
             retroarch_clock_pacing: false,
@@ -351,6 +357,9 @@ impl Settings {
         // Settings.json that silently resets every preference.
         slot_store::atomic_write(&dir.join(NAME), &bytes)
     }
+    pub fn load_state_on_insert(&self) -> bool {
+        self.auto_load.unwrap_or(self.eject_save)
+    }
     pub fn shader_for(&self, platform: slot_store::Platform)->Shader {
         match platform {
             slot_store::Platform::Gba=>self.shader_gba,
@@ -418,13 +427,15 @@ impl Settings {
             3 => self.gb_palettes = !self.gb_palettes,
             4 => {
                 let at = SPEEDS.iter().position(|x| *x == self.ff_speed).unwrap_or(0);
-                self.ff_speed = SPEEDS[if right { (at + 1) % 4 } else { (at + 3) % 4 }];
+                let n = SPEEDS.len();
+                self.ff_speed = SPEEDS[if right { (at + 1) % n } else { (at + n - 1) % n }];
             }
             5 => self.ff_sound = !self.ff_sound,
             6 => cycle_rewind_setting(&mut self.rewind, &mut self.rewind_speed, right),
             7 => self.turbo = !self.turbo,
             8 => self.rumble = !self.rumble,
             9 => self.eject_save = !self.eject_save,
+            29 => self.auto_load = Some(!self.load_state_on_insert()),
             10 => self.show_fps = !self.show_fps,
             11 => cycle_pacing(&mut self.responsive_pacing,
                 &mut self.display_sync_pacing, &mut self.hybrid_pacing,
@@ -1010,7 +1021,10 @@ mod tests {
         let mut s = Settings::default();
         s.change(0, false); assert_eq!(s.shader_gba, Shader::Dot);
         s.change(1, false); assert_eq!(s.shader_gb, Shader::Simpletex);
+        // 2x wraps left to Off (original Slot 1.8.1), then back to 6x.
+        s.change(4, false); assert_eq!(s.ff_speed, 0);
         s.change(4, false); assert_eq!(s.ff_speed, 6);
+        s.change(4, true); assert_eq!(s.ff_speed, 0);
         s.change(4, true); assert_eq!(s.ff_speed, 2);
         for i in [2, 3, 5, 7, 8, 9] { assert!(s.change(i, true)); }
         for _ in 0..3 { assert!(s.change(6,true)); } // 2x -> 3x -> 5x -> OFF
@@ -1019,6 +1033,30 @@ mod tests {
         assert!(s.change(10, true) && s.show_fps);
         assert!(s.change(11, true) && s.responsive_pacing);
         assert!(s.change(12, true) && s.run_ahead_frames == 1);
+    }
+    #[test]
+    fn load_state_on_insert_follows_eject_until_changed() {
+        // Older installs: inserting loads a state exactly when ejecting saves one.
+        let old: Settings = serde_json::from_str(r#"{"eject_save":false}"#).unwrap();
+        assert_eq!(old.auto_load, None);
+        assert!(!old.load_state_on_insert());
+        let mut s = Settings::default();
+        assert!(s.load_state_on_insert());
+        // Once changed, the two rows are independent.
+        assert!(s.change(29, true));
+        assert_eq!(s.auto_load, Some(false));
+        assert!(s.change(9, true));
+        assert!(!s.eject_save && !s.load_state_on_insert());
+        assert!(s.change(29, true));
+        assert!(s.load_state_on_insert() && !s.eject_save);
+    }
+    #[test]
+    fn fast_forward_off_survives_a_round_trip() {
+        let mut s = Settings::default();
+        s.ff_speed = 0;
+        let json = serde_json::to_vec(&s).unwrap();
+        let back: Settings = serde_json::from_slice(&json).unwrap();
+        assert_eq!(back.ff_speed, 0);
     }
     #[test]
     fn dev13_json_migrates_without_wiping_preferences() {
