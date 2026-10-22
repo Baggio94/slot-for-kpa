@@ -14,9 +14,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // Experimental opt-in RA CLOCK LAB. No GLES backend or default changes.
-        versionCode = 154
-        versionName = "1.2.3-beta16-ra-clock-lab"
+        // 1.2.3 release candidate: Frame Pacing NATIVE / RESPONSIVE.
+        versionCode = 163
+        versionName = "1.2.3-rc1"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
