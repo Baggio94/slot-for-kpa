@@ -1,4 +1,11 @@
-# RETROARCH pacing — opt-in sixth Frame pacing mode
+# RETROARCH pacing — the Frame Pacing of slot.
+
+Frame Pacing has two options, both built on this mode: **NATIVE** (default,
+the swap-paced loop below) and **RESPONSIVE** (the Choreographer loop, about
+9ms less lag, a little less smooth). The older modes (STANDARD, RESPONSIVE,
+DISPLAY SYNC, SYNC LAB, RA CLOCK LAB) are migrated to NATIVE when settings
+and per-game profiles load; their code paths remain only for Link sessions,
+which keep their own pacing.
 
 Reproduces the RetroArch defaults that matter for smoothness on a fixed 60Hz
 panel: VSync on, "Sync to Exact Content Framerate" off, Dynamic Rate Control on.
@@ -31,20 +38,20 @@ panel: VSync on, "Sync to Exact Content Framerate" off, Dynamic Rate Control on.
   running ahead on every frame (and avoids gpSP's JIT flush on every frame).
   The Run-Ahead guards (Pokémon FLASH1M, SMA4, Link) still apply, and a
   failed rollback quarantines the session exactly like Run-Ahead.
-- **Swap-paced loop (experimental):** by default each frame starts on an
-  Android Choreographer VSync and is handed to the GL thread. RetroArch
+- **NATIVE, the swap-paced loop:** RESPONSIVE starts each frame on an
+  Android Choreographer VSync and hands it to the GL thread. RetroArch
   instead loops on its own: run one frame, draw it, swap, and the blocking
-  swap waits for the display. The same APK can run that loop, selected with
-  a development launch extra (kept across restarts):
-  `adb shell am start -S -n fyi.slot.konkr/.MainActivity --es slot_ra_loop swap`
-  (`vsync` selects the Choreographer loop; `swap` is the default). GLSurfaceView then renders continuously, every call
-  runs exactly one core frame (a late swap slows the game rather than
-  bursting; a swap that did not wait runs nothing), and the refresh rate is
-  measured over runs of 60 on-time swaps. Like RetroArch's GPU Hard Sync,
-  the loop waits for the GPU (glFinish) before each swap: without it the
-  KONKR compositor waited on our unfinished buffer and every frame reached
-  the screen one refresh later. Frame Delay is off in this loop,
-  since nothing marks the VSync. The diagnostics line reports `ra_loop`.
+  swap waits for the display. NATIVE does the same: GLSurfaceView renders
+  continuously, every call runs exactly one core frame (a late swap slows the
+  game rather than bursting; a swap that did not wait runs nothing), and the
+  refresh rate is measured over runs of 60 on-time swaps. Like RetroArch's GPU
+  Hard Sync, the loop waits for the GPU (glFinish) before each swap: without
+  it the KONKR compositor waited on our unfinished buffer and every frame
+  reached the screen one refresh later. Frame Delay is off in this loop,
+  since nothing marks the VSync. The diagnostics line reports `ra_loop`
+  (`swap` or `vsync`). KONKR, Wario Land 4, mGBA, Run-Ahead OFF, 120s:
+  NATIVE 1 present interval over 25ms and 81.5ms desired-to-present,
+  RESPONSIVE 12 and 72ms, RetroArch 2-4 and 87ms.
 - **Fallbacks:** if the panel is more than 5% away from the core rate
   (RetroArch's `audio_max_timing_skew`, e.g. 90/120Hz), the mode uses the
   RA CLOCK LAB clock but keeps resampling and rate control. Link sessions keep

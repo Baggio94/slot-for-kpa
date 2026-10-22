@@ -204,12 +204,10 @@ static DISPLAY_REFRESH_MILLIHZ: AtomicI32 = AtomicI32::new(0);
 static AUDIO_OUT_QUEUED_FRAMES: AtomicI32 = AtomicI32::new(0);
 static AUDIO_OUT_CAPACITY_FRAMES: AtomicI32 = AtomicI32::new(0);
 static DISPLAY_SYNC: AtomicBool = AtomicBool::new(false);
-// RETROARCH pacing loop chosen in Kotlin (development launch extra): false
-// renders on each Choreographer VSync, true runs RetroArch's own loop where
-// the blocking buffer swap paces the core. RA_SWAP_ELIGIBLE: a solo game in
-// RETROARCH mode is running, so Kotlin may switch to that loop.
+// Frame Pacing NATIVE for the running solo game: Kotlin renders
+// continuously and the blocking buffer swap paces the core (RetroArch's own
+// loop). False (RESPONSIVE, menus, Link) renders on Choreographer VSyncs.
 static RA_SWAP_LOOP: AtomicBool = AtomicBool::new(false);
-static RA_SWAP_ELIGIBLE: AtomicBool = AtomicBool::new(false);
 // Updated by the GL owner after an entirely settled, fully preloaded shelf frame.
 // Kotlin may switch the idle carousel to requestRender without affecting games.
 static CAROUSEL_QUIET: AtomicBool = AtomicBool::new(false);
@@ -996,7 +994,7 @@ impl Engine {
                                "LCD1x", "Simpletex + GBA", "AGB-001",
                                "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
                                "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN",
-                               "RA CLOCK LAB", "RETROARCH"]
+                               "RA CLOCK LAB", "RETROARCH", "NATIVE"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
@@ -3949,11 +3947,7 @@ impl Engine {
             8 => if scoped.rumble { 4 } else { 5 },
             9 => if scoped.eject_save { 4 } else { 5 },
             10 => if profile.show_fps { 4 } else { 5 },
-            11 => if profile.retroarch_sync_pacing { 44 }
-                else if profile.retroarch_clock_pacing { 43 }
-                else if profile.hybrid_pacing { 37 }
-                else if profile.display_sync_pacing { 14 }
-                else if profile.responsive_pacing { 11 } else { 10 },
+            11 => if profile.responsive_loop { 11 } else { 45 },
             12 => match profile.run_ahead_frames { 1 => 12, 2 => 13, _ => 5 },
             13 => if self.settings.show_wifi { 4 } else { 5 },
             14 => if self.settings.show_bluetooth { 4 } else { 5 },
@@ -4952,7 +4946,7 @@ impl Engine {
                 || profile.retroarch_sync_pacing)
                 && self.game.as_ref().is_some_and(GameSession::linked)),
             Ordering::Release);
-        RA_SWAP_ELIGIBLE.store(profile.retroarch_sync_pacing
+        RA_SWAP_LOOP.store(profile.retroarch_sync_pacing && !profile.responsive_loop
             && self.game.as_ref().is_some_and(|session| !session.linked()),
             Ordering::Release);
         // Grab clear-cart textures before borrowing the mutable emulator
@@ -7084,18 +7078,11 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetDisplayRefresh(
     _env: *mut c_void, _this: *mut c_void, millihz: jint,
 ) { DISPLAY_REFRESH_MILLIHZ.store(millihz.max(0), Ordering::Release); }
 
-/// RETROARCH pacing loop: true runs RetroArch's swap-paced loop (Kotlin
-/// renders continuously), false renders on each Choreographer VSync.
+/// Frame Pacing NATIVE: the running solo game wants the swap-paced loop.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetRaSwapLoop(
-    _env: *mut c_void, _this: *mut c_void, enabled: jboolean,
-) { RA_SWAP_LOOP.store(enabled != 0, Ordering::Release); }
-
-/// A solo game runs in RETROARCH mode, so the swap-paced loop may be used.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRaSwapLoopEligible(
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRaSwapLoop(
     _env: *mut c_void, _this: *mut c_void,
-) -> jboolean { if RA_SWAP_ELIGIBLE.load(Ordering::Acquire) { 1 } else { 0 } }
+) -> jboolean { if RA_SWAP_LOOP.load(Ordering::Acquire) { 1 } else { 0 } }
 
 /// RETROARCH pacing: AudioTrack frames waiting to play and the size of its
 /// buffer, sampled by the audio worker before each write. Read-only for

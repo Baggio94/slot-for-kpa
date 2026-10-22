@@ -126,9 +126,8 @@ class MainActivity : Activity() {
     external fun nativeAudioQueuedShorts(): Int
     external fun nativeSetMgbaLinkRecoveryEnabled(enabled: Boolean)
     external fun nativeDisplaySyncEnabled(): Boolean
-    // RETROARCH pacing loop: swap-paced (RetroArch's own loop) or VSync callbacks.
-    external fun nativeSetRaSwapLoop(enabled: Boolean)
-    external fun nativeRaSwapLoopEligible(): Boolean
+    // Frame Pacing NATIVE: the game wants the swap-paced loop (RetroArch's own).
+    external fun nativeRaSwapLoop(): Boolean
     external fun nativeAudioSpeedPermille(): Int
     external fun nativeFastAudioSupported(supported: Boolean)
     external fun nativeReadAudioInto(samples: ShortArray): Int
@@ -241,9 +240,8 @@ class MainActivity : Activity() {
     private lateinit var shelfStatus: SlotStatusIndicators
     private var lastPerfPoll = 0L
     @Volatile private var displaySyncApplied = false
-    // RETROARCH swap-paced loop: render continuously and let the blocking
-    // buffer swap pace the core, as RetroArch does. Development launch extra.
-    private var raSwapLoopPreferred = false
+    // Frame Pacing NATIVE: render continuously and let the blocking buffer
+    // swap pace the core, as RetroArch does.
     @Volatile private var raSwapLoopApplied = false
     @Volatile private var latestVsyncFrameNs = 0L
     // Beta10 read-only Choreographer delivery telemetry (UI thread).
@@ -295,8 +293,7 @@ class MainActivity : Activity() {
     private fun updateDisplaySyncMode() {
         if (!::view.isInitialized) return
         val enabled = resumed && nativeIsPlaying() && nativeDisplaySyncEnabled()
-        val swapLoop = enabled && raSwapLoopPreferred && !view.ownsScheduler &&
-            nativeRaSwapLoopEligible()
+        val swapLoop = enabled && !view.ownsScheduler && nativeRaSwapLoop()
         if (enabled == displaySyncApplied && swapLoop == raSwapLoopApplied) return
         if (enabled) publishDisplayRefresh()
         // Diagnostic-only event: a switch from continuous GL rendering to
@@ -951,14 +948,6 @@ class MainActivity : Activity() {
             presenterPrefs.edit().putString("development_presenter", requestedPresenter).apply()
         }
         val controlledEgl = presenterPrefs.getString("development_presenter", "glsurfaceview") == "controlled-egl"
-        val requestedRaLoop = intent.getStringExtra("slot_ra_loop")
-        if (requestedRaLoop in setOf("swap", "vsync")) {
-            presenterPrefs.edit().putString("development_ra_loop", requestedRaLoop).apply()
-        }
-        raSwapLoopPreferred = !controlledEgl &&
-            presenterPrefs.getString("development_ra_loop", "swap") == "swap"
-        nativeSetRaSwapLoop(raSwapLoopPreferred)
-        Log.i(TAG, "RETROARCH loop: " + if (raSwapLoopPreferred) "swap-paced (experimental)" else "vsync callbacks")
         Log.i(TAG, "Slot presenter: " + if (controlledEgl) "controlled-egl (experimental)" else "glsurfaceview (reference)")
         view = if (controlledEgl) ControlledEglPresenter(this, renderer,
             beforeFrame = { timestamp -> recordVsync(timestamp) },

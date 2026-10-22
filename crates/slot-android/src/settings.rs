@@ -215,8 +215,12 @@ pub struct Settings {
     // Experimental timestamp-sourced mode, false for every legacy profile.
     pub retroarch_clock_pacing: bool,
     // RETROARCH: one core frame per display refresh with dynamic audio rate
-    // control. Opt-in; false for every legacy profile.
+    // control. Every profile is migrated to it on load (see migrate_pacing).
     pub retroarch_sync_pacing: bool,
+    // Frame Pacing: false = NATIVE (RetroArch's swap-paced loop), true =
+    // RESPONSIVE (Choreographer VSync loop, a little less lag, a little less
+    // smooth).
+    pub responsive_loop: bool,
     pub run_ahead_frames: u8,
     // Opt-in only. Old builds enabled these by default; the migration
     // below must not interpret those historical booleans as explicit consent.
@@ -250,7 +254,9 @@ impl Default for Settings {
             show_fps: false, responsive_pacing: false,
             display_sync_pacing: false, hybrid_pacing: false,
             retroarch_clock_pacing: false,
-            retroarch_sync_pacing: false,
+            // Every pacing mode loads as RETROARCH (migrate_pacing), so
+            // this baseline only keeps a saved profile equal to itself.
+            retroarch_sync_pacing: true, responsive_loop: false,
             run_ahead_frames: 0,
             show_wifi: false, show_bluetooth: false, show_integrations: false,
             time_format: TimeFormat::TwentyFourHour,
@@ -269,12 +275,10 @@ impl Settings {
         settings.shader_gba=Shader::Lcd3x;
         settings.shader_gbc=Shader::Lcd3x;
         settings.shader_gb=Shader::Lcd3x;
-        // v1.2.2 RC: on-device Wario Land 4 tests found SYNC LAB stable
-        // without Run-Ahead, while Run-Ahead audio remains a 1.2.3 task.
-        // Fresh installs only: never change existing saved user choices.
-        settings.responsive_pacing=false;
-        settings.display_sync_pacing=false;
-        settings.hybrid_pacing=true;
+        // Frame Pacing NATIVE: RetroArch's loop, smoother than RetroArch
+        // itself on the KONKR (1.2.3 beta22 captures).
+        settings.retroarch_sync_pacing=true;
+        settings.responsive_loop=false;
         settings.run_ahead_frames=0;
         settings
     }
@@ -318,19 +322,9 @@ impl Settings {
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
                 if s.gb_palette >= 48 { s.gb_palette = 1; }
                 if !REWIND_SPEEDS.contains(&s.rewind_speed) { s.rewind_speed = 2; }
-                if s.retroarch_sync_pacing {
-                    s.retroarch_clock_pacing = false;
-                    s.responsive_pacing = false;
-                    s.display_sync_pacing = false;
-                    s.hybrid_pacing = false;
-                } else if s.retroarch_clock_pacing {
-                    s.responsive_pacing = false;
-                    s.display_sync_pacing = false;
-                    s.hybrid_pacing = false;
-                } else if s.hybrid_pacing {
-                    s.responsive_pacing = false;
-                    s.display_sync_pacing = false;
-                } else if !s.responsive_pacing { s.display_sync_pacing = false; }
+                migrate_pacing(&mut s.responsive_pacing, &mut s.display_sync_pacing,
+                    &mut s.hybrid_pacing, &mut s.retroarch_clock_pacing,
+                    &mut s.retroarch_sync_pacing, &mut s.responsive_loop);
                 if s.run_ahead_frames > 2 { s.run_ahead_frames = 0; }
                 // Before this version all three toggles defaulted ON.
                 // A previously written settings file therefore isn't proof
@@ -428,9 +422,12 @@ impl Settings {
             8 => self.rumble = !self.rumble,
             9 => self.eject_save = !self.eject_save,
             10 => self.show_fps = !self.show_fps,
-            11 => cycle_pacing(&mut self.responsive_pacing,
-                &mut self.display_sync_pacing, &mut self.hybrid_pacing,
-                &mut self.retroarch_clock_pacing, &mut self.retroarch_sync_pacing, right),
+            11 => {
+                migrate_pacing(&mut self.responsive_pacing, &mut self.display_sync_pacing,
+                    &mut self.hybrid_pacing, &mut self.retroarch_clock_pacing,
+                    &mut self.retroarch_sync_pacing, &mut self.responsive_loop);
+                self.responsive_loop = !self.responsive_loop;
+            }
             12 => self.run_ahead_frames = cycle_u8(self.run_ahead_frames, 2, right),
             13 => self.show_wifi = !self.show_wifi,
             14 => self.show_bluetooth = !self.show_bluetooth,
@@ -445,22 +442,18 @@ impl Settings {
             .unwrap_or(GbPalette::DEFAULT).core_name()
     }
 }
-/// Existing modes preserve their serialized meaning; the fifth and sixth
-/// (RA CLOCK LAB, RETROARCH) are opt-in.
-pub fn cycle_pacing(
+/// Frame Pacing has two options, both RETROARCH pacing (display-clocked
+/// core, resampled audio with rate control): NATIVE runs RetroArch's
+/// swap-paced loop, RESPONSIVE the Choreographer VSync loop. Every older
+/// mode (STANDARD, RESPONSIVE, DISPLAY SYNC, SYNC LAB, RA CLOCK LAB) becomes
+/// NATIVE; RETROARCH keeps its loop choice.
+pub fn migrate_pacing(
     responsive: &mut bool, display_sync: &mut bool, hybrid: &mut bool,
-    ra_clock: &mut bool, ra_sync: &mut bool, right: bool
+    ra_clock: &mut bool, ra_sync: &mut bool, responsive_loop: &mut bool,
 ) {
-    let modes = [(false, false, false, false, false), (true, false, false, false, false),
-        (true, true, false, false, false), (false, false, true, false, false),
-        (false, false, false, true, false), (false, false, false, false, true)];
-    let current = modes.iter().position(|&(r, d, h, v, a)|
-        r == *responsive && d == *display_sync && h == *hybrid && v == *ra_clock
-            && a == *ra_sync)
-        .unwrap_or(0);
-    let next = if right { (current + 1) % modes.len() }
-        else { (current + modes.len() - 1) % modes.len() };
-    (*responsive, *display_sync, *hybrid, *ra_clock, *ra_sync) = modes[next];
+    if !*ra_sync { *responsive_loop = false; }
+    (*responsive, *display_sync, *hybrid, *ra_clock, *ra_sync) =
+        (false, false, false, false, true);
 }
 
 /// SYNC LAB (experimental): the Display Sync implementation discards
@@ -828,39 +821,30 @@ mod tests {
     }
 
     #[test]
-    fn frame_pacing_cycles_six_modes_without_changing_legacy_defaults() {
+    fn frame_pacing_is_native_or_responsive_and_old_modes_become_native() {
         let mut s = Settings::default();
-        assert!(!s.responsive_pacing && !s.display_sync_pacing);
+        assert!(s.retroarch_sync_pacing && !s.responsive_loop);
         assert!(s.change(11, true));
-        assert!(s.responsive_pacing && !s.display_sync_pacing);
-        assert!(s.change(11, true));
-        assert!(s.responsive_pacing && s.display_sync_pacing && !s.hybrid_pacing);
-        assert!(s.change(11, true));
-        assert!(s.hybrid_pacing && !s.responsive_pacing && !s.display_sync_pacing);
-        assert!(s.change(11, true));
-        assert!(s.retroarch_clock_pacing && !s.hybrid_pacing);
-        assert!(s.change(11, true));
-        assert!(s.retroarch_sync_pacing && !s.retroarch_clock_pacing);
-        assert!(s.change(11, true));
-        assert!(!s.retroarch_sync_pacing && !s.retroarch_clock_pacing && !s.responsive_pacing
-            && !s.display_sync_pacing && !s.hybrid_pacing);
+        assert!(s.retroarch_sync_pacing && s.responsive_loop);
         assert!(s.change(11, false));
-        assert!(s.retroarch_sync_pacing && !s.retroarch_clock_pacing);
-        assert!(s.change(11, false));
-        assert!(s.retroarch_clock_pacing && !s.hybrid_pacing);
-        assert!(s.change(11, false));
-        assert!(s.hybrid_pacing && !s.retroarch_clock_pacing);
-        let old: Settings = serde_json::from_str(r#"{"responsive_pacing":true}"#).unwrap();
-        assert!(old.responsive_pacing && !old.display_sync_pacing && !old.hybrid_pacing);
-        let old_sync: Settings = serde_json::from_str(
-            r#"{"responsive_pacing":true,"display_sync_pacing":true}"#).unwrap();
-        assert!(old_sync.display_sync_pacing && !old_sync.hybrid_pacing);
-        assert!(Settings::first_install_defaults().hybrid_pacing);
-        assert!(!Settings::first_install_defaults().retroarch_clock_pacing);
-        let legacy: Settings = serde_json::from_str(r#"{"hybrid_pacing":true}"#).unwrap();
-        assert!(legacy.hybrid_pacing && !legacy.retroarch_clock_pacing);
-        assert!(!legacy.retroarch_sync_pacing);
-        assert!(!Settings::first_install_defaults().retroarch_sync_pacing);
+        assert!(s.retroarch_sync_pacing && !s.responsive_loop);
+        assert!(s.change(11, false) && s.responsive_loop);
+        let dir = std::env::temp_dir().join(format!("slot-konkr-pacing-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for old in [r#"{"responsive_pacing":false}"#, r#"{"responsive_pacing":true}"#,
+            r#"{"responsive_pacing":true,"display_sync_pacing":true}"#,
+            r#"{"hybrid_pacing":true}"#, r#"{"retroarch_clock_pacing":true}"#,
+            r#"{"retroarch_sync_pacing":false,"responsive_loop":true}"#] {
+            fs::write(dir.join(NAME), old).unwrap();
+            let s = Settings::load(&dir);
+            assert!(s.retroarch_sync_pacing && !s.responsive_loop, "{old}");
+            assert!(!s.responsive_pacing && !s.display_sync_pacing && !s.hybrid_pacing
+                && !s.retroarch_clock_pacing, "{old}");
+        }
+        fs::write(dir.join(NAME), r#"{"retroarch_sync_pacing":true,"responsive_loop":true}"#)
+            .unwrap();
+        assert!(Settings::load(&dir).responsive_loop);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -884,10 +868,9 @@ mod tests {
         // GAMEPLAY
         assert_eq!(s.ff_speed,2);
         assert!(s.ff_sound && s.rewind && s.turbo && s.rumble && s.eject_save);
-        // EMULATION: SYNC LAB is the exclusive hybrid-pacing flag.
-        // Preserve all three legacy serde defaults for old saved JSON.
+        // EMULATION: Frame Pacing NATIVE.
         assert!(!s.show_fps);
-        assert!(s.hybrid_pacing);
+        assert!(s.retroarch_sync_pacing && !s.responsive_loop && !s.hybrid_pacing);
         assert!(!s.responsive_pacing && !s.display_sync_pacing);
         assert_eq!(s.run_ahead_frames,0);
     }
@@ -1022,7 +1005,7 @@ mod tests {
         assert!(!s.change(16, true));
         assert!(!s.rewind && !s.turbo && !s.eject_save);
         assert!(s.change(10, true) && s.show_fps);
-        assert!(s.change(11, true) && s.responsive_pacing);
+        assert!(s.change(11, true) && s.responsive_loop);
         assert!(s.change(12, true) && s.run_ahead_frames == 1);
     }
     #[test]
