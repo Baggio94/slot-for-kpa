@@ -956,7 +956,7 @@ class MainActivity : Activity() {
             presenterPrefs.edit().putString("development_ra_loop", requestedRaLoop).apply()
         }
         raSwapLoopPreferred = !controlledEgl &&
-            presenterPrefs.getString("development_ra_loop", "vsync") == "swap"
+            presenterPrefs.getString("development_ra_loop", "swap") == "swap"
         nativeSetRaSwapLoop(raSwapLoopPreferred)
         Log.i(TAG, "RETROARCH loop: " + if (raSwapLoopPreferred) "swap-paced (experimental)" else "vsync callbacks")
         Log.i(TAG, "Slot presenter: " + if (controlledEgl) "controlled-egl (experimental)" else "glsurfaceview (reference)")

@@ -37,7 +37,7 @@ panel: VSync on, "Sync to Exact Content Framerate" off, Dynamic Rate Control on.
   swap waits for the display. The same APK can run that loop, selected with
   a development launch extra (kept across restarts):
   `adb shell am start -S -n fyi.slot.konkr/.MainActivity --es slot_ra_loop swap`
-  (`vsync` goes back). GLSurfaceView then renders continuously, every call
+  (`vsync` selects the Choreographer loop; `swap` is the default). GLSurfaceView then renders continuously, every call
   runs exactly one core frame (a late swap slows the game rather than
   bursting; a swap that did not wait runs nothing), and the refresh rate is
   measured over runs of 60 on-time swaps. Like RetroArch's GPU Hard Sync,
