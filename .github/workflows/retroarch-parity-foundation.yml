@@ -23,13 +23,18 @@ jobs:
         with:
           toolchain: '1.96'
       - name: Install EGL linker library for native runtime tests
-        run: sudo apt-get update -qq && sudo apt-get install -y libegl-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y libegl-dev libgl1-mesa-dri
+      - name: Test real EGL context destruction and graphics recovery
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: cargo test --locked -p slot-gfx --no-default-features --features test-support --test context_recovery
       - name: Test the production session and runtime on Linux
         run: |
           set -euo pipefail
           cargo test --locked -p slot-android --features runtime-tests --lib 2>&1 | tee "$RUNNER_TEMP/session-tests.log"
           # A green run with Android modules compiled out is insufficient.
           grep -F 'test game::runahead_tests::runahead_0_1_2_preserve_real_state_audio_and_battery_while_showing_future_video ... ok' "$RUNNER_TEMP/session-tests.log"
+          grep -F 'test game::runahead_tests::real_egl_recovery_keeps_runahead_session_and_rollback_quarantine ... ok' "$RUNNER_TEMP/session-tests.log"
           grep -F 'test runtime::ui_feedback_tests::' "$RUNNER_TEMP/session-tests.log"
           grep -F 'test presentation_probe::tests::reports_do_not_rejuvenate_frames_waiting_for_presentation ... ok' "$RUNNER_TEMP/session-tests.log"
       - name: Test libretro and RetroAchievements contracts

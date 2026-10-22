@@ -1,4 +1,5 @@
 pub struct Quad {
+    context_lost: bool,
     vao: gl::types::GLuint,
     vbo: gl::types::GLuint,
 }
@@ -8,6 +9,10 @@ const VERTS: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 pub const POS_LOCATION: gl::types::GLuint = 0;
 
 impl Quad {
+    pub(crate) fn abandon_context(&mut self) {
+        self.context_lost = true;
+    }
+
     pub fn new() -> Self {
         unsafe {
             let mut vao = 0;
@@ -29,7 +34,11 @@ impl Quad {
             if !crate::gl::es() {
                 gl::BindVertexArray(0);
             }
-            Quad { vao, vbo }
+            Quad {
+                context_lost: false,
+                vao,
+                vbo,
+            }
         }
     }
 
@@ -52,6 +61,9 @@ impl Quad {
 
 impl Drop for Quad {
     fn drop(&mut self) {
+        if self.context_lost {
+            return;
+        }
         unsafe {
             gl::DeleteBuffers(1, &self.vbo);
             if !crate::gl::es() {

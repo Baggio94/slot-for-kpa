@@ -746,6 +746,7 @@ impl Engine {
             .unwrap_or_else(Settings::first_install_defaults);
         // Upstream Slot delegates colour correction to libretro core options.
         // Disable the dev13 approximate GPU grade to avoid double correction.
+        gpu.enable_context_recovery();
         gpu.set_colour_correction(false);
         FF_AUDIO_ENABLED.store(settings.ff_sound, Ordering::Release);
         let visuals_root = PATHS.lock().unwrap_or_else(|e| e.into_inner())
@@ -4460,6 +4461,7 @@ impl Engine {
         self.menu_repeat_dispatch=false;
     }
     fn draw(&mut self, vsync_frame_ns: i64, mut on_pcm_ready: impl FnMut()) {
+        if !self.gpu.graphics_ready() { return; }
         // Includes Slot-side input/menu/RA/status preparation in "other_us".
         // The enclosing JNI caller's library gate and later EGL swap remain
         // outside the scope; Kotlin times the broader nativeDrawFrame call.
@@ -6179,7 +6181,24 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSurfaceCreated(
     ENGINE.with(|holder| {
         let started = Instant::now();
         LIBRARY_UPDATE_SAFE.store(false, Ordering::Release);
-        *holder.borrow_mut() = None;
+        if let Some(engine) = holder.borrow_mut().as_mut() {
+            // GLSurfaceView calls this on its existing owner thread after EGL
+            // context recreation. Do not reload a core, auto-state or settings.
+            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            let result = engine.gpu.restore_after_context_loss(&AndroidSurface { size: engine.size });
+            if let Err(error) = result {
+                eprintln!("slot-konkr: graphics recovery failed; session retained: {error}");
+                return 0;
+            }
+            if let Some(session) = engine.game.as_ref() { engine.gpu.upload_game(session.frame()); }
+            engine.last = Instant::now();
+            engine.game_accum = 0.0;
+            engine.ra_clock.reset();
+            crate::game::log_launch_timing(&format!(
+                "Graphics recovered in {}ms; retained UI pixels={} bytes",
+                started.elapsed().as_millis(), engine.gpu.recovery_bytes()));
+            return 1;
+        }
         RA_STATUS_KEY.store(u64::MAX, Ordering::Release);
     *RA_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = None;
         RA_NOTICES.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -6257,6 +6276,8 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
     vsync_frame_ns: jni::sys::jlong,
 ) {
     ENGINE.with(|holder| {
+        // Even a direct JNI draw must not advance or save while recovery failed.
+        if holder.borrow().as_ref().is_some_and(|e| !e.gpu.graphics_ready()) { return; }
         let safe = holder.borrow().as_ref().is_some_and(|e|
             may_apply_library_update(e.game.is_some(), e.inserted, e.awaiting_game));
         LIBRARY_UPDATE_SAFE.store(safe, Ordering::Release);
@@ -6839,4 +6860,47 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePollMessage(
     match MESSAGE.lock().unwrap_or_else(|e| e.into_inner()).take().and_then(|v| env.new_string(v).ok()) {
         Some(v) => v.into_raw(), None => std::ptr::null_mut(),
     }
+}
+
+/// Real-context fixture used by the session tests. Runs the production JNI
+/// surface-created callback, including a failed reconstruction and retry.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn exercise_session_graphics_recovery(game: GameSession) -> GameSession {
+    let surface = slot_gfx::TestEgl::new();
+    let mut engine = Engine::new(0, None).unwrap();
+    engine.game = Some(game);
+    engine.inserted = true;
+    engine.game_accum = 42.0;
+    let session_address = engine.game.as_ref().unwrap().frame().as_ptr();
+    let retained = engine.gpu.recovery_bytes();
+    assert!(retained > 0);
+    eprintln!("bundled UI recovery pixels: {retained} bytes");
+    ENGINE.with(|holder| *holder.borrow_mut() = Some(engine));
+    drop(surface);
+    let replacement = slot_gfx::TestEgl::new();
+    let enable: unsafe extern "system" fn(u32) = unsafe {
+        std::mem::transmute(replacement.proc_address("glEnable"))
+    };
+    unsafe { enable(0xffff_ffff) };
+    let create = || Java_fyi_slot_konkr_MainActivity_nativeSurfaceCreated(
+        std::ptr::null_mut(), std::ptr::null_mut());
+    assert_eq!(create(), 0);
+    ENGINE.with(|holder| {
+        let mut guard = holder.borrow_mut();
+        let e = guard.as_mut().unwrap();
+        assert!(!e.gpu.graphics_ready());
+        e.draw(0, || panic!("audio must not advance during failed recovery"));
+        assert_eq!(e.game_accum, 42.0);
+        assert_eq!(e.game.as_ref().unwrap().frame().as_ptr(), session_address);
+    });
+    assert_eq!(create(), 1);
+    ENGINE.with(|holder| {
+        let mut engine = holder.borrow_mut().take().unwrap();
+        assert!(engine.gpu.graphics_ready());
+        assert_eq!(engine.game_accum, 0.0);
+        assert_eq!(engine.gpu.recovery_bytes(), retained);
+        assert_eq!(engine.game.as_ref().unwrap().frame().as_ptr(), session_address);
+        engine.game.take().unwrap()
+        // Engine drops while replacement context is current.
+    })
 }

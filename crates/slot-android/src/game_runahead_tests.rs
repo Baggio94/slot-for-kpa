@@ -263,3 +263,41 @@ fn runahead_respects_flash_sma4_and_multiplayer_guards() {
         assert_eq!(game.core.serialize().unwrap(), 0u32.to_le_bytes());
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn real_egl_recovery_keeps_runahead_session_and_rollback_quarantine() {
+    for failure in [Failure::None, Failure::StateRestore] {
+        for frames in 0..=2 {
+            let root = tempfile::tempdir().unwrap();
+            let (mut game, calls) = session(root.path(), failure);
+            game.advance(ButtonMask::A, false, false);
+            game.take_audio();
+            game.prepare_runahead(ButtonMask::A, false, frames);
+            let state = game.core.serialize().unwrap();
+            let video = game.frame().to_vec();
+            let quarantined = game.runahead_rollback_failed;
+            let core_address = &*game.core as *const dyn RetroCore as *const ();
+            let real = calls.lock().unwrap().real;
+            let predicted = calls.lock().unwrap().predicted.len();
+            let battery = calls.lock().unwrap().battery;
+            // Safety gates must survive independently of context recreation.
+            game.mgba_flash_runahead_guard = true;
+            game.sma4_runahead_guard = true;
+            let mut game = crate::runtime::exercise_session_graphics_recovery(game);
+            assert_eq!(&*game.core as *const dyn RetroCore as *const (), core_address);
+            assert_eq!(game.core.serialize().unwrap(), state);
+            assert_eq!(game.frame(), video);
+            assert_eq!(game.runahead_rollback_failed, quarantined);
+            assert!(game.mgba_flash_runahead_guard && game.sma4_runahead_guard);
+            assert_eq!(calls.lock().unwrap().real, real);
+            assert_eq!(calls.lock().unwrap().predicted.len(), predicted);
+            assert_eq!(calls.lock().unwrap().battery, battery);
+            if quarantined {
+                assert!(!game.advance(ButtonMask::A, false, false));
+                assert!(!game.save(true));
+                assert!(!game.save.exists());
+            }
+        }
+    }
+}

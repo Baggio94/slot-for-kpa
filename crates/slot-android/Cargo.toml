@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 [features]
 # Compile the real JNI runtime and session in Linux regression tests. Requires
 # libEGL at link time; tests do not create a context or run an Android device.
-runtime-tests = []
+runtime-tests = ["slot-gfx/test-support"]
 
 [dependencies]
 slot-gfx = { path = "../slot-gfx", default-features = false }

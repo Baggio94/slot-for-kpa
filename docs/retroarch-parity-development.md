@@ -41,10 +41,42 @@ prove device presentation, JNI lifecycle or determinism of the real mGBA/gpSP co
 No version bump or installable APK is produced by this development workflow.
 It uses read-only repository permissions, no signing secrets and no release job.
 
-## Next implementation boundary (P1/P2)
+## P1: context recovery on the existing owner thread
 
-The existing `nativeSurfaceCreated` destroys `Engine`, including its `GameSession`.
-`Engine` also intermixes UI state, texture IDs, the achievements service and link
+`nativeSurfaceCreated` now retains an existing Engine and GameSession and rebuilds
+only the compositor. UI texture IDs remain stable. Opt-in CPU texture snapshots
+retain the latest dimensions, pixels and filtering; shared immutable snapshots
+avoid doubling the entire UI recovery reserve while uploading a new context.
+Game pixels are re-uploaded from the session, without a new per-frame CPU copy.
+Shader configuration, paper, bezel, grading and canvas size are restored.
+
+All GL resource owners abandon old names before reconstruction: their destructors
+must never delete those names against the replacement context. New allocations
+are released normally on a failed attempt, while the old CPU snapshots and session
+remain available for retry. Failed recovery gates both the JNI frame entry and the
+engine draw method; no frame/input/save work is processed there. The explicit
+Android suspend/save path retains its existing safety policy. A successful retry
+resets elapsed emulation debt and the cadence clock, and clears old queued PCM.
+
+Validation added: a real surfaceless Mesa EGL context is destroyed twice; rendered
+pixels are compared exactly, including updated texture IDs, filtering and game
+shader settings. An injected GL error exercises failure and retry. A second test
+calls the production surface-created JNI entry with real GameSessions and fake
+cores at Run-Ahead 0/1/2, checking identity, state, pixels, battery-call counts,
+FLASH1M/SMA4 flags and rollback quarantine through failure/retry. These tests are
+mandatory in the development CI, alongside ARM64 compilation.
+
+**Boundary:** this covers EGL context replacement on the same GLSurfaceView owner
+thread. It does not preserve a thread-local Engine when that thread or the Activity
+is destroyed, and it does not yet replace GLSurfaceView or own buffer swaps. The
+next presenter must keep a persistent owner thread across surface detach/attach.
+No physical-device pacing, driver behavior or memory budget is validated by Mesa.
+The runtime logs retained CPU pixel bytes after successful recovery so the actual
+KONKR reserve can be measured with its populated library and artwork.
+
+## Next implementation boundary (P2)
+
+Context recreation no longer destroys the Engine. `Engine` still intermixes UI state, texture IDs, the achievements service and link
 state. Replacing GLSurfaceView before this ownership boundary is separated risks
 losing the only live core or deleting stale GL names in a new context.
 

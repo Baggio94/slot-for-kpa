@@ -11,6 +11,7 @@ pub const SRC_H: u32 = OUT_H / SCALE;
 pub const WHOLE_TEXTURE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 pub struct GamePass {
+    context_lost: bool,
     prog: gl::types::GLuint,
     game: gl::types::GLuint,
     // Reuse the Android GLES2-compatible RGBA staging pixels each frame.
@@ -30,12 +31,33 @@ pub struct GamePass {
     pic: [f32; 4],
     paper: gl::types::GLuint,
     paper_size: f32,
+    paper_pixels: Option<(u32, Vec<u8>)>,
     effect: ScreenEffect,
     power: f32,
     src: [f32; 4],
 }
 
 impl GamePass {
+    pub(crate) fn abandon_context(&mut self) {
+        self.context_lost = true;
+    }
+
+    pub(crate) fn recovery_bytes(&self) -> usize {
+        self.paper_pixels.as_ref().map_or(0, |p| p.1.len())
+    }
+
+    pub(crate) fn restore_settings_into(&self, target: &mut Self) {
+        target.colour_correct = self.colour_correct;
+        target.fbo_scale = self.fbo_scale;
+        target.pic = self.pic;
+        target.effect = self.effect;
+        target.power = self.power;
+        target.src = self.src;
+        if let Some((size, rgba)) = &self.paper_pixels {
+            target.set_paper(*size, rgba);
+        }
+    }
+
     pub fn new() -> Result<Self, GfxError> {
         let prog = crate::shaders::program(RECT_VERT, GAME_FRAG)?;
         // OpenGL ES 2 only guarantees RGBA, not BGRA texture uploads.
@@ -70,6 +92,7 @@ impl GamePass {
             u_pic = crate::gl::uniform_location(prog, "u_pic");
         }
         Ok(GamePass {
+            context_lost: false,
             prog,
             game,
             #[cfg(target_os = "android")]
@@ -87,6 +110,7 @@ impl GamePass {
             pic: WHOLE_TEXTURE,
             paper,
             paper_size: 1.0,
+            paper_pixels: None,
             effect: ScreenEffect::Lcd3x,
             power: 1.0,
             src: WHOLE_TEXTURE,
@@ -118,6 +142,7 @@ impl GamePass {
         unsafe { gl::DeleteTextures(1, &self.paper) };
         self.paper = tex;
         self.paper_size = size as f32;
+        self.paper_pixels = Some((size, rgba.to_vec()));
     }
 
     pub fn set_source_rect(&mut self, rect: [f32; 4]) {
@@ -133,7 +158,8 @@ impl GamePass {
             // ES2 requires RGBA; the libretro frame arrives as XRGB8888
             // in little-endian B,G,R,X order. Conversion is still required,
             // but happens in a persistent buffer without heap churn.
-            for (src, dst) in xrgb8888.chunks_exact(4)
+            for (src, dst) in xrgb8888
+                .chunks_exact(4)
                 .zip(self.rgba_upload.chunks_exact_mut(4))
             {
                 dst.copy_from_slice(&[src[2], src[1], src[0], 255]);
@@ -184,7 +210,10 @@ impl GamePass {
             gl::Uniform4f(self.u_uv, src[0], src[1], src[2], src[3]);
             gl::Uniform1f(self.u_bright, screen_brightness(self.power));
             gl::Uniform1f(self.u_mode, self.effect.mode());
-            gl::Uniform1f(self.u_colour_correct, if self.colour_correct { 1.0 } else { 0.0 });
+            gl::Uniform1f(
+                self.u_colour_correct,
+                if self.colour_correct { 1.0 } else { 0.0 },
+            );
             gl::Uniform1f(self.u_paper_size, self.paper_size);
             gl::Uniform2f(self.u_fbo, self.fbo_scale[0], self.fbo_scale[1]);
             gl::Uniform4f(
@@ -222,6 +251,9 @@ fn whole_scale(at: f32, len: f32, texels: f32, out: f32) -> (f32, f32) {
 
 impl Drop for GamePass {
     fn drop(&mut self) {
+        if self.context_lost {
+            return;
+        }
         unsafe {
             gl::DeleteTextures(1, &self.game);
             gl::DeleteTextures(1, &self.paper);
