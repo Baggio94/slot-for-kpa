@@ -1227,16 +1227,13 @@ impl GameSession {
         let input = (buttons, turbo);
         if self.preempt.needs_rollback(input) {
             let started = Instant::now();
-            if let Err(error) = self.core.capture_speculative_audio() {
-                // Nothing was touched yet: just stop preempting.
-                self.runahead_probe.failures += 1;
-                self.runahead_unavailable = true;
-                self.preempt.set_frames(0);
-                log_launch_timing(&format!("Preemptive Frames disabled: audio snapshot failed: {error}"));
-                return true;
-            }
             // The replayed frames rewrite the last n frames with the new
-            // buttons; their audio was already played and is dropped.
+            // buttons; their audio was already played and is dropped. The
+            // Run-Ahead audio sidecar is NOT restored afterwards: it holds
+            // the old timeline's sound channels, and restoring it would
+            // silence a sound the new buttons just started (a GB jump sound
+            // heard frames late). After the replay the core's audio already
+            // belongs to the new timeline, as in RetroArch.
             let pressed = ButtonMask(buttons);
             let first = self.frame_count.wrapping_sub(n as u32);
             let mut replayed = self.core.restore_speculative_state(self.preempt.state(0));
@@ -1248,7 +1245,6 @@ impl GameSession {
                     xy_buttons(pressed, turbo, first.wrapping_add(k as u32)));
                 self.core.discard_audio();
             }
-            let replayed = replayed.and_then(|_| self.core.restore_speculative_audio());
             let elapsed_us = started.elapsed().as_micros() as u64;
             self.runahead_probe.preemptive_rollbacks =
                 self.runahead_probe.preemptive_rollbacks.saturating_add(1);
