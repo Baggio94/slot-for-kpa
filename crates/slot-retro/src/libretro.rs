@@ -15,6 +15,9 @@ use crate::rumble::Rumble;
 const VIDEO_BYTES: usize = (GBA_W * GBA_H * 4) as usize;
 
 static LIVE: AtomicBool = AtomicBool::new(false);
+// Run-Ahead "second instance": one private prediction copy of the core,
+// loaded from a separate file so it owns its own globals.
+static SECONDARY_LIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum PixelFormat {
@@ -467,6 +470,7 @@ pub struct LibretroCore {
     rom_path: Option<CString>,
     av: AvInfo,
     loaded: bool,
+    secondary: bool,
     _lib: Library,
 }
 
@@ -487,6 +491,28 @@ impl LibretroCore {
         }
         Self::open_inner(dylib, system_dir, save_dir)
             .inspect_err(|_| LIVE.store(false, Ordering::SeqCst))
+    }
+
+    /// Open the Run-Ahead prediction instance. `dylib` must be a private
+    /// copy of the primary core file: the dynamic linker would otherwise
+    /// hand back the primary's library and both would share core globals.
+    /// Callers verify that with [`LibretroCore::instance_id`].
+    pub fn open_secondary(dylib: &Path, system_dir: &Path, save_dir: &Path)
+        -> Result<Self, CoreError>
+    {
+        if SECONDARY_LIVE.swap(true, Ordering::SeqCst) {
+            return Err(CoreError::Unsupported("a secondary core is already open".into()));
+        }
+        Self::open_inner(dylib, system_dir, save_dir)
+            .map(|mut core| { core.secondary = true; core })
+            .inspect_err(|_| SECONDARY_LIVE.store(false, Ordering::SeqCst))
+    }
+
+    /// Address of this library's `retro_run`. Two cores with the same id
+    /// share one loaded library (and its globals), so they are not
+    /// independent instances.
+    pub fn instance_id(&self) -> usize {
+        self.api.run as usize
     }
 
     fn try_init_mgba_audio(&mut self) {
@@ -656,6 +682,7 @@ impl LibretroCore {
                 sample_rate: 0.0,
             },
             loaded: false,
+            secondary: false,
             _lib: lib,
         })
     }
@@ -686,7 +713,11 @@ impl Drop for LibretroCore {
             let _a = Active::bind(&mut self.host);
             (self.api.deinit)();
         }
-        LIVE.store(false, Ordering::SeqCst);
+        if self.secondary {
+            SECONDARY_LIVE.store(false, Ordering::SeqCst);
+        } else {
+            LIVE.store(false, Ordering::SeqCst);
+        }
     }
 }
 

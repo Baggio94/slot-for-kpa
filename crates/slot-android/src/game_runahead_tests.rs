@@ -136,6 +136,9 @@ fn session(root: &Path, failure: Failure) -> (GameSession, Arc<Mutex<Calls>>) {
         runahead_rollback_failed: false,
         runahead_discard_confirm: false,
         runahead_probe: RunaheadProbe::default(),
+        runahead_secondary_spec: None,
+        runahead_secondary: None,
+        runahead_secondary_unavailable: false,
         last_step_timings: FrameStepTimings::default(),
         mgba_flash_runahead_guard: false,
         sma4_runahead_guard: false,
@@ -300,4 +303,79 @@ fn real_egl_recovery_keeps_runahead_session_and_rollback_quarantine() {
             }
         }
     }
+}
+
+fn prediction_copy(failure: Failure) -> (Box<dyn RetroCore>, Arc<Mutex<Calls>>) {
+    let calls = Arc::new(Mutex::new(Calls::default()));
+    (Box::new(CoreFixture {
+        frame: 0, mixer: 0, captured_mixer: 0, pcm: vec![], pixels: vec![0; 4],
+        failure, calls: calls.clone(),
+    }), calls)
+}
+
+#[test]
+fn second_instance_predicts_on_the_copy_and_never_rewinds_the_real_core() {
+    for frames in 1..=2u8 {
+        let root = tempfile::tempdir().unwrap();
+        // The real core cannot even capture speculative audio: the
+        // single-instance path would refuse, second instance does not need it.
+        let (mut game, real_calls) = session(root.path(), Failure::AudioCapture);
+        let (copy, copy_calls) = prediction_copy(Failure::None);
+        game.runahead_secondary = Some(copy);
+        for real in 1..=90u32 {
+            assert!(game.advance(ButtonMask::A, false, false));
+            // The real mixer is never rolled back: audio stays continuous.
+            assert_eq!(game.take_audio(), vec![real as i16; 2]);
+            game.prepare_runahead(ButtonMask::A, false, frames);
+            assert_eq!(game.frame(), (real + u32::from(frames)).to_le_bytes());
+            assert_eq!(game.core.serialize().unwrap(), real.to_le_bytes());
+            assert!(game.take_audio().is_empty());
+        }
+        assert!(real_calls.lock().unwrap().predicted.is_empty());
+        assert_eq!(real_calls.lock().unwrap().real, 90);
+        assert_eq!(copy_calls.lock().unwrap().predicted.len(), 90 * usize::from(frames));
+        assert_eq!(copy_calls.lock().unwrap().real, 0);
+        let probe = game.take_runahead_probe();
+        assert_eq!(probe.second_instance_calls, 90);
+        assert_eq!(probe.failures, 0);
+        assert!(!game.runahead_rollback_failed);
+    }
+}
+
+#[test]
+fn second_instance_failure_drops_only_the_copy_and_falls_back_to_single_instance() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut game, real_calls) = session(root.path(), Failure::None);
+    let (copy, _) = prediction_copy(Failure::StateRestore);
+    game.runahead_secondary = Some(copy);
+    assert!(game.advance(ButtonMask::A, false, false));
+    game.take_audio();
+    game.prepare_runahead(ButtonMask::A, false, 1);
+    assert!(game.runahead_secondary.is_none());
+    assert!(game.runahead_secondary_unavailable);
+    assert!(!game.runahead_rollback_failed);
+    // Same call fell back to the single-instance prediction on the real core.
+    assert_eq!(real_calls.lock().unwrap().predicted.len(), 1);
+    assert_eq!(game.frame(), 2u32.to_le_bytes());
+    assert_eq!(game.core.serialize().unwrap(), 1u32.to_le_bytes());
+    assert!(game.advance(ButtonMask::A, false, false));
+    assert_eq!(game.take_audio(), vec![2; 2]);
+}
+
+#[test]
+fn second_instance_respects_existing_guards_and_never_boots_without_a_spec() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut game, _) = session(root.path(), Failure::None);
+    let (copy, copy_calls) = prediction_copy(Failure::None);
+    game.runahead_secondary = Some(copy);
+    game.sma4_runahead_guard = true;
+    game.advance(ButtonMask::A, false, false);
+    game.prepare_runahead(ButtonMask::A, false, 2);
+    assert!(copy_calls.lock().unwrap().predicted.is_empty());
+    // No spec (tests, linked boots): the copy is never booted.
+    let (mut solo, calls) = session(root.path(), Failure::None);
+    solo.advance(ButtonMask::A, false, false);
+    solo.prepare_runahead(ButtonMask::A, false, 1);
+    assert!(solo.runahead_secondary.is_none() && solo.runahead_secondary_unavailable);
+    assert_eq!(calls.lock().unwrap().predicted.len(), 1);
 }

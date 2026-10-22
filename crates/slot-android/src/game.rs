@@ -55,6 +55,8 @@ pub(crate) struct RunaheadProbe {
     pub restores_us: u64,
     pub max_us: u64,
     pub failures: u32,
+    /// Calls served by the second-instance prediction core.
+    pub second_instance_calls: u32,
 }
 
 /// F8: WALL time spent inside the core and synchronous rewind work or
@@ -192,6 +194,11 @@ pub struct GameSession {
     runahead_rollback_failed: bool,
     runahead_discard_confirm: bool,
     runahead_probe: RunaheadProbe,
+    // Second instance: a private prediction copy of the core, booted on
+    // first use. The real core is then never rewound for Run-Ahead.
+    runahead_secondary_spec: Option<crate::runahead_secondary::Spec>,
+    runahead_secondary: Option<Box<dyn RetroCore>>,
+    runahead_secondary_unavailable: bool,
     last_step_timings: FrameStepTimings,
     // Keep mGBA speculative frames away from Pokémon Gen III FLASH1M.
     mgba_flash_runahead_guard: bool,
@@ -473,6 +480,15 @@ impl GameSession {
         let console = match platform {
             Platform::Gb => 4, Platform::Gba => 5, Platform::Gbc => 6,
         };
+        // Second-instance Run-Ahead boots its copy from these, solo only.
+        let runahead_secondary_spec = linked_boot.is_none().then(|| crate::runahead_secondary::Spec {
+            core_file: core_file.to_path_buf(),
+            system_dir: bios.clone(),
+            scratch_dir: storage.join("RunAheadInstance"),
+            rom: rom.to_path_buf(),
+            options: core.options(),
+            primary_id: core.instance_id(),
+        });
         let mut core: Box<dyn RetroCore> = match achievements {
             Some(service) => service.wrap_for_console(Box::new(core), console),
             None => Box::new(core),
@@ -662,6 +678,8 @@ impl GameSession {
             runahead_rollback_failed: false,
             runahead_discard_confirm: false,
             runahead_probe: RunaheadProbe::default(),
+            runahead_secondary_spec, runahead_secondary: None,
+            runahead_secondary_unavailable: false,
             last_step_timings: FrameStepTimings::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
@@ -1049,6 +1067,7 @@ impl GameSession {
         if frames == 0 || frames > 2 || self.runahead_rollback_failed || self.mgba_flash_runahead_guard ||
             self.sma4_runahead_guard ||
             self.runahead_unavailable || self.link_touched || self.linked_boot.is_some() { return; }
+        if self.prepare_runahead_second_instance(buttons, turbo, frames) { return; }
         if !self.core.speculative_audio_supported() {
             self.runahead_probe.failures += 1;
             self.runahead_unavailable = true;
@@ -1109,6 +1128,74 @@ impl GameSession {
 
     }
 
+    /// RetroArch "second instance" Run-Ahead. Returns false when the copy is
+    /// unavailable, so the caller uses the single-instance path instead.
+    /// The real core is only serialized, never rewound: a failure here can
+    /// never corrupt the real timeline.
+    fn prepare_runahead_second_instance(&mut self, buttons: u16, turbo: bool, frames: u8) -> bool {
+        if self.runahead_secondary_unavailable { return false; }
+        let started = Instant::now();
+        if self.runahead_secondary.is_none() {
+            let Some(spec) = self.runahead_secondary_spec.as_ref() else {
+                self.runahead_secondary_unavailable = true;
+                return false;
+            };
+            let battery = self.core.save_ram_verified().ok().flatten();
+            match crate::runahead_secondary::open(spec, battery.as_deref()) {
+                Ok(copy) => {
+                    log_launch_timing(&format!(
+                        "Run-Ahead second instance ready in {}ms", started.elapsed().as_millis()));
+                    self.runahead_secondary = Some(copy);
+                }
+                Err(error) => {
+                    self.runahead_secondary_unavailable = true;
+                    log_launch_timing(&format!(
+                        "Run-Ahead second instance unavailable, using single instance: {error}"));
+                    return false;
+                }
+            }
+        }
+        if let Err(error) = self.core.serialize_into(&mut self.runahead_state) {
+            self.runahead_probe.failures += 1;
+            self.runahead_unavailable = true;
+            log_launch_timing(&format!("Run-Ahead disabled: serialize failed: {error}"));
+            return true;
+        }
+        let snapshot_us = started.elapsed().as_micros() as u64;
+        let predicted = Instant::now();
+        let pressed = ButtonMask(buttons);
+        // Turbo flips every three REAL frames; each predicted frame samples
+        // its own future phase, exactly like the single-instance path.
+        let mut inputs = [ButtonMask::default(); 2];
+        for future in 0..usize::from(frames) {
+            inputs[future] = xy_buttons(pressed, turbo,
+                self.frame_count.wrapping_add(future as u32));
+        }
+        let copy = self.runahead_secondary.as_deref_mut().expect("booted above");
+        match crate::runahead_secondary::predict(copy, &self.runahead_state,
+            &inputs[..usize::from(frames)]) {
+            Ok(video) => self.runahead_video.extend_from_slice(video),
+            Err(error) => {
+                // Only the copy is affected: drop it and keep playing.
+                self.runahead_probe.failures += 1;
+                self.runahead_secondary = None;
+                self.runahead_secondary_unavailable = true;
+                log_launch_timing(&format!(
+                    "Run-Ahead second instance stopped, using single instance: {error}"));
+                return false;
+            }
+        }
+        let speculative_us = predicted.elapsed().as_micros() as u64;
+        self.runahead_probe.calls = self.runahead_probe.calls.saturating_add(1);
+        self.runahead_probe.second_instance_calls =
+            self.runahead_probe.second_instance_calls.saturating_add(1);
+        self.runahead_probe.snapshots_us += snapshot_us;
+        self.runahead_probe.speculative_us += speculative_us;
+        self.runahead_probe.max_us = self.runahead_probe.max_us.max(
+            started.elapsed().as_micros() as u64);
+        true
+    }
+
     pub fn rewind_step(&mut self) -> bool {
         if self.runahead_rollback_failed || self.link_touched || self.linked_boot.is_some() { return false; }
         self.runahead_video.clear();
@@ -1138,17 +1225,25 @@ impl GameSession {
 
     pub fn set_gb_palette(&mut self, name: &str) {
         if self.palette_live {
-            self.core.set_option("mgba_gb_colors_preset", "0");
-            self.core.set_option("mgba_gb_colors", name);
+            self.set_core_option("mgba_gb_colors_preset", "0");
+            self.set_core_option("mgba_gb_colors", name);
         }
+    }
+
+    /// Live option change on the real core, mirrored to the second-instance
+    /// prediction copy so predicted pictures keep the same colours.
+    fn set_core_option(&mut self, key: &str, value: &str) {
+        self.core.set_option(key, value);
+        if let Some(spec) = self.runahead_secondary_spec.as_mut() { spec.set_option(key, value); }
+        if let Some(copy) = self.runahead_secondary.as_mut() { copy.set_option(key, value); }
     }
 
     /// Per-game GB palette enable/disable is applied through mGBA's live core
     /// options, without restarting libretro or touching ROM SRAM/RTC.
     pub fn set_gb_palette_mode(&mut self, enabled: bool, name: &str) {
         if !self.palette_live { return; }
-        self.core.set_option("mgba_gb_colors_preset", if enabled { "0" } else { "1" });
-        if enabled { self.core.set_option("mgba_gb_colors", name); }
+        self.set_core_option("mgba_gb_colors_preset", if enabled { "0" } else { "1" });
+        if enabled { self.set_core_option("mgba_gb_colors", name); }
     }
 
     pub fn set_colour_correction(&mut self, enabled: bool) {
@@ -1158,7 +1253,7 @@ impl GameSession {
             Core::Gpsp => ("gpsp_color_correction",
                 if enabled { "enabled" } else { "disabled" }),
         };
-        self.core.set_option(key, value);
+        self.set_core_option(key, value);
     }
 
     pub fn rumble_strength(&self) -> u16 {
