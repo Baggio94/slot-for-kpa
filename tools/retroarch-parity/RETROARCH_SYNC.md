@@ -10,7 +10,7 @@ panel: VSync on, "Sync to Exact Content Framerate" off, Dynamic Rate Control on.
   frame debt. A 59.7275Hz GBA therefore runs at 60Hz (+0.46%) and no picture
   is repeated for clock drift. SYNC LAB and RA CLOCK LAB both still repeat one
   picture every ~3.7s by design.
-- **Audio:** core PCM is resampled to 48kHz (cubic Hermite) and the ratio is
+- **Audio:** core PCM is resampled to 48kHz (48-tap windowed sinc, as original slot. 1.8) and the ratio is
   corrected by at most ±0.5% from the AudioTrack fill level, aiming at a
   half-full buffer, as RetroArch's `audio_rate_control_delta = 0.005`.
   This absorbs the +0.46% speed-up and the drift between the audio and

@@ -60,20 +60,39 @@ pub fn rate_control_adjust(queued: usize, capacity: usize) -> f64 {
     1.0 + RATE_CONTROL_DELTA * direction
 }
 
-/// Interleaved stereo i16 resampler using 4-point cubic Hermite
-/// interpolation. Keeps three input frames of history between calls so a
-/// stream can be fed one core frame at a time without seams.
+/// Windowed-sinc taps per output sample, as original Slot 1.8.
+const TAPS: usize = 48;
+const HALF: usize = TAPS / 2;
+/// Sub-sample positions in the kernel table; neighbours are blended.
+const PHASES: usize = 256;
+/// Pass band edge relative to the lower of the two Nyquist rates: keeps
+/// 22kHz at 48kHz output and folds nothing back when a core runs faster.
+const CUTOFF: f64 = 22_000.0 / 24_000.0;
+/// Kaiser window shape.
+const BETA: f64 = 7.0;
+/// Dynamic Rate Control moves the ratio by 0.5% at most; only a different
+/// core rate (mGBA 32768Hz, gpSP 65536Hz) needs a new kernel.
+const KERNEL_RETUNE: f64 = 0.02;
+
+/// Interleaved stereo i16 resampler: a 48-tap Kaiser-windowed sinc, the
+/// filter original Slot 1.8 uses for its 48kHz output. Unlike linear or
+/// cubic interpolation it does not fold high GBA square-wave harmonics back
+/// into the audible band as grit. Fed one core frame at a time without seams.
 #[derive(Debug)]
 pub struct Resampler {
-    // Last four input frames: history[3] is the newest.
-    history: [[f32; 2]; 4],
-    // Fractional read position between history[1] and history[2].
-    phase: f64,
-    primed: usize,
+    kernel: Vec<f32>,
+    kernel_ratio: f64,
+    // Interleaved L/R input frames still needed by the filter window.
+    history: Vec<f32>,
+    // Read position in `history`, in input frames.
+    pos: f64,
 }
 
 impl Default for Resampler {
-    fn default() -> Self { Self { history: [[0.0; 2]; 4], phase: 0.0, primed: 0 } }
+    fn default() -> Self {
+        Self { kernel: Vec::new(), kernel_ratio: 0.0,
+            history: vec![0.0; TAPS * 2], pos: HALF as f64 }
+    }
 }
 
 impl Resampler {
@@ -83,35 +102,72 @@ impl Resampler {
     /// per input frame to `out`.
     pub fn process(&mut self, input: &[i16], ratio: f64, out: &mut Vec<i16>) {
         if !(ratio > 0.0) || !ratio.is_finite() { return; }
-        let step = 1.0 / ratio;
-        for frame in input.chunks_exact(2) {
-            self.history.rotate_left(1);
-            self.history[3] = [f32::from(frame[0]), f32::from(frame[1])];
-            if self.primed < 3 {
-                // Start on the first real sample instead of fading in from
-                // silence: emit nothing until history[1] holds input.
-                self.primed += 1;
-                continue;
-            }
-            while self.phase < 1.0 {
-                let t = self.phase as f32;
-                for channel in 0..2 {
-                    let value = hermite(self.history[0][channel], self.history[1][channel],
-                        self.history[2][channel], self.history[3][channel], t);
-                    out.push(value.round().clamp(-32768.0, 32767.0) as i16);
-                }
-                self.phase += step;
-            }
-            self.phase -= 1.0;
+        if self.kernel.is_empty() || (ratio / self.kernel_ratio - 1.0).abs() > KERNEL_RETUNE {
+            self.kernel = kernel(CUTOFF * ratio.min(1.0));
+            self.kernel_ratio = ratio;
         }
+        let step = 1.0 / ratio;
+        self.history.extend(input[..input.len() / 2 * 2].iter().map(|&s| f32::from(s)));
+        let frames = self.history.len() / 2;
+        while self.pos + (HALF as f64) < frames as f64 {
+            let i = self.pos as usize;
+            let at = (self.pos - i as f64) * PHASES as f64;
+            let phase = (at as usize).min(PHASES - 1);
+            let blend = (at - phase as f64) as f32;
+            let a = &self.kernel[phase * TAPS..(phase + 1) * TAPS];
+            let b = &self.kernel[(phase + 1) * TAPS..(phase + 2) * TAPS];
+            let window = &self.history[(i + 1 - HALF) * 2..(i + 1 + HALF) * 2];
+            let (mut l, mut r) = (0.0f32, 0.0f32);
+            for t in 0..TAPS {
+                let w = a[t] + (b[t] - a[t]) * blend;
+                l += window[t * 2] * w;
+                r += window[t * 2 + 1] * w;
+            }
+            out.push(l.round().clamp(-32768.0, 32767.0) as i16);
+            out.push(r.round().clamp(-32768.0, 32767.0) as i16);
+            self.pos += step;
+        }
+        let drop = (self.pos as usize + 1).saturating_sub(HALF).min(frames);
+        self.history.drain(..drop * 2);
+        self.pos -= drop as f64;
     }
 }
 
-fn hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
-    let c1 = 0.5 * (y2 - y0);
-    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-    ((c3 * t + c2) * t + c1) * t + y1
+fn kernel(cutoff: f64) -> Vec<f32> {
+    let mut k = vec![0.0f32; (PHASES + 1) * TAPS];
+    for phase in 0..=PHASES {
+        let frac = phase as f64 / PHASES as f64;
+        let mut taps = [0.0f64; TAPS];
+        for (t, tap) in taps.iter_mut().enumerate() {
+            let x = t as f64 + 1.0 - HALF as f64 - frac;
+            let window = bessel_i0(BETA * (1.0 - (x / HALF as f64).powi(2)).max(0.0).sqrt())
+                / bessel_i0(BETA);
+            *tap = cutoff * sinc(cutoff * x) * window;
+        }
+        // Unity gain at every phase: DC and slow signals pass unchanged.
+        let sum: f64 = taps.iter().sum();
+        for (dst, tap) in k[phase * TAPS..(phase + 1) * TAPS].iter_mut().zip(taps) {
+            *dst = (tap / sum) as f32;
+        }
+    }
+    k
+}
+
+fn sinc(x: f64) -> f64 {
+    if x.abs() < 1e-12 { 1.0 } else {
+        let px = std::f64::consts::PI * x;
+        px.sin() / px
+    }
+}
+
+fn bessel_i0(x: f64) -> f64 {
+    let mut sum = 1.0;
+    let mut term = 1.0;
+    for k in 1..32 {
+        term *= (x / (2.0 * k as f64)).powi(2);
+        sum += term;
+    }
+    sum
 }
 
 /// Output frames per input frame for a core whose audio is produced at
@@ -197,8 +253,8 @@ mod tests {
         let input_frames = 548.0 * 600.0;
         let produced = out.len() as f64 / 2.0;
         assert_eq!(out.len() % 2, 0);
-        // Only the three priming frames of history are not emitted.
-        assert!((produced - input_frames * ratio).abs() <= 3.0 * ratio + 1.0,
+        // The filter's look-ahead holds back at most one output frame.
+        assert!((produced - input_frames * ratio).abs() <= ratio + 1.0,
             "{produced} vs {}", input_frames * ratio);
     }
 
@@ -208,7 +264,10 @@ mod tests {
         let mut out = Vec::new();
         let chunk: Vec<i16> = (0..2 * 64).map(|n| if n % 2 == 0 { 1000 } else { -2000 }).collect();
         for _ in 0..50 { rs.process(&chunk, 1.4648, &mut out); }
-        assert!(out.chunks_exact(2).all(|f| f[0] == 1000 && f[1] == -2000));
+        // After the filter fills (HALF frames of initial silence), DC passes
+        // exactly on both channels, across every core-frame seam.
+        assert!(out.len() > 4000);
+        assert!(out.chunks_exact(2).skip(100).all(|f| f[0] == 1000 && f[1] == -2000));
     }
 
     #[test]
@@ -222,15 +281,61 @@ mod tests {
         let ratio = 48_000.0 / GBA_RATE;
         let mut out = Vec::new();
         rs.process(&input, ratio, &mut out);
-        // Output frame k sits at input position k/ratio, offset by the one
-        // frame of look-behind the interpolator needs.
+        // Output frame k sits at input position k/ratio, HALF frames late:
+        // the filter starts centred on its silent history.
         let mut worst = 0.0f64;
-        for (k, frame) in out.chunks_exact(2).enumerate().skip(10).take(40_000) {
-            let pos = k as f64 / ratio + 1.0;
+        for (k, frame) in out.chunks_exact(2).enumerate().skip(100).take(40_000) {
+            let pos = k as f64 / ratio - HALF as f64;
             let ideal = 10_000.0 * (2.0 * std::f64::consts::PI * freq * pos / GBA_RATE).sin();
             worst = worst.max((f64::from(frame[0]) - ideal).abs());
         }
         assert!(worst < 30.0, "max error {worst}");
+    }
+
+    fn level_at(samples: &[i16], hz: f64, rate: f64) -> f64 {
+        // Goertzel magnitude of the left channel at one frequency.
+        let w = 2.0 * std::f64::consts::PI * hz / rate;
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        let left: Vec<f64> = samples.chunks_exact(2).map(|f| f64::from(f[0])).collect();
+        for x in &left {
+            let s0 = x + 2.0 * w.cos() * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2).sqrt() / left.len() as f64
+    }
+
+    #[test]
+    fn ra_sync_resampler_does_not_image_high_gba_tones_into_hearing() {
+        // A 15kHz tone at 32768Hz has a mirror image at 17768Hz once
+        // upsampled; interpolators leave it audible, the sinc removes it.
+        let input: Vec<i16> = (0..32_768).flat_map(|n| {
+            let v = (12_000.0 * (2.0 * std::f64::consts::PI * 15_000.0 * n as f64 / GBA_RATE).sin()) as i16;
+            [v, v]
+        }).collect();
+        let mut rs = Resampler::default();
+        let mut out = Vec::new();
+        rs.process(&input, 48_000.0 / GBA_RATE, &mut out);
+        let tone = level_at(&out, 15_000.0, 48_000.0);
+        let image = level_at(&out, GBA_RATE - 15_000.0, 48_000.0);
+        assert!(tone > 1_000.0, "tone lost: {tone}");
+        assert!(image < tone / 100.0, "image only {:.1} dB down", 20.0 * (tone / image).log10());
+    }
+
+    #[test]
+    fn ra_sync_resampler_handles_gpsp_rate_downsampling() {
+        // gpSP reports 65536Hz: the kernel narrows so 30kHz content cannot
+        // alias below the 24kHz output Nyquist.
+        let input: Vec<i16> = (0..65_536).flat_map(|n| {
+            let v = (12_000.0 * (2.0 * std::f64::consts::PI * 30_000.0 * n as f64 / 65_536.0).sin()) as i16;
+            [v, v]
+        }).collect();
+        let mut rs = Resampler::default();
+        let mut out = Vec::new();
+        rs.process(&input, 48_000.0 / 65_536.0, &mut out);
+        assert!((out.len() as f64 / 2.0 - 48_000.0).abs() < 2.0);
+        let alias = level_at(&out, 48_000.0 - 30_000.0, 48_000.0);
+        assert!(alias < 60.0, "30kHz folded back at level {alias}");
     }
 
     #[test]
