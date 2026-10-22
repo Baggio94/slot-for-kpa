@@ -9,6 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "fyi.slot.konkr"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         minSdk = 31
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
@@ -85,6 +86,9 @@ android {
 dependencies {
     implementation("androidx.core:core:1.13.1")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
     // Android's org.json methods are stubbed in local JVM tests.
     testImplementation("org.json:json:20240303")
 }

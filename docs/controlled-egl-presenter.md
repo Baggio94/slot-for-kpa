@@ -2,7 +2,7 @@
 
 This is the first owned-EGL prototype. It retains the GLES compositor, core,
 Run-Ahead policy and audio policy. It does not yet use Swappy, presentation
-Deadlines or GPU fences, and does not claim RetroArch parity.
+deadlines or GPU fences, and does not claim RetroArch parity.
 
 ## Selecting the two paths in the same build
 
@@ -51,8 +51,10 @@ request does not bound Android BufferQueue depth or prove input-latency parity.
 
 Host tests cover request coalescing, pause/detach/close gating, and native recovery,
 resume and shutdown with a real Mesa context and Run-Ahead 0/1/2 fake cores.
-ARM64 compilation and JVM tests are CI gates. Physical SurfaceHolder/EGL14 lifecycle
-behavior, the KONKR driver and visible output still require device validation.
+ARM64 compilation, JVM tests and an Android API32 emulator lifecycle harness are
+CI gates. The harness uses the real presenter and a simple GL test renderer;
+it does not exercise JNI or a game. Results must be checked on the exact commit.
+The KONKR driver, native integration and visible output still need device validation.
 
 First device check: pause/resume, sleep/wake, background/foreground, then same-APK
 A/B in the same Wario Land 4 scene, mGBA, Run-Ahead OFF, 120 seconds per path. Keep

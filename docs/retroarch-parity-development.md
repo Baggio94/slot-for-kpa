@@ -74,7 +74,27 @@ No physical-device pacing, driver behavior or memory budget is validated by Mesa
 The runtime logs retained CPU pixel bytes after successful recovery so the actual
 KONKR reserve can be measured with its populated library and artwork.
 
-## Next implementation boundary (P2)
+## P2 prototype implemented (opt-in)
+
+The same app now includes `ControlledEglPresenter` and the GLSurfaceView reference
+adapter, both using the same native renderer callback. The controlled path owns
+EGL on a persistent HandlerThread, parks the context on a pbuffer while its window
+is absent, and uses owner-thread Choreographer with a single outstanding frame
+request. The UI scheduler is disabled on that path. Ordered commands continue
+through pause/detach; surface destruction waits for the owner to release it.
+
+EGL errors retain the session, abandon names and stop drawing until a lifecycle
+retry. Resume resets timing debt. Shutdown releases the native engine while its
+context is current, before destroying EGL. Logs identify backend, surface epoch,
+owner and swap CPU wall time. The default remains the reference backend.
+
+See [controlled-egl-presenter.md](controlled-egl-presenter.md) for selection,
+measurements, device checks and limitations. The source includes a diagnostic-only
+Android instrumentation harness for real attach/detach/pause/shutdown transitions.
+It exercises the presenter with a GL test renderer, without loading a ROM or JNI.
+Native session recovery and safety are tested separately with real Mesa EGL.
+
+## Remaining presentation work
 
 Context recreation no longer destroys the Engine. `Engine` still intermixes UI state, texture IDs, the achievements service and link
 state. Replacing GLSurfaceView before this ownership boundary is separated risks
@@ -89,7 +109,7 @@ retain the session and its error state. GPU resources must be released while the
 own context is current, or explicitly abandoned after context loss; never delete
 old names against a new context. Test these transitions before backend selection.
 
-Then introduce a `SurfaceView` presenter that owns EGL on that same thread, with
+The prototype introduces a `SurfaceView` presenter that owns EGL on that same thread, with
 an in-APK reference path for GLSurfaceView. Keep core options, shaders, emulation
 cadence, Run-Ahead and audio policy constant for the first comparison. Record swap
 wall time, surface epochs and frame IDs; do not call swap duration or a GPU fence
@@ -98,7 +118,7 @@ frame request, while retaining ordered input/lifecycle commands. Explicitly cove
 pause, surface replacement, context loss and shutdown. The application bound alone
 does not prove Android's BufferQueue depth is bounded.
 
-Only after that prototype is valid, evaluate the presentation scheduler (including
+After the prototype passes device lifecycle validation, evaluate the presentation scheduler (including
 Swappy's presentation timestamps/fences), with the old Choreographer controller
 removed from that path. Do not silently change 59.728 Hz emulation to 60 Hz or hide
 misses by increasing audio buffering. At native cadence on a 60 Hz panel, a repeated
