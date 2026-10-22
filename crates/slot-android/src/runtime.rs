@@ -2381,6 +2381,22 @@ impl Engine {
                     }
                     return;
                 }
+                if self.game.is_some() && matches!(self.overlay, ShelfOverlay::States)
+                    && self.polaroids.as_ref().is_some_and(Polaroids::confirming) {
+                    // Original Slot 1.8: while "Delete this state?" shows,
+                    // only X deletes and B keeps; every other key is ignored.
+                    if pressed {
+                        match code {
+                            99 => self.delete_selected_polaroid(),
+                            97 => {
+                                if let Some(p) = self.polaroids.as_mut() { p.keep(); }
+                                self.update_polaroid_title();
+                            }
+                            _ => {}
+                        }
+                    }
+                    return;
+                }
                 if self.game.is_some() && matches!(self.overlay, ShelfOverlay::States) {
                     if pressed {
                         match code {
@@ -2402,19 +2418,8 @@ impl Engine {
                                 }
                                 self.overlay=ShelfOverlay::None;
                             }
-                            100 => { // Y deletes one Slot history entry only.
-                                if let (Some(game),Some(p))=(self.game.as_mut(),self.polaroids.as_mut()) {
-                                    if let Some(entry)=p.selected() {
-                                        if let Err(err)=game.delete_manual(&entry.stamp) {
-                                            set_message(format!("State delete failed: {err}"));
-                                        } else {
-                                            p.remove_selected();
-                                        }
-                                    }
-                                }
-                                if self.polaroids.as_ref().is_some_and(|p|p.is_empty()) {
-                                    self.overlay=ShelfOverlay::None;
-                                } else {
+                            100 => { // Y asks before deleting one Slot history entry.
+                                if self.polaroids.as_mut().is_some_and(Polaroids::ask_delete) {
                                     self.update_polaroid_title();
                                 }
                             }
@@ -4408,9 +4413,29 @@ impl Engine {
         }
     }
 
+    fn delete_selected_polaroid(&mut self) {
+        if let (Some(game),Some(p))=(self.game.as_mut(),self.polaroids.as_mut()) {
+            if let Some(entry)=p.selected() {
+                if let Err(err)=game.delete_manual(&entry.stamp) {
+                    set_message(format!("State delete failed: {err}"));
+                    p.keep();
+                } else {
+                    p.remove_selected();
+                }
+            }
+        }
+        if self.polaroids.as_ref().is_some_and(|p|p.is_empty()) {
+            self.overlay=ShelfOverlay::None;
+        } else {
+            self.update_polaroid_title();
+        }
+    }
+
     fn update_polaroid_title(&mut self) {
         let Some(p)=self.polaroids.as_mut() else {return;};
-        let face=title_face(&p.title(&stamp_now()));
+        let title=if p.confirming() { slot_ui::CONFIRM_TITLE.to_owned() }
+            else { p.title(&stamp_now()) };
+        let face=title_face(&title);
         let tex=match self.polaroid_title_texture {
             Some(tex)=>{
                 self.gpu.update_texture(tex,face.w,face.h,&face.rgba);
@@ -4453,6 +4478,11 @@ impl Engine {
             self.gpu.create_texture(face.w,face.h,&face.rgba)
         });
         polaroids.set_hint_faces(hint_faces.to_vec());
+        let confirm_faces=slot_ui::CONFIRM_LEGEND.map(|(key,label)| {
+            let face=hint_face(key,label);
+            self.gpu.create_texture(face.w,face.h,&face.rgba)
+        });
+        polaroids.set_confirm_faces(confirm_faces.to_vec());
         if game.undo_available() {polaroids.set_undo(Some("undo"));}
         self.polaroids=Some(polaroids);
         self.update_polaroid_title();

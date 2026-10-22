@@ -64,7 +64,9 @@ pub use plate::{
     Hint, UndoFace, ARROW_GAP, CAP, CAP_GAP,
     HINT_EDGE, HINT_GAP, HINT_H, LEGEND_GAP, TITLE_H, TITLE_W,
 };
-pub use polaroids::{photo_face, PhotoFace, Polaroids, DOT, LEGEND, PHOTO_H, PHOTO_W};
+pub use polaroids::{
+    photo_face, PhotoFace, Polaroids, CONFIRM_LEGEND, CONFIRM_TITLE, DOT, LEGEND, PHOTO_H, PHOTO_W,
+};
 pub use power_menu::{menu_face, PowerChoice, MENU_PAD};
 pub use quick_menu::{
     quick_caret_face, quick_label_face, quick_legend_faces, quick_value_face, QuickMenu,

@@ -20,6 +20,9 @@ const DOT_DIM: f32 = 0.35;
 const MARGIN: f32 = 16.0;
 
 pub const LEGEND: [(&str, &str); 3] = [("B", "Back"), ("Y", "Delete"), ("A", "Load")];
+/// Original Slot 1.8: Y only asks; X deletes and B keeps the state.
+pub const CONFIRM_LEGEND: [(&str, &str); 2] = [("B", "Keep"), ("X", "Delete")];
+pub const CONFIRM_TITLE: &str = "Delete this state?";
 const WAYS_OUT: usize = 2;
 const UNDO_KEY: &str = "X";
 
@@ -51,6 +54,8 @@ pub struct Polaroids {
     faces: Vec<TexId>,
     title: Option<TexId>,
     hint_faces: Vec<TexId>,
+    confirm_faces: Vec<TexId>,
+    confirming: bool,
     undo: Option<String>,
 }
 
@@ -62,6 +67,8 @@ impl Polaroids {
             faces: Vec::new(),
             title: None,
             hint_faces: Vec::new(),
+            confirm_faces: Vec::new(),
+            confirming: false,
             undo: None,
         }
     }
@@ -78,11 +85,33 @@ impl Polaroids {
         self.hint_faces = faces;
     }
 
+    pub fn set_confirm_faces(&mut self, faces: Vec<TexId>) {
+        self.confirm_faces = faces;
+    }
+
+    /// Y asks before anything is deleted. Returns whether the question is
+    /// now showing (an empty switcher has nothing to delete).
+    pub fn ask_delete(&mut self) -> bool {
+        self.confirming = self.selected().is_some();
+        self.confirming
+    }
+
+    pub fn confirming(&self) -> bool {
+        self.confirming
+    }
+
+    pub fn keep(&mut self) {
+        self.confirming = false;
+    }
+
     pub fn set_undo(&mut self, label: Option<&str>) {
         self.undo = label.map(str::to_string);
     }
 
     pub fn hints(&self) -> Vec<Hint> {
+        if self.confirming {
+            return hint_row(&CONFIRM_LEGEND);
+        }
         let mut out = hint_row(&LEGEND);
         if let Some(label) = &self.undo {
             out.push(Hint {
@@ -113,6 +142,7 @@ impl Polaroids {
     }
 
     pub fn remove_selected(&mut self) {
+        self.confirming = false;
         if self.index >= self.entries.len() {
             return;
         }
@@ -206,14 +236,20 @@ impl Polaroids {
             .iter()
             .map(|h| hint_width(h.key, &h.label) as f32)
             .collect();
-        let tail = &widths[WAYS_OUT..];
-        let tail_w = tail.iter().sum::<f32>() + HINT_GAP * (tail.len() - 1) as f32;
+        // The question keeps B on the left and puts X Delete on the right.
+        let (ways_out, faces) = if self.confirming {
+            (1, &self.confirm_faces)
+        } else {
+            (WAYS_OUT, &self.hint_faces)
+        };
+        let tail = &widths[ways_out.min(widths.len())..];
+        let tail_w = tail.iter().sum::<f32>() + HINT_GAP * tail.len().saturating_sub(1) as f32;
         let mut x = MARGIN;
         for (i, w) in widths.iter().enumerate() {
-            if i == WAYS_OUT {
+            if i == ways_out {
                 x = OUT_W as f32 - MARGIN - tail_w;
             }
-            out.push(hint_quad(x, y, *w, self.hint_faces.get(i).copied()));
+            out.push(hint_quad(x, y, *w, faces.get(i).copied()));
             x += w + HINT_GAP;
         }
         self.draw_dots(top, out);
