@@ -28,6 +28,8 @@ const PERIOD_SMOOTHING: f64 = 240.0;
 /// A measured period further than this from the reported refresh rate is
 /// not trusted.
 const PERIOD_TRUST: f64 = 0.02;
+/// On-time swaps averaged into one period sample in the swap-paced loop.
+const SWAP_WINDOW: u32 = 60;
 
 /// Number of core frames for this display callback, derived from VSync
 /// timestamps. A repeated stamp runs nothing; one refresh runs one frame; a
@@ -39,11 +41,22 @@ const PERIOD_TRUST: f64 = 0.02;
 /// panel sold as 60Hz may run at 60.3Hz), and audio resampled for the wrong
 /// rate piles up faster than Dynamic Rate Control's 0.5% can drain it.
 #[derive(Default, Debug)]
-pub struct VsyncSteps { last_vsync_ns: Option<i64>, period_ns: Option<f64> }
+pub struct VsyncSteps {
+    last_vsync_ns: Option<i64>,
+    period_ns: Option<f64>,
+    /// Swap-paced loop: start and length of the current run of on-time
+    /// swaps, averaged as one period sample so call jitter cancels out.
+    window_start_ns: Option<i64>,
+    window_frames: u32,
+}
 
 impl VsyncSteps {
     /// Forget the last stamp; the measured period survives pauses.
-    pub fn reset(&mut self) { self.last_vsync_ns = None; }
+    pub fn reset(&mut self) {
+        self.last_vsync_ns = None;
+        self.window_start_ns = None;
+        self.window_frames = 0;
+    }
 
     /// The measured refresh rate, or `reported_hz` until it is known.
     pub fn display_hz(&self, reported_hz: f64) -> f64 {
@@ -82,6 +95,44 @@ impl VsyncSteps {
             }
         }
         (whole as usize).clamp(1, 2)
+    }
+
+    /// RetroArch's own loop: run a frame, draw it, and let the blocking
+    /// buffer swap wait for the display. The swap is the clock, so every
+    /// call runs exactly one frame; `frame_ns` is when the call started. A
+    /// call less than half a refresh after the last one means the swap did
+    /// not wait for VSync: it runs nothing, so the game never speeds up.
+    pub fn swap_paced_steps(&mut self, frame_ns: i64, display_hz: f64) -> usize {
+        if frame_ns <= 0 || !(display_hz > 0.0) {
+            self.reset();
+            return 1;
+        }
+        let Some(previous) = self.last_vsync_ns else {
+            self.last_vsync_ns = Some(frame_ns);
+            return 1;
+        };
+        let nominal = 1e9 / display_hz;
+        let delta = (frame_ns - previous) as f64;
+        if delta < nominal / 2.0 && delta >= 0.0 { return 0; }
+        self.last_vsync_ns = Some(frame_ns);
+        if delta < 0.0 || delta > nominal * 1.5 {
+            // Missed refresh or pause: start a new measuring run here.
+            self.window_start_ns = Some(frame_ns);
+            self.window_frames = 0;
+            return 1;
+        }
+        let start = *self.window_start_ns.get_or_insert(previous);
+        self.window_frames += 1;
+        if self.window_frames >= SWAP_WINDOW {
+            let sample = (frame_ns - start) as f64 / f64::from(self.window_frames);
+            if (sample / nominal - 1.0).abs() <= PERIOD_TRUST {
+                let p = self.period_ns.get_or_insert(nominal);
+                *p += (sample - *p) * f64::from(SWAP_WINDOW) / PERIOD_SMOOTHING;
+            }
+            self.window_start_ns = Some(frame_ns);
+            self.window_frames = 0;
+        }
+        1
     }
 }
 
@@ -309,6 +360,32 @@ mod tests {
         assert!(!display_can_clock_core(120.0, GBA_FPS));
         assert!(!display_can_clock_core(0.0, GBA_FPS));
         assert!(!display_can_clock_core(f64::NAN, GBA_FPS));
+    }
+
+    #[test]
+    fn ra_sync_swap_paced_loop_runs_one_frame_per_swap() {
+        let mut v = VsyncSteps::default();
+        let p = 16_666_667i64;
+        assert_eq!(v.swap_paced_steps(1_000_000_000, 60.0), 1);
+        // A late swap still runs one frame: the game slows, it never bursts.
+        assert_eq!(v.swap_paced_steps(1_000_000_000 + 2 * p, 60.0), 1);
+        assert_eq!(v.swap_paced_steps(1_000_000_000 + 3 * p, 60.0), 1);
+        // A swap that did not wait for VSync runs nothing.
+        assert_eq!(v.swap_paced_steps(1_000_000_000 + 3 * p + 2_000_000, 60.0), 0);
+        assert_eq!(v.swap_paced_steps(1_000_000_000 + 4 * p, 60.0), 1);
+        assert_eq!(v.swap_paced_steps(0, 60.0), 1);
+    }
+
+    #[test]
+    fn ra_sync_swap_paced_loop_measures_the_real_refresh() {
+        let mut v = VsyncSteps::default();
+        let real = 1e9 / 60.3;
+        for i in 0..2_000 {
+            // Start times jitter around the swap by +/-1ms.
+            let jitter = if i % 2 == 0 { 1_000_000.0 } else { -1_000_000.0 };
+            v.swap_paced_steps((1e9 + real * i as f64 + jitter) as i64, 60.0);
+        }
+        assert!((v.display_hz(60.0) - 60.3).abs() < 0.05, "{}", v.display_hz(60.0));
     }
 
     #[test]

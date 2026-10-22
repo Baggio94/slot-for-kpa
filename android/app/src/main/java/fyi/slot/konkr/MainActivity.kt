@@ -126,6 +126,9 @@ class MainActivity : Activity() {
     external fun nativeAudioQueuedShorts(): Int
     external fun nativeSetMgbaLinkRecoveryEnabled(enabled: Boolean)
     external fun nativeDisplaySyncEnabled(): Boolean
+    // RETROARCH pacing loop: swap-paced (RetroArch's own loop) or VSync callbacks.
+    external fun nativeSetRaSwapLoop(enabled: Boolean)
+    external fun nativeRaSwapLoopEligible(): Boolean
     external fun nativeAudioSpeedPermille(): Int
     external fun nativeFastAudioSupported(supported: Boolean)
     external fun nativeReadAudioInto(samples: ShortArray): Int
@@ -238,6 +241,10 @@ class MainActivity : Activity() {
     private lateinit var shelfStatus: SlotStatusIndicators
     private var lastPerfPoll = 0L
     @Volatile private var displaySyncApplied = false
+    // RETROARCH swap-paced loop: render continuously and let the blocking
+    // buffer swap pace the core, as RetroArch does. Development launch extra.
+    private var raSwapLoopPreferred = false
+    @Volatile private var raSwapLoopApplied = false
     @Volatile private var latestVsyncFrameNs = 0L
     // Beta10 read-only Choreographer delivery telemetry (UI thread).
     // These are UI callbacks, never confirmed display-present timestamps.
@@ -258,7 +265,8 @@ class MainActivity : Activity() {
     // STANDARD and RESPONSIVE retain their original render policy.
     private val vsyncCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            if (!displaySyncApplied || !resumed || isDestroyed || view.ownsScheduler) return
+            if (!displaySyncApplied || raSwapLoopApplied || !resumed || isDestroyed ||
+                view.ownsScheduler) return
             recordVsync(frameTimeNanos)
             view.requestRender()
             Choreographer.getInstance().postFrameCallback(this)
@@ -287,23 +295,28 @@ class MainActivity : Activity() {
     private fun updateDisplaySyncMode() {
         if (!::view.isInitialized) return
         val enabled = resumed && nativeIsPlaying() && nativeDisplaySyncEnabled()
-        if (enabled == displaySyncApplied) return
+        val swapLoop = enabled && raSwapLoopPreferred && !view.ownsScheduler &&
+            nativeRaSwapLoopEligible()
+        if (enabled == displaySyncApplied && swapLoop == raSwapLoopApplied) return
         if (enabled) publishDisplayRefresh()
         // Diagnostic-only event: a switch from continuous GL rendering to
         // Choreographer during the first 100ms of gameplay could explain
         // an isolated startup hitch. Do not change frame scheduling here.
         Log.i(TAG, "Game display pacing transition: " +
-            (if (view.ownsScheduler) "EGL owner" else if (enabled) "Choreographer" else "Continuous") +
+            (if (view.ownsScheduler) "EGL owner" else if (swapLoop) "Swap-paced"
+                else if (enabled) "Choreographer" else "Continuous") +
             ", playing=${nativeIsPlaying()}")
         displaySyncApplied = enabled
+        raSwapLoopApplied = swapLoop
         if (view.ownsScheduler) {
             // Owner-thread Choreographer is the only producer in this path.
             // Continuous/dirty here is controlled solely by the shelf policy.
             Choreographer.getInstance().removeFrameCallback(vsyncCallback)
             return
         }
-        if (enabled) {
+        if (enabled && !swapLoop) {
             view.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+            Choreographer.getInstance().removeFrameCallback(vsyncCallback)
             Choreographer.getInstance().postFrameCallback(vsyncCallback)
         } else {
             Choreographer.getInstance().removeFrameCallback(vsyncCallback)
@@ -837,7 +850,10 @@ class MainActivity : Activity() {
                 var a12NativeUs = 0L
                 if (ready) {
                     val beginNativeNs = SystemClock.elapsedRealtimeNanos()
-                    nativeDrawFrame(if (displaySyncApplied) latestVsyncFrameNs else 0L)
+                    // Swap-paced loop: this call's start time, right after
+                    // the previous blocking swap, stands in for the VSync.
+                    nativeDrawFrame(if (raSwapLoopApplied) System.nanoTime()
+                        else if (displaySyncApplied) latestVsyncFrameNs else 0L)
                     a12NativeUs = (SystemClock.elapsedRealtimeNanos() - beginNativeNs) / 1000L
                     // Notify the existing AudioTrack worker that libretro
                     // may have produced samples. Never block GL on audio.
@@ -932,6 +948,14 @@ class MainActivity : Activity() {
             presenterPrefs.edit().putString("development_presenter", requestedPresenter).apply()
         }
         val controlledEgl = presenterPrefs.getString("development_presenter", "glsurfaceview") == "controlled-egl"
+        val requestedRaLoop = intent.getStringExtra("slot_ra_loop")
+        if (requestedRaLoop in setOf("swap", "vsync")) {
+            presenterPrefs.edit().putString("development_ra_loop", requestedRaLoop).apply()
+        }
+        raSwapLoopPreferred = !controlledEgl &&
+            presenterPrefs.getString("development_ra_loop", "vsync") == "swap"
+        nativeSetRaSwapLoop(raSwapLoopPreferred)
+        Log.i(TAG, "RETROARCH loop: " + if (raSwapLoopPreferred) "swap-paced (experimental)" else "vsync callbacks")
         Log.i(TAG, "Slot presenter: " + if (controlledEgl) "controlled-egl (experimental)" else "glsurfaceview (reference)")
         view = if (controlledEgl) ControlledEglPresenter(this, renderer,
             beforeFrame = { timestamp -> recordVsync(timestamp) },
@@ -2771,6 +2795,7 @@ class MainActivity : Activity() {
         if (displaySyncApplied) {
             view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
             displaySyncApplied = false
+            raSwapLoopApplied = false
         }
         if (view.ownsScheduler) view.onPause()
         stopAudio()

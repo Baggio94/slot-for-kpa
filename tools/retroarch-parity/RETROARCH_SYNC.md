@@ -31,6 +31,17 @@ panel: VSync on, "Sync to Exact Content Framerate" off, Dynamic Rate Control on.
   running ahead on every frame (and avoids gpSP's JIT flush on every frame).
   The Run-Ahead guards (Pokémon FLASH1M, SMA4, Link) still apply, and a
   failed rollback quarantines the session exactly like Run-Ahead.
+- **Swap-paced loop (experimental):** by default each frame starts on an
+  Android Choreographer VSync and is handed to the GL thread. RetroArch
+  instead loops on its own: run one frame, draw it, swap, and the blocking
+  swap waits for the display. The same APK can run that loop, selected with
+  a development launch extra (kept across restarts):
+  `adb shell am start -S -n fyi.slot.konkr/.MainActivity --es slot_ra_loop swap`
+  (`vsync` goes back). GLSurfaceView then renders continuously, every call
+  runs exactly one core frame (a late swap slows the game rather than
+  bursting; a swap that did not wait runs nothing), and the refresh rate is
+  measured over runs of 60 on-time swaps. Frame Delay is off in this loop,
+  since nothing marks the VSync. The diagnostics line reports `ra_loop`.
 - **Fallbacks:** if the panel is more than 5% away from the core rate
   (RetroArch's `audio_max_timing_skew`, e.g. 90/120Hz), the mode uses the
   RA CLOCK LAB clock but keeps resampling and rate control. Link sessions keep

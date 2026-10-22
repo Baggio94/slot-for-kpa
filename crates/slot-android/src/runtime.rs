@@ -204,6 +204,12 @@ static DISPLAY_REFRESH_MILLIHZ: AtomicI32 = AtomicI32::new(0);
 static AUDIO_OUT_QUEUED_FRAMES: AtomicI32 = AtomicI32::new(0);
 static AUDIO_OUT_CAPACITY_FRAMES: AtomicI32 = AtomicI32::new(0);
 static DISPLAY_SYNC: AtomicBool = AtomicBool::new(false);
+// RETROARCH pacing loop chosen in Kotlin (development launch extra): false
+// renders on each Choreographer VSync, true runs RetroArch's own loop where
+// the blocking buffer swap paces the core. RA_SWAP_ELIGIBLE: a solo game in
+// RETROARCH mode is running, so Kotlin may switch to that loop.
+static RA_SWAP_LOOP: AtomicBool = AtomicBool::new(false);
+static RA_SWAP_ELIGIBLE: AtomicBool = AtomicBool::new(false);
 // Updated by the GL owner after an entirely settled, fully preloaded shelf frame.
 // Kotlin may switch the idle carousel to requestRender without affecting games.
 static CAROUSEL_QUIET: AtomicBool = AtomicBool::new(false);
@@ -3439,6 +3445,7 @@ impl Engine {
             && !self.exiting_screen && !self.rewind_held
             && !self.ff_held && !self.ff_latched && !session.linked()
             && self.current_emulation().retroarch_sync_pacing
+            && !RA_SWAP_LOOP.load(Ordering::Acquire)
             && crate::ra_sync::display_can_clock_core(display_hz, session.fps);
         clocked.then(|| self.frame_delay.delay_ns())
     }
@@ -4619,7 +4626,7 @@ impl Engine {
                     .map(|g| g.take_runahead_probe()).unwrap_or_default();
                 *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
                     Some(format!(
-                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} runahead_second_instance_calls={} runahead_preemptive_rollbacks={} ra_sync_rate_adjust={:.5} ra_display_hz={:.3} frame_delay_ms={:.1} linked={linked}",
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} runahead_second_instance_calls={} runahead_preemptive_rollbacks={} ra_sync_rate_adjust={:.5} ra_display_hz={:.3} frame_delay_ms={:.1} ra_loop={} linked={linked}",
                         self.game_accum * 1000.0,
                         self.perf_step0, self.perf_step1, self.perf_step_multi,
                         requested, probe.calls, probe.snapshots_us,
@@ -4628,7 +4635,8 @@ impl Engine {
                         probe.preemptive_rollbacks, self.ra_adjust,
                         self.ra_sync_steps.display_hz(
                             f64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire)) / 1000.0),
-                        self.frame_delay.delay_ns() as f64 / 1e6));
+                        self.frame_delay.delay_ns() as f64 / 1e6,
+                        if RA_SWAP_LOOP.load(Ordering::Acquire) { "swap" } else { "vsync" }));
                 if show_fps {
                     *PERF_STATUS.lock().unwrap_or_else(|e|e.into_inner()) =
                         Some(format!("EMU {emu:.1}/{target:.1} | DISPLAY {render:.1} | CATCHUP {catchup:.0}%"));
@@ -4944,6 +4952,9 @@ impl Engine {
                 || profile.retroarch_sync_pacing)
                 && self.game.as_ref().is_some_and(GameSession::linked)),
             Ordering::Release);
+        RA_SWAP_ELIGIBLE.store(profile.retroarch_sync_pacing
+            && self.game.as_ref().is_some_and(|session| !session.linked()),
+            Ordering::Release);
         // Grab clear-cart textures before borrowing the mutable emulator
         // session. They are used only for the 220ms CRT start transition.
         let (transition_back, transition_front) = self.clear_layers();
@@ -5067,7 +5078,11 @@ impl Engine {
                 // can run in any single callback; Beta 4 catch-up stays gone.
                 if ra_display_clocked {
                     // No fractional debt: run exactly the refreshes that elapsed.
-                    let refreshes = self.ra_sync_steps.steps(vsync_frame_ns, display_hz);
+                    let refreshes = if RA_SWAP_LOOP.load(Ordering::Acquire) {
+                        self.ra_sync_steps.swap_paced_steps(vsync_frame_ns, display_hz)
+                    } else {
+                        self.ra_sync_steps.steps(vsync_frame_ns, display_hz)
+                    };
                     self.game_accum = period * refreshes as f64;
                 } else if mgba_cable_pacing {
                     self.ra_sync_steps.reset();
@@ -7068,6 +7083,19 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioQueuedShorts(
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetDisplayRefresh(
     _env: *mut c_void, _this: *mut c_void, millihz: jint,
 ) { DISPLAY_REFRESH_MILLIHZ.store(millihz.max(0), Ordering::Release); }
+
+/// RETROARCH pacing loop: true runs RetroArch's swap-paced loop (Kotlin
+/// renders continuously), false renders on each Choreographer VSync.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetRaSwapLoop(
+    _env: *mut c_void, _this: *mut c_void, enabled: jboolean,
+) { RA_SWAP_LOOP.store(enabled != 0, Ordering::Release); }
+
+/// A solo game runs in RETROARCH mode, so the swap-paced loop may be used.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRaSwapLoopEligible(
+    _env: *mut c_void, _this: *mut c_void,
+) -> jboolean { if RA_SWAP_ELIGIBLE.load(Ordering::Acquire) { 1 } else { 0 } }
 
 /// RETROARCH pacing: AudioTrack frames waiting to play and the size of its
 /// buffer, sampled by the audio worker before each write. Read-only for
