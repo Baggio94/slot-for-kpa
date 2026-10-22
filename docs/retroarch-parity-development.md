@@ -31,7 +31,7 @@ before changing the presentation architecture does not answer the next question.
   The fake core deliberately keeps audio mixer state outside its ordinary state,
   so the test detects a missing audio-sidecar restoration.
 
-Local verification: 247 Android session/runtime/probe tests, 40 achievements and
+Local verification: 248 Android session/runtime/probe tests, 40 achievements and
 63 libretro tests passed (one pre-existing ignored achievements test), plus 28
 Emulation Lab and 19 parity-tool Python tests. Dedicated CI additionally compiles
 and links the Android ARM64 library and compiles/tests both Kotlin build variants.

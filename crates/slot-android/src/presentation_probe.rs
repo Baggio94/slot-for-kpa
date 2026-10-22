@@ -72,6 +72,10 @@ impl PresentationProbe {
             }
             let Some(id) = id else {
                 self.pending.pop_front();
+                // The capture error may have been reported in the previous
+                // window. Account for the missing sample when its turn to
+                // present arrives too, so this window cannot claim completeness.
+                self.pending_lost += 1;
                 self.last_present_ns = 0;
                 continue;
             };
@@ -339,21 +343,36 @@ mod tests {
     }
 
     #[test]
+    fn next_id_error_before_report_stays_incomplete_when_the_missing_sample_matures() {
+        let mut probe = PresentationProbe::new();
+        let mut driver = Driver::default();
+        for _ in 0..10 {
+            probe.tick(&mut driver);
+        }
+        driver.fail_next = true;
+        probe.tick(&mut driver);
+        assert!(probe.report("supported").contains("errors=1"));
+        for _ in 0..10 {
+            probe.tick(&mut driver);
+        }
+        let report = probe.report("supported");
+        assert!(report.contains("present_fps_valid=false"), "{report}");
+        assert!(report.contains("lost=1 errors=0"), "{report}");
+        assert_eq!(probe.gap_over25, 0);
+    }
+
+    #[test]
     fn incomplete_or_unsupported_timestamps_never_claim_presentation_fps() {
         let mut probe = PresentationProbe::new();
-        assert!(
-            probe
-                .report("unsupported_extension")
-                .contains("present_fps_valid=false")
-        );
+        assert!(probe
+            .report("unsupported_extension")
+            .contains("present_fps_valid=false"));
         let mut driver = Driver::default();
         for _ in 0..6 {
             probe.tick(&mut driver);
         }
-        assert!(
-            probe
-                .report("supported")
-                .contains("present_fps_valid=false")
-        );
+        assert!(probe
+            .report("supported")
+            .contains("present_fps_valid=false"));
     }
 }
