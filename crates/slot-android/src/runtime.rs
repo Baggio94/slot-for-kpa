@@ -396,7 +396,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 118] = [
+const MENU_TEXT: [&str; 117] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -436,7 +436,7 @@ const MENU_TEXT: [&str; 118] = [
     "GB Palettes",                      // 36
     "Rewind",                           // 37
     "X/Y Buttons",                       // 38
-    "Save State on Eject",              // 39, original Slot 1.8.1 name
+    "Auto Save on Eject",               // 39
     "",                                 // 40 retired
     "",                                 // 41 retired
     "",                                 // 42 retired
@@ -514,12 +514,11 @@ const MENU_TEXT: [&str; 118] = [
     "DOWNLOADING...",                    // 114
     "AVAILABLE",                         // 115
     "Time Format",                       // 116, Its-TroyM PR #2
-    "Load State on Insert",              // 117, original Slot 1.8.1
 ];
 
 /// Gameplay page labels and the Settings keys they change, in row order.
-const GAMEPLAY_ROWS: [usize; 7] = [27, 28, 37, 38, 30, 39, 117];
-const GAMEPLAY_KEYS: [usize; 7] = [4, 5, 6, 7, 8, 9, 29];
+const GAMEPLAY_ROWS: [usize; 6] = [27, 28, 37, 38, 30, 39];
+const GAMEPLAY_KEYS: [usize; 6] = [4, 5, 6, 7, 8, 9];
 
 const INTERFACE_ROWS: [usize; 4] = [63, 64, 65, 116];
 const INTERFACE_KEYS: [usize; 4] = [13, 14, 15, 28];
@@ -3208,7 +3207,7 @@ impl Engine {
             let resume_preference = NEXT_RESUME_MODE.swap(-1, Ordering::AcqRel);
             let wants_state = match resume_preference {
                 0 => false, 1 => true,
-                _ => effective_settings.load_state_on_insert() && !self.fresh_launch,
+                _ => effective_settings.eject_save && !self.fresh_launch,
             };
             match GameSession::open(Path::new(local), &core_file, &storage,
                 core, platform, wants_state,
@@ -3910,7 +3909,6 @@ impl Engine {
             7 => if scoped.turbo { 15 } else { 16 },
             8 => if scoped.rumble { 4 } else { 5 },
             9 => if scoped.eject_save { 4 } else { 5 },
-            29 => if scoped.load_state_on_insert() { 4 } else { 5 },
             10 => if profile.show_fps { 4 } else { 5 },
             11 => if profile.retroarch_sync_pacing { 44 }
                 else if profile.retroarch_clock_pacing { 43 }

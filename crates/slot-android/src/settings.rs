@@ -203,11 +203,6 @@ pub struct Settings {
     // X/Y Buttons: true = Slot's original Turbo, false = Y=A and X=B.
     // Existing persisted turbo=false now selects the alternative A/B mapping.
     pub turbo: bool, pub eject_save: bool,
-    /// Original Slot 1.8.1 "Load State on Insert" (#130). None until the
-    /// row is first changed: older installs keep loading their state on
-    /// insert exactly when they save one on eject, as before.
-    #[serde(default)]
-    pub auto_load: Option<bool>,
     // Optional one-line FPS display and latency settings.
     pub show_fps: bool, pub responsive_pacing: bool,
     // Choreographer-driven display callbacks, with a single real core
@@ -251,7 +246,7 @@ impl Default for Settings {
             bezel_gba: Bezel::None, bezel_gbc: Bezel::Default, bezel_gb: Bezel::Default,
             gb_palettes: false, gb_palette: 1, rewind: true,
             rewind_speed: 2,
-            turbo: true, eject_save: true, auto_load: None,
+            turbo: true, eject_save: true,
             show_fps: false, responsive_pacing: false,
             display_sync_pacing: false, hybrid_pacing: false,
             retroarch_clock_pacing: false,
@@ -357,9 +352,6 @@ impl Settings {
         // Settings.json that silently resets every preference.
         slot_store::atomic_write(&dir.join(NAME), &bytes)
     }
-    pub fn load_state_on_insert(&self) -> bool {
-        self.auto_load.unwrap_or(self.eject_save)
-    }
     pub fn shader_for(&self, platform: slot_store::Platform)->Shader {
         match platform {
             slot_store::Platform::Gba=>self.shader_gba,
@@ -435,7 +427,6 @@ impl Settings {
             7 => self.turbo = !self.turbo,
             8 => self.rumble = !self.rumble,
             9 => self.eject_save = !self.eject_save,
-            29 => self.auto_load = Some(!self.load_state_on_insert()),
             10 => self.show_fps = !self.show_fps,
             11 => cycle_pacing(&mut self.responsive_pacing,
                 &mut self.display_sync_pacing, &mut self.hybrid_pacing,
@@ -1033,22 +1024,6 @@ mod tests {
         assert!(s.change(10, true) && s.show_fps);
         assert!(s.change(11, true) && s.responsive_pacing);
         assert!(s.change(12, true) && s.run_ahead_frames == 1);
-    }
-    #[test]
-    fn load_state_on_insert_follows_eject_until_changed() {
-        // Older installs: inserting loads a state exactly when ejecting saves one.
-        let old: Settings = serde_json::from_str(r#"{"eject_save":false}"#).unwrap();
-        assert_eq!(old.auto_load, None);
-        assert!(!old.load_state_on_insert());
-        let mut s = Settings::default();
-        assert!(s.load_state_on_insert());
-        // Once changed, the two rows are independent.
-        assert!(s.change(29, true));
-        assert_eq!(s.auto_load, Some(false));
-        assert!(s.change(9, true));
-        assert!(!s.eject_save && !s.load_state_on_insert());
-        assert!(s.change(29, true));
-        assert!(s.load_state_on_insert() && !s.eject_save);
     }
     #[test]
     fn fast_forward_off_survives_a_round_trip() {

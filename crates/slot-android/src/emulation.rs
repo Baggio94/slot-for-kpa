@@ -30,7 +30,6 @@ pub struct EmulationProfile {
     pub turbo_override: Option<bool>, // original KONKR "X/Y Buttons"
     pub rumble_override: Option<bool>,
     pub eject_save_override: Option<bool>,
-    pub auto_load_override: Option<bool>,
 }
 impl Default for EmulationProfile {
     fn default() -> Self {
@@ -44,7 +43,7 @@ impl Default for EmulationProfile {
             ff_sound_override: None, rewind_override: None,
             rewind_speed_override: None,
             turbo_override: None, rumble_override: None,
-            eject_save_override: None, auto_load_override: None }
+            eject_save_override: None }
     }
 }
 impl EmulationProfile {
@@ -63,7 +62,7 @@ impl EmulationProfile {
             ff_sound_override: None, rewind_override: None,
             rewind_speed_override: None,
             turbo_override: None, rumble_override: None,
-            eject_save_override: None, auto_load_override: None }
+            eject_save_override: None }
     }
     /// Materialise the *current* game's per-ROM settings without mutating
     /// Settings.json or any other game's configured defaults.
@@ -88,7 +87,6 @@ impl EmulationProfile {
         if let Some(value)=self.turbo_override { settings.turbo=value; }
         if let Some(value)=self.rumble_override { settings.rumble=value; }
         if let Some(value)=self.eject_save_override { settings.eject_save=value; }
-        if let Some(value)=self.auto_load_override { settings.auto_load=Some(value); }
     }
 
     /// Screen/Gameplay pause edits are scoped to the current cart and core.
@@ -130,7 +128,6 @@ impl EmulationProfile {
             7 => self.turbo_override=Some(view.turbo),
             8 => self.rumble_override=Some(view.rumble),
             9 => self.eject_save_override=Some(view.eject_save),
-            29 => self.auto_load_override=Some(view.load_state_on_insert()),
             _ => return false,
         }
         true
