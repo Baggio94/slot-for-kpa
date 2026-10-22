@@ -90,6 +90,15 @@ fn drill_dozer_mgba_gbp_bypass(rom: &Path, which: Core, platform: Platform) -> b
         && code.starts_with(b"V49") && code[3].is_ascii_uppercase()
 }
 
+/// The core's own PCM rate, never altered except for absurd values. mGBA
+/// emits Game Boy / Color audio at 131072Hz: the old 96kHz ceiling played it
+/// 27% slow (and, once the queue filled, chopped) in every pacing mode, and
+/// made RETROARCH resample it for the wrong rate. AudioTrack takes up to
+/// 192kHz on every Android this app supports (minSdk 31).
+pub(crate) fn core_sample_rate(reported: i32) -> i32 {
+    reported.clamp(8_000, 192_000)
+}
+
 fn sma4_runahead_guard(rom: &Path, platform: Platform) -> bool {
     if platform != Platform::Gba { return false; }
     let Ok(mut file) = std::fs::File::open(rom) else { return false; };
@@ -689,7 +698,7 @@ impl GameSession {
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
             pending_undo: None, last_sram: Instant::now(), battery_writer,
-            sample_rate: sample_rate.clamp(8_000, 96_000),
+            sample_rate: core_sample_rate(sample_rate),
             fps,
         })
     }
@@ -1636,6 +1645,13 @@ impl Drop for GameSession {
 #[cfg(test)]
 mod pokemon_flash_guard_tests {
     use super::*;
+    #[test]
+    fn game_boy_audio_keeps_its_131072hz_rate() {
+        assert_eq!(core_sample_rate(131_072), 131_072, "mGBA GB/GBC");
+        assert_eq!(core_sample_rate(65_536), 65_536, "mGBA GBA, gpSP");
+        assert_eq!(core_sample_rate(1_000_000), 192_000);
+        assert_eq!(core_sample_rate(0), 8_000);
+    }
     #[test]
     fn flash_guard_accepts_complete_checksum_banks_and_rejects_partial_erase() {
         fn write_sector(image: &mut [u8], physical: usize, section: usize, counter: u32) {
