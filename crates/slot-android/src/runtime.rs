@@ -614,11 +614,9 @@ struct Engine {
     ra_resampled: Vec<i16>,
     ra_adjust: f64,
     /// RETROARCH mode's automatic Frame Delay; `frame_delay_used_ns` is the
-    /// wait applied in this callback and `frame_delay_missed` records that a
-    /// refresh went by without a frame.
+    /// wait applied in this callback.
     frame_delay: crate::ra_sync::FrameDelay,
     frame_delay_used_ns: Option<i64>,
-    frame_delay_missed: bool,
     perf_last: Instant,
     perf_rendered: u32,
     perf_emulated: u32,
@@ -1141,7 +1139,6 @@ impl Engine {
             ra_adjust: 1.0,
             frame_delay: crate::ra_sync::FrameDelay::default(),
             frame_delay_used_ns: None,
-            frame_delay_missed: false,
             perf_last: now,
             perf_rendered: 0,
             perf_emulated: 0,
@@ -3449,12 +3446,12 @@ impl Engine {
     /// Called once the frame is drawn: feeds this callback's cost (VSync to
     /// now, minus the delay) back into the automatic Frame Delay.
     fn observe_frame_delay(&mut self, vsync_frame_ns: i64) {
-        let missed = std::mem::take(&mut self.frame_delay_missed);
         let Some(delay) = self.frame_delay_used_ns.take() else { return };
-        let millihz = i64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire));
-        if millihz <= 0 { return; }
+        let reported = f64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire)) / 1000.0;
+        if !(reported > 0.0) { return; }
+        let period = (1e9 / self.ra_sync_steps.display_hz(reported)) as i64;
         let cost = crate::ra_sync::monotonic_ns() - vsync_frame_ns - delay;
-        self.frame_delay.observe(cost, missed, 1_000_000_000_000 / millihz);
+        self.frame_delay.observe_frame(cost, period);
     }
 
     fn current_emulation(&self) -> EmulationProfile {
@@ -4622,13 +4619,15 @@ impl Engine {
                     .map(|g| g.take_runahead_probe()).unwrap_or_default();
                 *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
                     Some(format!(
-                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} runahead_second_instance_calls={} runahead_preemptive_rollbacks={} ra_sync_rate_adjust={:.5} frame_delay_ms={:.1} linked={linked}",
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} runahead_second_instance_calls={} runahead_preemptive_rollbacks={} ra_sync_rate_adjust={:.5} ra_display_hz={:.3} frame_delay_ms={:.1} linked={linked}",
                         self.game_accum * 1000.0,
                         self.perf_step0, self.perf_step1, self.perf_step_multi,
                         requested, probe.calls, probe.snapshots_us,
                         probe.speculative_us, probe.restores_us, probe.max_us,
                         probe.failures, probe.second_instance_calls,
                         probe.preemptive_rollbacks, self.ra_adjust,
+                        self.ra_sync_steps.display_hz(
+                            f64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire)) / 1000.0),
                         self.frame_delay.delay_ns() as f64 / 1e6));
                 if show_fps {
                     *PERF_STATUS.lock().unwrap_or_else(|e|e.into_inner()) =
@@ -5026,7 +5025,8 @@ impl Engine {
                 let ra_ratio = if ra_sync {
                     let core_rate = f64::from(session.sample_rate);
                     let base = if ra_display_clocked {
-                        crate::ra_sync::base_ratio(core_rate, session.fps, display_hz)
+                        crate::ra_sync::base_ratio(core_rate, session.fps,
+                            self.ra_sync_steps.display_hz(display_hz))
                     } else { f64::from(crate::ra_sync::OUTPUT_RATE) / core_rate };
                     self.ra_adjust = if fast { 1.0 } else {
                         let fifo_frames = AUDIO.lock().unwrap_or_else(|e| e.into_inner()).len() / 2;
@@ -5068,7 +5068,6 @@ impl Engine {
                 if ra_display_clocked {
                     // No fractional debt: run exactly the refreshes that elapsed.
                     let refreshes = self.ra_sync_steps.steps(vsync_frame_ns, display_hz);
-                    self.frame_delay_missed |= refreshes > 1;
                     self.game_accum = period * refreshes as f64;
                 } else if mgba_cable_pacing {
                     self.ra_sync_steps.reset();
@@ -5185,8 +5184,15 @@ impl Engine {
                                 self.ra_resampler.process(&samples, ra_ratio, &mut self.ra_resampled);
                                 &self.ra_resampled
                             } else { &samples };
+                            // RETROARCH keeps at most one output buffer
+                            // waiting here, so audio can never lag the picture
+                            // by more than that even if production runs fast.
+                            let limit = if ra_sync && !fast {
+                                crate::ra_sync::fifo_limit_shorts(
+                                    AUDIO_OUT_CAPACITY_FRAMES.load(Ordering::Acquire).max(0) as usize)
+                            } else { 96_000 };
                             let dropped = crate::audio_pcm::enqueue_pcm_bounded(
-                                &mut audio, pcm, 96_000);
+                                &mut audio, pcm, limit);
                             if dropped > 0 {
                                 AUDIO_FIFO_OVERFLOW_EVENTS.fetch_add(1, Ordering::Relaxed);
                                 AUDIO_FIFO_DROPPED_SHORTS.fetch_add(dropped as u64, Ordering::Relaxed);

@@ -23,15 +23,41 @@ pub fn display_can_clock_core(display_hz: f64, core_fps: f64) -> bool {
         && ((display_hz - core_fps) / core_fps).abs() <= MAX_TIMING_SKEW
 }
 
+/// Refreshes averaged by the measured display period (4s at 60Hz).
+const PERIOD_SMOOTHING: f64 = 240.0;
+/// A measured period further than this from the reported refresh rate is
+/// not trusted.
+const PERIOD_TRUST: f64 = 0.02;
+
 /// Number of core frames for this display callback, derived from VSync
 /// timestamps. A repeated stamp runs nothing; one refresh runs one frame; a
 /// missed refresh runs at most one extra frame so game speed is kept without
 /// catch-up bursts. Missing, backwards or long gaps (pause, suspend) run one.
+///
+/// It also measures the real refresh period from the same timestamps, like
+/// RetroArch's measured refresh rate: Android rounds the reported rate (a
+/// panel sold as 60Hz may run at 60.3Hz), and audio resampled for the wrong
+/// rate piles up faster than Dynamic Rate Control's 0.5% can drain it.
 #[derive(Default, Debug)]
-pub struct VsyncSteps { last_vsync_ns: Option<i64> }
+pub struct VsyncSteps { last_vsync_ns: Option<i64>, period_ns: Option<f64> }
 
 impl VsyncSteps {
+    /// Forget the last stamp; the measured period survives pauses.
     pub fn reset(&mut self) { self.last_vsync_ns = None; }
+
+    /// The measured refresh rate, or `reported_hz` until it is known.
+    pub fn display_hz(&self, reported_hz: f64) -> f64 {
+        match self.trusted_period(reported_hz) {
+            Some(period) => 1e9 / period,
+            None => reported_hz,
+        }
+    }
+
+    fn trusted_period(&self, reported_hz: f64) -> Option<f64> {
+        if !(reported_hz > 0.0) { return None; }
+        let nominal = 1e9 / reported_hz;
+        self.period_ns.filter(|p| (p / nominal - 1.0).abs() <= PERIOD_TRUST)
+    }
 
     pub fn steps(&mut self, frame_ns: i64, display_hz: f64) -> usize {
         if frame_ns <= 0 || !(display_hz > 0.0) {
@@ -42,9 +68,20 @@ impl VsyncSteps {
         let Some(previous) = previous else { return 1 };
         if frame_ns == previous { return 0; }
         if frame_ns < previous { return 1; }
-        let refreshes = (frame_ns - previous) as f64 * 1e-9 * display_hz;
+        let nominal = 1e9 / display_hz;
+        let period = self.trusted_period(display_hz).unwrap_or(nominal);
+        let delta = (frame_ns - previous) as f64;
+        let refreshes = delta / period;
         if refreshes > 8.0 { return 1; }
-        (refreshes.round() as usize).clamp(1, 2)
+        let whole = refreshes.round();
+        if (1.0..=2.0).contains(&whole) && (refreshes - whole).abs() < 0.25 {
+            let sample = delta / whole;
+            if (sample / nominal - 1.0).abs() <= PERIOD_TRUST {
+                let p = self.period_ns.get_or_insert(nominal);
+                *p += (sample - *p) / PERIOD_SMOOTHING;
+            }
+        }
+        (whole as usize).clamp(1, 2)
     }
 }
 
@@ -200,7 +237,15 @@ impl FrameDelay {
     pub fn delay_ns(&self) -> i64 { self.delay_ns }
 
     /// `cost_ns`: time from VSync to the end of the frame's work, minus the
-    /// delay itself. `missed`: a refresh went by without a frame.
+    /// delay itself. The frame counts as missed when it ended within half
+    /// the safety margin of the next refresh: only a miss the delay itself
+    /// caused backs it off, not a late callback elsewhere in Android.
+    pub fn observe_frame(&mut self, cost_ns: i64, period_ns: i64) {
+        let missed = cost_ns + self.delay_ns > period_ns - FRAME_DELAY_SAFETY_NS / 2;
+        self.observe(cost_ns, missed, period_ns);
+    }
+
+    /// `missed`: a refresh went by without a frame.
     pub fn observe(&mut self, cost_ns: i64, missed: bool, period_ns: i64) {
         if missed {
             self.delay_ns = (self.delay_ns - FRAME_DELAY_BACKOFF_NS).max(0);
@@ -224,6 +269,12 @@ impl FrameDelay {
         self.frames = 0;
         self.worst_cost_ns = 0;
     }
+}
+
+/// Most PCM shorts waiting in front of the AudioTrack in RETROARCH mode: one
+/// output buffer (`capacity_frames` stereo frames), at least 4096 shorts.
+pub fn fifo_limit_shorts(capacity_frames: usize) -> usize {
+    (capacity_frames * 2).max(4096)
 }
 
 /// CLOCK_MONOTONIC in nanoseconds: the clock of Choreographer's
@@ -288,6 +339,25 @@ mod tests {
         assert_eq!(v.steps(1_000_000_000, 0.0), 1);
         // Jitter around one refresh still means one frame.
         assert_eq!(v.steps(1_000_000_000 + p + p / 3, 60.0), 1);
+    }
+
+    #[test]
+    fn ra_sync_measures_a_panel_faster_than_its_reported_rate() {
+        // The KONKR reports 60Hz; a panel really at 60.3Hz must be measured,
+        // or audio resampled for 60Hz is produced 0.5% too fast.
+        let mut v = VsyncSteps::default();
+        let real = 1e9 / 60.3;
+        let mut frames = 0;
+        for i in 0..6000i64 {
+            frames += v.steps(1_000_000_000 + (i as f64 * real) as i64, 60.0);
+        }
+        assert_eq!(frames, 6000);
+        assert!((v.display_hz(60.0) - 60.3).abs() < 0.01, "{}", v.display_hz(60.0));
+        // A pause keeps the measurement; a different panel ignores it.
+        v.reset();
+        assert!((v.display_hz(60.0) - 60.3).abs() < 0.01);
+        assert_eq!(v.display_hz(120.0), 120.0);
+        assert_eq!(VsyncSteps::default().display_hz(60.0), 60.0);
     }
 
     #[test]
@@ -431,6 +501,24 @@ mod tests {
         assert_eq!(d.delay_ns(), FRAME_DELAY_MAX_NS - 2_000_000);
         for _ in 0..FRAME_DELAY_WINDOW { d.observe(2_000_000, false, P60); }
         assert_eq!(d.delay_ns(), FRAME_DELAY_MAX_NS - 1_000_000);
+    }
+
+    #[test]
+    fn ra_sync_frame_delay_ignores_late_callbacks_it_did_not_cause() {
+        // A late Android callback (refresh skipped elsewhere) is not a miss:
+        // only a frame that ends too close to the next refresh is.
+        let mut d = FrameDelay::default();
+        for _ in 0..FRAME_DELAY_WINDOW * 20 { d.observe_frame(4_000_000, P60); }
+        assert_eq!(d.delay_ns(), FRAME_DELAY_MAX_NS);
+        d.observe_frame(P60 - FRAME_DELAY_MAX_NS - 1_000_000, P60);
+        assert_eq!(d.delay_ns(), FRAME_DELAY_MAX_NS - 2_000_000);
+    }
+
+    #[test]
+    fn ra_sync_fifo_holds_at_most_one_output_buffer() {
+        // 4096 frames at 48kHz: 85ms, instead of the 1s that piled up on GB.
+        assert_eq!(fifo_limit_shorts(4096), 8192);
+        assert_eq!(fifo_limit_shorts(0), 4096);
     }
 
     #[test]
