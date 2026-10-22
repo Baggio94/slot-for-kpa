@@ -90,6 +90,10 @@ class MainActivity : Activity() {
     }
 
     external fun nativeSurfaceCreated(): Boolean
+    external fun nativeGraphicsReady(): Boolean
+    external fun nativeGraphicsContextLost()
+    external fun nativePresentationResume()
+    external fun nativeRendererShutdown(contextCurrent: Boolean)
     external fun nativeSurfaceChanged(width: Int, height: Int)
     external fun nativeDrawFrame(vsyncFrameNs: Long)
     // Beta9 optional actual display present timestamp via EGL. Read-only.
@@ -251,22 +255,25 @@ class MainActivity : Activity() {
     // STANDARD and RESPONSIVE retain their original render policy.
     private val vsyncCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            if (!displaySyncApplied || !resumed || isDestroyed) return
-            // One fixed-time record per UI-vsync; avoid allocations,
-            // network calls, EGL queries and render-policy changes.
-            val previous = previousUiVsyncFrameNs
-            if (previous > 0L && frameTimeNanos > previous) {
-                val uiGap = frameTimeNanos - previous
-                if (uiGap > 25_000_000L) uiVsyncOver25ms.incrementAndGet()
-                if (uiGap > 40_000_000L) uiVsyncOver40ms.incrementAndGet()
-            }
-            previousUiVsyncFrameNs = frameTimeNanos
-            latestVsyncFrameNs = frameTimeNanos
-            latestVsyncSequence++
-            uiVsyncCallbacks.incrementAndGet()
+            if (!displaySyncApplied || !resumed || isDestroyed || view.ownsScheduler) return
+            recordVsync(frameTimeNanos)
             view.requestRender()
             Choreographer.getInstance().postFrameCallback(this)
         }
+    }
+    private fun recordVsync(frameTimeNanos: Long) {
+        // One fixed-time record per scheduler VSync; avoid allocations,
+        // network calls, EGL queries and render-policy changes.
+        val previous = previousUiVsyncFrameNs
+        if (previous > 0L && frameTimeNanos > previous) {
+            val uiGap = frameTimeNanos - previous
+            if (uiGap > 25_000_000L) uiVsyncOver25ms.incrementAndGet()
+            if (uiGap > 40_000_000L) uiVsyncOver40ms.incrementAndGet()
+        }
+        previousUiVsyncFrameNs = frameTimeNanos
+        latestVsyncFrameNs = frameTimeNanos
+        latestVsyncSequence++
+        uiVsyncCallbacks.incrementAndGet()
     }
     private fun updateDisplaySyncMode() {
         if (!::view.isInitialized) return
@@ -276,9 +283,15 @@ class MainActivity : Activity() {
         // Choreographer during the first 100ms of gameplay could explain
         // an isolated startup hitch. Do not change frame scheduling here.
         Log.i(TAG, "Game display pacing transition: " +
-            (if (enabled) "Choreographer" else "Continuous") +
+            (if (view.ownsScheduler) "EGL owner" else if (enabled) "Choreographer" else "Continuous") +
             ", playing=${nativeIsPlaying()}")
         displaySyncApplied = enabled
+        if (view.ownsScheduler) {
+            // Owner-thread Choreographer is the only producer in this path.
+            // Continuous/dirty here is controlled solely by the shelf policy.
+            Choreographer.getInstance().removeFrameCallback(vsyncCallback)
+            return
+        }
         if (enabled) {
             view.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
             Choreographer.getInstance().postFrameCallback(vsyncCallback)
@@ -741,7 +754,7 @@ class MainActivity : Activity() {
     private val shelfPickerError = 6
     private val shelfPermissionError = 7
 
-    private lateinit var view: GLSurfaceView
+    private lateinit var view: SlotPresenter
     private var startupSplash: View? = null
     private lateinit var raAchievementOverlay: RaAchievementOverlay
 
@@ -758,153 +771,167 @@ class MainActivity : Activity() {
             .getBoolean(SHARE_GBA_SAVES, false))
         if (cleanSignOut && RaAccount.configuredUser(filesDir) != null) nativeRaAccountConfigured()
         cartSounds = CartSounds(this)
-        view = object : GLSurfaceView(this) {
-            init {
-                setEGLContextClientVersion(2)
-                preserveEGLContextOnPause = true
-                setRenderer(object : Renderer {
-                    var ready = false
-                    private var probeStartNs = 0L
-                    private var lastDrawNs = 0L
-                    private var callbacks = 0
-                    private var gapOver25ms = 0
-                    private var gapOver40ms = 0
-                    private var gapUsMax = 0L
-                    private var nativeUsMax = 0L
-                    private var nativeOver16ms = 0
-                    private var nativeOver33ms = 0
-                    private var vsyncAgeTotalUs = 0L
-                    private var vsyncAgeMaxUs = 0L
-                    private var vsyncAgeCount = 0
-                    private val glPacingCorrelation = FramePacingCorrelation()
-                    override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-                        nativeEglPresentationReset()
-                        ready = nativeSurfaceCreated()
-                        glPacingCorrelation.reset()
-                        if (!ready) Log.e(TAG, "Slot GLES initialization failed")
-                        else runOnUiThread {
-                            // Wait for the renderer to exist before revealing the shelf.
-                            uiHandler.postDelayed({ hideSlotStartupSplash() }, 650L)
-                        }
-                    }
-                    override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
-                        if (ready) nativeSurfaceChanged(width, height)
-                    }
-                    override fun onDrawFrame(gl: GL10?) {
-                        val a12StartedNs = SystemClock.elapsedRealtimeNanos()
-                        // Beta8 observer: age of last Choreographer timestamp
-                        // when GL starts, not a measured display-present time.
-                        val vsyncStamp = latestVsyncFrameNs
-                        if (nativeIsPlaying() && vsyncStamp > 0) {
-                            val ageUs = (System.nanoTime() - vsyncStamp) / 1000L
-                            if (ageUs in 0L..200_000L) {
-                                vsyncAgeTotalUs += ageUs
-                                vsyncAgeMaxUs = maxOf(vsyncAgeMaxUs, ageUs)
-                                vsyncAgeCount++
-                            }
-                        }
-                        if (nativeIsPlaying()) EmulationDiagnostics.frame()
-                        var a12NativeUs = 0L
-                        if (ready) {
-                            val beginNativeNs = SystemClock.elapsedRealtimeNanos()
-                            nativeDrawFrame(if (displaySyncApplied) latestVsyncFrameNs else 0L)
-                            a12NativeUs = (SystemClock.elapsedRealtimeNanos() - beginNativeNs) / 1000L
-                            // Notify the existing AudioTrack worker that libretro
-                            // may have produced samples. Never block GL on audio.
-                            if (audioRunning.get() && nativeIsPlaying() &&
-                                audioFrameSignal.availablePermits() == 0
-                            ) audioFrameSignal.release()
-                            // Drain on the render thread for frame-accurate insert/eject clicks.
-                            var kind = nativePollCartSfx()
-                            while (kind != 0) {
-                                cartSounds.play(kind)
-                                kind = nativePollCartSfx()
-                            }
-                        } else {
-                            GLES20.glClearColor(0f, 0f, 0f, 1f)
-                            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-                        }
-                        // Beta9: record the ID of the frame swapped AFTER this
-                        // callback and query earlier EGL presentation timestamps.
-                        // Driver can report unsupported; no rendering changes.
-                        if (ready && displaySyncApplied && nativeIsPlaying()) {
-                            nativeEglPresentationTick()
-                        }
-                        // Diagnostic-only. EGL swaps after this callback returns:
-                        // callback gaps are not true presentation timestamps.
-                        if (ready && nativeIsPlaying()) {
-                            if (probeStartNs == 0L) probeStartNs = a12StartedNs
-                            var correlationGlGapUs = 0L
-                            if (lastDrawNs != 0L) {
-                                val gapUs = (a12StartedNs - lastDrawNs) / 1000L
-                                correlationGlGapUs = gapUs
-                                gapUsMax = maxOf(gapUsMax, gapUs)
-                                if (gapUs > 25_000L) gapOver25ms++
-                                if (gapUs > 40_000L) gapOver40ms++
-                            }
-                            lastDrawNs = a12StartedNs
-                            glPacingCorrelation.record(correlationGlGapUs, a12NativeUs,
-                                if (displaySyncApplied) latestVsyncSequence else 0L)
-                            callbacks++
-                            nativeUsMax = maxOf(nativeUsMax, a12NativeUs)
-                            if (a12NativeUs > 16_667L) nativeOver16ms++
-                            if (a12NativeUs > 33_333L) nativeOver33ms++
-                            val spanNs = SystemClock.elapsedRealtimeNanos() - probeStartNs
-                            if (spanNs >= 5_000_000_000L) {
-                                val fpsX10 = callbacks.toLong() * 10_000_000_000L / spanNs
-                                Log.i(TAG, "GL callback pacing: callbacks=$callbacks fps_x10=$fpsX10 " +
-                                    "gap_over_25ms=$gapOver25ms gap_over_40ms=$gapOver40ms " +
-                                    "gap_us_max=$gapUsMax native_us_max=$nativeUsMax " +
-                                    "native_over_16ms=$nativeOver16ms native_over_33ms=$nativeOver33ms " +
-                                    "vsync_gl_age_mean_us=${if (vsyncAgeCount > 0) vsyncAgeTotalUs / vsyncAgeCount else -1} " +
-                                    "vsync_gl_age_max_us=$vsyncAgeMaxUs " +
-                                    "early_pcm_wakes_5s=${earlyPcmWakes.getAndSet(0)}")
-                                val frameCorrelation = glPacingCorrelation.snapshotAndReset()
-                                Log.i(TAG, "GL vsync correlation: " +
-                                    "ui_vsync_callbacks=${uiVsyncCallbacks.getAndSet(0L)} " +
-                                    "ui_vsync_over25=${uiVsyncOver25ms.getAndSet(0L)} " +
-                                    "ui_vsync_over40=${uiVsyncOver40ms.getAndSet(0L)} " +
-                                    "gl_gap_over25=${frameCorrelation.slowGaps} " +
-                                    "gl_gap_prior_native_over16=${frameCorrelation.slowGapsAfterExpensiveNative} " +
-                                    "gl_gap_prior_native_normal=${frameCorrelation.slowGapsAfterNormalNative} " +
-                                    "gl_gap_current_native_over16=${frameCorrelation.slowGapsWithExpensiveCurrentNative} " +
-                                    "gl_reused_vsync=${frameCorrelation.glCallbacksWithRepeatedVsync} " +
-                                    "ui_vsync_without_gl=${frameCorrelation.vsyncCallbacksWithoutGl} " +
-                                    "not_actual_present_time=true")
-                                if (displaySyncApplied) {
-                                    Log.i(TAG, nativeEglPresentationReport())
-                                }
-                                probeStartNs = a12StartedNs
-                                callbacks = 0
-                                gapOver25ms = 0
-                                gapOver40ms = 0
-                                gapUsMax = 0L
-                                nativeUsMax = 0L
-                                nativeOver16ms = 0
-                                nativeOver33ms = 0
-                                vsyncAgeTotalUs = 0L
-                                vsyncAgeMaxUs = 0L
-                                vsyncAgeCount = 0
-                            }
-                        } else {
-                            probeStartNs = 0L
-                            lastDrawNs = 0L
-                            glPacingCorrelation.reset()
-                            uiVsyncCallbacks.getAndSet(0L)
-                            uiVsyncOver25ms.getAndSet(0L)
-                            uiVsyncOver40ms.getAndSet(0L)
-                        }
-                    }
-                })
-                renderMode = RENDERMODE_CONTINUOUSLY
-                isFocusableInTouchMode = true
-                requestFocus()
+        val renderer = object : GLSurfaceView.Renderer {
+            var ready = false
+            private var probeStartNs = 0L
+            private var lastDrawNs = 0L
+            private var callbacks = 0
+            private var gapOver25ms = 0
+            private var gapOver40ms = 0
+            private var gapUsMax = 0L
+            private var nativeUsMax = 0L
+            private var nativeOver16ms = 0
+            private var nativeOver33ms = 0
+            private var vsyncAgeTotalUs = 0L
+            private var vsyncAgeMaxUs = 0L
+            private var vsyncAgeCount = 0
+            private val glPacingCorrelation = FramePacingCorrelation()
+            fun resetTiming() {
+                probeStartNs = 0L; lastDrawNs = 0L; callbacks = 0
+                gapOver25ms = 0; gapOver40ms = 0; gapUsMax = 0L
+                nativeUsMax = 0L; nativeOver16ms = 0; nativeOver33ms = 0
+                vsyncAgeTotalUs = 0L; vsyncAgeMaxUs = 0L; vsyncAgeCount = 0
+                glPacingCorrelation.reset()
+                previousUiVsyncFrameNs = 0L
+                latestVsyncFrameNs = 0L
+                uiVsyncCallbacks.set(0L); uiVsyncOver25ms.set(0L); uiVsyncOver40ms.set(0L)
             }
-
-
+            override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+                resetTiming()
+                nativeEglPresentationReset()
+                ready = nativeSurfaceCreated()
+                glPacingCorrelation.reset()
+                if (!ready) Log.e(TAG, "Slot GLES initialization failed")
+                else runOnUiThread {
+                    // Wait for the renderer to exist before revealing the shelf.
+                    uiHandler.postDelayed({ hideSlotStartupSplash() }, 650L)
+                }
+            }
+            override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+                if (ready) nativeSurfaceChanged(width, height)
+            }
+            override fun onDrawFrame(gl: GL10?) {
+                val a12StartedNs = SystemClock.elapsedRealtimeNanos()
+                // Beta8 observer: age of last Choreographer timestamp
+                // when GL starts, not a measured display-present time.
+                val vsyncStamp = latestVsyncFrameNs
+                if (nativeIsPlaying() && vsyncStamp > 0) {
+                    val ageUs = (System.nanoTime() - vsyncStamp) / 1000L
+                    if (ageUs in 0L..200_000L) {
+                        vsyncAgeTotalUs += ageUs
+                        vsyncAgeMaxUs = maxOf(vsyncAgeMaxUs, ageUs)
+                        vsyncAgeCount++
+                    }
+                }
+                if (nativeIsPlaying()) EmulationDiagnostics.frame()
+                var a12NativeUs = 0L
+                if (ready) {
+                    val beginNativeNs = SystemClock.elapsedRealtimeNanos()
+                    nativeDrawFrame(if (displaySyncApplied) latestVsyncFrameNs else 0L)
+                    a12NativeUs = (SystemClock.elapsedRealtimeNanos() - beginNativeNs) / 1000L
+                    // Notify the existing AudioTrack worker that libretro
+                    // may have produced samples. Never block GL on audio.
+                    if (audioRunning.get() && nativeIsPlaying() &&
+                        audioFrameSignal.availablePermits() == 0
+                    ) audioFrameSignal.release()
+                    // Drain on the render thread for frame-accurate insert/eject clicks.
+                    var kind = nativePollCartSfx()
+                    while (kind != 0) {
+                        cartSounds.play(kind)
+                        kind = nativePollCartSfx()
+                    }
+                } else {
+                    GLES20.glClearColor(0f, 0f, 0f, 1f)
+                    GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                }
+                // Beta9: record the ID of the frame swapped AFTER this
+                // callback and query earlier EGL presentation timestamps.
+                // Driver can report unsupported; no rendering changes.
+                if (ready && displaySyncApplied && nativeIsPlaying()) {
+                    nativeEglPresentationTick()
+                }
+                // Diagnostic-only. EGL swaps after this callback returns:
+                // callback gaps are not true presentation timestamps.
+                if (ready && nativeIsPlaying()) {
+                    if (probeStartNs == 0L) probeStartNs = a12StartedNs
+                    var correlationGlGapUs = 0L
+                    if (lastDrawNs != 0L) {
+                        val gapUs = (a12StartedNs - lastDrawNs) / 1000L
+                        correlationGlGapUs = gapUs
+                        gapUsMax = maxOf(gapUsMax, gapUs)
+                        if (gapUs > 25_000L) gapOver25ms++
+                        if (gapUs > 40_000L) gapOver40ms++
+                    }
+                    lastDrawNs = a12StartedNs
+                    glPacingCorrelation.record(correlationGlGapUs, a12NativeUs,
+                        if (displaySyncApplied) latestVsyncSequence else 0L)
+                    callbacks++
+                    nativeUsMax = maxOf(nativeUsMax, a12NativeUs)
+                    if (a12NativeUs > 16_667L) nativeOver16ms++
+                    if (a12NativeUs > 33_333L) nativeOver33ms++
+                    val spanNs = SystemClock.elapsedRealtimeNanos() - probeStartNs
+                    if (spanNs >= 5_000_000_000L) {
+                        val fpsX10 = callbacks.toLong() * 10_000_000_000L / spanNs
+                        Log.i(TAG, "GL callback pacing: callbacks=$callbacks fps_x10=$fpsX10 " +
+                            "gap_over_25ms=$gapOver25ms gap_over_40ms=$gapOver40ms " +
+                            "gap_us_max=$gapUsMax native_us_max=$nativeUsMax " +
+                            "native_over_16ms=$nativeOver16ms native_over_33ms=$nativeOver33ms " +
+                            "vsync_gl_age_mean_us=${if (vsyncAgeCount > 0) vsyncAgeTotalUs / vsyncAgeCount else -1} " +
+                            "vsync_gl_age_max_us=$vsyncAgeMaxUs " +
+                            "early_pcm_wakes_5s=${earlyPcmWakes.getAndSet(0)}")
+                        val frameCorrelation = glPacingCorrelation.snapshotAndReset()
+                        Log.i(TAG, "GL vsync correlation: scheduler=${if (view.ownsScheduler) "egl-owner" else "ui"} " +
+                            "ui_vsync_callbacks=${uiVsyncCallbacks.getAndSet(0L)} " +
+                            "ui_vsync_over25=${uiVsyncOver25ms.getAndSet(0L)} " +
+                            "ui_vsync_over40=${uiVsyncOver40ms.getAndSet(0L)} " +
+                            "gl_gap_over25=${frameCorrelation.slowGaps} " +
+                            "gl_gap_prior_native_over16=${frameCorrelation.slowGapsAfterExpensiveNative} " +
+                            "gl_gap_prior_native_normal=${frameCorrelation.slowGapsAfterNormalNative} " +
+                            "gl_gap_current_native_over16=${frameCorrelation.slowGapsWithExpensiveCurrentNative} " +
+                            "gl_reused_vsync=${frameCorrelation.glCallbacksWithRepeatedVsync} " +
+                            "ui_vsync_without_gl=${frameCorrelation.vsyncCallbacksWithoutGl} " +
+                            "not_actual_present_time=true")
+                        if (displaySyncApplied) {
+                            Log.i(TAG, nativeEglPresentationReport())
+                        }
+                        probeStartNs = a12StartedNs
+                        callbacks = 0
+                        gapOver25ms = 0
+                        gapOver40ms = 0
+                        gapUsMax = 0L
+                        nativeUsMax = 0L
+                        nativeOver16ms = 0
+                        nativeOver33ms = 0
+                        vsyncAgeTotalUs = 0L
+                        vsyncAgeMaxUs = 0L
+                        vsyncAgeCount = 0
+                    }
+                } else {
+                    probeStartNs = 0L
+                    lastDrawNs = 0L
+                    glPacingCorrelation.reset()
+                    uiVsyncCallbacks.getAndSet(0L)
+                    uiVsyncOver25ms.getAndSet(0L)
+                    uiVsyncOver40ms.getAndSet(0L)
+                }
+            }
         }
+        val presenterPrefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val requestedPresenter = intent.getStringExtra("slot_presenter")
+        if (requestedPresenter in setOf("glsurfaceview", "controlled-egl")) {
+            presenterPrefs.edit().putString("development_presenter", requestedPresenter).apply()
+        }
+        val controlledEgl = presenterPrefs.getString("development_presenter", "glsurfaceview") == "controlled-egl"
+        Log.i(TAG, "Slot presenter: " + if (controlledEgl) "controlled-egl (experimental)" else "glsurfaceview (reference)")
+        view = if (controlledEgl) ControlledEglPresenter(this, renderer,
+            beforeFrame = { timestamp -> recordVsync(timestamp) },
+            contextLost = { nativeGraphicsContextLost() },
+            resumedClock = { nativePresentationResume(); nativeEglPresentationReset(); renderer.resetTiming() },
+            shutdown = { current -> nativeRendererShutdown(current) },
+            nativeReady = { nativeGraphicsReady() })
+        else ReferenceGlPresenter(this, renderer)
         val frame = FrameLayout(this)
-        frame.addView(view, FrameLayout.LayoutParams(-1, -1))
+        frame.addView(view.surfaceView, FrameLayout.LayoutParams(-1, -1))
         shelfStatus = SlotStatusIndicators(this, frame)
         taskIndicators = SlotShelfTaskIndicators(this, frame)
         libraryRefreshIndicator = taskIndicators.library
@@ -2712,6 +2739,7 @@ class MainActivity : Activity() {
         if (::raAchievementOverlay.isInitialized) raAchievementOverlay.destroy()
         if (::shelfStatus.isInitialized) shelfStatus.close()
         stopAudio()
+        if (::view.isInitialized) view.close()
         cartSounds.release()
         super.onDestroy()
     }
@@ -2731,6 +2759,7 @@ class MainActivity : Activity() {
             view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
             displaySyncApplied = false
         }
+        if (view.ownsScheduler) view.onPause()
         stopAudio()
         cartSounds.pause()
         // Preserve SRAM and automatic resume state while the GL context is still current.
@@ -2741,7 +2770,7 @@ class MainActivity : Activity() {
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         }
-        view.onPause()
+        if (!view.ownsScheduler) view.onPause()
         // The final SRAM write above can enqueue a RetroArch/Sync export.
         drainPendingSaveFlush()
         nativeResetInput()

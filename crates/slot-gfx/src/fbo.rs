@@ -50,7 +50,9 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    pub(crate) fn abandon_context(&mut self) {
+    /// Mark names unusable before destroying a lost/unavailable context.
+    /// The host must stop all rendering until restore_after_context_loss succeeds.
+    pub fn abandon_context(&mut self) {
         self.context_lost = true;
         self.quad.abandon_context();
         self.game.abandon_context();

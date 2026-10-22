@@ -6226,6 +6226,65 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSurfaceCreated(
     })
 }
 
+/// All four presenter lifecycle calls run on the same persistent owner as Engine.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeGraphicsReady(
+    _env: *mut c_void, _activity: *mut c_void,
+) -> u8 {
+    ENGINE.with(|holder| holder.borrow().as_ref().is_some_and(|e| e.gpu.graphics_ready()) as u8)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeGraphicsContextLost(
+    _env: *mut c_void, _activity: *mut c_void,
+) {
+    ENGINE.with(|holder| {
+        if let Some(engine) = holder.borrow_mut().as_mut() { engine.gpu.abandon_context(); }
+    });
+    LIBRARY_UPDATE_SAFE.store(false, Ordering::Release);
+    AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePresentationResume(
+    _env: *mut c_void, _activity: *mut c_void,
+) {
+    ENGINE.with(|holder| {
+        if let Some(engine) = holder.borrow_mut().as_mut() {
+            engine.last = Instant::now();
+            engine.game_accum = 0.0;
+            engine.ra_clock.reset();
+            engine.perf_last = Instant::now();
+            engine.perf_rendered = 0;
+            engine.perf_emulated = 0;
+            engine.perf_catchup = 0;
+            engine.perf_step0 = 0;
+            engine.perf_step1 = 0;
+            engine.perf_step_multi = 0;
+        }
+    });
+    AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRendererShutdown(
+    _env: *mut c_void, _activity: *mut c_void, context_current: u8,
+) {
+    ENGINE.with(|holder| {
+        let mut engine = holder.borrow_mut().take();
+        if context_current == 0 {
+            if let Some(engine) = engine.as_mut() { engine.gpu.abandon_context(); }
+        }
+        // The normal suspend checkpoint precedes shutdown. Dropping a session
+        // does not serialize or save a speculative/poisoned core.
+        drop(engine);
+    });
+    PLAYING.store(false, Ordering::Release);
+    SAMPLE_RATE.store(0, Ordering::Release);
+    LIBRARY_UPDATE_SAFE.store(false, Ordering::Release);
+    AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSurfaceChanged(
     _env: *mut c_void,
@@ -6876,6 +6935,8 @@ pub(crate) fn exercise_session_graphics_recovery(game: GameSession) -> GameSessi
     assert!(retained > 0);
     eprintln!("bundled UI recovery pixels: {retained} bytes");
     ENGINE.with(|holder| *holder.borrow_mut() = Some(engine));
+    Java_fyi_slot_konkr_MainActivity_nativeGraphicsContextLost(std::ptr::null_mut(), std::ptr::null_mut());
+    assert_eq!(Java_fyi_slot_konkr_MainActivity_nativeGraphicsReady(std::ptr::null_mut(), std::ptr::null_mut()), 0);
     drop(surface);
     let replacement = slot_gfx::TestEgl::new();
     let enable: unsafe extern "system" fn(u32) = unsafe {
@@ -6894,13 +6955,17 @@ pub(crate) fn exercise_session_graphics_recovery(game: GameSession) -> GameSessi
         assert_eq!(e.game.as_ref().unwrap().frame().as_ptr(), session_address);
     });
     assert_eq!(create(), 1);
-    ENGINE.with(|holder| {
-        let mut engine = holder.borrow_mut().take().unwrap();
+    Java_fyi_slot_konkr_MainActivity_nativePresentationResume(std::ptr::null_mut(), std::ptr::null_mut());
+    let game = ENGINE.with(|holder| {
+        let mut guard = holder.borrow_mut();
+        let engine = guard.as_mut().unwrap();
         assert!(engine.gpu.graphics_ready());
         assert_eq!(engine.game_accum, 0.0);
         assert_eq!(engine.gpu.recovery_bytes(), retained);
         assert_eq!(engine.game.as_ref().unwrap().frame().as_ptr(), session_address);
         engine.game.take().unwrap()
-        // Engine drops while replacement context is current.
-    })
+    });
+    Java_fyi_slot_konkr_MainActivity_nativeRendererShutdown(std::ptr::null_mut(), std::ptr::null_mut(), 1);
+    assert_eq!(Java_fyi_slot_konkr_MainActivity_nativeGraphicsReady(std::ptr::null_mut(), std::ptr::null_mut()), 0);
+    game
 }

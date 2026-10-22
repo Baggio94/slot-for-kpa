@@ -3,6 +3,12 @@ name: RetroArch parity development
 on:
   push:
     branches: ['dev/retroarch-parity-*']
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'crates/slot-android/**'
+      - 'crates/slot-gfx/**'
+      - '.github/workflows/retroarch-parity-foundation.yml'
   workflow_dispatch:
 
 permissions:
