@@ -346,15 +346,10 @@ impl Settings {
     }
     pub fn save(&self, dir: &Path) -> io::Result<()> {
         fs::create_dir_all(dir)?;
-        let target = dir.join(NAME);
-        let temporary = dir.join(format!("{NAME}.partial"));
         let bytes = serde_json::to_vec_pretty(&self).map_err(io::Error::other)?;
-        let write = (|| -> io::Result<()> {
-            fs::write(&temporary, bytes)?;
-            fs::rename(&temporary, target)
-        })();
-        if write.is_err() { let _ = fs::remove_file(temporary); }
-        write
+        // Durable like battery saves: a power cut must never leave an empty
+        // Settings.json that silently resets every preference.
+        slot_store::atomic_write(&dir.join(NAME), &bytes)
     }
     pub fn shader_for(&self, platform: slot_store::Platform)->Shader {
         match platform {

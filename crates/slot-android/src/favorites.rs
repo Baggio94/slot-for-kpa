@@ -26,14 +26,8 @@ pub fn toggle(root: &Path, uri: &str) -> std::io::Result<bool> {
 }
 fn store(root: &Path, list: &[String]) -> std::io::Result<()> {
     std::fs::create_dir_all(root)?;
-    let target=root.join(FILE);
-    let temp=root.join(format!("{FILE}.partial"));
     let bytes=serde_json::to_vec_pretty(list).map_err(std::io::Error::other)?;
-    std::fs::write(&temp,bytes)?;
-    match std::fs::rename(&temp,&target) {
-        Ok(())=>Ok(()),
-        Err(e)=>{ let _=std::fs::remove_file(&temp); Err(e) }
-    }
+    slot_store::atomic_write(&root.join(FILE),&bytes)
 }
 pub fn carts(ids: &[String], sources: &[&[Cart]]) -> Vec<Cart> {
     let mut rows: Vec<Cart> = ids.iter()

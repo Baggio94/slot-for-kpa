@@ -202,10 +202,9 @@ impl EmulationProfile {
     }
     fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
         fs::create_dir_all(path.parent().expect("app-owned profile path"))?;
-        let tmp = path.with_extension("json.partial");
-        let result = fs::write(&tmp, data).and_then(|_| fs::rename(&tmp, path));
-        if result.is_err() { let _ = fs::remove_file(&tmp); }
-        result
+        // fsync before and after the rename: a power cut keeps either the
+        // previous profile or the new one, never an empty file.
+        slot_store::atomic_write(path, data)
     }
     pub fn save(self, root: &Path, uri: &str, core: Core) -> io::Result<()> {
         let data = serde_json::to_vec_pretty(&self.sanitize()).map_err(io::Error::other)?;
