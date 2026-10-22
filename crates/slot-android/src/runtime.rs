@@ -4622,12 +4622,13 @@ impl Engine {
                     .map(|g| g.take_runahead_probe()).unwrap_or_default();
                 *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
                     Some(format!(
-                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} runahead_second_instance_calls={} ra_sync_rate_adjust={:.5} frame_delay_ms={:.1} linked={linked}",
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} runahead_second_instance_calls={} runahead_preemptive_rollbacks={} ra_sync_rate_adjust={:.5} frame_delay_ms={:.1} linked={linked}",
                         self.game_accum * 1000.0,
                         self.perf_step0, self.perf_step1, self.perf_step_multi,
                         requested, probe.calls, probe.snapshots_us,
                         probe.speculative_us, probe.restores_us, probe.max_us,
-                        probe.failures, probe.second_instance_calls, self.ra_adjust,
+                        probe.failures, probe.second_instance_calls,
+                        probe.preemptive_rollbacks, self.ra_adjust,
                         self.frame_delay.delay_ns() as f64 / 1e6));
                 if show_fps {
                     *PERF_STATUS.lock().unwrap_or_else(|e|e.into_inner()) =
@@ -4958,6 +4959,8 @@ impl Engine {
             SHELF_INDICATOR_FLAGS.store(0, Ordering::Release);
             let mut stepped = 0;
             let mut peer_unplugged = None;
+            // RETROARCH mode runs Run-Ahead as RetroArch's Preemptive Frames.
+            let mut preemptive = false;
             if self.rewind_held {
                 self.ra_clock.reset();
                 self.ra_sync_steps.reset();
@@ -5047,6 +5050,11 @@ impl Engine {
                     self.ra_clock.reset();
                     f64::from(dt)
                 };
+                // Preemptive Frames: only real frames are shown, and the core
+                // rolls back and replays only when the buttons change.
+                preemptive = ra_sync && !fast;
+                session.set_preemptive_frames(
+                    if preemptive { profile.run_ahead_frames } else { 0 });
                 // A11: this is the *same* double-GBA lockstep on both ends,
                 // even for equal ROMs. One late packet must not make gameplay
                 // and audio permanently lose an emulated frame. Restrict
@@ -5217,27 +5225,28 @@ impl Engine {
                 }
             }
             if stepped > 0 && !self.rewind_held && !self.ff_held && !self.ff_latched
-                && profile.run_ahead_frames > 0 {
+                && profile.run_ahead_frames > 0 && !preemptive {
                 // The normal frames and their audio are already consumed.
                 // Predicted video never advances the real saved/RA timeline.
                 let speculation_started = Instant::now();
                 session.prepare_runahead(self.buttons, live.turbo,
                     profile.run_ahead_frames);
                 frame_phases.speculative_us = speculation_started.elapsed().as_micros() as u64;
-                if session.runahead_rollback_failed() {
-                    // A partially restored speculative core must never tick
-                    // or reach any periodic/manual/eject save path. Stop audio
-                    // and force a visible, retryable unsaved-exit warning.
-                    self.game_accum = 0.0;
-                    self.rewind_held = false;
-                    self.ff_held = false;
-                    self.ff_latched = false;
-                    RUMBLE_STRENGTH.store(0, Ordering::Release);
-                    PLAYING.store(false, Ordering::Release);
-                    AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                    self.overlay = ShelfOverlay::GameMenu { row: 0 };
-                    set_message("Run-Ahead restore failed; game paused to protect saves. Exit twice to discard this session WITHOUT saving.".into());
-                }
+            }
+            // Run-Ahead or Preemptive Frames may have quarantined the session.
+            if session.runahead_rollback_failed() {
+                // A partially restored speculative core must never tick
+                // or reach any periodic/manual/eject save path. Stop audio
+                // and force a visible, retryable unsaved-exit warning.
+                self.game_accum = 0.0;
+                self.rewind_held = false;
+                self.ff_held = false;
+                self.ff_latched = false;
+                RUMBLE_STRENGTH.store(0, Ordering::Release);
+                PLAYING.store(false, Ordering::Release);
+                AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                self.overlay = ShelfOverlay::GameMenu { row: 0 };
+                set_message("Run-Ahead restore failed; game paused to protect saves. Exit twice to discard this session WITHOUT saving.".into());
             }
             match stepped {
                 0 => self.perf_step0 = self.perf_step0.saturating_add(1),

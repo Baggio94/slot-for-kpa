@@ -139,6 +139,7 @@ fn session(root: &Path, failure: Failure) -> (GameSession, Arc<Mutex<Calls>>) {
         runahead_secondary_spec: None,
         runahead_secondary: None,
         runahead_secondary_unavailable: false,
+        preempt: crate::preemptive::Preempt::default(),
         last_step_timings: FrameStepTimings::default(),
         mgba_flash_runahead_guard: false,
         sma4_runahead_guard: false,
@@ -378,4 +379,89 @@ fn second_instance_respects_existing_guards_and_never_boots_without_a_spec() {
     solo.prepare_runahead(ButtonMask::A, false, 1);
     assert!(solo.runahead_secondary.is_none() && solo.runahead_secondary_unavailable);
     assert_eq!(calls.lock().unwrap().predicted.len(), 1);
+}
+
+#[test]
+fn preemptive_frames_replay_the_window_only_when_the_buttons_change() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut game, calls) = session(root.path(), Failure::None);
+    game.set_preemptive_frames(2);
+    for real in 1..=10u32 {
+        assert!(game.advance(0, false, false));
+        assert_eq!(game.take_audio(), vec![real as i16; 2]);
+    }
+    assert!(calls.lock().unwrap().predicted.is_empty(), "steady buttons never roll back");
+    // A pressed on frame 11: frames 9 and 10 are replayed with A first.
+    assert!(game.advance(ButtonMask::A, false, false));
+    assert_eq!(calls.lock().unwrap().predicted, vec![ButtonMask::A; 2]);
+    assert_eq!(game.core.serialize().unwrap(), 11u32.to_le_bytes());
+    assert_eq!(game.frame(), 11u32.to_le_bytes(), "the real picture is shown");
+    assert_eq!(game.take_audio(), vec![11; 2], "replayed audio is dropped");
+    for _ in 0..5 {
+        assert!(game.advance(ButtonMask::A, false, false));
+        game.take_audio();
+    }
+    assert_eq!(calls.lock().unwrap().predicted.len(), 2, "holding A replays nothing");
+    let probe = game.take_runahead_probe();
+    assert_eq!(probe.preemptive_rollbacks, 1);
+    assert_eq!(probe.calls, 16, "one snapshot per real frame");
+    assert_eq!(calls.lock().unwrap().real, 16);
+}
+
+#[test]
+fn preemptive_frames_replay_each_frame_with_its_own_turbo_phase() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut game, calls) = session(root.path(), Failure::None);
+    game.set_preemptive_frames(2);
+    for _ in 0..4 {
+        game.advance(0, false, false);
+        game.take_audio();
+    }
+    game.advance(ButtonMask::X, true, false);
+    let expected: Vec<u16> = (2..4u32)
+        .map(|frame| xy_buttons(ButtonMask(ButtonMask::X), true, frame).0)
+        .collect();
+    assert_eq!(calls.lock().unwrap().predicted, expected);
+}
+
+#[test]
+fn preemptive_frames_fail_closed_on_a_broken_rollback_and_stop_on_snapshot_errors() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut game, calls) = session(root.path(), Failure::StateRestore);
+    game.set_preemptive_frames(1);
+    assert!(game.advance(0, false, false));
+    assert!(!game.advance(ButtonMask::A, false, false));
+    assert!(game.runahead_rollback_failed());
+    assert!(!game.advance(ButtonMask::A, false, false));
+    assert!(!game.save(true));
+    assert_eq!(calls.lock().unwrap().real, 1);
+
+    for failure in [Failure::Snapshot, Failure::AudioCapture] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut game, calls) = session(root.path(), failure);
+        game.set_preemptive_frames(2);
+        for buttons in [0, 0, 0, ButtonMask::A, 0, ButtonMask::B] {
+            assert!(game.advance(buttons, false, false));
+        }
+        assert!(!game.runahead_rollback_failed());
+        assert!(!game.runahead_supported());
+        assert!(calls.lock().unwrap().predicted.is_empty());
+        assert_eq!(calls.lock().unwrap().real, 6);
+    }
+}
+
+#[test]
+fn preemptive_frames_respect_the_runahead_guards() {
+    for guard in 0..3 {
+        let root = tempfile::tempdir().unwrap();
+        let (mut game, calls) = session(root.path(), Failure::None);
+        match guard {
+            0 => game.mgba_flash_runahead_guard = true,
+            1 => game.sma4_runahead_guard = true,
+            _ => game.link_touched = true,
+        }
+        game.set_preemptive_frames(2);
+        for buttons in [0, 0, 0, ButtonMask::A] { game.advance(buttons, false, false); }
+        assert!(calls.lock().unwrap().predicted.is_empty());
+    }
 }

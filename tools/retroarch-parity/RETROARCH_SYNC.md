@@ -22,15 +22,25 @@ panel: VSync on, "Sync to Exact Content Framerate" off, Dynamic Rate Control on.
   frame still leaves 4ms before the next refresh, shrinks at once when frames
   get heavier (Run-Ahead, gpSP JIT flushes), and drops 2ms after any missed
   refresh. It is off in menus, fast-forward, rewind and Link sessions.
+- **Run-Ahead as Preemptive Frames:** in this mode the Run-Ahead setting
+  (1 or 2 frames) uses RetroArch's Preemptive Frames instead of predicting
+  the future. The core keeps the state of the last 1-2 real frames; when the
+  buttons change, it goes back and replays them with the new buttons, then
+  runs the current frame. Every picture shown is real, and the extra work
+  happens only on the frame where a button changes, which is cheaper than
+  running ahead on every frame (and avoids gpSP's JIT flush on every frame).
+  The Run-Ahead guards (Pokémon FLASH1M, SMA4, Link) still apply, and a
+  failed rollback quarantines the session exactly like Run-Ahead.
 - **Fallbacks:** if the panel is more than 5% away from the core rate
   (RetroArch's `audio_max_timing_skew`, e.g. 90/120Hz), the mode uses the
   RA CLOCK LAB clock but keeps resampling and rate control. Link sessions keep
   their own pacing. Fast-forward keeps its existing frame budget.
 
-Run-Ahead, saves, RTC, achievements and the cores are unchanged.
+Saves, RTC, achievements and the cores are unchanged.
 The 1Hz diagnostics line reports `pacing_mode=retroarch` and
 `ra_sync_rate_adjust` (1.00000 = buffer exactly half full) and
-`frame_delay_ms` (the automatic Frame Delay in use).
+`frame_delay_ms` (the automatic Frame Delay in use);
+`runahead_preemptive_rollbacks` counts replays (one per button change).
 
 ## Acceptance test (hardware required)
 

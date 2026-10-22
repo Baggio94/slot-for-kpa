@@ -57,6 +57,8 @@ pub(crate) struct RunaheadProbe {
     pub failures: u32,
     /// Calls served by the second-instance prediction core.
     pub second_instance_calls: u32,
+    /// Preemptive Frames rollbacks (one per button change).
+    pub preemptive_rollbacks: u32,
 }
 
 /// F8: WALL time spent inside the core and synchronous rewind work or
@@ -199,6 +201,8 @@ pub struct GameSession {
     runahead_secondary_spec: Option<crate::runahead_secondary::Spec>,
     runahead_secondary: Option<Box<dyn RetroCore>>,
     runahead_secondary_unavailable: bool,
+    // Preemptive Frames: states at the start of the last real frames.
+    preempt: crate::preemptive::Preempt,
     last_step_timings: FrameStepTimings,
     // Keep mGBA speculative frames away from Pokémon Gen III FLASH1M.
     mgba_flash_runahead_guard: bool,
@@ -680,6 +684,7 @@ impl GameSession {
             runahead_probe: RunaheadProbe::default(),
             runahead_secondary_spec, runahead_secondary: None,
             runahead_secondary_unavailable: false,
+            preempt: crate::preemptive::Preempt::default(),
             last_step_timings: FrameStepTimings::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
@@ -701,6 +706,7 @@ impl GameSession {
             return false;
         }
         self.runahead_video.clear();
+        if self.link.is_none() && !self.preempt_before_frame(buttons, turbo) { return false; }
         let pressed = ButtonMask(buttons);
         let mapped = xy_buttons(pressed, turbo, self.frame_count);
         let core_started = Instant::now();
@@ -779,6 +785,7 @@ impl GameSession {
         self.link = Some(link);
         self.link_touched = true;
         self.runahead_video.clear();
+        self.preempt.clear();
         self.rewind_frames = 0;
         self.pending_undo = None;
         Ok(())
@@ -828,6 +835,7 @@ impl GameSession {
         restore_solo_checkpoint_to_core(self.core.as_mut(), saved)?;
         // Clear presentation/input time travel from any pre-recovery state.
         self.runahead_video.clear();
+        self.preempt.clear();
         self.rewind_frames = 0;
         self.pending_undo = None;
         Ok(())
@@ -953,6 +961,7 @@ impl GameSession {
                 .map_err(|e| format!("Core rejected local Link RTC: {e}"))?;
         }
         self.runahead_video.clear();
+        self.preempt.clear();
         self.rewind_frames = 0;
         self.pending_undo = None;
         Ok(())
@@ -1029,6 +1038,7 @@ impl GameSession {
             link.end(self.core.as_mut());
         }
         self.runahead_video.clear();
+        self.preempt.clear();
         self.rewind_frames = 0;
     }
 
@@ -1196,9 +1206,83 @@ impl GameSession {
         true
     }
 
+    /// RetroArch "Preemptive Frames" instead of Run-Ahead: `frames` real
+    /// frames are kept and replayed when the buttons change. 0 turns it off.
+    /// The Run-Ahead guards apply: Pokémon FLASH1M, SMA4, Link, and cores
+    /// whose audio cannot be rolled back.
+    pub fn set_preemptive_frames(&mut self, frames: u8) {
+        let allowed = !self.runahead_rollback_failed && !self.runahead_unavailable
+            && !self.mgba_flash_runahead_guard && !self.sma4_runahead_guard
+            && !self.link_touched && self.linked_boot.is_none()
+            && self.core.speculative_audio_supported();
+        self.preempt.set_frames(if allowed { usize::from(frames) } else { 0 });
+    }
+
+    /// Before each real solo frame: replay the window with the new buttons
+    /// if they changed, then keep the state this frame starts from. False
+    /// only when a rollback failed and the session was quarantined.
+    fn preempt_before_frame(&mut self, buttons: u16, turbo: bool) -> bool {
+        let n = self.preempt.frames();
+        if n == 0 || self.link_touched || self.linked_boot.is_some() { return true; }
+        let input = (buttons, turbo);
+        if self.preempt.needs_rollback(input) {
+            let started = Instant::now();
+            if let Err(error) = self.core.capture_speculative_audio() {
+                // Nothing was touched yet: just stop preempting.
+                self.runahead_probe.failures += 1;
+                self.runahead_unavailable = true;
+                self.preempt.set_frames(0);
+                log_launch_timing(&format!("Preemptive Frames disabled: audio snapshot failed: {error}"));
+                return true;
+            }
+            // The replayed frames rewrite the last n frames with the new
+            // buttons; their audio was already played and is dropped.
+            let pressed = ButtonMask(buttons);
+            let first = self.frame_count.wrapping_sub(n as u32);
+            let mut replayed = self.core.restore_speculative_state(self.preempt.state(0));
+            for k in 0..n {
+                if replayed.is_err() { break; }
+                if k > 0 { replayed = self.core.serialize_into(self.preempt.state_mut(k)); }
+                if replayed.is_err() { break; }
+                self.core.run_speculative_frame(
+                    xy_buttons(pressed, turbo, first.wrapping_add(k as u32)));
+                self.core.discard_audio();
+            }
+            let replayed = replayed.and_then(|_| self.core.restore_speculative_audio());
+            let elapsed_us = started.elapsed().as_micros() as u64;
+            self.runahead_probe.preemptive_rollbacks =
+                self.runahead_probe.preemptive_rollbacks.saturating_add(1);
+            self.runahead_probe.restores_us += elapsed_us;
+            self.runahead_probe.max_us = self.runahead_probe.max_us.max(elapsed_us);
+            if let Err(error) = replayed {
+                // The core is somewhere inside the window: fail closed
+                // exactly like a failed Run-Ahead rollback.
+                self.runahead_probe.failures += 1;
+                self.runahead_unavailable = true;
+                self.runahead_rollback_failed = true;
+                self.preempt.set_frames(0);
+                log_launch_timing(&format!(
+                    "Preemptive Frames ROLLBACK FAILED: session quarantined, ALL saves disabled: {error}"));
+                return false;
+            }
+        }
+        let started = Instant::now();
+        if let Err(error) = self.core.serialize_into(self.preempt.push(input)) {
+            self.runahead_probe.failures += 1;
+            self.runahead_unavailable = true;
+            self.preempt.set_frames(0);
+            log_launch_timing(&format!("Preemptive Frames disabled: serialize failed: {error}"));
+            return true;
+        }
+        self.runahead_probe.calls = self.runahead_probe.calls.saturating_add(1);
+        self.runahead_probe.snapshots_us += started.elapsed().as_micros() as u64;
+        true
+    }
+
     pub fn rewind_step(&mut self) -> bool {
         if self.runahead_rollback_failed || self.link_touched || self.linked_boot.is_some() { return false; }
         self.runahead_video.clear();
+        self.preempt.clear();
         // Rewind is a real state restoration: finish any older disk snapshot
         // once before moving the core backward in time.
         self.flush_periodic_battery();
@@ -1497,6 +1581,7 @@ impl GameSession {
         // Ensure a queued newer-generation battery write cannot race with
         // this explicit time-travel restore (the game state may move back).
         self.flush_periodic_battery();
+        self.preempt.clear();
         self.core.unserialize(&bytes).map_err(|e|e.to_string())?;
         self.pending_undo=Some((Instant::now(), PendingUndo::Loaded {prior}));
         Ok(())
@@ -1524,6 +1609,7 @@ impl GameSession {
         // An undo may restore an earlier memory timeline.
         self.flush_periodic_battery();
         let (_, pending)=self.pending_undo.take().unwrap();
+        self.preempt.clear();
         match pending {
             PendingUndo::Loaded {prior} =>
                 self.core.unserialize(&prior).map_err(|e|e.to_string()),

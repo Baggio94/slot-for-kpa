@@ -14,6 +14,9 @@ mod ra_clock_lab;
 mod ra_sync;
 // Run-Ahead second instance: predictions run on a private core copy.
 mod runahead_secondary;
+// Preemptive Frames: roll back and replay only when the buttons change.
+#[cfg(any(test, target_os = "android"))]
+mod preemptive;
 mod pokemon_flash;
 // F11: compile and EXECUTE F7's pure-Rust durability and ordering tests on
 // the Linux CI host. Android production shares this exact implementation.
