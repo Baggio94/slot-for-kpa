@@ -70,7 +70,7 @@ trap cleanup EXIT
 
 if [[ "$target" == slot ]]; then
   "${ADB[@]}" logcat -c
-  "${ADB[@]}" logcat -v time -s SlotEmuDiag:I >"$output/slot-diagnostics.txt" &
+  "${ADB[@]}" logcat -v time -s SlotEmuDiag:I SlotKonkr:I >"$output/slot-diagnostics.txt" &
   recorder=$!
 fi
 "${ADB[@]}" shell dumpsys SurfaceFlinger --timestats -clear -enable >/dev/null 2>&1 || {
