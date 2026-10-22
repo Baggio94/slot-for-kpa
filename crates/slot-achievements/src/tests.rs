@@ -879,3 +879,61 @@ fn artwork_identity_follows_rom_bytes_instead_of_its_filename() {
     std::fs::write(&moved, b"different rom bytes").unwrap();
     assert!(artwork_title(root.path(), &moved).is_none());
 }
+
+// A core whose ordinary libretro mirror intentionally remains stale after
+// rollback. Verified reads must preserve both current data and errors through
+// the same trait-object wrapper used by Android, even when tracking is disabled.
+struct ActiveSaveCore {
+    active: u8,
+    outcome: u8, // 0=data, 1=no battery, 2=read failure
+}
+impl RetroCore for ActiveSaveCore {
+    fn load(&mut self, _: &Path) -> Result<(), CoreError> { Ok(()) }
+    fn run_frame(&mut self, _: ButtonMask) { self.active += 1; }
+    fn video_xrgb8888(&self) -> &[u8] { &[] }
+    fn take_audio(&mut self) -> Vec<i16> { vec![] }
+    fn serialize(&mut self) -> Result<Vec<u8>, CoreError> { Ok(vec![self.active]) }
+    fn unserialize(&mut self, data: &[u8]) -> Result<(), CoreError> {
+        self.active = data[0];
+        Ok(())
+    }
+    fn save_ram(&self) -> Option<Vec<u8>> { Some(vec![0x11]) }
+    fn save_ram_verified(&self) -> Result<Option<Vec<u8>>, CoreError> {
+        match self.outcome {
+            0 => Ok(Some(vec![self.active])),
+            1 => Ok(None),
+            _ => Err(CoreError::State("active SRAM clone refused".into())),
+        }
+    }
+    fn load_save_ram(&mut self, _: &[u8]) -> Result<(), CoreError> { Ok(()) }
+    fn av_info(&self) -> AvInfo { AvInfo { fps: 59.728, sample_rate: 65536.0 } }
+}
+
+#[test]
+fn verified_save_survives_achievement_wrapping_and_speculative_rollback() {
+    let root = configured();
+    let service = Service::start_with(root.path().into(), Offline);
+    for enabled in [false, true] {
+        service.enabled.store(enabled, Ordering::Release);
+        for console in [4, 5, 6] {
+            let mut core = service.wrap_for_console(
+                Box::new(ActiveSaveCore { active: 0x42, outcome: 0 }), console);
+            let state = core.serialize().unwrap();
+            core.run_speculative_frame(ButtonMask(0));
+            core.restore_speculative_state(&state).unwrap();
+            assert_eq!(core.save_ram(), Some(vec![0x11]), "fixture must expose a stale mirror");
+            assert_eq!(core.save_ram_verified().unwrap(), Some(vec![0x42]));
+        }
+    }
+}
+
+#[test]
+fn verified_save_wrapper_does_not_fallback_on_absent_or_failed_active_sram() {
+    let root = configured();
+    let service = Service::start_with(root.path().into(), Offline);
+    let absent = service.wrap(Box::new(ActiveSaveCore { active: 0x42, outcome: 1 }));
+    assert_eq!(absent.save_ram_verified().unwrap(), None);
+    let failed = service.wrap(Box::new(ActiveSaveCore { active: 0x42, outcome: 2 }));
+    assert!(matches!(failed.save_ram_verified(), Err(CoreError::State(message))
+        if message == "active SRAM clone refused"));
+}

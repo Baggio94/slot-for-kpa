@@ -10,9 +10,8 @@
 #![cfg(target_os = "android")]
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use crate::presentation_probe::{PresentationProbe, Source, Timestamp};
 use std::ffi::{c_char, c_void, CStr, CString};
-use std::time::Instant;
 use jni::{JNIEnv, objects::JObject, sys::jstring};
 
 type EGLDisplay = *mut c_void;
@@ -30,9 +29,6 @@ const EGL_TIMESTAMPS_ANDROID: i32 = 0x3430;
 const EGL_DISPLAY_PRESENT_TIME_ANDROID: i32 = 0x343A;
 const EGL_TIMESTAMP_PENDING_ANDROID: i64 = -2;
 const EGL_TIMESTAMP_INVALID_ANDROID: i64 = -1;
-const MAX_PENDING: usize = 12;
-// Nominal KONKR 60Hz gap is ~16,667us; 25ms indicates missed cadence.
-const MAX_VALID_GAP_NS: i64 = 1_000_000_000;
 
 #[link(name = "EGL")]
 unsafe extern "C" {
@@ -51,37 +47,41 @@ struct Ext {
     supported: IsTimestampSupported,
     timestamps: FrameTimestamps,
 }
+struct EglSource(Ext);
+impl Source for EglSource {
+    fn timestamp(&mut self, id: u64) -> Result<Timestamp, ()> {
+        let ext = self.0;
+        let name = EGL_DISPLAY_PRESENT_TIME_ANDROID;
+        let mut time = EGL_TIMESTAMP_PENDING_ANDROID;
+        if unsafe { (ext.timestamps)(ext.display, ext.surface, id, 1, &name, &mut time) } == 0 {
+            return Err(());
+        }
+        Ok(match time {
+            EGL_TIMESTAMP_PENDING_ANDROID => Timestamp::Pending,
+            EGL_TIMESTAMP_INVALID_ANDROID => Timestamp::Invalid,
+            time => Timestamp::Presented(time),
+        })
+    }
+    fn next_id(&mut self) -> Result<u64, ()> {
+        let ext = self.0;
+        let mut id = 0;
+        if unsafe { (ext.next_id)(ext.display, ext.surface, &mut id) } == 0 {
+            Err(())
+        } else { Ok(id) }
+    }
+}
 struct Probe {
     extension: Option<Ext>,
     tried: bool,
     status: &'static str,
-    pending: VecDeque<(u64, u64)>, // EGL frame ID, tick at capture
-    ticks: u64,
-    present_count: u64,
-    last_present_ns: i64,
-    gap_count: u64,
-    gap_sum_us: u64,
-    gap_max_us: u64,
-    gap_over25: u64,
-    gap_over35: u64,
-    // Bounded histogram of actual display-present intervals: 1ms buckets.
-    gap_bins: [u32; 51],
-    pending_lost: u64,
-    query_errors: u64,
-    query_time_us: u64,
-    last_report: Instant,
+    samples: PresentationProbe,
 }
 
 impl Probe {
     fn new() -> Self {
         Self {
             extension: None, tried: false, status: "pending",
-            pending: VecDeque::with_capacity(MAX_PENDING),
-            ticks: 0, present_count: 0, last_present_ns: 0,
-            gap_count: 0, gap_sum_us: 0, gap_max_us: 0,
-            gap_over25: 0, gap_over35: 0, gap_bins: [0; 51],
-            pending_lost: 0, query_errors: 0, query_time_us: 0,
-            last_report: Instant::now(),
+            samples: PresentationProbe::new(),
         }
     }
     fn init(&mut self) {
@@ -144,129 +144,16 @@ impl Probe {
         let Some(ext) = self.extension else { return };
         // GLSurfaceView can recreate its EGL window surface independently
         // of our renderer. Never query IDs against a stale EGLSurface.
-        if unsafe { eglGetCurrentSurface(EGL_DRAW) } != ext.surface {
+        if unsafe { eglGetCurrentDisplay() } != ext.display
+            || unsafe { eglGetCurrentSurface(EGL_DRAW) } != ext.surface {
             *self = Self::new();
             self.init();
             return;
         }
-        self.ticks += 1;
-        let started = Instant::now();
-        // Read at most 2 pending timestamps per callback. A frame must have
-        // passed through >=2 swaps before we query it, avoiding GPU waits.
-        for _ in 0..2 {
-            let Some(&(id, tick)) = self.pending.front() else { break };
-            if self.ticks.saturating_sub(tick) < 3 { break; }
-            let names = [EGL_DISPLAY_PRESENT_TIME_ANDROID];
-            let mut result = [EGL_TIMESTAMP_PENDING_ANDROID];
-            let ok = unsafe {
-                (ext.timestamps)(ext.display, ext.surface, id, 1,
-                    names.as_ptr(), result.as_mut_ptr())
-            };
-            if ok == 0 {
-                self.query_errors += 1;
-                self.pending.pop_front();
-                // A missing frame breaks timestamp continuity. Never
-                // attribute the interval across the hole to one frame.
-                self.last_present_ns = 0;
-                continue;
-            }
-            if result[0] == EGL_TIMESTAMP_PENDING_ANDROID {
-                if self.ticks.saturating_sub(tick) <= 9 { break; }
-                self.pending_lost += 1;
-                self.pending.pop_front();
-                self.last_present_ns = 0;
-                continue;
-            }
-            self.pending.pop_front();
-            if result[0] == EGL_TIMESTAMP_INVALID_ANDROID || result[0] <= 0 {
-                self.pending_lost += 1;
-                self.last_present_ns = 0;
-                continue;
-            }
-            self.present_count += 1;
-            let time = result[0];
-            if self.last_present_ns > 0 {
-                let delta = time - self.last_present_ns;
-                if delta > 0 && delta <= MAX_VALID_GAP_NS {
-                    let us = (delta / 1000) as u64;
-                    self.gap_count += 1;
-                    self.gap_sum_us += us;
-                    self.gap_max_us = self.gap_max_us.max(us);
-                    if us > 25_000 { self.gap_over25 += 1; }
-                    if us > 35_000 { self.gap_over35 += 1; }
-                    let bucket = (us / 1000).min(50) as usize;
-                    self.gap_bins[bucket] += 1;
-                }
-            }
-            self.last_present_ns = time;
-        }
-        while self.pending.len() >= MAX_PENDING {
-            self.pending.pop_front();
-            self.pending_lost += 1;
-            self.last_present_ns = 0;
-        }
-        let mut next_frame: u64 = 0;
-        if unsafe { (ext.next_id)(ext.display, ext.surface, &mut next_frame) } != 0 {
-            self.pending.push_back((next_frame, self.ticks));
-        } else {
-            self.query_errors += 1;
-        }
-        self.query_time_us += started.elapsed().as_micros() as u64;
+        self.samples.tick(&mut EglSource(ext));
     }
     fn report(&mut self) -> String {
-        let p95 = if self.gap_count == 0 { 0 } else {
-            let goal = self.gap_count.saturating_mul(95).div_ceil(100);
-            let mut sum = 0u64;
-            self.gap_bins.iter().enumerate().find_map(|(i, &n)| {
-                sum += u64::from(n);
-                (sum >= goal).then_some(i as u64 * 1000)
-            }).unwrap_or(0)
-        };
-        let span = self.last_report.elapsed().as_secs_f64();
-        // Do not publish an apparent presentation FPS when the driver has
-        // dropped or rejected frame IDs. This KONKR driver consistently
-        // returns ~5 lost and ~7 errors per 5s; dividing remaining samples
-        // by elapsed time incorrectly claims ~57 FPS on a ~60Hz display.
-        let complete = self.status == "supported"
-            && self.pending_lost == 0 && self.query_errors == 0
-            && self.gap_count >= 5;
-        let verified_fps = if complete && self.gap_sum_us > 0 {
-            self.gap_count as f64 * 1_000_000.0 / self.gap_sum_us as f64
-        } else { -1.0 };
-        let status = if self.status == "supported" && !complete {
-            "incomplete_timestamps"
-        } else { self.status };
-        let gap_mean = if complete && self.gap_count > 0 {
-            (self.gap_sum_us / self.gap_count) as i64
-        } else { -1 };
-        let gap_p95 = if complete { p95 as i64 } else { -1 };
-        let gap_max = if complete { self.gap_max_us as i64 } else { -1 };
-        let over25 = if complete { self.gap_over25 as i64 } else { -1 };
-        let over35 = if complete { self.gap_over35 as i64 } else { -1 };
-        let result = format!(
-            "EGL presentation: status={} callbacks={} present_samples={} present_fps={:.2} \
-             present_fps_valid={} report_span_s={:.3} \
-             present_gap_mean_us={} present_gap_p95_us={} present_gap_max_us={} \
-             present_over25={} present_over35={} lost={} errors={} \
-             probe_us_per_callback={:.2}",
-            status, self.ticks, self.present_count, verified_fps,
-            complete, span, gap_mean, gap_p95, gap_max, over25, over35,
-            self.pending_lost, self.query_errors,
-            if self.ticks > 0 { self.query_time_us as f64 / self.ticks as f64 } else { 0.0 },
-        );
-        self.ticks = 0;
-        self.present_count = 0;
-        self.gap_count = 0;
-        self.gap_sum_us = 0;
-        self.gap_max_us = 0;
-        self.gap_over25 = 0;
-        self.gap_over35 = 0;
-        self.gap_bins = [0; 51];
-        self.pending_lost = 0;
-        self.query_errors = 0;
-        self.query_time_us = 0;
-        self.last_report = Instant::now();
-        result
+        self.samples.report(self.status)
     }
 }
 

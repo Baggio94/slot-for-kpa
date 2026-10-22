@@ -84,7 +84,7 @@ trap cleanup EXIT
 echo "Measuring $target/$core for $duration seconds. Do not leave game or change options."
 # Optional slot-only diagnostic; never read ROM/save/audio data.
 if [[ "$target" == slot ]]; then
-  "${ADB[@]}" logcat -v time -T 1 -s SlotEmuDiag:I SlotKONKR:I '*:S' >"$logfile" &
+  "${ADB[@]}" logcat -v time -T 1 -s SlotEmuDiag:I SlotKONKR:I SlotKonkr:I '*:S' >"$logfile" &
   recorder=$!
 fi
 "${ADB[@]}" shell dumpsys SurfaceFlinger --timestats -clear -enable \

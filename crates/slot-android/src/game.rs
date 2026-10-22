@@ -1,5 +1,8 @@
 //! Native libretro mGBA / gpSP game session. All core calls occur on GLSurfaceView's GL thread.
 //! Android's SAF bridge materializes a **bounded private cache** copy of each selected ROM.
+#[cfg(test)]
+#[path = "game_runahead_tests.rs"]
+mod runahead_tests;
 use crate::pokemon_flash::pokemon_flash_complete_bank_count;
 use slot_retro::{ButtonMask, LibretroCore, RetroCore, LinkChannel};
 use crate::link_kind::LinkKind;

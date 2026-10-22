@@ -156,6 +156,12 @@ impl RetroCore for Tracked {
     fn save_ram(&self) -> Option<Vec<u8>> {
         self.core.save_ram()
     }
+    fn save_ram_verified(&self) -> Result<Option<Vec<u8>>, CoreError> {
+        // Preserve the active-timeline SRAM accessor AND its failure. The
+        // trait fallback calls save_ram(), which may expose mGBA's stale
+        // libretro mirror after rollback. Tracking must not weaken F5.
+        self.core.save_ram_verified()
+    }
     fn load_save_ram(&mut self, data: &[u8]) -> Result<(), CoreError> {
         self.core.load_save_ram(data)
     }
