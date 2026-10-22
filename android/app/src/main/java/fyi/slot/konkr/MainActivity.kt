@@ -870,6 +870,9 @@ class MainActivity : Activity() {
                     GLES20.glClearColor(0f, 0f, 0f, 1f)
                     GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
                 }
+                // RetroArch's GPU Hard Sync in the swap-paced loop: queue only
+                // a finished picture, so the compositor never waits on our GPU.
+                if (raSwapLoopApplied) GLES20.glFinish()
                 // Beta9: record the ID of the frame swapped AFTER this
                 // callback and query earlier EGL presentation timestamps.
                 // Driver can report unsupported; no rendering changes.

@@ -40,7 +40,10 @@ panel: VSync on, "Sync to Exact Content Framerate" off, Dynamic Rate Control on.
   (`vsync` goes back). GLSurfaceView then renders continuously, every call
   runs exactly one core frame (a late swap slows the game rather than
   bursting; a swap that did not wait runs nothing), and the refresh rate is
-  measured over runs of 60 on-time swaps. Frame Delay is off in this loop,
+  measured over runs of 60 on-time swaps. Like RetroArch's GPU Hard Sync,
+  the loop waits for the GPU (glFinish) before each swap: without it the
+  KONKR compositor waited on our unfinished buffer and every frame reached
+  the screen one refresh later. Frame Delay is off in this loop,
   since nothing marks the VSync. The diagnostics line reports `ra_loop`.
 - **Fallbacks:** if the panel is more than 5% away from the core rate
   (RetroArch's `audio_max_timing_skew`, e.g. 90/120Hz), the mode uses the
