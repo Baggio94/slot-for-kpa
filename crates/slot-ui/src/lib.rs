@@ -35,7 +35,7 @@ pub use barcode::{code39, CODE39_NARROW, CODE39_WIDE};
 pub use battery::{draw_gauge, BOLT_PX, GAUGE_H, GAUGE_W, WALL};
 pub use board::{
     board_at, board_face, pak_chip_face, board_layout, board_toward, BoardLayout, board_from, board_zoom, chip_face, chip_shadow_face, grown, lid_at,
-    lid_from, lid_rest, lid_toward, lift_of, on_board, padded, rom_marking, rom_marking_face, shelf_cart, shelf_cart_at, shelf_cart_for,
+    lid_from, lid_rest, lid_toward, lift_of, on_board, padded, pak_marking_face, rom_marking, rom_marking_face, shelf_cart, shelf_cart_at, shelf_cart_for,
     slide_of, socket_face, Placed, BOARD_H, BOARD_W, BOARD_X, BOARD_Y, CHIP_H, CHIP_TIP, CHIP_U,
     CHIP_V, CHIP_W, HOP_LIFT, LID_TURN, ROM_H, ROM_W, ROM_X, ROM_Y, SHADOW_H, SHADOW_W,
     SLIDE_SHARE, SLIDE_UP, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
