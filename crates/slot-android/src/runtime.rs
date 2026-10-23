@@ -633,9 +633,6 @@ struct Engine {
     shelf_frame_at: Option<Instant>,
     shelf_hitch_logs: u32,
     frame_uploads: u32,
-    // One shelf frame is drawn under the black eject hold so the first
-    // visible shelf frame after a game is not the expensive one.
-    shelf_warmed: bool,
     select_down_at: Option<Instant>,
     // HOME release must not close the Link screen opened by SELECT + HOME.
     select_home_consumed: bool,
@@ -1177,7 +1174,6 @@ impl Engine {
             shelf_frame_at: None,
             shelf_hitch_logs: 0,
             frame_uploads: 0,
-            shelf_warmed: false,
             select_down_at: None,
             select_home_consumed: false,
             select_chorded: false,
@@ -2164,7 +2160,6 @@ impl Engine {
                     eject_trace_start();
                     self.shelf_frame_at = None;
                     self.shelf_hitch_logs = 0;
-                    self.shelf_warmed = false;
                 }
                 // The reversed cart animation will emit the original eject sound.
                 if self.progress > 0.0 || self.inserted { self.eject_sound_armed = true; }
@@ -4790,10 +4785,11 @@ impl Engine {
             }
             self.gpu.set_screen_power(self.screen_power);
             eject_mark(if self.exiting_screen {"crt"} else {"hold"});
-            if !self.exiting_screen && !self.shelf_warmed && self.game.is_none() {
-                // Build and draw one full shelf frame, frozen (dt = 0) and
-                // hidden under the identical hold picture.
-                self.shelf_warmed = true;
+            if !self.exiting_screen && self.game.is_none() {
+                // Keep the GPU on the shelf's workload through the black hold:
+                // a frozen (dt = 0) shelf frame is drawn over the hold picture
+                // at 1/255 opacity, so its textures are really sampled (an
+                // occluded draw would be culled) and the GPU clock stays up.
                 cover_with_hold = true;
                 dt = 0.0;
             } else {
@@ -5567,11 +5563,14 @@ impl Engine {
         }
         self.draw_overlay(&mut commands);
         if cover_with_hold {
-            self.push_hold_scene(&mut commands);
+            let mut hold = Vec::with_capacity(commands.len() + 8);
+            self.push_hold_scene(&mut hold);
+            hold.extend(commands.iter().filter_map(|draw| ghost(*draw)));
             self.gpu.fit(self.size);
             self.gpu.begin_frame();
-            self.gpu.draw_list(&commands);
+            self.gpu.draw_list(&hold);
             self.gpu.end_frame(self.size);
+            self.shelf_frame_at = None;
             return;
         }
         // Keep the upper indicators on the identical visibility lifecycle
@@ -5625,6 +5624,20 @@ impl Engine {
                     !self.cart_render.is_idle()));
             }
         }
+    }
+}
+
+/// The same draw at 1/255 opacity: invisible, but never culled by the GPU.
+fn ghost(draw: Draw) -> Option<Draw> {
+    const GHOST: f32 = 1.0 / 255.0;
+    match draw {
+        Draw::Rect { x, y, w, h, colour: [r, g, b, a] } =>
+            Some(Draw::Rect { x, y, w, h, colour: [r, g, b, a * GHOST] }),
+        Draw::Tex { x, y, w, h, tex, alpha } =>
+            Some(Draw::Tex { x, y, w, h, tex, alpha: alpha * GHOST }),
+        Draw::Turned { x, y, w, h, tex, alpha, turn } =>
+            Some(Draw::Turned { x, y, w, h, tex, alpha: alpha * GHOST, turn }),
+        Draw::Game | Draw::Shot { .. } => None,
     }
 }
 

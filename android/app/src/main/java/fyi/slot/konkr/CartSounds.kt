@@ -3,6 +3,9 @@ package fyi.slot.konkr
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.SoundPool
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Process
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
@@ -21,6 +24,12 @@ internal class CartSounds(context: Context) {
             .setUsage(AudioAttributes.USAGE_GAME)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
         .build()
+    // SoundPool.play is a binder call that can block for tens of ms when the
+    // audio output wakes up (right after a game's AudioTrack stops). Keep it
+    // off the GL thread, which drains the clicks after each frame.
+    private val player = HandlerThread("slot-cart-sfx", Process.THREAD_PRIORITY_AUDIO)
+        .apply { start() }
+    private val playerHandler = Handler(player.looper)
     private val samples = IntArray(3)
     private val loaded = HashSet<Int>()
     @Volatile private var closed = false
@@ -43,7 +52,9 @@ internal class CartSounds(context: Context) {
         if (closed || kind !in INSERT..EJECT) return
         val id = samples[kind]
         if (id == 0 || !synchronized(loaded) { loaded.contains(id) }) return
-        soundPool.play(id, CART_SFX_VOLUME, CART_SFX_VOLUME, 1, 0, 1f)
+        playerHandler.post {
+            if (!closed) soundPool.play(id, CART_SFX_VOLUME, CART_SFX_VOLUME, 1, 0, 1f)
+        }
     }
 
     fun pause() { if (!closed) soundPool.autoPause() }
@@ -51,7 +62,9 @@ internal class CartSounds(context: Context) {
 
     fun release() {
         closed = true
-        soundPool.release()
+        // Release on the player thread, after any click already queued.
+        playerHandler.post { soundPool.release() }
+        player.quitSafely()
         synchronized(loaded) { loaded.clear() }
     }
 
