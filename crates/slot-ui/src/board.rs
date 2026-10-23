@@ -2,7 +2,7 @@ use slot_gfx::OUT_W;
 use slot_store::{Cart, Core, Platform};
 
 use crate::art;
-use crate::cart::{cart_backing, cart_box, cart_interior_at, clean_label, gb_shell_of, CartFace, CART_H, CART_W};
+use crate::cart::{cart_backing_open, cart_box, cart_interior_at, pak_chip, clean_label, gb_shell_of, CartFace, CART_H, CART_W};
 use crate::density::Face as _;
 use crate::density::{self, px, Canvas};
 use crate::shelf::foot_y;
@@ -72,7 +72,7 @@ pub fn board_face(cart: &Cart) -> CartFace {
         // the game's colour with the original pak board seated in it, the
         // same board a clear GBC cart shows through its shell.
         let mut face = cart_interior_at(cart, 255);
-        over(&mut face, &cart_backing(Some(shell)), 0, 0);
+        over(&mut face, &cart_backing_open(shell), 0, 0);
         return face;
     }
     let shell = shell_for(cart);
@@ -297,15 +297,25 @@ pub struct BoardLayout {
     pub rest: Placed,
     /// The board's face size in its own logical pixels.
     pub native: (f32, f32),
+    /// GBA draws two sockets; a pak board has the chip footprints printed on it.
+    pub sockets: bool,
     pub socket_u: [f32; 2],
     pub socket_v: f32,
     pub chip_u: [f32; 2],
     pub chip_v: f32,
+    /// The chip's size at zoom 1, how high it hops, and where its shadow
+    /// falls (offset from the chip's top-left, in board units) and how big.
+    pub chip: (f32, f32),
+    pub hop: f32,
+    pub shadow_at: (f32, f32),
+    pub shadow: (f32, f32),
 }
 
-/// Top-left of the sockets over the pak board's two big chips, in its pixels.
-const PAK_SOCKETS: [f32; 2] = [67.5, 186.5];
-const PAK_SOCKET_Y: f32 = 188.5;
+/// Centres of the pak board's two big-chip footprints, in its pixels, and
+/// the chip's size (gb_board_open.png / gb_chip.png).
+const PAK_FOOTPRINTS: [f32; 2] = [99.0, 219.0];
+const PAK_FOOTPRINT_Y: f32 = 213.5;
+const PAK_CHIP: (f32, f32) = (70.0, 91.0);
 const PAK_REST_H: f32 = 300.0;
 const PAK_GAP: f32 = 40.0;
 const PAK_LID_W: f32 = 168.0;
@@ -315,10 +325,15 @@ pub fn board_layout(platform: Platform) -> BoardLayout {
         return BoardLayout {
             rest: Placed { x: BOARD_X, y: BOARD_Y, w: BOARD_W as f32, h: BOARD_H as f32 },
             native: (BOARD_W as f32, BOARD_H as f32),
+            sockets: true,
             socket_u: SOCKET_U,
             socket_v: SOCKET_V,
             chip_u: CHIP_U,
             chip_v: CHIP_V,
+            chip: (CHIP_W as f32, CHIP_H as f32),
+            hop: HOP_LIFT,
+            shadow_at: (19.0, 29.4),
+            shadow: (SHADOW_W as f32, SHADOW_H as f32),
         };
     }
     let (cw, ch) = cart_box(platform);
@@ -327,14 +342,19 @@ pub fn board_layout(platform: Platform) -> BoardLayout {
     let lid = lid_rest(platform);
     let x = lid.x + lid.w + PAK_GAP;
     let unit = |px: f32| px / UNIT_PX;
-    let (du, dv) = (CHIP_U[0] - SOCKET_U[0], CHIP_V - SOCKET_V);
+    let (chip_w, chip_h) = PAK_CHIP;
     BoardLayout {
         rest: Placed { x, y: (480.0 - 120.0 - h) / 2.0 + 30.0, w, h },
         native: (cw as f32, ch as f32),
-        socket_u: PAK_SOCKETS.map(unit),
-        socket_v: unit(PAK_SOCKET_Y),
-        chip_u: PAK_SOCKETS.map(|x| unit(x) + du),
-        chip_v: unit(PAK_SOCKET_Y) + dv,
+        sockets: false,
+        socket_u: PAK_FOOTPRINTS.map(|x| unit(x - chip_w / 2.0)),
+        socket_v: unit(PAK_FOOTPRINT_Y - chip_h / 2.0),
+        chip_u: PAK_FOOTPRINTS.map(|x| unit(x - chip_w / 2.0)),
+        chip_v: unit(PAK_FOOTPRINT_Y - chip_h / 2.0),
+        chip: PAK_CHIP,
+        hop: unit(22.0),
+        shadow_at: (unit(chip_w / 2.0), unit(chip_h + 4.0)),
+        shadow: (SHADOW_W as f32 * chip_w / CHIP_W as f32, SHADOW_H as f32 * 1.5),
     }
 }
 
@@ -400,6 +420,15 @@ pub fn chip_face(core: Option<Core>) -> CartFace {
     let mut face = svg_face(CHIP_SVG, CHIP_W, CHIP_H);
     if let Some(layout) = core.and_then(|c| name_layout(c, (CHIP_W - 8) as f32)) {
         ink_band(&mut face, 4, 34, &layout, CHIP_INK, 1.0);
+    }
+    padded(&face, TURN_PAD)
+}
+
+/// The big pak chip carrying the core's name, as it sits on a GB/GBC board.
+pub fn pak_chip_face(core: Option<Core>) -> CartFace {
+    let mut face = pak_chip();
+    if let Some(layout) = core.and_then(|c| name_layout(c, (PAK_CHIP.0 - 26.0).max(8.0))) {
+        ink_band(&mut face, (PAK_CHIP.1 as u32 - 34) / 2, 34, &layout, CHIP_INK, 0.9);
     }
     padded(&face, TURN_PAD)
 }

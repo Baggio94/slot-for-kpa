@@ -26,11 +26,11 @@ use slot_store::{Cart, Platform, Core, stamp_now};
 use slot_power::{Battery, Charge};
 use crate::library::{carts_by_platform, RomEntry, LIBRARY};
 use slot_ui::{
-    board_face, chip_face, chip_shadow_face, socket_face, quick_value_face, cart_face_with_material,
+    board_face, chip_face, pak_chip_face, chip_shadow_face, socket_face, quick_value_face, cart_face_with_material,
     cart_shadow, gb_cart_shadow, lift_of, shelf_cart_for,
     lid_rest, lid_toward, cart_box, board_layout, board_toward,
     grown, Draw, GbShell, Shelf, SlotChrome, SOCKET_W, SOCKET_H,
-    CHIP_W, CHIP_H, HOP_LIFT, TURN_PAD, SHADOW_W, SHADOW_H,
+    TURN_PAD,
     hint_face, arrows_hint_face, title_face, photo_face, Polaroids, Printed, HINT_H, HINT_EDGE, draw_slot_name, draw_platform_name, platform_name_face,
     icon_face, badge_face, menu_face, Icon, LinkBadge, BOLT_PX, HUD_INK,
     Hud, HudKind, FfState, Toast, toast_face, QUICK_PITCH, opening, edge, centred_hints, LEGEND_GAP,
@@ -686,6 +686,8 @@ struct Engine {
     socket_textures: [slot_gfx::TexId; 3],
     chip_textures: [slot_gfx::TexId; 3],
     chip_blank: slot_gfx::TexId,
+    pak_chip_textures: [slot_gfx::TexId; 3],
+    pak_chip_blank: slot_gfx::TexId,
     chip_shadow: slot_gfx::TexId,
     core_legend_faces: [(slot_gfx::TexId, u32); 3],
     a_down_at: Option<Instant>,
@@ -1053,6 +1055,9 @@ impl Engine {
         });
         let blank = chip_face(None);
         let chip_blank = gpu.create_face(&blank);
+        // GB/GBC boards hop their own big pak chip between two footprints.
+        let pak_chip_textures = Core::ALL.map(|core| gpu.create_face(&pak_chip_face(Some(core))));
+        let pak_chip_blank = gpu.create_face(&pak_chip_face(None));
         let shadow = chip_shadow_face();
         let chip_shadow = gpu.create_face(&shadow);
         // The actual Slot legend is a set of three compact keycaps, not
@@ -1212,6 +1217,8 @@ impl Engine {
             socket_textures,
             chip_textures,
             chip_blank,
+            pak_chip_textures,
+            pak_chip_blank,
             chip_shadow,
             core_legend_faces,
             a_down_at: None,
@@ -4357,6 +4364,7 @@ impl Engine {
             });
         }
         for (i, core) in [Core::Mgba, picker.right()].into_iter().enumerate() {
+            if !layout.sockets { break; }
             let tex = self.socket_textures[core.index()];
             let (x, y) = layout.at(board, layout.socket_u[i], layout.socket_v);
             out.push(Draw::Tex {
@@ -4369,20 +4377,24 @@ impl Engine {
         let chip = picker.chip(now);
         let u = layout.chip_u[0] + (layout.chip_u[1] - layout.chip_u[0]) * chip.across;
         if chip.lift > 0.0 {
-            let (cx, cy) = layout.at(board, u + 19.0, layout.chip_v + 29.4);
-            let (w, h) = (SHADOW_W as f32 * zoom, SHADOW_H as f32 * zoom);
+            let (cx, cy) = layout.at(board,
+                u + layout.shadow_at.0, layout.chip_v + layout.shadow_at.1);
+            let (w, h) = (layout.shadow.0 * zoom, layout.shadow.1 * zoom);
             out.push(Draw::Tex {
                 x: cx - w / 2.0, y: cy - h / 2.0, w, h,
                 tex: self.chip_shadow, alpha: 0.6 * chip.lift * lift,
             });
         }
-        let tex = chip.seated
-            .map(|core| self.chip_textures[core.index()])
-            .unwrap_or(self.chip_blank);
-        let (x, y) = layout.at(board, u, layout.chip_v - HOP_LIFT * chip.lift);
+        let (chips, blank) = if layout.sockets {
+            (&self.chip_textures, self.chip_blank)
+        } else {
+            (&self.pak_chip_textures, self.pak_chip_blank)
+        };
+        let tex = chip.seated.map(|core| chips[core.index()]).unwrap_or(blank);
+        let (x, y) = layout.at(board, u, layout.chip_v - layout.hop * chip.lift);
         let body = grown(slot_ui::Placed {
             x: x + chip.shake, y,
-            w: CHIP_W as f32 * zoom, h: CHIP_H as f32 * zoom,
+            w: layout.chip.0 * zoom, h: layout.chip.1 * zoom,
         }, TURN_PAD as f32 * zoom);
         out.push(Draw::Turned {
             x: body.x.round(), y: body.y.round(),

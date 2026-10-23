@@ -240,8 +240,26 @@ pub fn cart_backing(shell: Option<GbShell>) -> CartFace {
             h: BOARD_H,
         });
     };
+    pak_board(shell, bitmaps::gb_board())
+}
+
+/// The pak board with both big-chip footprints empty, for the core picker.
+pub fn cart_backing_open(shell: GbShell) -> CartFace {
+    pak_board(shell, bitmaps::gb_board_open())
+}
+
+/// The big pak chip the core picker hops between the footprints.
+pub fn pak_chip() -> CartFace {
+    dense_layer(CartFace {
+        rgba: bitmaps::gb_chip().to_vec(),
+        w: bitmaps::GB_CHIP_W,
+        h: bitmaps::GB_CHIP_H,
+    })
+}
+
+fn pak_board(shell: GbShell, board: &[u8]) -> CartFace {
     let s = spec(Shape::Gb(shell));
-    let mut rgba = bitmaps::gb_board().to_vec();
+    let mut rgba = board.to_vec();
     for (px, cover) in rgba.chunks_exact_mut(4).zip(s.mask) {
         px[3] = ((px[3] as u32 * *cover as u32 + 127) / 255) as u8;
     }
