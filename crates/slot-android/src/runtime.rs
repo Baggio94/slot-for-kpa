@@ -27,10 +27,10 @@ use slot_power::{Battery, Charge};
 use crate::library::{carts_by_platform, RomEntry, LIBRARY};
 use slot_ui::{
     board_face, chip_face, chip_shadow_face, socket_face, quick_value_face, cart_face_with_material,
-    cart_shadow, gb_cart_shadow, board_from, board_zoom, lift_of, shelf_cart_for,
-    lid_rest, lid_toward, cart_box,
-    on_board, grown, Draw, GbShell, Shelf, SlotChrome, SOCKET_U, SOCKET_V, SOCKET_W, SOCKET_H,
-    CHIP_U, CHIP_V, CHIP_W, CHIP_H, HOP_LIFT, TURN_PAD, SHADOW_W, SHADOW_H,
+    cart_shadow, gb_cart_shadow, lift_of, shelf_cart_for,
+    lid_rest, lid_toward, cart_box, board_layout, board_toward,
+    grown, Draw, GbShell, Shelf, SlotChrome, SOCKET_W, SOCKET_H,
+    CHIP_W, CHIP_H, HOP_LIFT, TURN_PAD, SHADOW_W, SHADOW_H,
     hint_face, arrows_hint_face, title_face, photo_face, Polaroids, Printed, HINT_H, HINT_EDGE, draw_slot_name, draw_platform_name, platform_name_face,
     icon_face, badge_face, menu_face, Icon, LinkBadge, BOLT_PX, HUD_INK,
     Hud, HudKind, FfState, Toast, toast_face, QUICK_PITCH, opening, edge, centred_hints, LEGEND_GAP,
@@ -4346,8 +4346,9 @@ impl Engine {
         let (rest, scale) = shelf.selected_at();
         let platform = shelf.carts.get(shelf.index).map_or(Platform::Gba, |c| c.platform);
         let cart = shelf_cart_for(platform, rest, scale);
-        let board = board_from(cart, progress);
-        let zoom = board_zoom(board);
+        let layout = board_layout(platform);
+        let board = board_toward(cart, layout.rest, progress);
+        let zoom = layout.zoom(board);
 
         if let Some(tex) = self.board_texture {
             out.push(Draw::Tex {
@@ -4357,7 +4358,7 @@ impl Engine {
         }
         for (i, core) in [Core::Mgba, picker.right()].into_iter().enumerate() {
             let tex = self.socket_textures[core.index()];
-            let (x, y) = on_board(board, SOCKET_U[i], SOCKET_V);
+            let (x, y) = layout.at(board, layout.socket_u[i], layout.socket_v);
             out.push(Draw::Tex {
                 x: x.round(), y: y.round(),
                 w: SOCKET_W as f32 * zoom, h: SOCKET_H as f32 * zoom,
@@ -4366,9 +4367,9 @@ impl Engine {
         }
 
         let chip = picker.chip(now);
-        let u = CHIP_U[0] + (CHIP_U[1] - CHIP_U[0]) * chip.across;
+        let u = layout.chip_u[0] + (layout.chip_u[1] - layout.chip_u[0]) * chip.across;
         if chip.lift > 0.0 {
-            let (cx, cy) = on_board(board, u + 19.0, CHIP_V + 29.4);
+            let (cx, cy) = layout.at(board, u + 19.0, layout.chip_v + 29.4);
             let (w, h) = (SHADOW_W as f32 * zoom, SHADOW_H as f32 * zoom);
             out.push(Draw::Tex {
                 x: cx - w / 2.0, y: cy - h / 2.0, w, h,
@@ -4378,7 +4379,7 @@ impl Engine {
         let tex = chip.seated
             .map(|core| self.chip_textures[core.index()])
             .unwrap_or(self.chip_blank);
-        let (x, y) = on_board(board, u, CHIP_V - HOP_LIFT * chip.lift);
+        let (x, y) = layout.at(board, u, layout.chip_v - HOP_LIFT * chip.lift);
         let body = grown(slot_ui::Placed {
             x: x + chip.shake, y,
             w: CHIP_W as f32 * zoom, h: CHIP_H as f32 * zoom,
