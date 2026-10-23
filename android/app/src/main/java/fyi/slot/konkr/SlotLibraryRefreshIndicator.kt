@@ -32,7 +32,7 @@ internal class SlotLibraryRefreshIndicator(context: Context, rail: LinearLayout)
             style = Paint.Style.STROKE
             strokeWidth = dim(2).toFloat()
             strokeCap = Paint.Cap.ROUND
-            color = Color.WHITE
+            color = SlotUi.ink
         }
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
@@ -45,7 +45,7 @@ internal class SlotLibraryRefreshIndicator(context: Context, rail: LinearLayout)
         }
     }
     private val caption: TextView =
-        SlotUi.label(context, "UPDATING LIBRARY", 9f, Color.WHITE)
+        SlotUi.label(context, "UPDATING LIBRARY", 9f, SlotUi.ink)
 
     init {
         root.addView(spinner, LinearLayout.LayoutParams(dim(13), dim(13)))
@@ -58,7 +58,7 @@ internal class SlotLibraryRefreshIndicator(context: Context, rail: LinearLayout)
     }
 
     fun setLightTheme(light: Boolean) {
-        val ink = if (light) Color.BLACK else Color.WHITE
+        val ink = if (light) Color.BLACK else SlotUi.ink
         caption.setTextColor(ink)
         if (spinner.paint.color != ink) {
             spinner.paint.color = ink

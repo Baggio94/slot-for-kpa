@@ -75,7 +75,7 @@ class CartStudioActivity : Activity() {
         frame.setBackgroundColor(SlotUi.background)
         setContentView(frame)
         val notice = TextView(this).apply {
-            text = "Cart Studio\nLoading Slot library…"
+            text = "CART STUDIO\nLOADING YOUR CARTRIDGES…"
             typeface = SlotUi.font(this@CartStudioActivity)
             letterSpacing = .09f
             textSize = 18f
@@ -89,9 +89,9 @@ class CartStudioActivity : Activity() {
         worker.execute {
             try {
                 val carts = CartStudioCatalog.games(this)
-                require(carts.isNotEmpty()) { "Choose GB, GBC or GBA ROM folders in Library" }
+                require(carts.isNotEmpty()) { "Choose your ROM folder in Library first." }
                 require(selected == null || carts.any { it.uri == selected }) {
-                    "Selected cartridge is no longer in the library"
+                    "This cartridge is no longer in your library."
                 }
                 // X is an editor for ONE ROM, not a full catalog scan.
                 // Menu -> Cart Studio still sees all GB/GBC/GBA games.
@@ -104,8 +104,9 @@ class CartStudioActivity : Activity() {
                 Log.e(TAG, "Cannot prepare Cart Studio", error)
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed) {
-                        notice.text = "Unable to load library\n" +
-                            (error.message ?: "Check your ROM folder permission")
+                        notice.text = ("Couldn't load your cartridges\n" +
+                            (error.message?.takeIf { it.endsWith(".") }
+                                ?: "Check your ROM folder in Library.")).uppercase()
                     }
                 }
             }
@@ -216,7 +217,7 @@ class CartStudioActivity : Activity() {
             setBackgroundColor(Color.rgb(27, 27, 33))
         }
         frame.addView(toolbar, FrameLayout.LayoutParams(-1, barHeight, Gravity.TOP))
-        val title = SlotUi.label(this, "Cart Studio", 17f, upper = false).apply {
+        val title = SlotUi.label(this, "Cart Studio", 17f).apply {
             setTextColor(SlotUi.ink)
             gravity = Gravity.CENTER
         }
@@ -236,7 +237,7 @@ class CartStudioActivity : Activity() {
         val close = SlotUi.nativeHint(this, "B", "BACK").apply {
             setOnClickListener { backInStudio() }
             isFocusable = true
-            contentDescription = "Back to Cart Studio library or Slot"
+            contentDescription = "Back to the Cart Studio list or slot."
         }
         val backWidth = (116 * resources.displayMetrics.density + 0.5f).toInt()
         toolbar.addView(close, FrameLayout.LayoutParams(backWidth, -1, Gravity.START))
@@ -250,7 +251,7 @@ class CartStudioActivity : Activity() {
             setPadding(0, 0, (10 * density).toInt(), 0)
         }
         fun action(label: String, pale: Boolean): TextView {
-            return SlotUi.label(this, label, 12f, upper = false).apply {
+            return SlotUi.label(this, label, 12f).apply {
                 gravity = Gravity.CENTER
                 setTextColor(if (pale) SlotUi.background else SlotUi.ink)
                 setPadding((12 * density).toInt(), 0, (12 * density).toInt(), 0)
@@ -288,7 +289,7 @@ class CartStudioActivity : Activity() {
         save.setOnClickListener {
             if (!save.isEnabled) return@setOnClickListener
             save.isEnabled = false
-            save.text = "Saving…"
+            save.text = "SAVING…"
             w.evaluateJavascript("document.getElementById('write')?.click()", null)
         }
         w.addJavascriptInterface(object {
@@ -296,8 +297,8 @@ class CartStudioActivity : Activity() {
             fun progress(done: Int, total: Int) {
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed) {
-                        save.text = if (total > 0) "Saving ${done.coerceIn(0, total)}/$total"
-                                    else "Save to slot."
+                        save.text = if (total > 0) "SAVING ${done.coerceIn(0, total)}/$total"
+                                    else "SAVE TO SLOT."
                         save.isEnabled = total <= 0
                     }
                 }
@@ -316,7 +317,7 @@ class CartStudioActivity : Activity() {
                     if (shellsSafe > 0) parts.add("$shellsSafe shell changes saved")
                     if (skippedSafe > 0) parts.add("$skippedSafe skipped")
                     if (failedSafe > 0) parts.add("$failedSafe failed")
-                    if (shellNote.isNotBlank()) parts.add("shell save failed")
+                    if (shellNote.isNotBlank()) parts.add("shell colors not saved")
                     val message = parts.joinToString(" · ").ifBlank { "Nothing to save." }
                     val hasWarning = skippedSafe > 0 || failedSafe > 0 || shellNote.isNotBlank()
                     SlotToast.makeText(this@CartStudioActivity, message,

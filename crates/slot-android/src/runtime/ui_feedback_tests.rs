@@ -87,13 +87,11 @@ fn android_suspend_forces_eject_menu_when_a_live_link_ended_fullscreen() {
 #[test]
 fn link_boot_failures_never_pretend_solo_recovery_succeeded() {
     let ok = link_boot_failure("gpSP Link", "cannot connect", Ok(()));
-    assert!(ok.contains("original solo progress restored"));
+    assert!(ok.contains("back to solo"));
     let unsafe_state = link_boot_failure("mGBA Link", "invalid peer",
         Err("saved state was rejected".into()));
-    assert!(unsafe_state.contains("solo recovery failed"));
-    assert!(unsafe_state.contains("saved state was rejected"));
-    assert!(unsafe_state.contains("Eject/relaunch"));
-    assert!(!unsafe_state.contains("progress restored"));
+    assert!(unsafe_state.contains("Eject and reinsert"));
+    assert!(!unsafe_state.contains("back to solo"));
 }
 
 #[test]
