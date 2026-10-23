@@ -65,8 +65,6 @@ android {
         }
     }
 
-    // Reuse the exact upstream Slot insert/eject PCM assets.
-    sourceSets.getByName("main").assets.srcDir("../../crates/slot/assets")
     // Original Slot label font (SIL OFL) for a visually consistent account panel.
     // Include the accompanying OFL license from the same upstream source directory.
     sourceSets.getByName("main").assets.srcDir("../../crates/slot-ui/assets")
