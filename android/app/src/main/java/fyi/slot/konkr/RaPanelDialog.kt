@@ -156,8 +156,7 @@ internal class RaPanelDialog(
         // first cache diagnostics pass is scanning 115+ ROM definitions.
         section("ACCOUNT")
         row("Player", username)
-        row("Connection", "Direct to RA")
-        loading = text("CHECKING GAME CACHE AND BADGES...", 12.5f, muted)
+        loading = text("LOADING…", 12.5f, muted)
         content.addView(loading)
         scroll.addView(content)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -204,54 +203,37 @@ internal class RaPanelDialog(
         if (!dialog.isShowing) return
         val previousScroll = scroll.scrollY
         content.removeAllViews()
+        // Player-facing summary only; cache budget, icon metadata and engine
+        // internals stay in RaDiagnostics / logcat.
         section("ACCOUNT")
         row("Player", username)
-        row("Engine", if (engine == "Inactive") "Inactive" else "Active")
         // Android's validated Internet is not proof of a successful RA HTTPS
         // handshake. Sync status is derived separately from the native worker.
-        row("Connection", if (internet) "Internet available" else "Offline")
-        row("Sync", when {
-            !internet -> "Waiting for connection"
-            engine == "Online" -> "Up to date"
-            engine == "Preparing" -> "Preparing"
+        row("Status", when {
+            !internet -> "Offline"
+            engine == "Online" -> "Online"
+            engine == "Preparing" -> "Preparing…"
             engine == "Needs attention" -> "Needs attention"
-            engine == "Offline" -> "Waiting for RA service"
+            engine == "Offline" -> "Waiting for RetroAchievements"
+            engine == "Inactive" -> "Starting…"
             else -> engine
         })
-        row("Mode", "Casual")
-        section("GAME CACHE")
-        row("GBA ROMs", snapshot.libraryGba?.toString() ?: "Not indexed")
-        val cached = snapshot.cachedGba?.toString() ?: "Unknown"
-        val indexed = snapshot.indexedGba?.toString() ?: "?"
-        row("GBA prepared", "$cached / $indexed indexed")
-        row("GB prepared", "${snapshot.cachedGb ?: "?"} / ${snapshot.indexedGb ?: "?"} indexed")
-        row("GBC prepared", "${snapshot.cachedGbc ?: "?"} / ${snapshot.indexedGbc ?: "?"} indexed")
-        row("RA games recognized", snapshot.recognizedGames?.toString() ?: "Checking...")
-        row("No RA match", snapshot.unmatchedGames?.toString() ?: "Checking...")
-        row("Missing icon IDs", snapshot.missingIconMetadata?.toString() ?: "Checking...")
-        row("Game icons cached", if (snapshot.gameIconsTotal != null &&
-            snapshot.gameIconsCached != null)
-            "${snapshot.gameIconsCached} / ${snapshot.gameIconsTotal}"
-            else "Checking cache...")
-        section("ACHIEVEMENT BADGES")
+        val pending = snapshot.pendingAwards
+        if (pending != null && pending > 0)
+            row("Unlocks to sync", if (internet) "$pending" else "$pending (next time online)")
+        section("GAMES READY OFFLINE")
+        fun ready(cached: Int?, indexed: Int?) =
+            if (cached != null && indexed != null) "$cached / $indexed" else "Checking…"
+        row("Game Boy Advance", ready(snapshot.cachedGba, snapshot.indexedGba))
+        row("Game Boy Color", ready(snapshot.cachedGbc, snapshot.indexedGbc))
+        row("Game Boy", ready(snapshot.cachedGb, snapshot.indexedGb))
+        row("With achievements", snapshot.recognizedGames?.toString() ?: "Checking…")
+        section("BADGES")
         val badgesDownloaded = snapshot.badgesDownloaded
         val badgesTotal = snapshot.badgesTotal
-        val imageValue = if (badgesDownloaded != null && badgesTotal != null)
-            "$badgesDownloaded / $badgesTotal    ${snapshot.badgesPercent}%"
-        else if (badgesTotal != null) "Checking $badgesTotal known badges..."
-        else "Not indexed"
-        row("Images downloaded", imageValue)
+        row("Downloaded", if (badgesDownloaded != null && badgesTotal != null)
+            "$badgesDownloaded / $badgesTotal" else "Checking…")
         badgeProgress(snapshot.badgesPercent)
-        section("SYNC & AWARDS")
-        val budgetUsed = snapshot.prefetchBudgetUsed
-        if (budgetUsed != null) {
-            row("Cache requests", "$budgetUsed / 100 (30 min)")
-            if (snapshot.nextBatchMinutes != null)
-                row("Next batch", "In ${snapshot.nextBatchMinutes} min")
-        }
-        row("Awards to sync", snapshot.pendingAwards?.toString() ?: "Unknown")
-        row("Awards saved", snapshot.recordedAwards?.toString() ?: "Unknown")
-        row("GB / GBC", "Online + offline (mGBA)")
         // The permanent icon-count explanation was redundant. Show this
         // area only for a genuine local-ledger warning, never for routine
         // offline cache progress. Existing award records are untouched.

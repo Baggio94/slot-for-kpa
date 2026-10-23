@@ -277,6 +277,12 @@ fn set_message(message: String) {
     *MESSAGE.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
 }
 
+/// Short user-facing sentence on screen; the technical cause goes to logcat.
+fn set_error_message(message: &str, detail: &dyn std::fmt::Display) {
+    crate::game::log_launch_timing(&format!("{message} ({detail})"));
+    set_message(message.into());
+}
+
 
 // A12 GL-thread-only diagnostic; no extra simulation step or GPU readback.
 // Native draw duration is measured BEFORE GLSurfaceView's EGL buffer swap.
@@ -438,14 +444,14 @@ const MENU_TEXT: [&str; 117] = [
     "Run-Ahead",                        // 55
     "GAME EMULATION",                   // 56
     "Reset to global",                  // 57
-    "Interface",                        // 58
-    "INTERFACE",                        // 59
+    "Status Bar",                       // 58
+    "STATUS BAR",                       // 59
     "Wi-Fi",                            // 60
     "Bluetooth",                        // 61
     "App Integrations",                 // 62 legacy
-    "Show Wi-Fi icon",                  // 63
-    "Show Bluetooth icon",             // 64
-    "Show app status icons",            // 65
+    "Wi-Fi Icon",                       // 63
+    "Bluetooth Icon",                   // 64
+    "App Icons",                        // 65
     "Multiplayer",                      // 66
     "End Link",                         // 67
     "",                                 // 68 retired: old non-Slot Multiplayer title
@@ -459,7 +465,7 @@ const MENU_TEXT: [&str; 117] = [
     "",                                 // 76 retired: no middle-page helper text
     "",                                 // 77 retired: upstream shows A OK
     "Eject to play solo",               // 78
-    "Share mGBA/gpSP Saves",            // 79
+    "Share Saves (mGBA/gpSP)",          // 79
     "",                                  // 80 retired: value rendered at right
     "General",                            // 81, official Slot v1.7 menu
     "GENERAL",                            // 82
@@ -496,7 +502,7 @@ const MENU_TEXT: [&str; 117] = [
     "CHECK FAILED",                      // 113
     "DOWNLOADING...",                    // 114
     "AVAILABLE",                         // 115
-    "Time Format",                       // 116, Its-TroyM PR #2
+    "Clock",                             // 116, Its-TroyM PR #2 (Time Format)
 ];
 
 /// Gameplay page labels and the Settings keys they change, in row order.
@@ -965,10 +971,10 @@ impl Engine {
         let setting_values = ["2×", "3×", "4×", "6×", "ON", "OFF",
                               "LCD3x", "Grid", "Dot", "Simpletex",
                               "STANDARD", "RESPONSIVE", "1 FRAME", "2 FRAMES",
-                              "DISPLAY SYNC", "TURBO", "A/B",
+                              "DISPLAY SYNC", "TURBO A/B", "A/B",
                               "None", "Random", "Default", "DEFAULT BLUR",
                               "Dark", "Light", "Low", "Medium", "High", "Custom",
-                               "LCD Grid V2", "Grid V2 + GBA Color", "zfast LCD",
+                               "LCD Grid V2", "Grid V2 + GBA", "zfast LCD",
                                "LCD1x", "Simpletex + GBA", "AGB-001",
                                "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
                                "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN",
@@ -1338,7 +1344,7 @@ impl Engine {
             100 => {
                 let platform=self.current_cart_platform();
                 if self.game_settings().shader_for(platform).includes_gba_color() {
-                    set_message("Color correction is built into this shader".into());
+                    set_message("This shader already includes color correction.".into());
                     return true;
                 }
                 if self.game.is_some() {
@@ -1359,7 +1365,7 @@ impl Engine {
                 if let Some(game) = self.game.as_mut() {
                     match game.load_latest() {
                         Ok(()) => self.hud.toast(Toast::StateLoaded, time),
-                        Err(err) => set_message(format!("Cannot load state: {err}")),
+                        Err(err) => set_error_message("Couldn't load this save state.", &err),
                     }
                 }
             }
@@ -1380,7 +1386,7 @@ impl Engine {
                                     .push_back(event);
                             }
                         }
-                        Err(err) => set_message(format!("Cannot export state: {err}")),
+                        Err(err) => set_error_message("Save state created, but couldn't copy it to your save state folder.", &err),
                     }
                 }
             }
@@ -1419,11 +1425,11 @@ impl Engine {
     fn enter_multiplayer_menu(&mut self) {
         if self.game.is_none() { return; }
         if self.game.as_ref().is_some_and(GameSession::requires_relaunch) {
-            set_message("Eject and relaunch the cartridge before linking again".into());
+            set_message("Eject and reinsert the cartridge to link again.".into());
             return;
         }
         if self.link_identity.is_none() {
-            set_message("Multiplayer currently requires a valid GBA ROM".into());
+            set_message("Multiplayer needs a valid GBA ROM.".into());
             return;
         }
         let game = self.game.as_ref().expect("checked above");
@@ -1434,7 +1440,7 @@ impl Engine {
             self.link_mode = LinkKind::Cable;
         } else {
             if !game.wireless_capable() {
-                set_message("This gpSP build did not register its GBA Link interface".into());
+                set_message("Multiplayer isn't available with gpSP here. Try mGBA.".into());
                 return;
             }
             if !link_kind::link_carried(&identity.code, &identity.title) {
@@ -1442,14 +1448,14 @@ impl Engine {
                     "Multiplayer unsupported protocol: game_code={}, title={}, clean_header={}",
                     identity.code, identity.title, identity.clean_header
                 ));
-                set_message("This GBA game's link protocol is not yet verified in gpSP. Try Pokemon FireRed or Emerald.".into());
+                set_message("gpSP can't link this game yet. Try mGBA.".into());
                 return;
             }
             self.link_mode = self.link_mode_override.unwrap_or_else(||
                 link_kind::preferred_mode(&identity.code, &identity.title,
                     identity.clean_header));
             if !link_kind::gpsp_runtime_mode_supported(&identity.code, self.link_mode) {
-                set_message("This gpSP core cannot emulate this cartridge's GBA Cable protocol. Try mGBA Cable with identical ROMs.".into());
+                set_message("gpSP can't link this game. Try mGBA with the same ROM on both consoles.".into());
                 return;
             }
         }
@@ -1507,13 +1513,17 @@ impl Engine {
                     Ok(original) => {
                         SAMPLE_RATE.store(original.sample_rate, Ordering::Release);
                         self.game = Some(original);
-                        return Err(format!("Cannot activate gpSP {wanted}: {error}; previous mode restored"));
+                        crate::game::log_launch_timing(&format!(
+                            "Cannot activate gpSP {wanted}: {error}; previous mode restored"));
+                        return Err("Couldn't switch the link mode. Your game is unchanged.".into());
                     }
                     Err(recovery) => {
                         SAMPLE_RATE.store(0, Ordering::Release);
                         PLAYING.store(false, Ordering::Release);
                         self.handle(Input::Exit);
-                        return Err(format!("gpSP Link mode failed: {error}; recovery requires cartridge relaunch ({recovery})"));
+                        crate::game::log_launch_timing(&format!(
+                            "gpSP Link mode failed: {error}; recovery requires cartridge relaunch ({recovery})"));
+                        return Err("Couldn't switch the link mode. Reinsert the cartridge; your saves are safe.".into());
                     }
                 }
             }
@@ -1582,7 +1592,7 @@ impl Engine {
             role: self.link_role, fail: failure,
             worked: self.link_worked_at, since: self.link_millis(),
         };
-        set_message(format!("Multiplayer: {reason}"));
+        set_message(reason.into());
     }
 
     fn begin_link_session(&mut self, role: LinkRole,
@@ -1811,13 +1821,13 @@ impl Engine {
                         crate::multiplayer::Failure::PeerVanished => LinkFail::PeerVanished,
                     };
                     let details = if reason == crate::multiplayer::Failure::IncompatiblePeer {
-                        "Peer refused Link: check compatible cartridges, same build, BIOS and Cable/RFU mode (mGBA KMLB/4, gpSP KMLB/3)."
+                        "The other console refused. Use the same game, core and slot. version."
                     } else {
                         match reason {
-                            crate::multiplayer::Failure::NobodyCame => "No compatible Host found. Ensure Host is waiting on the same LAN.",
-                            crate::multiplayer::Failure::NoNetwork => "A usable Wi-Fi or emulator bridge network is required.",
+                            crate::multiplayer::Failure::NobodyCame => "No host found. Make sure it's waiting on the same Wi-Fi.",
+                            crate::multiplayer::Failure::NoNetwork => "Connect to Wi-Fi to play Multiplayer.",
                             crate::multiplayer::Failure::Cancelled => "Connection cancelled.",
-                            _ => "Multiplayer peer disappeared or connection failed.",
+                            _ => "Connection lost with the other console.",
                         }
                     };
                     self.fail_multiplayer(details, fail);
@@ -1850,7 +1860,7 @@ impl Engine {
                     starter.approve_peer_rom(decision);
                     if choice != 1 && choice != 2 {
                         self.cancel_link_discovery();
-                        self.fail_multiplayer("You declined sharing ROM data with this peer",
+                        self.fail_multiplayer("Link cancelled. The cartridge wasn't shared.",
                             LinkFail::Cancelled);
                     }
                 }
@@ -1859,7 +1869,7 @@ impl Engine {
                 if matches!(self.overlay, ShelfOverlay::Multiplayer) &&
                     matches!(self.link_phase, LinkMenu::Working {..}) {
                     let start = address.parse::<Ipv4Addr>()
-                        .map_err(|_| "Invalid Wi-Fi IPv4 address".to_string())
+                        .map_err(|_| "Couldn't read this console's Wi-Fi address.".to_string())
                         .and_then(|ip| {
                             let config = self.link_config()?;
                             let role = if self.link_role == LinkRow::Host {
@@ -2023,7 +2033,7 @@ impl Engine {
                         // explicit Exit to discard and reload from last disk
                         // checkpoint. This branch has NO SAVE_SYNC event.
                         if !session.confirm_rollback_discard() {
-                            set_message("Run-Ahead rollback failed. Game frozen to protect saves. Select Save & Eject AGAIN to exit WITHOUT saving.".into());
+                            set_message("Something went wrong. Game paused to protect your save. Choose Save and Eject again to quit without saving.".into());
                             self.overlay = ShelfOverlay::GameMenu { row: 0 };
                             self.game_accum = 0.0;
                             return;
@@ -2037,7 +2047,7 @@ impl Engine {
                         Err(error) => {
                             crate::game::log_launch_timing(&format!(
                                 "Save & Eject cancelled; core preserved: {error}"));
-                            set_message(format!("Save failed: {error}. Try Save & Eject again."));
+                            set_error_message("Couldn't save. Try Save and Eject again.", &error);
                             self.overlay = ShelfOverlay::GameMenu { row: 0 };
                             self.game_accum = 0.0;
                             return;
@@ -2131,7 +2141,7 @@ impl Engine {
                 {
                     return;
                 }
-                set_message(format!("Cannot open game: {message}"));
+                set_error_message("Couldn't open this game. Check the ROM and core.", &message);
                 self.awaiting_game = false;
                 self.inserted = false;
                 self.requested_uri = None;
@@ -2258,7 +2268,7 @@ impl Engine {
                         } else if self.game.as_ref().is_some_and(GameSession::requires_relaunch) {
                             self.mode_last_tap = None;
                             self.overlay = ShelfOverlay::GameMenu { row: 0 };
-                            set_message("Press A to eject and relaunch in solo".into());
+                            set_message("Press A to eject, then reinsert to play solo.".into());
                         } else if self.game.is_some() {
                             let is_double=self.mode_last_tap.take()
                                 .is_some_and(|t|t.elapsed().as_millis()<360);
@@ -2350,7 +2360,7 @@ impl Engine {
                                             if let Some(game) = self.game.as_mut() {
                                                 game.end_multiplayer();
                                             }
-                                            set_message(format!("Link recovery unsafe: {reason}. Original solo progress preserved."));
+                                            set_error_message("Couldn't return to solo. Your solo progress is safe.", &reason);
                                             self.hud.set_link(link_badge_for(role, true));
                                             if self.game.is_some() {
                                                 self.overlay = ShelfOverlay::GameMenu { row: 0 };
@@ -2401,7 +2411,7 @@ impl Engine {
                                 if let (Some(game),Some(p))=(self.game.as_mut(),self.polaroids.as_ref()) {
                                     if let Some(entry)=p.selected() {
                                         if let Err(err)=game.load_manual(&entry.stamp) {
-                                            set_message(format!("State load failed: {err}"));
+                                            set_error_message("Couldn't load this save state.", &err);
                                         }
                                     }
                                 }
@@ -2457,7 +2467,7 @@ impl Engine {
                                 },
                                 97 => if !relaunch {
                                     self.overlay = ShelfOverlay::None
-                                } else { set_message("Eject to return to solo.".into()); },
+                                } else { set_message("Eject the cartridge to play solo.".into()); },
                                 _ => {}
                             }
                         }
@@ -2819,7 +2829,7 @@ impl Engine {
                                                     format!("lib{}_libretro.so", core.as_str()));
                                                 if !core_file.is_file() {
                                                     set_message(format!(
-                                                        "{} core is not installed", core.text()));
+                                                        "{} isn't installed.", core.text()));
                                                 } else {
                                                     match core_selection::set(&storage, &uri, core) {
                                                         Ok(()) => {
@@ -2832,8 +2842,8 @@ impl Engine {
                                                                     &storage, &uri, core);
                                                             picker.press(Press::Keep, now);
                                                         }
-                                                        Err(err) => set_message(format!(
-                                                            "Cannot save core selection: {err}")),
+                                                        Err(err) => set_error_message(
+                                                            "Couldn't save the selected core.", &err),
                                                     }
                                                 }
                                             }
@@ -2878,7 +2888,7 @@ impl Engine {
                             if selected.platform != Platform::Gba {
                                 self.refusal = Some(slot_ui::Refusal::started(
                                     self.born.elapsed().as_millis() as u64));
-                                set_message("mGBA is the only installed GB/GBC core".into());
+                                set_message("GB and GBC games always use mGBA.".into());
                                 return;
                             }
                             let face = board_face(selected);
@@ -3203,13 +3213,13 @@ impl Engine {
                         recents_started.elapsed().as_millis()));
                 }
                 Err(error) => {
-                    set_message(format!("{}: {error}", core.text()));
+                    set_error_message(&format!("Couldn't start {}.", core.text()), &error);
                     self.inserted = false;
                     self.requested_uri = None;
                 }
             }
         } else {
-            set_message("Android game paths are not configured".into());
+            set_message("Choose your ROM folder first.".into());
             self.inserted = false;
             self.requested_uri = None;
         }
@@ -3267,7 +3277,7 @@ impl Engine {
             .map_or("", |cart| cart.stem.as_str());
         if let Some((root, _)) = PATHS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             if let Err(err) = video_mode::write_video_mode(root, name, mode) {
-                set_message(format!("Cannot save display mode: {err}"));
+                set_error_message("Couldn't save the screen size.", &err);
             }
         }
     }
@@ -3419,7 +3429,7 @@ impl Engine {
         if key == 2 && self.game_settings().shader_for(platform).includes_gba_color() {
             // These two RetroArch presets bake GBA Color into the shader.
             // Never silently toggle an option that cannot affect the picture.
-            set_message("Color correction is built into this shader".into());
+            set_message("This shader already includes color correction.".into());
             return;
         }
         let linked=self.game.as_ref().is_some_and(GameSession::linked);
@@ -3427,7 +3437,7 @@ impl Engine {
         // Shader and color-correction are display-only and safe while linked;
         // never change input, save states, emulation speed or rewind in Link.
         if relaunch || (linked && !matches!(key,0|1|2|21|22|23|24|25|26|27)) {
-            set_message("Gameplay changes are disabled during Multiplayer".into());
+            set_message("Not available during Multiplayer.".into());
             return;
         }
         // This method is only called from the paused game, not the carousel.
@@ -3436,7 +3446,7 @@ impl Engine {
         if !profile.change_visual_and_gameplay(&self.settings,platform,key,right) { return; }
         if let Some((root,_))=PATHS.lock().unwrap_or_else(|e|e.into_inner()).as_ref() {
             if let Err(error)=profile.save(root,&uri,core) {
-                set_message(format!("Cannot save game settings: {error}"));
+                set_error_message("Couldn't save this game's settings.", &error);
                 return;
             }
         } else { return; }
@@ -3470,22 +3480,22 @@ impl Engine {
         if self.game.as_ref().is_some_and(|game|game.linked() || game.requires_relaunch()) {
             // In a linked session, do not alter the effective frame cadence
             // or speculative time travel. Keep the current session in sync.
-            set_message("Emulation settings are locked while Multiplayer is active".into());
+            set_message("Not available during Multiplayer.".into());
             return;
         }
         if key == 12 && self.game.as_ref().is_some_and(|game|
             game.sma4_runahead_blocked()) {
-            set_message("Run-Ahead disabled for Super Mario Advance 4 to protect saves (mGBA and gpSP).".into());
+            set_message("Run-Ahead is off for this game to protect its saves.".into());
             return;
         }
         if key == 12 && self.game.as_ref().is_some_and(|game|
             game.mgba_flash_runahead_blocked()) {
-            set_message("Run-Ahead disabled for Pokemon Gen III with mGBA to protect Flash saves. gpSP is unchanged.".into());
+            set_message("Run-Ahead is off for this game with mGBA to protect its saves.".into());
             return;
         }
         if key == 12 && self.game.as_ref().is_some_and(|game|
             !game.runahead_supported()) {
-            set_message("Run-Ahead unavailable for this core/game (Link, Flash or speculative audio protection)".into());
+            set_message("Run-Ahead isn't available for this game.".into());
             return;
         }
         let Some(uri) = self.selected_rom_uri() else { return; };
@@ -3499,7 +3509,7 @@ impl Engine {
         if !profile.change(key, right) { return; }
         if let Some((root, _)) = PATHS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             if let Err(error) = profile.save(root, &uri, core) {
-                set_message(format!("Cannot save game emulation settings: {error}"));
+                set_error_message("Couldn't save this game's settings.", &error);
                 return;
             }
         } else { return; }
@@ -3515,14 +3525,14 @@ impl Engine {
     }
     fn reset_game_emulation(&mut self) {
         if self.game.as_ref().is_some_and(|game|game.linked() || game.requires_relaunch()) {
-            set_message("Cannot reset emulation during Multiplayer".into());
+            set_message("Not available during Multiplayer.".into());
             return;
         }
         let Some(uri) = self.selected_rom_uri() else { return; };
         let core = self.selected_emulation_core();
         if let Some((root, _)) = PATHS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             if let Err(error) = EmulationProfile::clear(root, &uri, core) {
-                set_message(format!("Cannot reset game emulation settings: {error}"));
+                set_error_message("Couldn't reset this game's settings.", &error);
                 return;
             }
         } else { return; }
@@ -3542,7 +3552,7 @@ impl Engine {
     fn persist_settings(&self) {
         if let Some((root, _)) = PATHS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             if let Err(error) = self.settings.save(root) {
-                set_message(format!("Cannot save Settings: {error}"));
+                set_error_message("Couldn't save settings.", &error);
             }
         }
     }
@@ -3616,7 +3626,7 @@ impl Engine {
         let Some(root)=Self::recents_root() else {return};
         match crate::favorites::toggle(&root,&uri) {
             Ok(_) => self.rebuild_favorites(),
-            Err(error)=>set_message(format!("Could not save favorite: {error}")),
+            Err(error)=>set_error_message("Couldn't save this favorite.", &error),
         }
     }
     fn rebuild_favorites(&mut self) {
@@ -3810,7 +3820,7 @@ impl Engine {
 
     fn change_setting(&mut self, key: usize, right: bool) {
         if matches!(key,2|22) && self.settings.shader_gba.includes_gba_color() {
-            set_message("Color correction is built into this shader".into());
+            set_message("This shader already includes color correction.".into());
             return;
         }
         if !self.settings.change(key, right) { return; }
@@ -3892,9 +3902,9 @@ impl Engine {
                 else if scoped.colour_correction_gba {4}else{5},
             23 => if scoped.colour_correction_gbc {4}else{5},
             24 => if scoped.colour_correction_gb {4}else{5},
-            25 => if scoped.bezel_gba==crate::settings::Bezel::None {17}else{19},
-            26 => if scoped.bezel_gbc==crate::settings::Bezel::None {17}else{19},
-            27 => if scoped.bezel_gb==crate::settings::Bezel::None {17}else{19},
+            25 => if scoped.bezel_gba==crate::settings::Bezel::None {5}else{4},
+            26 => if scoped.bezel_gbc==crate::settings::Bezel::None {5}else{4},
+            27 => if scoped.bezel_gb==crate::settings::Bezel::None {5}else{4},
             28 => if self.settings.time_format==crate::settings::TimeFormat::TwelveHour
                 {35}else{36},
             _ => 5,
@@ -4012,7 +4022,10 @@ impl Engine {
                 });
             }
         } else {
-            for (tex, w, x) in centred_hints(&self.menu_hints, LEGEND_GAP) {
+            // Library's Share Saves row is a toggle, not a submenu.
+            let hints = if heading == 5 && selected == 4 { &self.settings_hints }
+                else { &self.menu_hints };
+            for (tex, w, x) in centred_hints(hints, LEGEND_GAP) {
                 out.push(Draw::Tex {
                     x, y: 427.0, w: w as f32, h: HINT_H as f32,
                     tex, alpha: fade,
@@ -4356,7 +4369,7 @@ impl Engine {
         if let (Some(game),Some(p))=(self.game.as_mut(),self.polaroids.as_mut()) {
             if let Some(entry)=p.selected() {
                 if let Err(err)=game.delete_manual(&entry.stamp) {
-                    set_message(format!("State delete failed: {err}"));
+                    set_error_message("Couldn't delete this save state.", &err);
                     p.keep();
                 } else {
                     p.remove_selected();
@@ -4393,7 +4406,7 @@ impl Engine {
         let Some(game)=self.game.as_ref() else {return;};
         let entries=game.history();
         if entries.is_empty() {
-            set_message("No saved states yet — SELECT + R1 to save".into());
+            set_message("No save states yet. Press SELECT + R1 to save.".into());
             return;
         }
         let mut polaroids=Polaroids::new(entries);
@@ -4787,7 +4800,7 @@ impl Engine {
                         if self.game.is_some() {
                             self.overlay = ShelfOverlay::GameMenu { row: 0 };
                         } else { self.handle(Input::Exit); }
-                        set_message(format!("Multiplayer stopped: {reason}"));
+                        set_error_message("Multiplayer stopped. Your solo progress is safe.", &reason);
                     }
                 }
             }
@@ -5005,7 +5018,7 @@ impl Engine {
                                 self.hud.toast(link_fault_toast(fault),
                                     self.born.elapsed().as_millis() as u64);
                                 self.overlay = ShelfOverlay::GameMenu { row: 0 };
-                                set_message(format!("Multiplayer paused: {fault:?}"));
+                                set_error_message("Multiplayer paused. Check the connection and try again.", &format!("{fault:?}"));
                             }
                             self.ff_held = false;
                             self.ff_latched = false;
@@ -5088,7 +5101,7 @@ impl Engine {
                 PLAYING.store(false, Ordering::Release);
                 AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
                 self.overlay = ShelfOverlay::GameMenu { row: 0 };
-                set_message("Run-Ahead restore failed; game paused to protect saves. Exit twice to discard this session WITHOUT saving.".into());
+                set_message("Something went wrong. Game paused to protect your save. Choose Save and Eject twice to quit without saving.".into());
             }
             match stepped {
                 0 => self.perf_step0 = self.perf_step0.saturating_add(1),
@@ -5192,7 +5205,7 @@ impl Engine {
                         if self.game.is_some() {
                             self.overlay = ShelfOverlay::GameMenu { row: 0 };
                         } else { self.handle(Input::Exit); }
-                        set_message(format!("Unable to recover Link player: {reason}"));
+                        set_error_message("Connection lost with the other console.", &reason);
                     }
                 }
             }
@@ -5449,8 +5462,16 @@ fn suspend_returns_to_eject_menu(requires_relaunch: bool,
 fn link_boot_failure(context: &str, error: &str,
                      recovery: Result<(), String>) -> String {
     match recovery {
-        Ok(()) => format!("{context}: {error}; original solo progress restored"),
-        Err(cause) => format!("{context}: {error}; solo recovery failed: {cause}. Eject/relaunch the cartridge; saved progress remains on disk"),
+        Ok(()) => {
+            crate::game::log_launch_timing(&format!(
+                "{context}: {error}; original solo progress restored"));
+            "Couldn't start the link. Your game is back to solo.".into()
+        }
+        Err(cause) => {
+            crate::game::log_launch_timing(&format!(
+                "{context}: {error}; solo recovery failed: {cause}"));
+            "Couldn't start the link. Eject and reinsert the cartridge; your saves are safe.".into()
+        }
     }
 }
 
