@@ -484,7 +484,8 @@ internal class StatusGlyph(context: Context, private val glyph: Glyph) : View(co
             fills = listOf(dot(12f, 18.6f, 1.7f) to 1)
         )
         val BLUETOOTH = Glyph(
-            strokes = listOf("M7.2 8.6L16.6 15.6L12 19.2V4.8L16.6 8.4L7.2 15.4" to 0),
+            // Sits on the Wi-Fi dot's baseline rather than the grid centre.
+            strokes = listOf("M7.2 9.4L16.6 16.4L12 20V5.6L16.6 9.2L7.2 16.2" to 0),
             fills = emptyList()
         )
         val MOON = Glyph(

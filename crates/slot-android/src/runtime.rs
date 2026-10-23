@@ -575,6 +575,11 @@ struct Engine {
     screen_power: f32,
     exiting_screen: bool,
     eject_hold_remaining: f32,
+    // Shelf hitch probe: frame gaps for 15 s after a game is ejected.
+    ejected_at: Option<Instant>,
+    shelf_frame_at: Option<Instant>,
+    shelf_hitch_logs: u32,
+    frame_uploads: u32,
     select_down_at: Option<Instant>,
     // HOME release must not close the Link screen opened by SELECT + HOME.
     select_home_consumed: bool,
@@ -1112,6 +1117,10 @@ impl Engine {
             screen_power: 0.0,
             exiting_screen: false,
             eject_hold_remaining: 0.0,
+            ejected_at: None,
+            shelf_frame_at: None,
+            shelf_hitch_logs: 0,
+            frame_uploads: 0,
             select_down_at: None,
             select_home_consumed: false,
             select_chorded: false,
@@ -2094,6 +2103,9 @@ impl Engine {
                 if self.game.is_some() {
                     self.exiting_screen = true;
                     self.eject_hold_remaining = EJECT_HOLD_S;
+                    self.ejected_at = Some(Instant::now());
+                    self.shelf_frame_at = None;
+                    self.shelf_hitch_logs = 0;
                 }
                 // The reversed cart animation will emit the original eject sound.
                 if self.progress > 0.0 || self.inserted { self.eject_sound_armed = true; }
@@ -3060,6 +3072,7 @@ impl Engine {
             && matches!(self.overlay,ShelfOverlay::None);
         let limit=if quiet {2} else {1};
         let upload_started=Instant::now();
+        self.frame_uploads=0;
         for _ in 0..limit {
             if upload_started.elapsed()>=CART_GPU_UPLOAD_BUDGET {break}
             let Some(((shelf_id,index),face,layers))=self.cart_render.ready() else {break};
@@ -3091,6 +3104,7 @@ impl Engine {
             };
             self.shelves[shelf_id].set_face(index, texture);
             self.texture_cache.push_back((shelf_id, index, texture));
+            self.frame_uploads+=1;
         }
         let shelf_id = self.active;
         let selected = self.shelves[shelf_id].index;
@@ -5268,6 +5282,9 @@ impl Engine {
             return;
         }
 
+        let shelf_started = Instant::now();
+        let shelf_gap = self.shelf_frame_at.replace(shelf_started)
+            .map(|at| shelf_started.duration_since(at));
         // Shelf mode clears the opt-in clock between cartridges.
         self.ra_clock.reset();
         self.ra_sync_steps.reset();
@@ -5500,7 +5517,22 @@ impl Engine {
             && self.menu_opened.elapsed() >= Duration::from_millis(1200)
             && !self.shelves[self.active].is_scrolling()
             && self.cart_render.is_idle();
-        CAROUSEL_QUIET.store(quiet, Ordering::Release);
+        let was_quiet = CAROUSEL_QUIET.swap(quiet, Ordering::AcqRel);
+        if let (Some(ejected), Some(gap)) = (self.ejected_at, shelf_gap) {
+            if ejected.elapsed() > Duration::from_secs(15) {
+                self.ejected_at = None;
+            } else if gap > Duration::from_millis(25) && !was_quiet
+                && self.shelf_hitch_logs < 30
+            {
+                self.shelf_hitch_logs += 1;
+                crate::game::log_launch_timing(&format!(
+                    "Shelf hitch after eject: gap={}ms work={}ms at={}ms scrolling={} uploads={} art_pending={}",
+                    gap.as_millis(), shelf_started.elapsed().as_millis(),
+                    ejected.elapsed().as_millis(),
+                    self.shelves[self.active].is_scrolling(), self.frame_uploads,
+                    !self.cart_render.is_idle()));
+            }
+        }
     }
 }
 
