@@ -196,6 +196,12 @@ pub fn is_clear(cart: &Cart) -> bool {
 /// 80% opacity. A GBA cart uses `gba_interior.png`, a Game Boy pak `gb_interior.png`, and a Game
 /// Boy Color pak `gbc_interior.png`. Same size as that cart's board and face.
 pub fn cart_interior(cart: &Cart) -> CartFace {
+    cart_interior_at(cart, CLEAR_ALPHA)
+}
+
+/// The back plastic at a chosen opacity: the core picker opens a pak and
+/// shows its back half solid, with the board seated in it.
+pub fn cart_interior_at(cart: &Cart, alpha: u8) -> CartFace {
     let colour = shell_for(cart).colour;
     let (src, w, h, mask) = match gb_shell_of(cart) {
         None => (bitmaps::gba_interior(), BOARD_W, BOARD_H, None),
@@ -219,7 +225,7 @@ pub fn cart_interior(cart: &Cart) -> CartFace {
         for c in 0..3 {
             px[c] = overlay(px[c], colour[c]);
         }
-        px[3] = ((u32::from(px[3]) * u32::from(CLEAR_ALPHA) + 127) / 255) as u8;
+        px[3] = ((u32::from(px[3]) * u32::from(alpha) + 127) / 255) as u8;
     }
     dense_layer(CartFace { rgba, w, h })
 }

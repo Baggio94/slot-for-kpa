@@ -2,7 +2,7 @@ use slot_gfx::OUT_W;
 use slot_store::{Cart, Core, Platform};
 
 use crate::art;
-use crate::cart::{cart_box, clean_label, CartFace, CART_H, CART_W};
+use crate::cart::{cart_backing, cart_box, cart_interior_at, clean_label, gb_shell_of, CartFace, CART_H, CART_W};
 use crate::density::Face as _;
 use crate::density::{self, px, Canvas};
 use crate::shelf::foot_y;
@@ -67,6 +67,14 @@ pub fn rom_marking_face(stem: &str) -> CartFace {
 }
 
 pub fn board_face(cart: &Cart) -> CartFace {
+    if let Some(shell) = gb_shell_of(cart) {
+        // An opened Game Boy / Game Boy Color pak: its own back plastic in
+        // the game's colour with the original pak board seated in it, the
+        // same board a clear GBC cart shows through its shell.
+        let mut face = cart_interior_at(cart, 255);
+        over(&mut face, &cart_backing(Some(shell)), 0, 0);
+        return face;
+    }
     let shell = shell_for(cart);
     let svg = BOARD_SVG
         .replace(DEEP, &hex(shade(shell.colour, 0.35)))
@@ -223,10 +231,13 @@ pub fn shelf_cart_for(platform: Platform, x: f32, scale: f32) -> Placed {
 /// stays clear of the board, centred where the GBA lid rests.
 pub fn lid_rest(platform: Platform) -> Placed {
     if platform == Platform::Gba { return LID_REST; }
+    // A pak opens like a book: its front rests beside the board.
     let (cw, ch) = cart_box(platform);
-    let h = BOARD_Y - LID_REST.y - 8.0;
-    let w = h * cw as f32 / ch as f32;
-    Placed { x: LID_REST.x + (LID_REST.w - w) / 2.0, y: LID_REST.y, w, h }
+    let w = PAK_LID_W;
+    let h = w * ch as f32 / cw as f32;
+    let board_w = PAK_REST_H * cw as f32 / ch as f32;
+    let x = (OUT_W as f32 - w - PAK_GAP - board_w) / 2.0;
+    Placed { x, y: (480.0 - 120.0 - h) / 2.0 + 40.0, w, h }
 }
 
 pub fn lid_toward(shelf: Placed, rest: Placed, progress: f32) -> (Placed, f32) {
@@ -272,6 +283,82 @@ pub fn on_board(board: Placed, u: f32, v: f32) -> (f32, f32) {
 
 pub fn board_zoom(board: Placed) -> f32 {
     board.w / BOARD_W as f32
+}
+
+/// One unit of the GBA board in its own pixels at rest. A pak board uses the
+/// same unit, so sockets, chips, hops and shadows keep their GBA sizes.
+const UNIT_PX: f32 = BOARD_W as f32 / UNITS_W;
+
+/// Where the board and its two sockets sit for a platform. GBA keeps the
+/// original Slot geometry; a GB/GBC pak board is the cart's own outline with
+/// its two big chips (ROM and RAM) replaced by the mGBA and Gambatte sockets.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub struct BoardLayout {
+    pub rest: Placed,
+    /// The board's face size in its own logical pixels.
+    pub native: (f32, f32),
+    pub socket_u: [f32; 2],
+    pub socket_v: f32,
+    pub chip_u: [f32; 2],
+    pub chip_v: f32,
+}
+
+/// Top-left of the sockets over the pak board's two big chips, in its pixels.
+const PAK_SOCKETS: [f32; 2] = [67.5, 186.5];
+const PAK_SOCKET_Y: f32 = 188.5;
+const PAK_REST_H: f32 = 300.0;
+const PAK_GAP: f32 = 40.0;
+const PAK_LID_W: f32 = 168.0;
+
+pub fn board_layout(platform: Platform) -> BoardLayout {
+    if platform == Platform::Gba {
+        return BoardLayout {
+            rest: Placed { x: BOARD_X, y: BOARD_Y, w: BOARD_W as f32, h: BOARD_H as f32 },
+            native: (BOARD_W as f32, BOARD_H as f32),
+            socket_u: SOCKET_U,
+            socket_v: SOCKET_V,
+            chip_u: CHIP_U,
+            chip_v: CHIP_V,
+        };
+    }
+    let (cw, ch) = cart_box(platform);
+    let h = PAK_REST_H;
+    let w = h * cw as f32 / ch as f32;
+    let lid = lid_rest(platform);
+    let x = lid.x + lid.w + PAK_GAP;
+    let unit = |px: f32| px / UNIT_PX;
+    let (du, dv) = (CHIP_U[0] - SOCKET_U[0], CHIP_V - SOCKET_V);
+    BoardLayout {
+        rest: Placed { x, y: (480.0 - 120.0 - h) / 2.0 + 30.0, w, h },
+        native: (cw as f32, ch as f32),
+        socket_u: PAK_SOCKETS.map(unit),
+        socket_v: unit(PAK_SOCKET_Y),
+        chip_u: PAK_SOCKETS.map(|x| unit(x) + du),
+        chip_v: unit(PAK_SOCKET_Y) + dv,
+    }
+}
+
+impl BoardLayout {
+    pub fn at(&self, board: Placed, u: f32, v: f32) -> (f32, f32) {
+        if self.native == (BOARD_W as f32, BOARD_H as f32) {
+            return on_board(board, u, v);
+        }
+        let zoom = self.zoom(board);
+        (board.x + u * UNIT_PX * zoom, board.y + v * UNIT_PX * zoom * self.aspect(board))
+    }
+
+    /// Screen pixels per board pixel; sockets and chips scale with it.
+    pub fn zoom(&self, board: Placed) -> f32 {
+        board.w / self.native.0
+    }
+
+    fn aspect(&self, board: Placed) -> f32 {
+        (board.h / self.native.1) / self.zoom(board)
+    }
+}
+
+pub fn board_toward(shelf: Placed, rest: Placed, progress: f32) -> Placed {
+    lerp(shelf, rest, lift_of(progress))
 }
 
 pub fn grown(p: Placed, by: f32) -> Placed {
