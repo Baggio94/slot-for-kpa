@@ -717,6 +717,7 @@ class MainActivity : Activity() {
                 val uri = payload.getString("uri")
                 val core = when (payload.getString("core")) {
                     "gpsp" -> "gpSP"
+                    "gambatte" -> "Gambatte"
                     else -> "mGBA"
                 }
                 val target = activeTargets[uri]
@@ -1291,7 +1292,11 @@ class MainActivity : Activity() {
                 }
                 val romReadyAt = SystemClock.elapsedRealtime()
                 val savedCore = nativeCoreForUri(rawUri)
-                val core = if (savedCore == "gpsp" && ext == "gba") "gpSP" else "mGBA"
+                val core = when {
+                    savedCore == "gpsp" && ext == "gba" -> "gpSP"
+                    savedCore == "gambatte" && ext != "gba" -> "Gambatte"
+                    else -> "mGBA"
+                }
                 val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
                 val storage = SlotBuildBehavior.storagePolicy(
                     packageName,
@@ -1348,7 +1353,7 @@ class MainActivity : Activity() {
                                 // priority than stale external auto-states.
                                 RetroArchStorage.importExplicitExistingState(
                                     this@MainActivity, shared)
-                                val lower = if (core == "mGBA") "mgba" else "gpsp"
+                                val lower = RetroArchStorage.coreLower(core)
                                 // The previous SRAM-first attempt may have
                                 // allocated a generation but never written a
                                 // state (e.g. Android killed the app before
@@ -1382,7 +1387,7 @@ class MainActivity : Activity() {
                                 resumeChoice = 1
                             }
                             CoreStateChoice.SHARED -> {
-                                val lower = if (core == "mGBA") "mgba" else "gpsp"
+                                val lower = RetroArchStorage.coreLower(core)
                                 RetroArchStorage.stage(File(filesDir,
                                     "Saves/$digest.$lower.skip-resume.once"), byteArrayOf(1))
                                 resumeChoice = 0

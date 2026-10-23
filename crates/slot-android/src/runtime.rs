@@ -637,7 +637,7 @@ struct Engine {
     overlay: ShelfOverlay,
     settings: Settings,
     game_emulation: Option<EmulationProfile>,
-    emulation_core_labels: [(slot_gfx::TexId, u32, u32); 2],
+    emulation_core_labels: [(slot_gfx::TexId, u32, u32); 3],
     video_mode: VideoMode,
     wallpaper_texture: Option<slot_gfx::TexId>,
     wallpaper_personal: bool,
@@ -682,8 +682,8 @@ struct Engine {
     link_failed_hints: [(slot_gfx::TexId, u32); 1],
     board_texture: Option<slot_gfx::TexId>,
     picker: Option<CorePicker>,
-    socket_textures: [slot_gfx::TexId; 2],
-    chip_textures: [slot_gfx::TexId; 2],
+    socket_textures: [slot_gfx::TexId; 3],
+    chip_textures: [slot_gfx::TexId; 3],
     chip_blank: slot_gfx::TexId,
     chip_shadow: slot_gfx::TexId,
     core_legend_faces: [(slot_gfx::TexId, u32); 3],
@@ -1404,10 +1404,7 @@ impl Engine {
                         Ok(stamp) => {
                             self.hud.toast(Toast::StateSaved, time);
                             if let Some(uri) = self.requested_uri.as_deref() {
-                                let paths = PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                                let core = paths.as_ref().map(|(storage, _)| {
-                                    core_selection::selected(storage, uri).as_str()
-                                }).unwrap_or("mgba");
+                                let core = game.core_kind().as_str();
                                 let event = serde_json::json!({
                                     "uri": uri, "core": core, "manual_stamp": stamp
                                 }).to_string();
@@ -1601,6 +1598,7 @@ impl Engine {
         let backend = match kind {
             Core::Mgba => crate::multiplayer::Backend::MgbaSlotCable,
             Core::Gpsp => crate::multiplayer::Backend::GpspNetpacket,
+            Core::Gambatte => return Err("Link needs mGBA or gpSP".into()),
         };
         Ok(crate::multiplayer::LinkConfig {
             game: identity.code.clone(),
@@ -1719,6 +1717,7 @@ impl Engine {
     fn return_link_to_solo(&mut self) -> Result<(), String> {
         let linked = self.game.as_mut().ok_or("No Link game to unplug")?;
         let which = linked.core_kind();
+        if which == Core::Gambatte { return Err("Gambatte never links".into()); }
         let serial = linked.loaded_serial();
         let rom = linked.rom_path().to_path_buf();
         let stem = linked.rom_stem().to_owned();
@@ -1738,6 +1737,7 @@ impl Engine {
             Core::Gpsp => GameSession::open_gpsp_solo_unresumed(
                 &rom, &dylib, &storage, &stem,
                 self.settings.colour_correction, self.ra_service.as_ref(), serial),
+            Core::Gambatte => Err("Gambatte never links".into()),
         }?;
         solo.restore_local_after_link(&rejoin)?;
         let backup = solo.commit_rejoined_solo(&rejoin)?;
@@ -2038,10 +2038,7 @@ impl Engine {
                 if let Some(session) = self.game.as_mut() {
                     if session.save(true) && !session.is_link_sandbox() {
                         if let Some(uri) = self.requested_uri.as_deref() {
-                            let paths = PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                            let core = paths.as_ref().map(|(storage, _)| {
-                                core_selection::selected(storage, uri).as_str()
-                            }).unwrap_or("mgba");
+                            let core = session.core_kind().as_str();
                             let event = serde_json::json!({"uri": uri, "core": core}).to_string();
                             SAVE_SYNC.lock().unwrap_or_else(|e| e.into_inner()).push_back(event);
                         }
@@ -2106,10 +2103,7 @@ impl Engine {
                     // battery error masked by an unrelated RTC/state write.
                     if eject_saved && !session.is_link_sandbox() {
                         if let Some(uri) = self.requested_uri.as_deref() {
-                            let paths = PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                            let core = paths.as_ref().map(|(storage, _)| {
-                                core_selection::selected(storage, uri).as_str()
-                            }).unwrap_or("mgba");
+                            let core = session.core_kind().as_str();
                             let event = serde_json::json!({"uri": uri, "core": core}).to_string();
                             SAVE_SYNC.lock().unwrap_or_else(|e| e.into_inner()).push_back(event);
                         }
@@ -2917,12 +2911,6 @@ impl Engine {
                         }
                         109 if !self.inserted && !self.shelves[self.active].carts.is_empty() => {
                             let selected = &self.shelves[self.active].carts[self.shelves[self.active].index];
-                            if selected.platform != Platform::Gba {
-                                self.refusal = Some(slot_ui::Refusal::started(
-                                    self.born.elapsed().as_millis() as u64));
-                                set_message("GB and GBC games always use mGBA.".into());
-                                return;
-                            }
                             let face = board_face(selected);
                             if let Some(texture) = self.board_texture {
                                 self.gpu.update_face(texture, &face);
@@ -2933,10 +2921,11 @@ impl Engine {
                             let current_core = PATHS.lock()
                                 .unwrap_or_else(|e| e.into_inner())
                                 .as_ref()
-                                .map(|(storage, _)| core_selection::selected(
-                                    storage, &selected.rom.to_string_lossy()))
+                                .map(|(storage, _)| core_selection::selected_for(
+                                    storage, &selected.rom.to_string_lossy(), selected.platform))
                                 .unwrap_or(Core::Mgba);
-                            let mut picker = CorePicker::open(current_core, now);
+                            let mut picker = CorePicker::open_with(current_core,
+                                Core::alternate_for(selected.platform), now);
                             picker.start(now);
                             self.picker = Some(picker);
                             self.overlay = ShelfOverlay::Core;
@@ -3188,18 +3177,11 @@ impl Engine {
         let paths = PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some((storage, library)) = paths {
             let uri = self.requested_uri.as_deref().unwrap_or_default();
-            let is_gba = self.shelves[self.active].carts
-                .get(self.shelves[self.active].index)
-                .is_some_and(|c| c.platform == Platform::Gba);
-            let core = if is_gba {
-                core_selection::selected(&storage, uri)
-            } else {
-                Core::Mgba
-            };
-            let core_file = library.join(format!("lib{}_libretro.so", core.as_str()));
             let platform = self.shelves[self.active].carts
                 .get(self.shelves[self.active].index)
                 .map_or(Platform::Gba, |cart|cart.platform);
+            let core = core_selection::selected_for(&storage, uri, platform);
+            let core_file = library.join(format!("lib{}_libretro.so", core.as_str()));
             // First game still wakes RA if the asynchronous SAF scan has not run.
             // Perform this mutable operation BEFORE borrowing rom_stem.
             // GBA, GB and GBC use the verified per-console memory maps.
@@ -3434,11 +3416,12 @@ impl Engine {
         profile
     }
     fn selected_emulation_core(&self) -> Core {
-        // GB/GBC never invoke gpSP, even if a stale core preference exists.
-        if self.current_cart_platform() != Platform::Gba { return Core::Mgba; }
+        // GB/GBC never invoke gpSP, nor GBA Gambatte, even if a stale core
+        // preference exists.
+        let platform = self.current_cart_platform();
         let Some(uri) = self.selected_rom_uri() else { return Core::Mgba; };
         PATHS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
-            .map(|(root, _)| core_selection::selected(root, &uri))
+            .map(|(root, _)| core_selection::selected_for(root, &uri, platform))
             .unwrap_or(Core::Mgba)
     }
     fn selected_rom_uri(&self) -> Option<String> {
@@ -4228,8 +4211,7 @@ impl Engine {
                 self.draw_original_style_menu(50, &[51, 52, 55], row, out);
                 // Identify the selected core without changing Slot's menu
                 // layout or existing keycap typography.
-                let index = if self.selected_emulation_core() == Core::Gpsp { 1 } else { 0 };
-                let (tex, w, h) = self.emulation_core_labels[index];
+                let (tex, w, h) = self.emulation_core_labels[self.selected_emulation_core().index()];
                 // Match text_fit's 0.79x header scale and exactly the heading
                 // baseline at y=33; right align to the same 32px inset.
                 // Core names are short enough to never overlap the left title.
@@ -4371,7 +4353,8 @@ impl Engine {
                 tex, alpha: 1.0,
             });
         }
-        for (i, tex) in self.socket_textures.iter().copied().enumerate() {
+        for (i, core) in [Core::Mgba, picker.right()].into_iter().enumerate() {
+            let tex = self.socket_textures[core.index()];
             let (x, y) = on_board(board, SOCKET_U[i], SOCKET_V);
             out.push(Draw::Tex {
                 x: x.round(), y: y.round(),
