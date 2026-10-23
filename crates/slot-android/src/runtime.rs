@@ -416,7 +416,7 @@ const MENU_TEXT: [&str; 117] = [
     "GAMEPLAY",                         // 33
     "GBA Shader",                       // 34
     "GB / GBC Shader",                  // 35
-    "GB Palettes",                      // 36
+    "GB Palette",                       // 36
     "Rewind",                           // 37
     "X/Y Buttons",                       // 38
     "Auto Save on Eject",               // 39
@@ -628,6 +628,8 @@ struct Engine {
     gbc_bezel_tex: slot_gfx::TexId,
     custom_wallpaper_present: bool,
     setting_values: Vec<(slot_gfx::TexId, u32, u32)>,
+    // The live Palette row shows the palette's own name, one face per palette.
+    palette_values: Vec<(slot_gfx::TexId, u32, u32)>,
     setting_carets: [(slot_gfx::TexId, u32, u32); 2],
     settings_hints: [(slot_gfx::TexId, u32); 2],
     about_texture: Option<slot_gfx::TexId>,
@@ -981,6 +983,10 @@ impl Engine {
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
                 (tex, face.w, face.h)
             }).collect();
+        let palette_values = slot_store::GbPalette::all().map(|palette| {
+            let face = quick_value_face(palette.label(), true);
+            (gpu.create_texture(face.w, face.h, &face.rgba), face.w, face.h)
+        }).collect();
         let wallpaper_name_face = match &settings.wallpaper {
             crate::settings::WallpaperPick::File(_) => {
                 let name = settings.wallpaper.label();
@@ -1149,6 +1155,7 @@ impl Engine {
             gbc_bezel_tex,
             custom_wallpaper_present,
             setting_values,
+            palette_values,
             setting_carets,
             settings_hints,
             about_texture,
@@ -3468,7 +3475,20 @@ impl Engine {
         // This method is only called from the paused game, not the carousel.
         let mut profile=self.game_emulation
             .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
+        // The per-game profile keeps only Palette ON/OFF; which palette is
+        // the shared choice, exactly as the in-game SELECT shortcut keeps it.
+        let palette = (key==3).then(|| {
+            let mut view=self.game_settings();
+            view.change(3,right);
+            view.gb_palette
+        });
         if !profile.change_visual_and_gameplay(&self.settings,platform,key,right) { return; }
+        if let Some(index)=palette {
+            if self.settings.gb_palette!=index {
+                self.settings.gb_palette=index;
+                self.persist_settings();
+            }
+        }
         if let Some((root,_))=PATHS.lock().unwrap_or_else(|e|e.into_inner()).as_ref() {
             if let Err(error)=profile.save(root,&uri,core) {
                 set_message(format!("Cannot save game settings: {error}"));
@@ -3867,6 +3887,14 @@ impl Engine {
         self.persist_settings();
     }
 
+    /// The Palette row's value face while a palette is on; None shows OFF.
+    fn palette_value(&self) -> Option<(slot_gfx::TexId, u32, u32)> {
+        let scoped = if matches!(self.overlay, ShelfOverlay::PauseScreenSettings { .. }) {
+            self.game_settings()
+        } else { self.settings.clone() };
+        scoped.gb_palettes.then(|| self.palette_values.get(scoped.gb_palette as usize).copied()).flatten()
+    }
+
     fn setting_value(&self, key: usize) -> usize {
         use crate::settings::Shader;
         let profile = if matches!(self.overlay, ShelfOverlay::PauseEmulationSettings { .. }) {
@@ -3966,6 +3994,8 @@ impl Engine {
                 if key == 16 && matches!(self.settings.wallpaper,
                     crate::settings::WallpaperPick::File(_)) {
                     self.wallpaper_name_face.unwrap_or(self.setting_values[26])
+                } else if let Some(face) = (key == 3).then(|| self.palette_value()).flatten() {
+                    face
                 } else {
                     self.setting_values[self.setting_value(key)]
                 };
