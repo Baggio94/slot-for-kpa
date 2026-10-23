@@ -360,6 +360,59 @@ fn a12_draw_sample(linked: bool, steps: usize, native_us: u64, recovery: bool) {
     });
 }
 
+// Per-frame trace of the first 1.5 s after a game is ejected: one log line
+// per draw with the gap since the previous draw and the CPU phase marks.
+struct EjectTrace {
+    exit: Instant,
+    last_entry: Option<Instant>,
+    entry: Instant,
+    gap_us: u64,
+    marks: String,
+}
+thread_local! {
+    static EJECT_TRACE: RefCell<Option<EjectTrace>> = const { RefCell::new(None) };
+}
+fn eject_trace_start() {
+    EJECT_TRACE.with(|t| *t.borrow_mut() = Some(EjectTrace {
+        exit: Instant::now(), last_entry: None, entry: Instant::now(),
+        gap_us: 0, marks: String::new(),
+    }));
+}
+fn eject_mark(name: &str) {
+    EJECT_TRACE.with(|t| if let Some(trace) = t.borrow_mut().as_mut() {
+        use std::fmt::Write;
+        let _ = write!(trace.marks, " {name}={}", trace.entry.elapsed().as_micros());
+    });
+}
+struct EjectFrame;
+impl EjectFrame {
+    fn begin() -> Self {
+        EJECT_TRACE.with(|t| {
+            let mut slot = t.borrow_mut();
+            let Some(trace) = slot.as_mut() else { return };
+            if trace.exit.elapsed() > Duration::from_millis(1500) { *slot = None; return; }
+            let now = Instant::now();
+            trace.gap_us = trace.last_entry.map_or(0, |at| now.duration_since(at).as_micros() as u64);
+            trace.last_entry = Some(now);
+            trace.entry = now;
+            trace.marks.clear();
+        });
+        EjectFrame
+    }
+}
+impl Drop for EjectFrame {
+    fn drop(&mut self) {
+        EJECT_TRACE.with(|t| if let Some(trace) = t.borrow().as_ref() {
+            if trace.last_entry == Some(trace.entry) {
+                crate::game::log_launch_timing(&format!(
+                    "Eject frame: t={}ms gap={}us work={}us{}",
+                    trace.entry.duration_since(trace.exit).as_millis(), trace.gap_us,
+                    trace.entry.elapsed().as_micros(), trace.marks));
+            }
+        });
+    }
+}
+
 // All engine / OpenGL work occurs on GLSurfaceView's dedicated GL thread.
 thread_local! {
     static ENGINE: RefCell<Option<Engine>> = const { RefCell::new(None) };
@@ -2108,6 +2161,7 @@ impl Engine {
                     self.exiting_screen = true;
                     self.eject_hold_remaining = EJECT_HOLD_S;
                     self.ejected_at = Some(Instant::now());
+                    eject_trace_start();
                     self.shelf_frame_at = None;
                     self.shelf_hitch_logs = 0;
                     self.shelf_warmed = false;
@@ -4558,6 +4612,7 @@ impl Engine {
     }
     fn draw(&mut self, vsync_frame_ns: i64, mut on_pcm_ready: impl FnMut()) {
         if !self.gpu.graphics_ready() { return; }
+        let _eject_frame = EjectFrame::begin();
         // Includes Slot-side input/menu/RA/status preparation in "other_us".
         // The enclosing JNI caller's library gate and later EGL swap remain
         // outside the scope; Kotlin times the broader nativeDrawFrame call.
@@ -4734,6 +4789,7 @@ impl Engine {
                 self.eject_hold_remaining = (self.eject_hold_remaining - dt).max(0.0);
             }
             self.gpu.set_screen_power(self.screen_power);
+            eject_mark(if self.exiting_screen {"crt"} else {"hold"});
             if !self.exiting_screen && !self.shelf_warmed && self.game.is_none() {
                 // Build and draw one full shelf frame, frozen (dt = 0) and
                 // hidden under the identical hold picture.
@@ -5322,7 +5378,9 @@ impl Engine {
         };
         if repeated_letter { self.show_selected_letter(); }
         self.shelves[self.active].update(dt);
+        eject_mark("shelf");
         self.prepare_visible();
+        eject_mark("prep");
         // Only warm a settled carousel selection. Actual ROM I/O takes place
         // on an independently cancelable Android background executor.
         let warming = !self.inserted && self.game.is_none()
@@ -5361,6 +5419,7 @@ impl Engine {
             && self.progress <= EJECT_SOUND_PROGRESS {
             self.eject_sound_armed = false;
             CART_SFX.lock().unwrap_or_else(|e| e.into_inner()).push_back(CART_EJECT_SFX);
+            eject_mark("sfx");
         }
 
         let mut commands = vec![Draw::Rect {
@@ -5531,10 +5590,13 @@ impl Engine {
                 self.clock_face,self.shelf_footer_ink(),&mut commands);
         }
         SHELF_INDICATOR_FLAGS.store(indicator_flags, Ordering::Release);
+        eject_mark("built");
         self.gpu.fit(self.size);
         self.gpu.begin_frame();
         self.gpu.draw_list(&commands);
+        eject_mark("drawn");
         self.gpu.end_frame(self.size);
+        eject_mark("ended");
         // Idle throttle is an output-only pacing hint; never change upstream
         // animation timings, input handling, or cartridge prefetch priorities.
         let quiet = !self.inserted
