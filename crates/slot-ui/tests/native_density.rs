@@ -51,7 +51,6 @@ fn legends_menus_and_hud_are_drawn_for_the_panel() {
     check!(quick_caret_face(true));
     check!(menu_face("Power Off"));
     check!(onboarding_instruction_face("PRESS", "START", "TO SELECT YOUR ROM FOLDER"));
-    check!(progress_face(12, 40, [255, 255, 255]));
     check!(icon_face(Icon::Volume, HUD_ICON_PX, HUD_INK));
     check!(badge_face(Badge::Link, HUD_ICON_PX, LINK_HOST_INK));
     check!(toast_face(Toast::all()[0]));

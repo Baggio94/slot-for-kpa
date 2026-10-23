@@ -63,7 +63,7 @@ fn rasterise(w: u32, h: u32) -> Option<Vec<u8>> {
     rasterise_svg(CART_SVG, w, h)
 }
 
-pub(crate) fn rasterise_svg(svg: &str, w: u32, h: u32) -> Option<Vec<u8>> {
+fn rasterise_svg(svg: &str, w: u32, h: u32) -> Option<Vec<u8>> {
     let px = render(svg, w, h)?;
     Some(px.data().iter().skip(3).step_by(4).copied().collect())
 }
