@@ -9,6 +9,7 @@ mod battery;
 mod board;
 mod cart;
 mod clock;
+pub mod density;
 mod draw;
 mod footer;
 mod hud;
@@ -46,6 +47,7 @@ pub use cart::{
     LABEL_H, LABEL_W, LABEL_X, LABEL_Y,
 };
 pub use clock::{clock_label, date_time_text, hhmm, set_clock_hint_face, ClockPicker, Field};
+pub use density::Face;
 pub use draw::{Draw, TexId, OUT_H, OUT_W};
 pub use footer::{draw_footer, draw_footer_centre, draw_footer_with_ink, footer_ink, progress_face, Printed, MASTERED_INK};
 pub use hud::{

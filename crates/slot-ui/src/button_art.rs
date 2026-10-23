@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::art::decode_png_bytes;
+use crate::density::{self, Canvas};
 use crate::plate::UndoFace;
 
-/// Drawn height inside the 24px hint band. The 58px art is box-filtered.
+/// Drawn height inside the 24px hint band. The 58px art is box-filtered,
+/// straight to panel density, so the KONKR gets 2x rather than 2.6x.
 pub const BUTTON_H: u32 = 22;
 const COMBO_GAP: u32 = 2;
 
@@ -32,8 +34,7 @@ fn png(key: &str) -> Option<&'static [u8]> {
 
 /// Premultiplied box filter: every source pixel lands in exactly one
 /// destination pixel, weighted by overlap, so edges stay soft and clean.
-fn shrink(rgba: &[u8], sw: u32, sh: u32, dh: u32) -> UndoFace {
-    let dw = ((sw as f32 * dh as f32 / sh as f32).round() as u32).max(1);
+fn shrink(rgba: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> UndoFace {
     let (fx, fy) = (sw as f32 / dw as f32, sh as f32 / dh as f32);
     let mut out = vec![0u8; (dw * dh * 4) as usize];
     for y in 0..dh {
@@ -70,13 +71,17 @@ fn shrink(rgba: &[u8], sw: u32, sh: u32, dh: u32) -> UndoFace {
 
 fn single(key: &str) -> Option<UndoFace> {
     // Keyed by the embedded PNG, so "SEL" and "SELECT" share one decode.
-    static CACHE: OnceLock<Mutex<HashMap<usize, Option<(Vec<u8>, u32, u32)>>>> = OnceLock::new();
+    // Also keyed by density, so a 1x export never reuses KONKR texels.
+    type Cache = HashMap<(usize, u32), Option<(Vec<u8>, u32, u32)>>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
     let bytes = png(key)?;
     let mut cache = CACHE.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner());
-    let entry = cache.entry(bytes.as_ptr() as usize).or_insert_with(|| {
+    let key = (bytes.as_ptr() as usize, density::scale().to_bits());
+    let entry = cache.entry(key).or_insert_with(|| {
         let (rgba, w, h) = decode_png_bytes(bytes)?;
-        let face = shrink(&rgba, w, h, BUTTON_H);
-        Some((face.rgba, face.w, face.h))
+        let lw = ((w as f32 * BUTTON_H as f32 / h as f32).round() as u32).max(1);
+        let face = shrink(&rgba, w, h, density::px(lw), density::px(BUTTON_H));
+        Some((face.rgba, lw, BUTTON_H))
     });
     entry.clone().map(|(rgba, w, h)| UndoFace { rgba, w, h })
 }
@@ -86,13 +91,13 @@ fn single(key: &str) -> Option<UndoFace> {
 pub fn key_art(key: &str) -> Option<UndoFace> {
     let parts: Vec<UndoFace> = key.split('+').map(single).collect::<Option<_>>()?;
     let w = parts.iter().map(|p| p.w).sum::<u32>() + COMBO_GAP * (parts.len() as u32 - 1);
-    let mut rgba = vec![0u8; (w * BUTTON_H * 4) as usize];
+    let mut face = Canvas::new(w, BUTTON_H);
     let mut x = 0;
     for part in &parts {
-        crate::plate::blit(&mut rgba, w, &part.rgba, part.w, part.h, x, 0);
+        face.blit_face(part, x, 0);
         x += part.w + COMBO_GAP;
     }
-    Some(UndoFace { rgba, w, h: BUTTON_H })
+    Some(face.into_undo())
 }
 
 #[cfg(test)]

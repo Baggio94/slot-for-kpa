@@ -1,4 +1,5 @@
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::cart::{CART_H, CART_W, GB_CART_H, GB_CART_W};
 
@@ -6,7 +7,7 @@ const CART_SVG: &str = include_str!("../assets/cart.svg");
 const GB_CART_SVG: &str = include_str!("../assets/gb_cart.svg");
 const GBC_CART_SVG: &str = include_str!("../assets/gbc_cart.svg");
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum GbShell {
     Notched,
     Rounded,
@@ -37,6 +38,25 @@ pub(crate) fn gb_cart_mask(shell: GbShell) -> &'static [u8] {
         GbShell::Rounded => &ROUNDED,
     };
     lock.get_or_init(|| gb_silhouette(shell, GB_CART_W, GB_CART_H))
+}
+
+/// A cart outline at panel density (`px(w)` x `px(h)`): crisp edges rather
+/// than the 1x mask stretched. `None` is the GBA cart.
+pub(crate) fn dense_mask(shell: Option<GbShell>) -> Arc<Vec<u8>> {
+    type Cache = Mutex<HashMap<(Option<GbShell>, u32), Arc<Vec<u8>>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let key = (shell, crate::density::scale().to_bits());
+    let mut cache = CACHE.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner());
+    cache
+        .entry(key)
+        .or_insert_with(|| {
+            let px = crate::density::px;
+            Arc::new(match shell {
+                None => silhouette(px(CART_W), px(CART_H)),
+                Some(shell) => gb_silhouette(shell, px(GB_CART_W), px(GB_CART_H)),
+            })
+        })
+        .clone()
 }
 
 fn rasterise(w: u32, h: u32) -> Option<Vec<u8>> {

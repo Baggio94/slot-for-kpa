@@ -1,3 +1,4 @@
+use crate::density::{self, Canvas};
 use crate::draw::{Draw, TexId, OUT_H, OUT_W};
 use crate::plate::{arrows_hint_face, centred_hints, hint_face, UndoFace, HINT_H, LEGEND_GAP};
 use crate::power_menu::{MENU_H, MENU_INK, MENU_PAD, MENU_PX};
@@ -239,10 +240,9 @@ fn quick_text_face(label: &str, colour: [u8; 3]) -> UndoFace {
         .iter()
         .map(|l| text::line_width(font, l, layout.px, layout.tracking))
         .fold(0.0, f32::max);
-    let w = set.ceil() as u32 + 2 * MENU_PAD;
-    let mut rgba = vec![0u8; (w * MENU_H * 4) as usize];
-    text::draw_centred(&mut rgba, w, MENU_H, &layout, colour);
-    UndoFace { rgba, w, h: MENU_H }
+    let mut face = Canvas::new(set.ceil() as u32 + 2 * MENU_PAD, MENU_H);
+    face.text(&layout, colour);
+    face.into_undo()
 }
 
 pub fn quick_caret_face(right: bool) -> UndoFace {
@@ -254,29 +254,37 @@ pub fn quick_caret_face(right: bool) -> UndoFace {
             h: 0,
         };
     };
-    let (m, cov) = symbols.rasterize(glyph, CARET_PX);
-    let (w, h) = (m.width as u32, MENU_H);
-    let centre = match label.horizontal_line_metrics(MENU_PX) {
+    // Logical width from Slot's 24px caret; the pixels at panel density.
+    let w = symbols.metrics(glyph, CARET_PX).width as u32;
+    let mut face = Canvas::new(w, MENU_H);
+    let s = density::scale();
+    let (m, cov) = symbols.rasterize(glyph, CARET_PX * s);
+    let h = face.th;
+    let centre = match label.horizontal_line_metrics(MENU_PX * s) {
         Some(v) => {
             (h as f32 - v.new_line_size) / 2.0 + v.ascent
-                - label.metrics('H', MENU_PX).height as f32 / 2.0
+                - label.metrics('H', MENU_PX * s).height as f32 / 2.0
         }
         None => h as f32 / 2.0,
     };
     let top = (centre - m.height as f32 / 2.0).round() as i32;
-    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    let left = (face.tw as i32 - m.width as i32) / 2;
     for gy in 0..m.height {
         let y = top + gy as i32;
         if y < 0 || y >= h as i32 {
             continue;
         }
         for gx in 0..m.width {
-            let at = ((y as u32 * w + gx as u32) * 4) as usize;
+            let x = left + gx as i32;
+            if x < 0 || x >= face.tw as i32 {
+                continue;
+            }
+            let at = ((y as u32 * face.tw + x as u32) * 4) as usize;
             let a = cov[gy * m.width + gx];
-            rgba[at..at + 4].copy_from_slice(&[MENU_INK[0], MENU_INK[1], MENU_INK[2], a]);
+            face.rgba[at..at + 4].copy_from_slice(&[MENU_INK[0], MENU_INK[1], MENU_INK[2], a]);
         }
     }
-    UndoFace { rgba, w, h }
+    face.into_undo()
 }
 
 pub fn quick_legend_faces() -> [UndoFace; 3] {

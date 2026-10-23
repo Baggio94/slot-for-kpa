@@ -11,6 +11,18 @@ use slot_store::Cart;
 use slot_ui::{cart_face_with_material, cart_face, cart_interior, cart_backing,
     gb_shell_of, is_clear, CartFace};
 
+/// A cart face in panel texels, the size the GL thread uploads. Dense faces
+/// were drawn for the panel already; 1x faces are filtered up as before.
+fn panel_face(face: CartFace) -> CartFace {
+    use slot_ui::Face;
+    let (w, h) = face.texels();
+    if (w, h) != (face.w, face.h) {
+        return CartFace { rgba: face.rgba, w, h };
+    }
+    let (rgba, w, h) = slot_ui::native_rgba(&face.rgba, face.w, face.h);
+    CartFace { rgba, w, h }
+}
+
 type Key = (usize, usize);
 type WorkKey = (Key, u64);
 type Job = (WorkKey, Cart, bool);
@@ -88,22 +100,15 @@ impl CartRender {
                             _ => None,
                         };
                         let needs_write=cached.is_none();
-                        let pixels=cached.unwrap_or_else(|| {
-                            let original=cart_face_with_material(&cart,None);
-                            let (rgba,w,h)=slot_ui::native_rgba(
-                                &original.rgba,original.w,original.h);
-                            CartFace {rgba,w,h}
-                        });
+                        let pixels=cached.unwrap_or_else(||
+                            panel_face(cart_face_with_material(&cart,None)));
                         let layers = if include_material && is_clear(&cart) {
                             let original = [
                                 cart_interior(&cart),
                                 cart_backing(gb_shell_of(&cart)),
                                 cart_face(&cart),
                             ];
-                            Some(original.map(|face| {
-                                let (rgba,w,h)=slot_ui::native_rgba(&face.rgba,face.w,face.h);
-                                CartFace{rgba,w,h}
-                            }))
+                            Some(original.map(panel_face))
                         } else {None};
                         // Clone only on cache miss. Hand the face to the GL
                         // uploader before best-effort persistence is queued.

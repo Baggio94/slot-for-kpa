@@ -77,7 +77,7 @@ jobs:
       - name: Test full-width Slot onboarding prompts
         run: cargo test -p slot-ui --lib onboarding_tests
       - name: Test original Slot v1.7 PNG and cartridge graphics
-        run: cargo test -p slot-ui --test cart_material --test upstream_v17_assets --test native_resolution --test insert_neighbour_motion --test mixed_shelf_parity --test chrome_crt_parity
+        run: cargo test -p slot-ui --test cart_material --test upstream_v17_assets --test native_resolution --test insert_neighbour_motion --test mixed_shelf_parity --test chrome_crt_parity --test native_density
       - name: Export authentic Slot keycap graphics for Android Apps
         run: |
           cargo run --locked -p slot-ui --example export_apps_legend -- android/app/src/main/assets/apps_controls
@@ -91,7 +91,8 @@ jobs:
               data = (Path('android/app/src/main/assets/apps_controls') / f'{name}.png').read_bytes()
               assert data[:8] == bytes((137, 80, 78, 71, 13, 10, 26, 10))
               width, height = struct.unpack('>II', data[16:24])
-              assert width > 20 and height == 24, (name, width, height)
+              # Drawn at the KONKR's 4/3 panel density: Slot's 24px band.
+              assert width > 20 and height == 32, (name, width, height)
               print(f'Verified authentic Slot legend {name}: {width}x{height}')
           PY
       - name: Test beta10 offline SurfaceFlinger presentation histogram parser

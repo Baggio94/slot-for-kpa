@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use fontdue::{Font, FontSettings};
 
+use crate::density::{self, Canvas};
 use crate::CartFace;
 
 const SYMBOLS_TTF: &[u8] = include_bytes!("../assets/SymbolsNerdFontMono-Regular.ttf");
@@ -110,14 +111,26 @@ pub fn haloed(cov: &[u8], cw: u32, ch: u32, colour: [u8; 3]) -> CartFace {
 }
 
 pub fn icon_face(icon: Icon, px: f32, colour: [u8; 3]) -> CartFace {
-    let Some(r) = raster(icon, px) else {
+    let Some(r) = raster(icon, px * density::scale()) else {
         return CartFace {
             rgba: Vec::new(),
             w: 0,
             h: 0,
         };
     };
-    haloed(&r.cov, r.w, r.h, colour)
+    in_box(haloed(&r.cov, r.w, r.h, colour), icon_box(px))
+}
+
+/// A face rendered at panel density, centred in its logical box.
+fn in_box(face: CartFace, (w, h): (u32, u32)) -> CartFace {
+    if !density::is_dense() {
+        return face;
+    }
+    let mut c = Canvas::new(w, h);
+    let x = (c.tw as i32 - face.w as i32) / 2;
+    let y = (c.th as i32 - face.h as i32) / 2;
+    c.blit_texels(&face.rgba, face.w, face.h, x, y);
+    c.into_cart()
 }
 
 pub fn icon_box(px: f32) -> (u32, u32) {
@@ -150,6 +163,8 @@ pub fn badge_face(badge: Badge, px: f32, colour: [u8; 3]) -> CartFace {
             h: 0,
         };
     };
+    let logical = frame(font, px);
+    let px = px * density::scale();
     let f = frame(font, px);
     let (m, cov) = font.rasterize(badge.glyph(), px);
     let x0 = m.xmin - f.left;
@@ -164,7 +179,8 @@ pub fn badge_face(badge: Badge, px: f32, colour: [u8; 3]) -> CartFace {
             out[(dy as u32 * f.w + dx as u32) as usize] = cov[gy * m.width + gx];
         }
     }
-    haloed(&out, f.w, f.h, colour)
+    let halo = 2 * HALO_PX;
+    in_box(haloed(&out, f.w, f.h, colour), (logical.w + halo, logical.h + halo))
 }
 
 struct Raster {
@@ -259,10 +275,14 @@ pub fn star_face(scale: u32, colour: [u8; 3]) -> CartFace {
             && STAR[y as usize].as_bytes()[x as usize] == b'#'
     };
     let (w, h) = ((gw + 2) as u32 * scale, (gh + 2) as u32 * scale);
-    let mut rgba = vec![0u8; (w * h * 4) as usize];
-    for py in 0..h {
-        for px in 0..w {
-            let (x, y) = ((px / scale) as i32 - 1, (py / scale) as i32 - 1);
+    // Pixel art stays pixel art: each panel texel takes its nearest cell.
+    let (tw, th) = (density::px(w), density::px(h));
+    let cell = scale as f32 * density::scale();
+    let mut rgba = vec![0u8; (tw * th * 4) as usize];
+    for py in 0..th {
+        for px in 0..tw {
+            let x = ((px as f32 + 0.5) / cell).floor() as i32 - 1;
+            let y = ((py as f32 + 0.5) / cell).floor() as i32 - 1;
             let rim = [(0, -1), (0, 1), (-1, 0), (1, 0)]
                 .iter()
                 .any(|(dx, dy)| ink(x + dx, y + dy));
@@ -271,7 +291,7 @@ pub fn star_face(scale: u32, colour: [u8; 3]) -> CartFace {
                 (false, true) => [HALO[0], HALO[1], HALO[2], 255],
                 _ => continue,
             };
-            let o = ((py * w + px) * 4) as usize;
+            let o = ((py * tw + px) * 4) as usize;
             rgba[o..o + 4].copy_from_slice(&c);
         }
     }

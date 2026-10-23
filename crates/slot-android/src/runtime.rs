@@ -37,6 +37,25 @@ use slot_ui::{
     onboarding_instruction_face, onboarding_note_face,
 };
 
+/// Upload a Slot face at whatever density it was rendered at. Draws keep
+/// using the face's logical `w`/`h`; only the texel count differs.
+trait FaceTextures {
+    fn create_face(&mut self, face: &impl slot_ui::Face) -> slot_gfx::TexId;
+    fn update_face(&mut self, tex: slot_gfx::TexId, face: &impl slot_ui::Face);
+}
+
+impl FaceTextures for Compositor {
+    fn create_face(&mut self, face: &impl slot_ui::Face) -> slot_gfx::TexId {
+        let (w, h) = face.texels();
+        self.create_texture(w, h, face.rgba())
+    }
+
+    fn update_face(&mut self, tex: slot_gfx::TexId, face: &impl slot_ui::Face) {
+        let (w, h) = face.texels();
+        self.update_texture(tex, w, h, face.rgba());
+    }
+}
+
 // Android GLSurfaceView owns EGL context creation, current context and buffer swaps.
 #[link(name = "EGL")]
 unsafe extern "C" {
@@ -750,6 +769,9 @@ fn wallpaper_pixels(root: Option<&Path>, selection: &crate::settings::WallpaperP
 impl Engine {
     fn new(library_version: u64, library: Option<&[RomEntry]>) -> Result<Self, String> {
         let size = (960, 640);
+        // Text, glyphs and vector art are drawn for the panel, not stretched
+        // from Slot's 720x480 canvas. Set before the first face is built.
+        slot_ui::density::set_scale(size.0 as f32 / OUT_W as f32);
         let mut gpu = Compositor::new(&AndroidSurface { size }).map_err(|e| e.to_string())?;
         let settings = PATHS.lock().unwrap_or_else(|e| e.into_inner())
             .as_ref().map(|(root, _)| Settings::load(root))
@@ -840,28 +862,28 @@ impl Engine {
         // Cache textures once rather than rebuilding on every L1/R1.
         let platform_faces = Platform::ALL.map(|platform| {
             let face = platform_name_face(platform.name());
-            let tex = gpu.create_texture(face.w, face.h, &face.rgba);
+            let tex = gpu.create_face(&face);
             Printed::new(tex, face.w)
         });
 
         let recent_label = platform_name_face("RECENTS");
         let recents_platform_face=Printed::new(
-            gpu.create_texture(recent_label.w,recent_label.h,&recent_label.rgba),
+            gpu.create_face(&recent_label),
             recent_label.w);
         let favorites_label=platform_name_face("FAVORITES");
         let favorites_platform_face=Printed::new(
-            gpu.create_texture(favorites_label.w,favorites_label.h,&favorites_label.rgba),
+            gpu.create_face(&favorites_label),
             favorites_label.w);
 
         let shadow = cart_shadow();
-        let gba = gpu.create_texture(shadow.w, shadow.h, &shadow.rgba);
+        let gba = gpu.create_face(&shadow);
         let shadow = gb_cart_shadow(GbShell::Notched);
-        let gb = gpu.create_texture(shadow.w, shadow.h, &shadow.rgba);
+        let gb = gpu.create_face(&shadow);
         let shadow = gb_cart_shadow(GbShell::Rounded);
-        let gbc = gpu.create_texture(shadow.w, shadow.h, &shadow.rgba);
+        let gbc = gpu.create_face(&shadow);
         // The exact original Slot 9x9 pixel star, bright yellow with dark rim.
         let star=slot_ui::star_face(2, [0xf6,0xc3,0x2c]);
-        let star_tex=gpu.create_texture(star.w,star.h,&star.rgba);
+        let star_tex=gpu.create_face(&star);
         for shelf in &mut shelves {
             shelf.set_shadow(gba);
             shelf.set_gb_shadow(GbShell::Notched, gb);
@@ -875,7 +897,7 @@ impl Engine {
         // positions/easing, pre-rasterised once on the GL thread.
         let art = slot_ui::link_art();
         let mut sprite = |face: slot_ui::CartFace| Sprite {
-            tex: gpu.create_texture(face.w, face.h, &face.rgba),
+            tex: gpu.create_face(&face),
             w: face.w, h: face.h,
         };
         let link_art = LinkSprites {
@@ -891,12 +913,12 @@ impl Engine {
         };
         let menu_textures = MENU_TEXT.iter().map(|label| {
             let face = quick_value_face(label, true);
-            let tex = gpu.create_texture(face.w, face.h, &face.rgba);
+            let tex = gpu.create_face(&face);
             (tex, face.w, face.h)
         }).collect();
         let menu_hints = [("A", "Select"), ("B", "Back")].map(|(key, label)| {
             let face = hint_face(key, label);
-            let tex = gpu.create_texture(face.w, face.h, &face.rgba);
+            let tex = gpu.create_face(&face);
             (tex, face.w)
         });
         // Authentic Slot raster/keycap for a clean library. Render it in the
@@ -904,24 +926,24 @@ impl Engine {
         let first_run_hint = {
             let face = onboarding_instruction_face(
                 "PRESS", "START", ", THEN SELECT LIBRARY TO ADD GAMES");
-            (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
+            (gpu.create_face(&face), face.w)
         };
         let shelf_no_games_hint = {
             let face = onboarding_instruction_face(
                 "PRESS", "START", "TO SELECT YOUR ROM FOLDER");
-            (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
+            (gpu.create_face(&face), face.w)
         };
         let onboarding_note = {
             let face = onboarding_note_face("(ZIP ROMS SUPPORTED)");
-            (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
+            (gpu.create_face(&face), face.w)
         };
         let shelf_status_faces = SHELF_STATUS_TEXT.map(|label| {
             let face = quick_value_face(label, true);
-            (gpu.create_texture(face.w, face.h, &face.rgba), face.w, face.h)
+            (gpu.create_face(&face), face.w, face.h)
         });
         let shelf_status_start = {
             let face = hint_face("START", "Open Library");
-            (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
+            (gpu.create_face(&face), face.w)
         };
         // Original Slot keycap typography also describes the actual in-game
         // shortcuts, so users need not guess physical controller buttons.
@@ -929,7 +951,7 @@ impl Engine {
             ("B", "Back"), ("SEL+R1", "Save"), ("SEL+L1", "Load"),
         ].map(|(key, label)| {
             let face = hint_face(key, label);
-            let tex = gpu.create_texture(face.w, face.h, &face.rgba);
+            let tex = gpu.create_face(&face);
             (tex, face.w)
         });
         let make_link_text = |gpu: &mut Compositor, label: &str| {
@@ -937,7 +959,7 @@ impl Engine {
             // to original slot/src/frontend.rs menu_faces(), not our
             // Android Settings quick_value_face fallback.
             let face = menu_face(label);
-            (gpu.create_texture(face.w, face.h, &face.rgba), face.w, face.h)
+            (gpu.create_face(&face), face.w, face.h)
         };
         let link_role_faces = LinkRow::ALL
             .map(|role| make_link_text(&mut gpu, role.text()));
@@ -951,17 +973,17 @@ impl Engine {
             arrows_hint_face("Swap"),
             hint_face("A", "Link"),
         ].map(|face| {
-            (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
+            (gpu.create_face(&face), face.w)
         });
         // State-specific original Slot legends; never advertise an active
         // Connect button when already linked or after a failed handshake.
         let link_connected_hints = [("B", "Back"), ("A", "End Link")]
             .map(|(key, label)| {
                 let face = hint_face(key, label);
-                (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
+                (gpu.create_face(&face), face.w)
             });
         let link_failed_hints = [hint_face("A", "OK")].map(|face| {
-            (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
+            (gpu.create_face(&face), face.w)
         });
         // Upstream has SELECT Mode in the picker when Cable/RFU is truly
         // switchable. Reuse exactly its hint and arrow primitives.
@@ -971,7 +993,7 @@ impl Engine {
             arrows_hint_face("Swap"),
             hint_face("A", "Link"),
         ].map(|face| {
-            (gpu.create_texture(face.w, face.h, &face.rgba), face.w)
+            (gpu.create_face(&face), face.w)
         });
         let setting_values = ["2×", "3×", "4×", "6×", "ON", "OFF",
                               "LCD3x", "Grid", "Dot", "Simpletex",
@@ -986,55 +1008,55 @@ impl Engine {
                                "RA CLOCK LAB", "RETROARCH", "NATIVE"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
-                let tex = gpu.create_texture(face.w, face.h, &face.rgba);
+                let tex = gpu.create_face(&face);
                 (tex, face.w, face.h)
             }).collect();
         let palette_values = slot_store::GbPalette::all().map(|palette| {
             let face = quick_value_face(palette.label(), true);
-            (gpu.create_texture(face.w, face.h, &face.rgba), face.w, face.h)
+            (gpu.create_face(&face), face.w, face.h)
         }).collect();
         let wallpaper_name_face = match &settings.wallpaper {
             crate::settings::WallpaperPick::File(_) => {
                 let name = settings.wallpaper.label();
                 let short: String = name.chars().take(18).collect();
                 let face = quick_value_face(&short, true);
-                Some((gpu.create_texture(face.w, face.h, &face.rgba), face.w, face.h))
+                Some((gpu.create_face(&face), face.w, face.h))
             }
             _ => None,
         };
         let emulation_core_labels = Core::ALL.map(|core| {
             let face = quick_value_face(core.text(), true);
-            (gpu.create_texture(face.w, face.h, &face.rgba), face.w, face.h)
+            (gpu.create_face(&face), face.w, face.h)
         });
         let setting_carets = [false, true].map(|right| {
             let face = quick_caret_face(right);
-            let tex = gpu.create_texture(face.w, face.h, &face.rgba);
+            let tex = gpu.create_face(&face);
             (tex, face.w, face.h)
         });
         let settings_hints = [
             hint_face("B", "Back"), arrows_hint_face("Change")
         ].map(|face| {
-            let tex = gpu.create_texture(face.w, face.h, &face.rgba);
+            let tex = gpu.create_face(&face);
             (tex, face.w)
         });
         // Rasterize the detailed barcode About label only when opened.
         // Creating SVG / fonts during every cold boot needlessly delays shelf.
         let about_texture = None;
         let chip = chip_face(Some(Core::Mgba));
-        let chip_texture = gpu.create_texture(chip.w, chip.h, &chip.rgba);
+        let chip_texture = gpu.create_face(&chip);
         let socket_textures = Core::ALL.map(|core| {
             let face = socket_face(core);
-            gpu.create_texture(face.w, face.h, &face.rgba)
+            gpu.create_face(&face)
         });
         let chip_textures = Core::ALL.map(|core| {
             if core == Core::Mgba { return chip_texture; }
             let face = chip_face(Some(core));
-            gpu.create_texture(face.w, face.h, &face.rgba)
+            gpu.create_face(&face)
         });
         let blank = chip_face(None);
-        let chip_blank = gpu.create_texture(blank.w, blank.h, &blank.rgba);
+        let chip_blank = gpu.create_face(&blank);
         let shadow = chip_shadow_face();
-        let chip_shadow = gpu.create_texture(shadow.w, shadow.h, &shadow.rgba);
+        let chip_shadow = gpu.create_face(&shadow);
         // The actual Slot legend is a set of three compact keycaps, not
         // oversized menu labels. These are the original Slot UI generators.
         let core_legend_faces = [
@@ -1042,7 +1064,7 @@ impl Engine {
             arrows_hint_face("Swap"),
             hint_face("A", "Choose"),
         ].map(|face| {
-            let texture = gpu.create_texture(face.w, face.h, &face.rgba);
+            let texture = gpu.create_face(&face);
             (texture, face.w)
         });
 
@@ -1050,14 +1072,14 @@ impl Engine {
         let mut hud = Hud::new();
         let toasts = Toast::all().into_iter().map(|toast| {
             let face = toast_face(toast);
-            gpu.create_texture(face.w, face.h, &face.rgba)
+            gpu.create_face(&face)
         }).collect();
         hud.set_toasts(toasts);
         // The upstream glyph subset is already packaged. Enable its exact
         // fast-forward badge and rewind progress icon in the Android HUD.
         let icons = Icon::ALL.into_iter().map(|icon| {
             let face = icon_face(icon, slot_ui::HUD_ICON_PX, HUD_INK);
-            gpu.create_texture(face.w, face.h, &face.rgba)
+            gpu.create_face(&face)
         }).collect();
         hud.set_icons(icons);
         // Exact upstream slot. Link badge glyphs, colour and 24px halo.
@@ -1067,13 +1089,13 @@ impl Engine {
             let glyph = badge.badge().expect("only visible LinkBadge variants");
             let colour = badge.colour().expect("visible LinkBadge has a colour");
             let face = badge_face(glyph, slot_ui::HUD_ICON_PX, colour);
-            gpu.create_texture(face.w, face.h, &face.rgba)
+            gpu.create_face(&face)
         }).collect();
         hud.set_link_faces(link_faces);
         let bolt = icon_face(Icon::Charging, BOLT_PX, slot_ui::footer_ink(false));
-        let bolt_texture = gpu.create_texture(bolt.w, bolt.h, &bolt.rgba);
+        let bolt_texture = gpu.create_face(&bolt);
         let bolt = icon_face(Icon::Charging, BOLT_PX, slot_ui::footer_ink(true));
-        let bolt_light_texture = gpu.create_texture(bolt.w, bolt.h, &bolt.rgba);
+        let bolt_light_texture = gpu.create_face(&bolt);
 
         // On a GBA-only library do not begin on an empty GB or GBC shelf.
         let saved_focus=visuals_root.as_deref().and_then(crate::selection::load);
@@ -1251,8 +1273,8 @@ impl Engine {
                 let face = slot_ui::progress_face(progress.unlocked, progress.total,
                     self.shelf_footer_ink());
                 let tex = match previous {
-                    Some((_, _, tex, _)) => { self.gpu.update_texture(tex, face.w, face.h, &face.rgba); tex }
-                    None => self.gpu.create_texture(face.w, face.h, &face.rgba),
+                    Some((_, _, tex, _)) => { self.gpu.update_face(tex, &face); tex }
+                    None => self.gpu.create_face(&face),
                 };
                 self.ra_progress_face = Some((progress, light, tex, face.w));
                 Some((tex, face.w))
@@ -1272,12 +1294,12 @@ impl Engine {
         let ink = self.shelf_footer_ink();
         if let Some(tex) = self.clock_texture {
             let face = slot_ui::word_ink(&self.clock_text, ink);
-            self.gpu.update_texture(tex, face.w, face.h, &face.rgba);
+            self.gpu.update_face(tex, &face);
             self.clock_face = Printed::new(tex, face.w);
         }
         if let (Some(tex), Some(percent)) = (self.battery_texture, self.battery_percent) {
             let face = slot_ui::word_ink(&format!("{percent}%"), ink);
-            self.gpu.update_texture(tex, face.w, face.h, &face.rgba);
+            self.gpu.update_face(tex, &face);
             self.battery_face = Printed::new(tex, face.w);
         }
     }
@@ -1293,8 +1315,8 @@ impl Engine {
             if !self.clock_text.is_empty() {
                 let face = slot_ui::word_ink(&self.clock_text, self.shelf_footer_ink());
                 let tex = match self.clock_texture {
-                    Some(tex) => { self.gpu.update_texture(tex, face.w, face.h, &face.rgba); tex }
-                    None => { let tex = self.gpu.create_texture(face.w, face.h, &face.rgba);
+                    Some(tex) => { self.gpu.update_face(tex, &face); tex }
+                    None => { let tex = self.gpu.create_face(&face);
                         self.clock_texture = Some(tex); tex }
                 };
                 self.clock_face = Printed::new(tex, face.w);
@@ -1310,13 +1332,13 @@ impl Engine {
                 let sticker = sticker_face_konkr(&StickerFields {
                     battery: percent, serial: "0000130", dirty_digit: '0',
                 });
-                self.gpu.update_texture(tex, sticker.w, sticker.h, &sticker.rgba);
+                self.gpu.update_face(tex, &sticker);
             }
             if let Some(percent) = percent {
                 let face = slot_ui::word_ink(&format!("{percent}%"), self.shelf_footer_ink());
                 let tex = match self.battery_texture {
-                    Some(tex) => { self.gpu.update_texture(tex, face.w, face.h, &face.rgba); tex }
-                    None => { let tex = self.gpu.create_texture(face.w, face.h, &face.rgba);
+                    Some(tex) => { self.gpu.update_face(tex, &face); tex }
+                    None => { let tex = self.gpu.create_face(&face);
                         self.battery_texture = Some(tex); tex }
                 };
                 self.battery_face = Printed::new(tex, face.w);
@@ -1998,7 +2020,7 @@ impl Engine {
                         if cart.rom.to_string_lossy() == uri {
                             if let Some(tex) = shelf.face(index) {
                                 let face = cart_face_with_material(cart, None);
-                                self.gpu.update_texture(tex, face.w, face.h, &face.rgba);
+                                self.gpu.update_face(tex, &face);
                             }
                         }
                     }
@@ -2160,10 +2182,10 @@ impl Engine {
                         else { self.update_version_face };
                     let tex = match existing {
                         Some((tex,_,_)) => {
-                            self.gpu.update_texture(tex, face.w, face.h, &face.rgba);
+                            self.gpu.update_face(tex, &face);
                             tex
                         }
-                        None => self.gpu.create_texture(face.w, face.h, &face.rgba),
+                        None => self.gpu.create_face(&face),
                     };
                     if is_installed {
                         self.update_installed_face = Some((tex,face.w,face.h));
@@ -2935,9 +2957,9 @@ impl Engine {
                             }
                             let face = board_face(selected);
                             if let Some(texture) = self.board_texture {
-                                self.gpu.update_texture(texture, face.w, face.h, &face.rgba);
+                                self.gpu.update_face(texture, &face);
                             } else {
-                                self.board_texture = Some(self.gpu.create_texture(face.w, face.h, &face.rgba));
+                                self.board_texture = Some(self.gpu.create_face(&face));
                             }
                             let now = self.born.elapsed().as_millis() as u64;
                             let current_core = PATHS.lock()
@@ -3039,11 +3061,11 @@ impl Engine {
     fn upload_clear_material(&mut self, key:(usize,usize), layers:[slot_ui::CartFace;3]) {
         let textures=if let Some(existing)=self.clear_material {
             for (tex,face) in existing.tex.iter().copied().zip(layers.into_iter()) {
-                self.gpu.update_texture(tex,face.w,face.h,&face.rgba);
+                self.gpu.update_face(tex, &face);
             }
             existing.tex
         } else {
-            layers.map(|face|self.gpu.create_texture(face.w,face.h,&face.rgba))
+            layers.map(|face|self.gpu.create_face(&face))
         };
         self.clear_material=Some(ClearMaterial{key,tex:textures});
     }
@@ -3091,10 +3113,10 @@ impl Engine {
                 if let Some(shelf) = self.shelves.get_mut(old_shelf) {
                     shelf.take_face(old_index);
                 }
-                self.gpu.update_texture(tex, face.w, face.h, &face.rgba);
+                self.gpu.update_face(tex, &face);
                 tex
             } else {
-                self.gpu.create_texture(face.w, face.h, &face.rgba)
+                self.gpu.create_face(&face)
             };
             self.shelves[shelf_id].set_face(index, texture);
             self.texture_cache.push_back((shelf_id, index, texture));
@@ -3285,9 +3307,7 @@ impl Engine {
             let sticker = sticker_face_konkr(&StickerFields {
                 battery: self.battery_percent, serial: "0000130", dirty_digit: '0',
             });
-            self.about_texture = Some(self.gpu.create_texture(
-                sticker.w, sticker.h, &sticker.rgba,
-            ));
+            self.about_texture = Some(self.gpu.create_face(&sticker));
         }
     }
 
@@ -3635,10 +3655,10 @@ impl Engine {
         let face = quick_value_face(&short, true);
         self.wallpaper_name_face = Some(
             if let Some((tex, _, _)) = self.wallpaper_name_face {
-                self.gpu.update_texture(tex, face.w, face.h, &face.rgba);
+                self.gpu.update_face(tex, &face);
                 (tex, face.w, face.h)
             } else {
-                (self.gpu.create_texture(face.w, face.h, &face.rgba), face.w, face.h)
+                (self.gpu.create_face(&face), face.w, face.h)
             });
     }
 
@@ -3813,8 +3833,8 @@ impl Engine {
         let letter=slot_store::initial(&cart.stem);
         let face=slot_ui::word_ink(&letter.to_string(),[255,255,255]);
         let tex=match self.letter_texture {
-            Some(tex)=>{self.gpu.update_texture(tex,face.w,face.h,&face.rgba);tex},
-            None=>{let tex=self.gpu.create_texture(face.w,face.h,&face.rgba);
+            Some(tex)=>{self.gpu.update_face(tex, &face);tex},
+            None=>{let tex=self.gpu.create_face(&face);
                 self.letter_texture=Some(tex);tex},
         };
         self.letter_face=Printed::new(tex,face.w);
@@ -3841,10 +3861,10 @@ impl Engine {
             return;
         }
         let tex=if let Some(tex)=self.selected_title_texture {
-            self.gpu.update_texture(tex,image.w,image.h,&image.rgba);
+            self.gpu.update_face(tex, &image);
             tex
         }else{
-            let tex=self.gpu.create_texture(image.w,image.h,&image.rgba);
+            let tex=self.gpu.create_face(&image);
             self.selected_title_texture=Some(tex);
             tex
         };
@@ -4455,11 +4475,11 @@ impl Engine {
         let face=title_face(&title);
         let tex=match self.polaroid_title_texture {
             Some(tex)=>{
-                self.gpu.update_texture(tex,face.w,face.h,&face.rgba);
+                self.gpu.update_face(tex, &face);
                 tex
             }
             None=>{
-                let tex=self.gpu.create_texture(face.w,face.h,&face.rgba);
+                let tex=self.gpu.create_face(&face);
                 self.polaroid_title_texture=Some(tex);
                 tex
             }
@@ -4479,10 +4499,10 @@ impl Engine {
         for (index,entry) in polaroids.entries.iter().enumerate() {
             let face=photo_face(entry);
             let tex=if let Some(tex)=self.photo_textures.get(index).copied() {
-                self.gpu.update_texture(tex,face.w,face.h,&face.rgba);
+                self.gpu.update_face(tex, &face);
                 tex
             } else {
-                let tex=self.gpu.create_texture(face.w,face.h,&face.rgba);
+                let tex=self.gpu.create_face(&face);
                 self.photo_textures.push(tex);
                 tex
             };
@@ -4492,12 +4512,12 @@ impl Engine {
         let hints=[("B","Back"),("Y","Delete"),("A","Load"),("X","Undo")];
         let hint_faces=hints.map(|(key,label)| {
             let face=hint_face(key,label);
-            self.gpu.create_texture(face.w,face.h,&face.rgba)
+            self.gpu.create_face(&face)
         });
         polaroids.set_hint_faces(hint_faces.to_vec());
         let confirm_faces=slot_ui::CONFIRM_LEGEND.map(|(key,label)| {
             let face=hint_face(key,label);
-            self.gpu.create_texture(face.w,face.h,&face.rgba)
+            self.gpu.create_face(&face)
         });
         polaroids.set_confirm_faces(confirm_faces.to_vec());
         if game.undo_available() {polaroids.set_undo(Some("undo"));}

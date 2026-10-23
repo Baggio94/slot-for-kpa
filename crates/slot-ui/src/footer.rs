@@ -2,6 +2,7 @@ use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
 use slot_power::Battery;
 
 use crate::battery::{draw_gauge_with_ink, GAUGE_H};
+use crate::density::{self, Canvas};
 use crate::hud::HUD_INK;
 use crate::plate::{word_ink, UndoFace, HINT_H};
 use crate::slot_chrome::MOUTH_H;
@@ -101,31 +102,24 @@ const TROPHY_GAP: u32 = 4;
 pub fn progress_face(unlocked: u16, total: u16, ink: [u8; 3]) -> UndoFace {
     let word = word_ink(&format!("{unlocked}/{total}"), ink);
     let trophy_ink = if total > 0 && unlocked >= total { MASTERED_INK } else { ink };
-    let Some(cov) = crate::silhouette::rasterise_svg(TROPHY_SVG, TROPHY_PX, TROPHY_PX) else {
+    let side = density::px(TROPHY_PX);
+    let Some(cov) = crate::silhouette::rasterise_svg(TROPHY_SVG, side, side) else {
         return word;
     };
-    let tw = TROPHY_PX;
-    let w = tw + TROPHY_GAP + word.w;
-    let h = HINT_H;
-    let mut rgba = vec![0u8; (w * h * 4) as usize];
-    let top = (h - TROPHY_PX) / 2;
-    for gy in 0..TROPHY_PX {
-        for gx in 0..tw {
-            let a = cov[(gy * tw + gx) as usize];
+    let mut face = Canvas::new(TROPHY_PX + TROPHY_GAP + word.w, HINT_H);
+    let top = (face.th - side) / 2;
+    for gy in 0..side {
+        for gx in 0..side {
+            let a = cov[(gy * side + gx) as usize];
             if a == 0 {
                 continue;
             }
-            let o = (((top + gy) * w + gx) * 4) as usize;
-            rgba[o..o + 4].copy_from_slice(&[trophy_ink[0], trophy_ink[1], trophy_ink[2], a]);
+            let o = (((top + gy) * face.tw + gx) * 4) as usize;
+            face.rgba[o..o + 4].copy_from_slice(&[trophy_ink[0], trophy_ink[1], trophy_ink[2], a]);
         }
     }
-    let x0 = tw + TROPHY_GAP;
-    for y in 0..h.min(word.h) {
-        let src = (y * word.w * 4) as usize;
-        let dst = ((y * w + x0) * 4) as usize;
-        rgba[dst..dst + (word.w * 4) as usize].copy_from_slice(&word.rgba[src..src + (word.w * 4) as usize]);
-    }
-    UndoFace { rgba, w, h }
+    face.blit_face(&word, TROPHY_PX + TROPHY_GAP, 0);
+    face.into_undo()
 }
 
 /// Centre slot of the shelf footer, between the battery and the clock.

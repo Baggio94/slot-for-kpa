@@ -3,6 +3,8 @@ use slot_store::{Cart, Core};
 
 use crate::art;
 use crate::cart::{clean_label, CartFace, CART_H, CART_W};
+use crate::density::Face as _;
+use crate::density::{self, px, Canvas};
 use crate::shelf::foot_y;
 use crate::shell::shell_for;
 use crate::slot_chrome::ease;
@@ -49,11 +51,7 @@ pub fn rom_marking(stem: &str) -> Vec<String> {
 
 pub fn rom_marking_face(stem: &str) -> CartFace {
     let title = rom_marking(stem);
-    let mut face = CartFace {
-        rgba: vec![0; (ROM_W * ROM_H * 4) as usize],
-        w: ROM_W,
-        h: ROM_H,
-    };
+    let mut face = Canvas::new(ROM_W, ROM_H).into_cart();
     let Some(font) = text::label_font() else {
         return face;
     };
@@ -74,15 +72,16 @@ pub fn board_face(cart: &Cart) -> CartFace {
         .replace(DEEP, &hex(shade(shell.colour, 0.35)))
         .replace(FLOOR, &hex(shade(shell.colour, 0.62)))
         .replace(PLASTIC, &hex(shell.colour));
-    let rgba = art::render_svg(&svg, BOARD_W, BOARD_H)
-        .unwrap_or_else(|| vec![0; (BOARD_W * BOARD_H * 4) as usize]);
-    let mut face = CartFace {
-        rgba,
-        w: BOARD_W,
-        h: BOARD_H,
-    };
+    let mut face = svg_face(&svg, BOARD_W, BOARD_H);
     over(&mut face, &rom_marking_face(&cart.stem), ROM_X, ROM_Y);
     face
+}
+
+/// SVG art rendered straight at panel density.
+fn svg_face(svg: &str, w: u32, h: u32) -> CartFace {
+    let (tw, th) = (px(w), px(h));
+    let rgba = art::render_svg(svg, tw, th).unwrap_or_else(|| vec![0; (tw * th * 4) as usize]);
+    CartFace { rgba, w, h }
 }
 
 fn ink_band(
@@ -93,13 +92,15 @@ fn ink_band(
     ink: [u8; 3],
     strength: f32,
 ) {
-    let band = band.min(face.h.saturating_sub(top));
-    for (i, a) in text::coverage(face.w, band, layout).into_iter().enumerate() {
+    let (fw, fh) = face.texels();
+    let top = px(top).min(fh);
+    let band = px(band).min(fh - top);
+    for (i, a) in text::coverage(fw, band, &density::scaled(layout)).into_iter().enumerate() {
         let a = (a as f32 * strength).round() as u8;
         if a == 0 {
             continue;
         }
-        let at = ((top * face.w) as usize + i) * 4;
+        let at = ((top * fw) as usize + i) * 4;
         let (a, d_a) = (a as f32 / 255.0, face.rgba[at + 3] as f32 / 255.0);
         let out_a = a + d_a * (1.0 - a);
         for (k, &c) in ink.iter().enumerate() {
@@ -112,15 +113,17 @@ fn ink_band(
 }
 
 fn over(dst: &mut CartFace, src: &CartFace, x: u32, y: u32) {
-    for row in 0..src.h {
-        for col in 0..src.w {
-            let s = ((row * src.w + col) * 4) as usize;
+    let ((sw, sh), (dw, dh)) = (src.texels(), dst.texels());
+    let (x, y) = (px(x), px(y));
+    for row in 0..sh {
+        for col in 0..sw {
+            let s = ((row * sw + col) * 4) as usize;
             let a = src.rgba[s + 3] as u32;
             let (dx, dy) = (x + col, y + row);
-            if a == 0 || dx >= dst.w || dy >= dst.h {
+            if a == 0 || dx >= dw || dy >= dh {
                 continue;
             }
-            let d = ((dy * dst.w + dx) * 4) as usize;
+            let d = ((dy * dw + dx) * 4) as usize;
             for k in 0..3 {
                 dst.rgba[d + k] =
                     ((src.rgba[s + k] as u32 * a + dst.rgba[d + k] as u32 * (255 - a)) / 255) as u8;
@@ -268,25 +271,16 @@ fn lerp(a: Placed, b: Placed, t: f32) -> Placed {
 }
 
 pub fn padded(face: &CartFace, pad: u32) -> CartFace {
-    let (w, h) = (face.w + 2 * pad, face.h + 2 * pad);
-    let mut rgba = vec![0u8; (w * h * 4) as usize];
-    let stride = (face.w * 4) as usize;
-    for row in 0..face.h {
-        let from = (row * face.w * 4) as usize;
-        let to = (((row + pad) * w + pad) * 4) as usize;
-        rgba[to..to + stride].copy_from_slice(&face.rgba[from..from + stride]);
-    }
-    CartFace { rgba, w, h }
+    let (tw, th) = face.texels();
+    let mut out = Canvas::new(face.w + 2 * pad, face.h + 2 * pad);
+    let x = (out.tw as i32 - tw as i32) / 2;
+    let y = (out.th as i32 - th as i32) / 2;
+    out.blit_texels(&face.rgba, tw, th, x, y);
+    out.into_cart()
 }
 
 pub fn socket_face(core: Core) -> CartFace {
-    let rgba = art::render_svg(SOCKET_SVG, SOCKET_W, SOCKET_H)
-        .unwrap_or_else(|| vec![0; (SOCKET_W * SOCKET_H * 4) as usize]);
-    let mut face = CartFace {
-        rgba,
-        w: SOCKET_W,
-        h: SOCKET_H,
-    };
+    let mut face = svg_face(SOCKET_SVG, SOCKET_W, SOCKET_H);
     if let Some(layout) = name_layout(core, (SOCKET_W - 12) as f32) {
         ink_band(&mut face, 4, 37, &layout, SOCKET_INK, 0.5);
     }
@@ -294,13 +288,7 @@ pub fn socket_face(core: Core) -> CartFace {
 }
 
 pub fn chip_face(core: Option<Core>) -> CartFace {
-    let rgba = art::render_svg(CHIP_SVG, CHIP_W, CHIP_H)
-        .unwrap_or_else(|| vec![0; (CHIP_W * CHIP_H * 4) as usize]);
-    let mut face = CartFace {
-        rgba,
-        w: CHIP_W,
-        h: CHIP_H,
-    };
+    let mut face = svg_face(CHIP_SVG, CHIP_W, CHIP_H);
     if let Some(layout) = core.and_then(|c| name_layout(c, (CHIP_W - 8) as f32)) {
         ink_band(&mut face, 4, 34, &layout, CHIP_INK, 1.0);
     }
@@ -308,7 +296,7 @@ pub fn chip_face(core: Option<Core>) -> CartFace {
 }
 
 pub fn chip_shadow_face() -> CartFace {
-    let (w, h) = (SHADOW_W, SHADOW_H);
+    let (w, h) = (px(SHADOW_W), px(SHADOW_H));
     let mut rgba = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         for x in 0..w {
@@ -318,7 +306,7 @@ pub fn chip_shadow_face() -> CartFace {
             rgba.extend_from_slice(&[0, 0, 0, (fall * fall * 255.0) as u8]);
         }
     }
-    CartFace { rgba, w, h }
+    CartFace { rgba, w: SHADOW_W, h: SHADOW_H }
 }
 
 fn name_layout(core: Core, max_w: f32) -> Option<text::Layout> {

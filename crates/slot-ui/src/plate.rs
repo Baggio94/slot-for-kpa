@@ -1,3 +1,5 @@
+use crate::density::Face as _;
+use crate::density::{self, Canvas};
 use crate::draw::{Draw, TexId, OUT_W};
 use crate::text;
 
@@ -72,33 +74,36 @@ pub fn hint_width(key: &str, label: &str) -> u32 {
 }
 
 pub fn hint_face(key: &str, label: &str) -> UndoFace {
-    let w = hint_width(key, label);
-    let mut rgba = vec![0u8; (w * HINT_H * 4) as usize];
-
+    let mut face = Canvas::new(hint_width(key, label), HINT_H);
     let cap_w = cap_width(key);
-    if let Some(art) = crate::button_art::key_art(key) {
-        blit(&mut rgba, w, &art.rgba, art.w, art.h, 0, (HINT_H - art.h) / 2);
-    } else {
-        let mut cap = Vec::with_capacity((cap_w * CAP * 4) as usize);
-        for _ in 0..cap_w * CAP {
-            cap.extend_from_slice(&[INK[0], INK[1], INK[2], 255]);
-        }
-        if let Some(font) = text::label_font() {
-            let layout = text::fit(font, key, cap_w as f32, 1, KEY_PX, KEY_PX);
-            text::draw_centred(&mut cap, cap_w, CAP, &layout, CAP_INK);
-        }
-        blit(&mut rgba, w, &cap, cap_w, CAP, 0, (HINT_H - CAP) / 2);
-    }
-
+    stamp_key(&mut face, key, cap_w, 0);
     let text_w = band_width(label);
-    let mut band = vec![0u8; (text_w * HINT_H * 4) as usize];
     if let Some(font) = text::label_font() {
         let layout = text::fit(font, label, text_w as f32, 1, LABEL_PX, LABEL_MIN_PX);
-        text::draw_centred(&mut band, text_w, HINT_H, &layout, INK);
+        face.text_in(cap_w + CAP_GAP, 0, text_w, HINT_H, &layout, INK);
     }
-    blit(&mut rgba, w, &band, text_w, HINT_H, cap_w + CAP_GAP, 0);
+    face.into_undo()
+}
 
-    UndoFace { rgba, w, h: HINT_H }
+/// The button art for `key`, or the classic keycap, vertically centred in
+/// the hint band at logical `x`.
+fn stamp_key(face: &mut Canvas, key: &str, cap_w: u32, x: u32) {
+    if let Some(art) = crate::button_art::key_art(key) {
+        let (aw, ah) = art.texels();
+        let y = (face.th as i32 - ah as i32) / 2;
+        face.blit_texels(&art.rgba, aw, ah, density::px(x) as i32, y);
+        return;
+    }
+    let mut cap = Canvas::new(cap_w, CAP);
+    for p in cap.rgba.chunks_exact_mut(4) {
+        p.copy_from_slice(&[INK[0], INK[1], INK[2], 255]);
+    }
+    if let Some(font) = text::label_font() {
+        let layout = text::fit(font, key, cap_w as f32, 1, KEY_PX, KEY_PX);
+        cap.text(&layout, CAP_INK);
+    }
+    let y = (face.th as i32 - cap.th as i32) / 2;
+    face.blit_texels(&cap.rgba, cap.tw, cap.th, density::px(x) as i32, y);
 }
 
 /// Complete first-run instructions must never inherit the 140px footer
@@ -110,13 +115,12 @@ fn onboarding_text_width(text: &str, px: f32) -> u32 {
     text::line_width(font,&text.to_uppercase(),px,spacing).ceil() as u32+8
 }
 fn onboarding_band(text: &str, px: f32) -> UndoFace {
-    let w=onboarding_text_width(text,px);
-    let mut rgba=vec![0u8;(w*HINT_H*4) as usize];
+    let mut face=Canvas::new(onboarding_text_width(text,px),HINT_H);
     if let Some(font)=text::label_font() {
-        let layout=text::fit(font,text,w as f32,1,px,px);
-        text::draw_centred(&mut rgba,w,HINT_H,&layout,INK);
+        let layout=text::fit(font,text,face.w as f32,1,px,px);
+        face.text(&layout,INK);
     }
-    UndoFace {rgba,w,h:HINT_H}
+    face.into_undo()
 }
 /// One wide single-line instruction with the ORIGINAL boxed keycap between
 /// the word "PRESS" and the rest of the instruction.
@@ -132,19 +136,13 @@ pub fn onboarding_instruction_face(before: &str, key: &str, after: &str) -> Undo
     let before=onboarding_band(before,px);
     let after=onboarding_band(after,px);
     let w=before.w+cap_w+after.w+2*GAP;
-    let mut rgba=vec![0u8;(w*HINT_H*4) as usize];
-    blit(&mut rgba,w,&before.rgba,before.w,before.h,0,0);
+    let mut face=Canvas::new(w,HINT_H);
+    face.blit_face(&before,0,0);
     let x=before.w+GAP;
-    // Reuse the exact Slot cap renderer and copy only its cap pixels.
-    let cap=hint_face(key,"");
-    for row in 0..HINT_H {
-        let from=(row*cap.w*4) as usize;
-        let to=((row*w+x)*4) as usize;
-        let len=(cap_w*4) as usize;
-        rgba[to..to+len].copy_from_slice(&cap.rgba[from..from+len]);
-    }
-    blit(&mut rgba,w,&after.rgba,after.w,after.h,x+cap_w+GAP,0);
-    UndoFace {rgba,w,h:HINT_H}
+    // The exact Slot cap renderer, as in hint_face().
+    stamp_key(&mut face,key,cap_w,x);
+    face.blit_face(&after,x+cap_w+GAP,0);
+    face.into_undo()
 }
 /// Smaller but fully readable second line on BOTH empty-library screens.
 pub fn onboarding_note_face(text: &str) -> UndoFace {
@@ -183,13 +181,12 @@ pub fn word_face(text: &str) -> UndoFace {
 /// Render footer words in Slot's exact Dark/Light ink without touching menu
 /// typography or the game HUD. Called only on clock/battery/theme changes.
 pub fn word_ink(text: &str, ink: [u8; 3]) -> UndoFace {
-    let w = word_width(text);
-    let mut rgba = vec![0u8; (w * HINT_H * 4) as usize];
+    let mut face = Canvas::new(word_width(text), HINT_H);
     if let Some(font) = text::label_font() {
-        let layout = text::fit(font, text, w as f32, 1, LABEL_PX, LABEL_MIN_PX);
-        text::draw_centred(&mut rgba, w, HINT_H, &layout, ink);
+        let layout = text::fit(font, text, face.w as f32, 1, LABEL_PX, LABEL_MIN_PX);
+        face.text(&layout, ink);
     }
-    UndoFace { rgba, w, h: HINT_H }
+    face.into_undo()
 }
 
 /// High-resolution shelf label for the KONKR's 960×640 panel.
@@ -283,30 +280,18 @@ pub fn title_line_face(text: &str) -> UndoFace {
         .map(|line| text::line_width(font, line, layout.px, layout.tracking))
         .fold(0.0, f32::max);
     let w = (ink.ceil() as u32).clamp(1, TITLE_LINE_MAX_W as u32);
-    let mut rgba = vec![0u8; (w * TITLE_LINE_H * 4) as usize];
-    text::draw_centred(&mut rgba, w, TITLE_LINE_H, &layout, [0xff, 0xff, 0xff]);
-    UndoFace { rgba, w, h: TITLE_LINE_H }
+    let mut face = Canvas::new(w, TITLE_LINE_H);
+    face.text(&layout, [0xff, 0xff, 0xff]);
+    face.into_undo()
 }
 
 pub fn title_face(text: &str) -> UndoFace {
-    let mut rgba = vec![0u8; (TITLE_W * TITLE_H * 4) as usize];
+    let mut face = Canvas::new(TITLE_W, TITLE_H);
     if let Some(font) = text::label_font() {
         let layout = text::fit(font, text, TITLE_W as f32, 1, TITLE_PX, TITLE_MIN_PX);
-        text::draw_centred(&mut rgba, TITLE_W, TITLE_H, &layout, INK);
+        face.text(&layout, INK);
     }
-    UndoFace {
-        rgba,
-        w: TITLE_W,
-        h: TITLE_H,
-    }
-}
-
-pub(crate) fn blit(dst: &mut [u8], dst_w: u32, src: &[u8], src_w: u32, src_h: u32, x: u32, y: u32) {
-    for row in 0..src_h {
-        let from = ((row * src_w) * 4) as usize;
-        let to = (((y + row) * dst_w + x) * 4) as usize;
-        dst[to..to + (src_w * 4) as usize].copy_from_slice(&src[from..from + (src_w * 4) as usize]);
-    }
+    face.into_undo()
 }
 
 pub const ARROW_GAP: u32 = 3;
@@ -327,63 +312,50 @@ pub fn arrows_hint_width(label: &str) -> u32 {
 }
 
 pub fn arrows_hint_face(label: &str) -> UndoFace {
-    let w = arrows_hint_width(label);
-    let mut rgba = vec![0u8; (w * HINT_H * 4) as usize];
+    let mut face = Canvas::new(arrows_hint_width(label), HINT_H);
     if let Some(art) = arrows_art() {
-        blit(&mut rgba, w, &art.rgba, art.w, art.h, 0, (HINT_H - art.h) / 2);
+        let (aw, ah) = art.texels();
+        let y = (face.th as i32 - ah as i32) / 2;
+        face.blit_texels(&art.rgba, aw, ah, 0, y);
     } else {
         for (i, glyph) in [LEFT_CARET, RIGHT_CARET].into_iter().enumerate() {
-            blit(
-                &mut rgba,
-                w,
-                &glyph_cap(glyph),
-                CAP,
-                CAP,
-                i as u32 * (CAP + ARROW_GAP),
-                (HINT_H - CAP) / 2,
-            );
+            let cap = glyph_cap(glyph);
+            let y = (face.th as i32 - cap.th as i32) / 2;
+            let x = density::px(i as u32 * (CAP + ARROW_GAP)) as i32;
+            face.blit_texels(&cap.rgba, cap.tw, cap.th, x, y);
         }
     }
     let text_w = band_width(label);
-    let mut band = vec![0u8; (text_w * HINT_H * 4) as usize];
     if let Some(font) = text::label_font() {
         let layout = text::fit(font, label, text_w as f32, 1, LABEL_PX, LABEL_MIN_PX);
-        text::draw_centred(&mut band, text_w, HINT_H, &layout, INK);
+        face.text_in(arrows_w() + CAP_GAP, 0, text_w, HINT_H, &layout, INK);
     }
-    blit(
-        &mut rgba,
-        w,
-        &band,
-        text_w,
-        HINT_H,
-        arrows_w() + CAP_GAP,
-        0,
-    );
-    UndoFace { rgba, w, h: HINT_H }
+    face.into_undo()
 }
 
-fn glyph_cap(glyph: char) -> Vec<u8> {
-    let mut cap = Vec::with_capacity((CAP * CAP * 4) as usize);
-    for _ in 0..CAP * CAP {
-        cap.extend_from_slice(&[INK[0], INK[1], INK[2], 255]);
+fn glyph_cap(glyph: char) -> Canvas {
+    let mut cap = Canvas::new(CAP, CAP);
+    for p in cap.rgba.chunks_exact_mut(4) {
+        p.copy_from_slice(&[INK[0], INK[1], INK[2], 255]);
     }
     let Some(font) = crate::icon::symbols_font() else {
         return cap;
     };
-    let (m, cov) = font.rasterize(glyph, KEY_PX);
-    let x0 = (CAP as i32 - m.width as i32) / 2;
-    let y0 = (CAP as i32 - m.height as i32) / 2;
+    let side = cap.tw as i32;
+    let (m, cov) = font.rasterize(glyph, KEY_PX * density::scale());
+    let x0 = (side - m.width as i32) / 2;
+    let y0 = (side - m.height as i32) / 2;
     for gy in 0..m.height {
         for gx in 0..m.width {
             let (dx, dy) = (x0 + gx as i32, y0 + gy as i32);
-            if dx < 0 || dy < 0 || dx >= CAP as i32 || dy >= CAP as i32 {
+            if dx < 0 || dy < 0 || dx >= side || dy >= side {
                 continue;
             }
             let a = cov[gy * m.width + gx] as u32;
-            let at = ((dy as u32 * CAP + dx as u32) * 4) as usize;
+            let at = ((dy * side + dx) * 4) as usize;
             for k in 0..3 {
-                cap[at + k] =
-                    ((CAP_INK[k] as u32 * a + cap[at + k] as u32 * (255 - a)) / 255) as u8;
+                cap.rgba[at + k] =
+                    ((CAP_INK[k] as u32 * a + cap.rgba[at + k] as u32 * (255 - a)) / 255) as u8;
             }
         }
     }

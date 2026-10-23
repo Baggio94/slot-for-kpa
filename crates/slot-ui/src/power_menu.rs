@@ -1,3 +1,4 @@
+use crate::density::Canvas;
 use crate::plate::UndoFace;
 use crate::text;
 
@@ -38,8 +39,8 @@ pub fn menu_face(label: &str) -> UndoFace {
     };
     let ink = text::line_width(font, label, MENU_PX, 0.0).ceil() as u32;
     let w = ink + 2 * MENU_PAD;
-    let mut rgba = vec![0u8; (w * MENU_H * 4) as usize];
+    let mut face = Canvas::new(w, MENU_H);
     let layout = text::fit(font, label, w as f32, 1, MENU_PX, MENU_MIN_PX);
-    text::draw_centred(&mut rgba, w, MENU_H, &layout, MENU_INK);
-    UndoFace { rgba, w, h: MENU_H }
+    face.text(&layout, MENU_INK);
+    face.into_undo()
 }

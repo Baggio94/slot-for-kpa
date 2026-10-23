@@ -57,6 +57,8 @@ pub struct Sprites {
     prog: gl::types::GLuint,
     white: gl::types::GLuint,
     textures: Vec<gl::types::GLuint>,
+    sizes: Vec<(u32, u32)>,
+    grid: [f32; 2],
     recovery: Option<Vec<TexturePixels>>,
     u_rect: gl::types::GLint,
     u_colour: gl::types::GLint,
@@ -123,6 +125,8 @@ impl Sprites {
             prog,
             white,
             textures: Vec::new(),
+            sizes: Vec::new(),
+            grid: [1.0, 1.0],
             recovery: None,
             u_rect,
             u_colour,
@@ -141,6 +145,7 @@ impl Sprites {
     fn push(&mut self, w: u32, h: u32, rgba: &[u8], filter: gl::types::GLenum) -> TexId {
         let tex = crate::gl::texture(w, h, filter, gl::CLAMP_TO_EDGE, gl::RGBA, Some(rgba));
         self.textures.push(tex);
+        self.sizes.push((w, h));
         if let Some(pixels) = &mut self.recovery {
             pixels.push(TexturePixels {
                 w,
@@ -158,6 +163,9 @@ impl Sprites {
         };
         if rgba.len() < (w * h * 4) as usize {
             return;
+        }
+        if let Some(size) = self.sizes.get_mut(id.0) {
+            *size = (w, h);
         }
         if let Some(pixels) = self.recovery.as_mut().and_then(|r| r.get_mut(id.0)) {
             pixels.w = w;
@@ -179,6 +187,11 @@ impl Sprites {
                 rgba.as_ptr() as *const std::ffi::c_void,
             );
         }
+    }
+
+    /// Framebuffer pixels per canvas unit, e.g. 4/3 on a 960x640 panel.
+    pub(crate) fn set_grid(&mut self, fbo: (u32, u32)) {
+        self.grid = [fbo.0 as f32 / OUT_W as f32, fbo.1 as f32 / OUT_H as f32];
     }
 
     pub fn source(&self, id: TexId) -> Option<gl::types::GLuint> {
@@ -203,7 +216,11 @@ impl Sprites {
                     tex,
                     alpha,
                 } => match self.textures.get(tex.0) {
-                    Some(t) => (x, y, w, h, *t, [1.0, 1.0, 1.0, alpha], 0.0),
+                    Some(t) => {
+                        let size = self.sizes.get(tex.0).copied().unwrap_or((0, 0));
+                        let (x, y, w, h) = on_grid([x, y, w, h], size, self.grid);
+                        (x, y, w, h, *t, [1.0, 1.0, 1.0, alpha], 0.0)
+                    }
                     None => continue,
                 },
                 Draw::Turned {
@@ -234,6 +251,42 @@ impl Sprites {
             quad.draw();
         }
         unsafe { gl::Disable(gl::BLEND) };
+    }
+}
+
+/// A texture shown at its own size lands on whole framebuffer pixels, so
+/// a face rendered for the panel stays 1:1 instead of being resampled half a
+/// pixel off. Scaled or moving-and-scaled sprites are left alone.
+pub fn on_grid(rect: [f32; 4], texels: (u32, u32), grid: [f32; 2]) -> (f32, f32, f32, f32) {
+    let [x, y, w, h] = rect;
+    let (tw, th) = (texels.0 as f32, texels.1 as f32);
+    if grid == [1.0, 1.0] || (w * grid[0] - tw).abs() >= 1.0 || (h * grid[1] - th).abs() >= 1.0 {
+        return (x, y, w, h);
+    }
+    (
+        (x * grid[0]).round() / grid[0],
+        (y * grid[1]).round() / grid[1],
+        tw / grid[0],
+        th / grid[1],
+    )
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use super::on_grid;
+
+    #[test]
+    fn panel_faces_snap_to_whole_pixels_and_scaled_ones_do_not() {
+        let k = [4.0 / 3.0; 2];
+        // A 24-unit hint band holding 32 texels, drawn at x = 10.
+        let (x, y, w, h) = on_grid([10.0, 7.0, 60.0, 24.0], (80, 32), k);
+        assert_eq!(((x * k[0]).round(), (y * k[1]).round()), (13.0, 9.0));
+        assert!((x * k[0] - 13.0).abs() < 1e-4 && (w * k[0] - 80.0).abs() < 1e-4);
+        assert!((h * k[1] - 32.0).abs() < 1e-4);
+        // A 1x texture stretched by 4/3 is not touched.
+        assert_eq!(on_grid([10.5, 7.0, 60.0, 24.0], (60, 24), k), (10.5, 7.0, 60.0, 24.0));
+        // Upstream's own 720x480 canvas is drawn exactly as before.
+        assert_eq!(on_grid([10.4, 7.6, 60.0, 24.0], (60, 24), [1.0; 2]), (10.4, 7.6, 60.0, 24.0));
     }
 }
 

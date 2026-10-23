@@ -3,10 +3,11 @@ use slot_store::{Cart, Outline, Platform};
 
 use crate::art;
 use crate::bitmaps::{self, Mould, BOARD_H, BOARD_W};
+use crate::density::{self, px};
 // The KONKR core-picker still uses its own BOARD_W/H, which differ from the
 // official v1.7 visual bitmap 360x212. Cart layers use the bitmap dimensions.
 use crate::shell::{shell_for, Finish, Shell};
-use crate::silhouette::{cart_mask, gb_cart_mask, GbShell};
+use crate::silhouette::{cart_mask, dense_mask, gb_cart_mask, GbShell};
 use crate::text;
 
 pub const CART_W: u32 = 360;
@@ -70,8 +71,10 @@ struct Spec {
     label: (u32, u32, u32, u32),
     mask: &'static [u8],
     mould: Mould,
+    shell: Option<GbShell>,
 }
 
+#[derive(Copy, Clone)]
 enum Shape {
     Gba,
     Gb(GbShell),
@@ -106,6 +109,7 @@ fn spec(shape: Shape) -> Spec {
             label: (LABEL_X, LABEL_Y, LABEL_W, LABEL_H),
             mask: cart_mask(),
             mould: Mould::Gba,
+            shell: None,
         },
         Shape::Gb(shell) => Spec {
             w: GB_CART_W,
@@ -119,6 +123,7 @@ fn spec(shape: Shape) -> Spec {
                 GbShell::Notched => Mould::Notched,
                 GbShell::Rounded => Mould::Rounded,
             },
+            shell: Some(shell),
         },
     }
 }
@@ -143,25 +148,44 @@ pub fn cart_box(platform: Platform) -> (u32, u32) {
 }
 
 pub fn cart_shadow() -> CartFace {
-    shadow(CART_W, CART_H, cart_mask())
+    shadow(spec(Shape::Gba))
 }
 
 pub fn gb_cart_shadow(shell: GbShell) -> CartFace {
-    shadow(GB_CART_W, GB_CART_H, gb_cart_mask(shell))
+    shadow(spec(Shape::Gb(shell)))
 }
 
-fn shadow(w: u32, h: u32, mask: &[u8]) -> CartFace {
-    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-    for cover in mask {
+fn shadow(s: Spec) -> CartFace {
+    let mut rgba = Vec::with_capacity((px(s.w) * px(s.h) * 4) as usize);
+    for cover in mask_of(&s).iter() {
         rgba.extend_from_slice(&[0, 0, 0, *cover]);
     }
-    CartFace { rgba, w, h }
+    CartFace { rgba, w: s.w, h: s.h }
+}
+
+/// The outline at the current density.
+fn mask_of(s: &Spec) -> std::borrow::Cow<'static, [u8]> {
+    if density::is_dense() {
+        std::borrow::Cow::Owned(dense_mask(s.shell).to_vec())
+    } else {
+        std::borrow::Cow::Borrowed(s.mask)
+    }
 }
 
 pub fn cart_face(cart: &Cart) -> CartFace {
     let (lw, lh) = label_size(cart);
-    let art = cart.label.as_deref().and_then(|p| art::cover(p, lw, lh));
+    let art = cart.label.as_deref().and_then(|p| art::cover(p, px(lw), px(lh)));
     cart_face_with(cart, art)
+}
+
+/// A 1x bitmap layer at panel density. The upstream PNGs have no larger
+/// source, so they are filtered up once; text, art and edges are not.
+fn dense_layer(face: CartFace) -> CartFace {
+    if !density::is_dense() {
+        return face;
+    }
+    let rgba = crate::native_assets::resample(&face.rgba, face.w, face.h, px(face.w), px(face.h));
+    CartFace { rgba, w: face.w, h: face.h }
 }
 
 pub fn is_clear(cart: &Cart) -> bool {
@@ -197,31 +221,32 @@ pub fn cart_interior(cart: &Cart) -> CartFace {
         }
         px[3] = ((u32::from(px[3]) * u32::from(CLEAR_ALPHA) + 127) / 255) as u8;
     }
-    CartFace { rgba, w, h }
+    dense_layer(CartFace { rgba, w, h })
 }
 
 /// The board a clear cart's plastic is drawn over, between the back and front shells. A GBA cart
 /// gets `board.png`. A pak gets `gb_board.png`, cut to the notched or rounded outline.
 pub fn cart_backing(shell: Option<GbShell>) -> CartFace {
     let Some(shell) = shell else {
-        return CartFace {
+        return dense_layer(CartFace {
             rgba: bitmaps::board().to_vec(),
             w: BOARD_W,
             h: BOARD_H,
-        };
+        });
     };
     let s = spec(Shape::Gb(shell));
     let mut rgba = bitmaps::gb_board().to_vec();
     for (px, cover) in rgba.chunks_exact_mut(4).zip(s.mask) {
         px[3] = ((px[3] as u32 * *cover as u32 + 127) / 255) as u8;
     }
-    CartFace {
+    dense_layer(CartFace {
         rgba,
         w: s.w,
         h: s.h,
-    }
+    })
 }
 
+/// Logical label size; artwork for `cart_face_with` is `px()` of it.
 pub fn label_size(cart: &Cart) -> (u32, u32) {
     let (_, _, lw, lh) = spec(shape_of(cart)).label;
     (lw, lh)
@@ -236,7 +261,7 @@ pub fn label_size(cart: &Cart) -> (u32, u32) {
 pub fn cart_face_with_material(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
     let artwork = art.or_else(|| {
         let (w, h) = label_size(cart);
-        cart.label.as_deref().and_then(|path| crate::art::cover(path, w, h))
+        cart.label.as_deref().and_then(|path| crate::art::cover(path, px(w), px(h)))
     });
     let plastic = cart_face_with(cart, artwork);
     if !is_clear(cart) {
@@ -274,7 +299,7 @@ fn blend_over(dst: &mut [u8], src: &[u8]) {
 
 pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
     let s = spec(shape_of(cart));
-    let mut face = shell_face(&s, &shell_for(cart));
+    let mut face = dense_layer(shell_face(&s, &shell_for(cart)));
     let label = match art {
         Some(rgba) => rgba,
         None => generated_label(&s, &label_text(cart)),
@@ -285,7 +310,7 @@ pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
 }
 
 fn clip_to_silhouette(s: &Spec, face: &mut CartFace) {
-    for (px, cover) in face.rgba.chunks_exact_mut(4).zip(s.mask) {
+    for (px, cover) in face.rgba.chunks_exact_mut(4).zip(mask_of(s).iter()) {
         px[3] = ((px[3] as u32 * *cover as u32 + 127) / 255) as u8;
     }
 }
@@ -460,8 +485,9 @@ fn lerp(a: [u8; 3], b: [u8; 3], num: u32, den: u32) -> [u8; 3] {
 fn generated_label(s: &Spec, title: &str) -> Vec<u8> {
     let (_, _, lw, lh) = s.label;
     let bg = label_colour(title);
-    let mut rgba = Vec::with_capacity((lw * lh * 4) as usize);
-    for _ in 0..lw * lh {
+    let (tw, th) = (px(lw), px(lh));
+    let mut rgba = Vec::with_capacity((tw * th * 4) as usize);
+    for _ in 0..tw * th {
         rgba.extend_from_slice(&[bg[0], bg[1], bg[2], 255]);
     }
 
@@ -482,7 +508,7 @@ fn generated_label(s: &Spec, title: &str) -> Vec<u8> {
             max_px,
             MIN_PX,
         );
-        text::draw_centred(&mut rgba, lw, lh, &layout, ink(bg));
+        text::draw_centred(&mut rgba, tw, th, &density::scaled(&layout), ink(bg));
     }
     rgba
 }
@@ -498,14 +524,19 @@ fn ink(bg: [u8; 3]) -> [u8; 3] {
 
 fn paste_label(s: &Spec, face: &mut CartFace, label: &[u8]) {
     let (lx, ly, lw, lh) = s.label;
-    for y in 0..lh {
-        for x in 0..lw {
+    let (lx, ly, lw, lh) = (px(lx), px(ly), px(lw), px(lh));
+    let (fw, fh) = (px(s.w), px(s.h));
+    if label.len() < (lw * lh * 4) as usize {
+        return;
+    }
+    for y in 0..lh.min(fh.saturating_sub(ly)) {
+        for x in 0..lw.min(fw.saturating_sub(lx)) {
             let src = ((y * lw + x) * 4) as usize;
             let a = label[src + 3] as u32;
             if a == 0 {
                 continue;
             }
-            let d = (((y + ly) * s.w + x + lx) * 4) as usize;
+            let d = (((y + ly) * fw + x + lx) * 4) as usize;
             for c in 0..3 {
                 face.rgba[d + c] =
                     ((label[src + c] as u32 * a + face.rgba[d + c] as u32 * (255 - a) + 127) / 255)

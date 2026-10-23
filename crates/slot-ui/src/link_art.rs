@@ -1,5 +1,7 @@
 use crate::art::render_svg;
 use crate::cart::CartFace;
+use crate::density::Face as _;
+use crate::density;
 use crate::text;
 
 const PORT_SVG: &str = include_str!("../assets/link_port.svg");
@@ -76,7 +78,8 @@ pub fn link_art() -> LinkArt {
 }
 
 fn svg_face(svg: &str, w: u32, h: u32) -> CartFace {
-    let rgba = render_svg(svg, w, h).unwrap_or_else(|| vec![0; (w * h * 4) as usize]);
+    let (tw, th) = (density::px(w), density::px(h));
+    let rgba = render_svg(svg, tw, th).unwrap_or_else(|| vec![0; (tw * th * 4) as usize]);
     CartFace { rgba, w, h }
 }
 
@@ -100,11 +103,12 @@ fn arc_face(ring: usize) -> CartFace {
 }
 
 fn mirror(face: &CartFace) -> CartFace {
+    let (tw, th) = face.texels();
     let mut rgba = vec![0u8; face.rgba.len()];
-    for y in 0..face.h {
-        for x in 0..face.w {
-            let s = ((y * face.w + x) * 4) as usize;
-            let d = ((y * face.w + (face.w - 1 - x)) * 4) as usize;
+    for y in 0..th {
+        for x in 0..tw {
+            let s = ((y * tw + x) * 4) as usize;
+            let d = ((y * tw + (tw - 1 - x)) * 4) as usize;
             rgba[d..d + 4].copy_from_slice(&face.rgba[s..s + 4]);
         }
     }
@@ -195,7 +199,11 @@ fn stamp(
     let Some(font) = text::label_font() else {
         return;
     };
-    let layout = text::fit(font, line, f32::MAX, 1, px, px);
+    // Lay out at Slot's size, then set the type at panel density.
+    let s = density::scale();
+    let layout = density::scaled(&text::fit(font, line, f32::MAX, 1, px, px));
+    let (x, baseline, px) = (x * s, baseline * s, px * s);
+    let (fw, fh) = face.texels();
     let width = layout
         .lines
         .first()
@@ -214,10 +222,10 @@ fn stamp(
         for col in 0..bw as i32 {
             let a = cov[(row as u32 * bw + col as u32) as usize] as u32;
             let (dx, dy) = (left + col, top + row);
-            if a == 0 || dx < 0 || dy < 0 || dx >= face.w as i32 || dy >= face.h as i32 {
+            if a == 0 || dx < 0 || dy < 0 || dx >= fw as i32 || dy >= fh as i32 {
                 continue;
             }
-            let d = ((dy as u32 * face.w + dx as u32) * 4) as usize;
+            let d = ((dy as u32 * fw + dx as u32) * 4) as usize;
             for (k, c) in ink.iter().enumerate() {
                 face.rgba[d + k] =
                     ((*c as u32 * a + face.rgba[d + k] as u32 * (255 - a)) / 255) as u8;

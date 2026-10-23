@@ -4,6 +4,7 @@ use slot_store::GbPalette;
 use crate::hud::{HUD_INK, PLATE_H};
 use crate::icon::{haloed, HALO_PX};
 use crate::text;
+use crate::density::{self, Canvas};
 use crate::CartFace;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -133,8 +134,18 @@ pub fn toast_face(toast: Toast) -> CartFace {
         TOAST_PX,
         TOAST_MIN_PX,
     );
-    let cov = text::coverage(TOAST_W, TOAST_H, &layout);
-    haloed(&cov, TOAST_W, TOAST_H, HUD_INK)
+    if !density::is_dense() {
+        let cov = text::coverage(TOAST_W, TOAST_H, &layout);
+        return haloed(&cov, TOAST_W, TOAST_H, HUD_INK);
+    }
+    let (tw, th) = (density::px(TOAST_W), density::px(TOAST_H));
+    let halo = haloed(&text::coverage(tw, th, &density::scaled(&layout)), tw, th, HUD_INK);
+    let (w, h) = toast_box();
+    let mut face = Canvas::new(w, h);
+    let x = (face.tw as i32 - halo.w as i32) / 2;
+    let y = (face.th as i32 - halo.h as i32) / 2;
+    face.blit_texels(&halo.rgba, halo.w, halo.h, x, y);
+    face.into_cart()
 }
 
 #[cfg(test)]

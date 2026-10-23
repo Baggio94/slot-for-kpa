@@ -186,6 +186,7 @@ impl Compositor {
     }
 
     pub fn draw_list(&mut self, items: &[Draw]) {
+        self.sprites.set_grid(self.size);
         let mut from = 0;
         for (i, item) in items.iter().enumerate() {
             match *item {
