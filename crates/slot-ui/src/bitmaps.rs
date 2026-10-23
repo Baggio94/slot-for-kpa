@@ -39,13 +39,6 @@ const GBA_INTERIOR_PNG: &[u8] = include_bytes!("../../../assets/gba_interior.png
 const GB_INTERIOR_PNG: &[u8] = include_bytes!("../../../assets/gb_interior.png");
 const GBC_INTERIOR_PNG: &[u8] = include_bytes!("../../../assets/gbc_interior.png");
 const GB_BOARD_PNG: &[u8] = include_bytes!("../../../assets/gb_board.png");
-// The pak board with its two big chips lifted off their footprints, and the
-// chip itself: the core picker hops it between them. Made by
-// tools/pak-board/make.py from gb_board.png.
-const GB_BOARD_OPEN_PNG: &[u8] = include_bytes!("../../../assets/gb_board_open.png");
-const GB_CHIP_PNG: &[u8] = include_bytes!("../../../assets/gb_chip.png");
-pub const GB_CHIP_W: u32 = 70;
-pub const GB_CHIP_H: u32 = 91;
 const BOARD_PNG: &[u8] = include_bytes!("../../../assets/board.png");
 const SOCKET_PNG: &[u8] = include_bytes!("../../../assets/socket.png");
 const CHIP_PNG: &[u8] = include_bytes!("../../../assets/chip.png");
@@ -165,16 +158,6 @@ pub fn gbc_interior() -> &'static [u8] {
 pub fn gb_board() -> &'static [u8] {
     static P: OnceLock<Vec<u8>> = OnceLock::new();
     load(GB_BOARD_PNG, GB_CART_W, GB_CART_H, &P)
-}
-
-pub fn gb_board_open() -> &'static [u8] {
-    static P: OnceLock<Vec<u8>> = OnceLock::new();
-    load(GB_BOARD_OPEN_PNG, GB_CART_W, GB_CART_H, &P)
-}
-
-pub fn gb_chip() -> &'static [u8] {
-    static P: OnceLock<Vec<u8>> = OnceLock::new();
-    load(GB_CHIP_PNG, GB_CHIP_W, GB_CHIP_H, &P)
 }
 
 pub fn board() -> &'static [u8] {

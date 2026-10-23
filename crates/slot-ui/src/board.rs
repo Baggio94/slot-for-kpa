@@ -2,7 +2,9 @@ use slot_gfx::OUT_W;
 use slot_store::{Cart, Core, Platform};
 
 use crate::art;
-use crate::cart::{cart_backing_open, cart_box, cart_interior, cart_interior_at, is_clear, pak_chip, clean_label, gb_shell_of, CartFace, CART_H, CART_W};
+use crate::bitmaps::{GB_CART_H, GB_CART_W};
+use crate::cart::{cart_box, cut_to_shell, is_clear, clean_label, gb_shell_of, CartFace, CART_H, CART_W};
+use crate::silhouette::GbShell;
 use crate::density::Face as _;
 use crate::density::{self, px, Canvas};
 use crate::shelf::foot_y;
@@ -11,6 +13,12 @@ use crate::slot_chrome::ease;
 use crate::text;
 
 const BOARD_SVG: &str = include_str!("../assets/board.svg");
+// The Game Boy pak board and its back shells, drawn in board.svg's style by
+// tools/pak-board/gen.py from the layout of assets/gb_board.png.
+const GB_BOARD_SVG: &str = include_str!("../assets/gb_board.svg");
+const GB_SHELL_SVG: &str = include_str!("../assets/gb_shell.svg");
+const GBC_SHELL_SVG: &str = include_str!("../assets/gbc_shell.svg");
+const GB_CHIP_SVG: &str = include_str!("../assets/gb_chip.svg");
 
 pub const BOARD_W: u32 = 372;
 pub const BOARD_H: u32 = 209;
@@ -31,13 +39,13 @@ const MARK_PX: f32 = 10.0;
 const MARK_MIN_PX: f32 = 6.0;
 const MARK_INK: [u8; 3] = [0xbd, 0xbd, 0xbd];
 
-// The small square chip of the GB/GBC pak board carries the title.
-const PAK_MARK_X: u32 = 80;
-const PAK_MARK_Y: u32 = 114;
-const PAK_MARK_SIDE: u32 = 30;
-const PAK_MARK_LINE_CHARS: usize = 7;
-const PAK_MARK_PX: f32 = 7.0;
-const PAK_MARK_MIN_PX: f32 = 4.0;
+// The square chip of the GB/GBC pak board carries the title.
+const PAK_MARK_X: u32 = 74;
+const PAK_MARK_Y: u32 = 108;
+const PAK_MARK_SIDE: u32 = 42;
+const PAK_MARK_LINE_CHARS: usize = 8;
+const PAK_MARK_PX: f32 = 9.0;
+const PAK_MARK_MIN_PX: f32 = 5.0;
 
 pub fn rom_marking(stem: &str) -> Vec<String> {
     marking(stem, MARK_LINE_CHARS)
@@ -68,7 +76,7 @@ pub fn rom_marking_face(stem: &str) -> CartFace {
 /// The title on a GB/GBC pak board's small square chip.
 pub fn pak_marking_face(stem: &str) -> CartFace {
     let title = marking(stem, PAK_MARK_LINE_CHARS);
-    marking_face(&title, PAK_MARK_SIDE, PAK_MARK_SIDE, 1, PAK_MARK_PX, PAK_MARK_MIN_PX)
+    marking_face(&title, PAK_MARK_SIDE, PAK_MARK_SIDE, 3, PAK_MARK_PX, PAK_MARK_MIN_PX)
 }
 
 fn marking_face(title: &[String], w: u32, h: u32, pad: u32, px: f32, min_px: f32) -> CartFace {
@@ -88,30 +96,92 @@ fn marking_face(title: &[String], w: u32, h: u32, pad: u32, px: f32, min_px: f32
 }
 
 pub fn board_face(cart: &Cart) -> CartFace {
-    if let Some(shell) = gb_shell_of(cart) {
-        // An opened Game Boy / Game Boy Color pak: its own back plastic in
-        // the game's colour with the original pak board seated in it, the
-        // same board a clear GBC cart shows through its shell.
-        // A clear pak keeps its see-through back plastic, as on the shelf.
-        // Like a GBA board, the empty footprints keep the cores' names and
-        // the title is printed on a chip.
-        let mut face = if is_clear(cart) { cart_interior(cart) } else { cart_interior_at(cart, 255) };
-        over(&mut face, &cart_backing_open(shell), 0, 0);
-        for (core, u) in [Core::Mgba, Core::alternate_for(cart.platform)].into_iter().zip(PAK_FOOTPRINTS) {
-            let name = pak_footprint_face(core);
-            over(&mut face, &name, (u - PAK_CHIP.0 / 2.0) as u32, (PAK_FOOTPRINT_Y - PAK_CHIP.1 / 2.0) as u32);
-        }
-        over(&mut face, &pak_marking_face(&cart.stem), PAK_MARK_X, PAK_MARK_Y);
+    if gb_shell_of(cart).is_some() {
+        // An opened Game Boy / Game Boy Color pak: its own back shell in the
+        // game's colour with the pak board seated in it, the same board a
+        // clear cart shows through its shell. A clear pak keeps its
+        // see-through back, as on the shelf.
+        let alpha = if is_clear(cart) { CLEAR_BACK } else { 255 };
+        let mut face = pak_shell_face(cart, alpha);
+        over(&mut face, &pak_board_face(cart), 0, 0);
         return face;
     }
-    let shell = shell_for(cart);
-    let svg = BOARD_SVG
-        .replace(DEEP, &hex(shade(shell.colour, 0.35)))
-        .replace(FLOOR, &hex(shade(shell.colour, 0.62)))
-        .replace(PLASTIC, &hex(shell.colour));
-    let mut face = svg_face(&svg, BOARD_W, BOARD_H);
+    let mut face = svg_face(&shaded(BOARD_SVG, shell_for(cart).colour), BOARD_W, BOARD_H);
     over(&mut face, &rom_marking_face(&cart.stem), ROM_X, ROM_Y);
     face
+}
+
+/// A clear cart's back plastic: as see-through as cart.rs's interior.
+const CLEAR_BACK: u8 = 204;
+
+fn shaded(svg: &str, colour: [u8; 3]) -> String {
+    svg.replace(DEEP, &hex(shade(colour, 0.35)))
+        .replace(FLOOR, &hex(shade(colour, 0.62)))
+        .replace(PLASTIC, &hex(colour))
+}
+
+/// A pak's back shell in the game's colour, cut to its outline, with the
+/// pegs and screw post the board sits on.
+pub(crate) fn pak_shell_face(cart: &Cart, alpha: u8) -> CartFace {
+    let shell = gb_shell_of(cart).unwrap_or(GbShell::Rounded);
+    let svg = match shell {
+        GbShell::Notched => GB_SHELL_SVG,
+        GbShell::Rounded => GBC_SHELL_SVG,
+    };
+    let mut face = svg_face(&shaded(svg, shell_for(cart).colour), GB_CART_W, GB_CART_H);
+    cut_to_shell(&mut face, shell);
+    if alpha < 255 {
+        for px in face.rgba.chunks_exact_mut(4) {
+            px[3] = ((u32::from(px[3]) * u32::from(alpha) + 127) / 255) as u8;
+        }
+    }
+    face
+}
+
+/// The pak board with both big-chip footprints empty. Like a GBA board, the
+/// footprints keep the cores' names and the title is printed on a chip.
+fn pak_board_face(cart: &Cart) -> CartFace {
+    let mut face = svg_face(GB_BOARD_SVG, GB_CART_W, GB_CART_H);
+    for (core, u) in [Core::Mgba, Core::alternate_for(cart.platform)].into_iter().zip(PAK_FOOTPRINTS) {
+        over(&mut face, &pak_footprint_face(core), pak_chip_x(u), pak_chip_y());
+    }
+    over(&mut face, &pak_marking_face(&cart.stem), PAK_MARK_X, PAK_MARK_Y);
+    face
+}
+
+fn pak_chip_x(u: f32) -> u32 {
+    (u - PAK_CHIP.0 / 2.0) as u32
+}
+
+fn pak_chip_y() -> u32 {
+    (PAK_FOOTPRINT_Y - PAK_CHIP.1 / 2.0) as u32
+}
+
+/// What a clear pak shows through its plastic on the shelf: the opened
+/// board with a chip seated in the first footprint.
+pub(crate) fn pak_shelf_board(cart: &Cart) -> CartFace {
+    let mut face = pak_board_face(cart);
+    over(&mut face, &pak_chip_body(), pak_chip_x(PAK_FOOTPRINTS[0]), pak_chip_y());
+    face
+}
+
+/// What a clear GBA cart shows through its plastic on the shelf: the opened
+/// board with both sockets and a chip seated, fitted to the cart's size.
+pub(crate) fn gba_shelf_board(cart: &Cart) -> CartFace {
+    let mut face = board_face(cart);
+    let at = |u: f32, v: f32, pad: u32| {
+        let (x, y) = on_board(Placed { x: 0.0, y: 0.0, w: BOARD_W as f32, h: BOARD_H as f32 }, u, v);
+        ((x.round() as i32 - pad as i32).max(0) as u32, (y.round() as i32 - pad as i32).max(0) as u32)
+    };
+    for (i, core) in [Core::Mgba, Core::Gpsp].into_iter().enumerate() {
+        let (x, y) = at(SOCKET_U[i], SOCKET_V, 0);
+        over(&mut face, &socket_face(core), x, y);
+    }
+    let (x, y) = at(CHIP_U[0], CHIP_V, TURN_PAD);
+    over(&mut face, &chip_face(None), x, y);
+    let (tw, th) = face.texels();
+    let rgba = crate::native_assets::resample(&face.rgba, tw, th, px(CART_W), px(CART_H));
+    CartFace { rgba, w: CART_W, h: CART_H }
 }
 
 /// SVG art rendered straight at panel density.
@@ -341,7 +411,7 @@ pub struct BoardLayout {
 }
 
 /// Centres of the pak board's two big-chip footprints, in its pixels, and
-/// the chip's size (gb_board_open.png / gb_chip.png).
+/// the chip's size (gb_board.svg / gb_chip.svg).
 const PAK_FOOTPRINTS: [f32; 2] = [99.0, 219.0];
 const PAK_FOOTPRINT_Y: f32 = 213.5;
 const PAK_CHIP: (f32, f32) = (70.0, 91.0);
@@ -450,7 +520,7 @@ pub fn socket_face(core: Core) -> CartFace {
 fn pak_footprint_face(core: Core) -> CartFace {
     let (w, h) = (PAK_CHIP.0 as u32, PAK_CHIP.1 as u32);
     let mut face = Canvas::new(w, h).into_cart();
-    if let Some(layout) = name_layout(core, (w - 18) as f32) {
+    if let Some(layout) = name_layout(core, (w - 30) as f32) {
         ink_band(&mut face, (h - 34) / 2, 34, &layout, SOCKET_INK, 0.5);
     }
     face
@@ -464,9 +534,13 @@ pub fn chip_face(core: Option<Core>) -> CartFace {
     padded(&face, TURN_PAD)
 }
 
+fn pak_chip_body() -> CartFace {
+    svg_face(GB_CHIP_SVG, PAK_CHIP.0 as u32, PAK_CHIP.1 as u32)
+}
+
 /// The big pak chip carrying the core's name, as it sits on a GB/GBC board.
 pub fn pak_chip_face(core: Option<Core>) -> CartFace {
-    let mut face = pak_chip();
+    let mut face = pak_chip_body();
     if let Some(layout) = core.and_then(|c| name_layout(c, (PAK_CHIP.0 - 26.0).max(8.0))) {
         ink_band(&mut face, (PAK_CHIP.1 as u32 - 34) / 2, 34, &layout, CHIP_INK, 0.9);
     }

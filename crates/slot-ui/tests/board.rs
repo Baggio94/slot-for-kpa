@@ -88,13 +88,13 @@ fn pak(stem: &str) -> Cart {
 #[test]
 fn a_pak_board_prints_its_title_on_the_small_square_chip() {
     let face = pak_marking_face("Pokemon - Crystal Version (USA, Europe)");
-    assert_eq!((face.w, face.h), (30, 30));
+    assert_eq!((face.w, face.h), (42, 42));
     assert!(face.rgba.chunks_exact(4).any(|p| p[3] > 128), "no marking");
     let crystal = board_face(&pak("Pokemon - Crystal Version (USA, Europe)"));
     let zelda = board_face(&pak("Legend of Zelda, The - Link's Awakening DX"));
     for y in 0..crystal.h {
         for x in 0..crystal.w {
-            let on_chip = (80..110).contains(&x) && (114..144).contains(&y);
+            let on_chip = (74..116).contains(&x) && (108..150).contains(&y);
             if !on_chip {
                 assert_eq!(rgb(&crystal, x, y), rgb(&zelda, x, y), "the title leaked to {x},{y}");
             }

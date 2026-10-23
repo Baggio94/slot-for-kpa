@@ -192,82 +192,43 @@ pub fn is_clear(cart: &Cart) -> bool {
     shell_for(cart).finish != Finish::Solid
 }
 
-/// The back plastic, with the game's colour blended onto it by the same overlay as the shells, at
-/// 80% opacity. A GBA cart uses `gba_interior.png`, a Game Boy pak `gb_interior.png`, and a Game
-/// Boy Color pak `gbc_interior.png`. Same size as that cart's board and face.
+/// The back plastic at 80% opacity. A GBA cart uses `gba_interior.png` with
+/// the game's colour blended onto it by the same overlay as the shells; a pak
+/// gets its drawn back shell, the same one the core picker opens onto.
 pub fn cart_interior(cart: &Cart) -> CartFace {
-    cart_interior_at(cart, CLEAR_ALPHA)
-}
-
-/// The back plastic at a chosen opacity: the core picker opens a pak and
-/// shows its back half solid, with the board seated in it.
-pub fn cart_interior_at(cart: &Cart, alpha: u8) -> CartFace {
+    if gb_shell_of(cart).is_some() {
+        return crate::board::pak_shell_face(cart, CLEAR_ALPHA);
+    }
     let colour = shell_for(cart).colour;
-    let (src, w, h, mask) = match gb_shell_of(cart) {
-        None => (bitmaps::gba_interior(), BOARD_W, BOARD_H, None),
-        Some(shell) => {
-            let s = spec(Shape::Gb(shell));
-            let src = match shell {
-                GbShell::Notched => bitmaps::gb_interior(),
-                GbShell::Rounded => bitmaps::gbc_interior(),
-            };
-            (src, s.w, s.h, Some(s.mask))
-        }
-    };
-    let mut rgba = src.to_vec();
-    for (i, px) in rgba.chunks_exact_mut(4).enumerate() {
-        if let Some(mask) = mask {
-            px[3] = ((px[3] as u32 * mask[i] as u32 + 127) / 255) as u8;
-        }
+    let mut rgba = bitmaps::gba_interior().to_vec();
+    for px in rgba.chunks_exact_mut(4) {
         if px[3] == 0 {
             continue;
         }
         for c in 0..3 {
             px[c] = overlay(px[c], colour[c]);
         }
-        px[3] = ((u32::from(px[3]) * u32::from(alpha) + 127) / 255) as u8;
+        px[3] = ((u32::from(px[3]) * u32::from(CLEAR_ALPHA) + 127) / 255) as u8;
     }
-    dense_layer(CartFace { rgba, w, h })
+    dense_layer(CartFace { rgba, w: BOARD_W, h: BOARD_H })
 }
 
-/// The board a clear cart's plastic is drawn over, between the back and front shells. A GBA cart
-/// gets `board.png`. A pak gets `gb_board.png`, cut to the notched or rounded outline.
-pub fn cart_backing(shell: Option<GbShell>) -> CartFace {
-    let Some(shell) = shell else {
-        return dense_layer(CartFace {
-            rgba: bitmaps::board().to_vec(),
-            w: BOARD_W,
-            h: BOARD_H,
-        });
-    };
-    pak_board(shell, bitmaps::gb_board())
+/// The board a clear cart's plastic is drawn over, between the back and front
+/// shells: the same drawn board the core picker opens onto, so a clear cart
+/// shows on the shelf what it shows when it opens.
+pub fn cart_backing(cart: &Cart) -> CartFace {
+    match gb_shell_of(cart) {
+        Some(_) => crate::board::pak_shelf_board(cart),
+        None => crate::board::gba_shelf_board(cart),
+    }
 }
 
-/// The pak board with both big-chip footprints empty, for the core picker.
-pub fn cart_backing_open(shell: GbShell) -> CartFace {
-    pak_board(shell, bitmaps::gb_board_open())
-}
-
-/// The big pak chip the core picker hops between the footprints.
-pub fn pak_chip() -> CartFace {
-    dense_layer(CartFace {
-        rgba: bitmaps::gb_chip().to_vec(),
-        w: bitmaps::GB_CHIP_W,
-        h: bitmaps::GB_CHIP_H,
-    })
-}
-
-fn pak_board(shell: GbShell, board: &[u8]) -> CartFace {
+/// Cut a face drawn at a pak's size to that pak's outline.
+pub(crate) fn cut_to_shell(face: &mut CartFace, shell: GbShell) {
     let s = spec(Shape::Gb(shell));
-    let mut rgba = board.to_vec();
-    for (px, cover) in rgba.chunks_exact_mut(4).zip(s.mask) {
+    for (px, cover) in face.rgba.chunks_exact_mut(4).zip(mask_of(&s).iter()) {
         px[3] = ((px[3] as u32 * *cover as u32 + 127) / 255) as u8;
     }
-    dense_layer(CartFace {
-        rgba,
-        w: s.w,
-        h: s.h,
-    })
 }
 
 /// Logical label size; artwork for `cart_face_with` is `px()` of it.
@@ -291,7 +252,7 @@ pub fn cart_face_with_material(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
     if !is_clear(cart) {
         return plastic;
     }
-    let backing = cart_backing(gb_shell_of(cart));
+    let backing = cart_backing(cart);
     let interior = cart_interior(cart);
     assert_eq!((plastic.w, plastic.h), (backing.w, backing.h));
     assert_eq!((plastic.w, plastic.h), (interior.w, interior.h));
