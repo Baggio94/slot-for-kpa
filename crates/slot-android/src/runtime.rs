@@ -2961,6 +2961,10 @@ impl Engine {
                         96 if !self.inserted && !self.shelves[self.active].carts.is_empty() => {
                             self.load_selected_emulation();
                             self.inserted = true;
+                            crate::game::log_launch_timing(&format!(
+                                "Insert: {}ms after last cart navigation, art pending={}",
+                                self.last_cart_navigation.elapsed().as_millis(),
+                                !self.cart_render.is_idle()));
                             let selected = &self.shelves[self.active].carts[self.shelves[self.active].index];
                             let uri = selected.rom.to_string_lossy();
                                         self.prepared_rom = None;
@@ -3049,7 +3053,9 @@ impl Engine {
     fn prepare_visible(&mut self) {
         // During scrolling cap uploads to one per frame and never work on
         // background disk tasks on the OpenGL thread.
-        let quiet=self.last_cart_navigation.elapsed()>=CART_IDLE_GRACE
+        // A launch owns the CPU: an inserted cartridge stops the idle fill.
+        let quiet=!self.inserted
+            && self.last_cart_navigation.elapsed()>=CART_IDLE_GRACE
             && !self.shelves[self.active].is_scrolling()
             && matches!(self.overlay,ShelfOverlay::None);
         let limit=if quiet {2} else {1};

@@ -227,6 +227,9 @@ class MainActivity : Activity() {
     private val raSmartForeground = java.lang.Object()
     private var carouselDozing = false
     private var lastCarouselHeartbeat = 0L
+    // A key may still be queued for the GL thread while the shelf reports
+    // quiet: keep rendering every frame until the engine has consumed it.
+    private var carouselAwakeUntil = 0L
     private var returnFromSlotChild = false
     private lateinit var performanceHud: TextView
     private lateinit var shelfStatus: SlotStatusIndicators
@@ -311,6 +314,7 @@ class MainActivity : Activity() {
     // clocks, library scans and asynchronous UI changes.
     private fun wakeCarouselRender() {
         if (!::view.isInitialized || !resumed) return
+        carouselAwakeUntil = SystemClock.uptimeMillis() + 500L
         if (carouselDozing) {
             carouselDozing = false
             view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
@@ -321,6 +325,7 @@ class MainActivity : Activity() {
     private fun updateCarouselPacing() {
         if (!::view.isInitialized || !resumed) return
         val canDoze = !displaySyncApplied && !nativeIsPlaying() && nativeCarouselQuiet()
+            && SystemClock.uptimeMillis() >= carouselAwakeUntil
         if (!canDoze) {
             if (carouselDozing) wakeCarouselRender()
             return
@@ -1092,6 +1097,9 @@ class MainActivity : Activity() {
             EmulationDiagnostics.input(keyCode, true, event, button)
             if (event.repeatCount == 0) {
                 warmedCandidate.set(null)
+                if (carouselDozing && keyCode == KeyEvent.KEYCODE_BUTTON_A) {
+                    Log.i(TAG, "Carousel woke from idle for A")
+                }
                 wakeCarouselRender()
                 nativeKey(button, true)
             }
