@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::Platform;
 
 pub const SELECTED_CORE_FILE: &str = "Config/selected_core.ini";
+pub const DEFAULT_CORE_FILE: &str = "Config/default_core.ini";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Core {
@@ -95,7 +96,46 @@ pub fn core_for_platform(root: &Path, stem: &str, platform: Platform) -> Core {
         .as_deref()
         .and_then(Core::parse)
         .filter(|core| core.runs(platform))
+        .unwrap_or_else(|| default_core(root, platform))
+}
+
+fn default_key(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Gba => "gba",
+        Platform::Gb => "gb",
+        Platform::Gbc => "gbc",
+    }
+}
+
+/// The core a system's carts run on unless a cart was given the other one.
+pub fn default_core(root: &Path, platform: Platform) -> Core {
+    crate::ini::value(root, DEFAULT_CORE_FILE, default_key(platform))
+        .as_deref()
+        .and_then(Core::parse)
+        .filter(|core| core.runs(platform))
         .unwrap_or_else(|| Core::default_for(platform))
+}
+
+pub fn write_default_core(root: &Path, platform: Platform, core: Core) -> std::io::Result<()> {
+    // Before default cores existed every confirmed pick was written down,
+    // mGBA included. Those mGBA lines only meant "the default": drop them
+    // once so those carts follow the new default too.
+    if !root.join(DEFAULT_CORE_FILE).exists() {
+        for (stem, _) in read_selected_cores(root)
+            .into_iter()
+            .filter(|(_, core)| *core == Core::Mgba)
+        {
+            crate::ini::write_entry(root, SELECTED_CORE_FILE, &stem, None)?;
+        }
+    }
+    crate::ini::write(root, DEFAULT_CORE_FILE, default_key(platform), core.as_str())
+}
+
+/// A cart's pick from the board: only a core other than the system's
+/// default is written down, so the cart keeps following the default.
+pub fn choose_core(root: &Path, stem: &str, platform: Platform, core: Core) -> std::io::Result<()> {
+    let value = (core != default_core(root, platform)).then(|| core.as_str());
+    crate::ini::write_entry(root, SELECTED_CORE_FILE, stem, value)
 }
 
 pub fn write_selected_core(root: &Path, stem: &str, core: Core) -> std::io::Result<()> {
