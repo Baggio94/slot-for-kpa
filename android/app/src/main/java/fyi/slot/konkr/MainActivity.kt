@@ -420,13 +420,13 @@ class MainActivity : Activity() {
             val dialog = SlotModalDialog(
                 this,
                 "LINK — SHARE CARTRIDGE",
-                "Share this ROM with $peer over local Wi-Fi? " +
-                    "Only allow a device you trust.",
+                "Share this cartridge with $peer over Wi-Fi? " +
+                    "Only allow a console you trust.",
                 onDismiss = { reply(0) }
             )
             dialog.addButton("CANCEL") { reply(0); dialog.dismiss() }
             dialog.addButton("ALLOW ONCE") { reply(1); dialog.dismiss() }
-            dialog.addButton("REMEMBER DEVICE") { reply(2); dialog.dismiss() }
+            dialog.addButton("ALWAYS ALLOW") { reply(2); dialog.dismiss() }
             dialog.show()
         } catch (error: Exception) {
             Log.w(TAG, "Cannot show Slot peer permission", error)
@@ -436,12 +436,12 @@ class MainActivity : Activity() {
 
     private fun requestLinkWifi() {
         if (!resumed) {
-            nativeLinkNetworkError("Return to Slot before starting Multiplayer")
+            nativeLinkNetworkError("Return to slot. before starting Multiplayer.")
             return
         }
         val address = linkWifiAddress()
         if (address == null) {
-            nativeLinkNetworkError("Connect both consoles to the same Wi-Fi network")
+            nativeLinkNetworkError("Connect both consoles to the same Wi-Fi.")
             return
         }
         try {
@@ -456,7 +456,7 @@ class MainActivity : Activity() {
         } catch (error: Exception) {
             releaseLinkMulticast()
             Log.w(TAG, "Unable to acquire LAN discovery lock", error)
-            nativeLinkNetworkError("Wi-Fi multicast unavailable on this device")
+            nativeLinkNetworkError("Couldn't search for other consoles on this Wi-Fi.")
         }
     }
     private val raConnectivityCallback = object : ConnectivityManager.NetworkCallback() {
@@ -545,7 +545,7 @@ class MainActivity : Activity() {
                         nativeExternalReturn()
                         Log.e(TAG, "Unable to open RetroAchievements", error)
                         SlotToast.makeText(this@MainActivity,
-                            "Unable to open RetroAchievements.", Toast.LENGTH_SHORT).show()
+                            "Couldn't open RetroAchievements.", Toast.LENGTH_SHORT).show()
                     }
                 }
                 4 -> openBiosFolderPicker()
@@ -568,7 +568,7 @@ class MainActivity : Activity() {
                         returnFromSlotChild = false
                         nativeExternalReturn()
                         Log.w(TAG, "Cannot open Apps", error)
-                        SlotToast.makeText(this@MainActivity, "Unable to open Apps.",
+                        SlotToast.makeText(this@MainActivity, "Couldn't open Apps.",
                             Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -731,8 +731,8 @@ class MainActivity : Activity() {
                                         it.startsWith("Shared GBA save sync deferred")
                                     }
                                     val notice = if (onlyMirrors)
-                                        "Game saved locally. mGBA/gpSP copy deferred."
-                                    else "Game saved locally; some external/state exports need attention."
+                                        "Game saved. The copy for the other core will be made later."
+                                    else "Game saved, but some copies to your save folders failed."
                                     SlotToast.makeText(this@MainActivity, notice, Toast.LENGTH_LONG).show()
                                 }
                             }
@@ -963,7 +963,7 @@ class MainActivity : Activity() {
         if (!cleanSignOut) {
             uiHandler.postDelayed({
                 SlotToast.makeText(this,
-                    "Previous RA sign out needs attention. Local awards were kept.",
+                    "The last RetroAchievements sign-out didn't finish. Your unlocks are safe.",
                     Toast.LENGTH_LONG).show()
             }, 800L)
         }
@@ -1169,8 +1169,8 @@ class MainActivity : Activity() {
             if (isDestroyed || isFinishing) { ready.countDown(); return@runOnUiThread }
             try {
                 val dialog = SlotModalDialog(this, "SAVE CONFLICT",
-                    "mGBA and gpSP saves differ. Choose which progress to keep. " +
-                        "Both original saves are backed up.",
+                    "mGBA and gpSP have different saves for this game. Choose which one to keep. " +
+                        "Both are backed up.",
                     onDismiss = { ready.countDown() })
                 // Default to the safe action: accidental A never changes SRAM.
                 dialog.addButton("CANCEL") { dialog.dismiss() }
@@ -1205,15 +1205,15 @@ class MainActivity : Activity() {
             if (isDestroyed || isFinishing) { ready.countDown(); return@runOnUiThread }
             try {
                 val dialog = SlotModalDialog(this, "SAVE STATE",
-                    "The $core state may be older than the shared cartridge save. " +
-                        "Choose which progress to load.",
+                    "The $core save state may be older than your in-game save. " +
+                        "Choose which one to load.",
                     onDismiss = { ready.countDown() })
                 dialog.addButton("CANCEL") { dialog.dismiss() }
-                dialog.addButton("SHARED CARTRIDGE SAVE") {
+                dialog.addButton("IN-GAME SAVE") {
                     selected.set(CoreStateChoice.SHARED)
                     dialog.dismiss()
                 }
-                dialog.addButton("EXISTING $core STATE") {
+                dialog.addButton("$core SAVE STATE") {
                     selected.set(CoreStateChoice.EXISTING)
                     dialog.dismiss()
                 }
@@ -1920,7 +1920,7 @@ class MainActivity : Activity() {
      */
     private fun confirmRaSignOut(panel: RaPanelDialog, username: String) {
         if (nativeIsPlaying()) {
-            SlotToast.makeText(this, "Eject your game before switching RA accounts.",
+            SlotToast.makeText(this, "Eject your game before signing out.",
                 Toast.LENGTH_LONG).show()
             return
         }
@@ -1930,19 +1930,19 @@ class MainActivity : Activity() {
                 if (isDestroyed) return@runOnUiThread
                 val message = when {
                     pending == null ->
-                        "Pending awards couldn't be checked. They stay on this device. " +
-                            "Reconnect as $username to try syncing them."
+                        "Couldn't check for unlocks waiting to sync. They stay on this console. " +
+                            "Sign in as $username again to sync them."
                     pending > 0 ->
-                        "$pending awards await upload for $username. " +
-                            "They stay on this device. Sign in again to sync them; " +
-                            "delayed uploads may expire."
+                        "$pending unlocks are waiting to sync for $username. " +
+                            "They stay on this console. Sign in again to sync them; " +
+                            "very old unlocks may expire."
                     else ->
-                        "Sign out of $username? Local awards and cached games stay."
+                        "Sign out of $username? Your unlocks and downloaded game data stay on this console."
                 }
                 val confirm = SlotModalDialog(
                     this,
                     "SIGN OUT",
-                    "$message\n\nSlot will keep running after sign-out."
+                    "$message"
                 )
                 confirm.addButton("STAY SIGNED IN") { confirm.dismiss() }
                 confirm.addButton("SIGN OUT") {
@@ -1950,8 +1950,8 @@ class MainActivity : Activity() {
                         JSONObject(nativeRaStatus() ?: "{}").optBoolean("unsaved", false)
                     }.getOrDefault(false)
                     if (unsaved) {
-                        confirm.setError("Awards still need to be written locally. " +
-                            "Sign out is blocked to protect your progress.")
+                        confirm.setError("Unlocks are still being saved. " +
+                            "Try again in a moment.")
                     } else {
                         confirm.dismiss()
                         flushRaBeforeSignOut(panel, username, 0)
@@ -1967,7 +1967,7 @@ class MainActivity : Activity() {
         if (isDestroyed || nativeIsPlaying()) return
         if (attempt >= 25) {
             SlotToast.makeText(this,
-                "Achievement writes haven't finished. Sign out cancelled to keep your awards.",
+                "Unlocks are still being saved. Sign-out cancelled to keep them.",
                 Toast.LENGTH_LONG).show()
             return
         }
@@ -1995,7 +1995,7 @@ class MainActivity : Activity() {
         if (isDestroyed || nativeIsPlaying()) return
         if (attempt >= 150) {
             SlotToast.makeText(this,
-                "Sign out couldn't safely stop RetroAchievements. Restart Slot before retrying.",
+                "Couldn't sign out. Restart slot. and try again.",
                 Toast.LENGTH_LONG).show()
             return
         }
@@ -2016,12 +2016,12 @@ class MainActivity : Activity() {
                 if (success) {
                     panel.dismiss()
                     SlotToast.makeText(this,
-                        "RetroAchievements signed out. Local awards were kept.",
+                        "Signed out of RetroAchievements. Your unlocks were kept.",
                         Toast.LENGTH_LONG).show()
                     openRetroAchievementsAccount()
                 } else {
                     SlotToast.makeText(this,
-                        "Sign out needs attention. Your local awards were kept. Restart Slot to retry.",
+                        "Sign-out didn't finish. Your unlocks were kept. Restart slot. to try again.",
                         Toast.LENGTH_LONG).show()
                 }
             }
@@ -2068,7 +2068,7 @@ class MainActivity : Activity() {
         val login = SlotModalDialog(
             this,
             "RETROACHIEVEMENTS",
-            "Sign in securely. Achievements use Casual mode.",
+            "Sign in to earn achievements (Casual mode).",
             onDismiss = { if (!openingDashboard) nativeExternalReturn() }
         )
         val username = login.addInput("USERNAME", "RetroAchievements username")
@@ -2081,7 +2081,7 @@ class MainActivity : Activity() {
                 login.setError("Enter both your RetroAchievements username and password.")
             } else {
                 password.text.clear() // Don't leave credentials in the visible form.
-                login.setError("Connecting securely…")
+                login.setError("Signing in…")
                 login.setBusy(true)
                 raLoginWorker.execute {
                     val result = RaAccount.authenticateAndSave(filesDir, name, secret)
@@ -2095,8 +2095,8 @@ class MainActivity : Activity() {
                                 startRaSmartCache()
                                 openRetroAchievementsAccount()
                                 SlotToast.makeText(this,
-                                    "RA connected as " + result.username +
-                                        ". Preparing GB/GBC/GBA achievements in background.",
+                                    "Signed in as " + result.username +
+                                        ". Preparing achievements…",
                                     Toast.LENGTH_LONG).show()
                             }
                             is RaAccount.Result.Failed -> {
@@ -2144,34 +2144,34 @@ class MainActivity : Activity() {
      */
     private fun toggleShareGbaSaves() {
         if (nativeIsPlaying()) {
-            SlotToast.makeText(this, "Eject the cartridge before changing Save sharing.",
+            SlotToast.makeText(this, "Eject the cartridge before changing this setting.",
                 Toast.LENGTH_LONG).show()
             return
         }
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val enabled = !prefs.getBoolean(SHARE_GBA_SAVES, false)
         if (!prefs.edit().putBoolean(SHARE_GBA_SAVES, enabled).commit()) {
-            SlotToast.makeText(this, "Unable to save Share Saves preference.",
+            SlotToast.makeText(this, "Couldn't save this setting.",
                 Toast.LENGTH_LONG).show()
             return
         }
         nativeSetShareSaves(enabled)
         SlotToast.makeText(this,
-            if (enabled) "Share Saves ON: mGBA/gpSP SRAM only; conflicts are never overwritten."
-            else "Share Saves OFF: mGBA and gpSP saves kept separate.",
+            if (enabled) "mGBA and gpSP now share the same saves."
+            else "mGBA and gpSP now keep separate saves.",
             Toast.LENGTH_LONG).show()
     }
 
     private fun refreshLibrary() {
         val saved = getSharedPreferences(PREFS, MODE_PRIVATE).getString(ROM_ROOT, null)
         if (saved == null) {
-            SlotToast.makeText(this, "Choose your games folder first.", Toast.LENGTH_SHORT).show()
+            SlotToast.makeText(this, "Choose your ROM folder first.", Toast.LENGTH_SHORT).show()
             openRomFolderPicker()
             return
         }
         val uri = Uri.parse(saved)
         if (contentResolver.persistedUriPermissions.none { it.uri == uri && it.isReadPermission }) {
-            SlotToast.makeText(this, "Games folder access expired. Choose it again.", Toast.LENGTH_SHORT).show()
+            SlotToast.makeText(this, "ROM folder access expired. Choose it again.", Toast.LENGTH_SHORT).show()
             openRomFolderPicker()
             return
         }
@@ -2193,7 +2193,7 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(intent, requestCode)
         } catch (error: ActivityNotFoundException) {
-            SlotToast.makeText(this, "Android folder picker unavailable", Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, "Couldn't open the folder picker.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2208,7 +2208,7 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(intent, BIOS_REQUEST)
         } catch (error: ActivityNotFoundException) {
-            SlotToast.makeText(this, "Can't open the BIOS folder picker.", Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, "Couldn't open the folder picker.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2230,7 +2230,7 @@ class MainActivity : Activity() {
                         SlotToast.makeText(
                             this,
                             "BIOS imported: " + imported.joinToString(", ") +
-                                " (available next time you start a game)",
+                                ". Used from your next game.",
                             Toast.LENGTH_LONG
                         ).show()
                     }
@@ -2239,8 +2239,8 @@ class MainActivity : Activity() {
                 Log.e(TAG, "BIOS folder import failed", error)
                 runOnUiThread {
                     if (!isDestroyed) {
-                        SlotToast.makeText(this, "Couldn't import BIOS files: " +
-                            (error.message ?: "check folder files"), Toast.LENGTH_LONG).show()
+                        SlotToast.makeText(this, "Couldn't import BIOS files. Check the folder.",
+                            Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -2273,7 +2273,7 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(intent, kind)
         } catch (error: ActivityNotFoundException) {
-            SlotToast.makeText(this, "Can't open the file picker on this device.", Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, "Couldn't open the file picker.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2285,7 +2285,7 @@ class MainActivity : Activity() {
     private fun resetVisualFile(kind: Int) {
         val file = visualFile(kind)
         if (file.exists() && !file.delete()) {
-            SlotToast.makeText(this, "Couldn't remove the wallpaper. Please try again.", Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, "Couldn't remove the wallpaper. Try again.", Toast.LENGTH_LONG).show()
             return
         }
         nativeReloadVisualAssets()
@@ -2310,12 +2310,12 @@ class MainActivity : Activity() {
             if (kind == WALLPAPER_REQUEST) {
                 val png = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
                 require(bytes.size >= 8 && bytes.copyOfRange(0, 8).contentEquals(png)) {
-                    "Wallpaper must be a PNG"
+                    "Wallpaper must be a PNG up to 4096 × 4096."
                 }
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                 require(bounds.outWidth in 1..4096 && bounds.outHeight in 1..4096) {
-                    "Unsupported wallpaper dimensions"
+                    "Wallpaper must be a PNG up to 4096 × 4096."
                 }
             }
             val target = visualFile(kind)
@@ -2333,7 +2333,8 @@ class MainActivity : Activity() {
             SlotToast.makeText(this, "Wallpaper updated.", Toast.LENGTH_SHORT).show()
         } catch (error: Exception) {
             Log.e(TAG, "Cannot import Slot visual file", error)
-            SlotToast.makeText(this, "Couldn't import this file: " + error.message, Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, error.message?.takeIf { it.startsWith("Wallpaper must") }
+                ?: "Couldn't import this file.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2356,7 +2357,7 @@ class MainActivity : Activity() {
             returnFromSlotChild = false
             nativeExternalReturn()
             Log.w(TAG, "Cannot open Cart Studio", error)
-            SlotToast.makeText(this, "Unable to open Cart Studio.",
+            SlotToast.makeText(this, "Couldn't open Cart Studio.",
                 Toast.LENGTH_SHORT).show()
         }
     }
@@ -2366,7 +2367,7 @@ class MainActivity : Activity() {
     private fun openSelectedCartStudio() {
         val selected = nativePollCartLabelUri()
         if (selected.isNullOrBlank()) {
-            SlotToast.makeText(this, "Select a game first.", Toast.LENGTH_SHORT).show()
+            SlotToast.makeText(this, "Select a cartridge first.", Toast.LENGTH_SHORT).show()
             return
         }
         openCartStudio(selected)
@@ -2378,7 +2379,7 @@ class MainActivity : Activity() {
     private fun openCartLabelPicker() {
         val selected = nativePollCartLabelUri()
         if (selected.isNullOrBlank()) {
-            SlotToast.makeText(this, "Select a game first.", Toast.LENGTH_SHORT).show()
+            SlotToast.makeText(this, "Select a cartridge first.", Toast.LENGTH_SHORT).show()
             return
         }
         pendingCartLabelUri = selected
@@ -2389,11 +2390,11 @@ class MainActivity : Activity() {
         val selected = nativePollCartLabelUri() ?: return
         val file = cartLabelFile(selected)
         if (file.exists() && !file.delete()) {
-            SlotToast.makeText(this, "Couldn't remove the selected artwork.", Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, "Couldn't remove this label.", Toast.LENGTH_LONG).show()
             return
         }
         nativeReloadCartLabel(selected)
-        SlotToast.makeText(this, "Custom artwork removed. Original cart label restored.", Toast.LENGTH_SHORT).show()
+        SlotToast.makeText(this, "Custom label removed.", Toast.LENGTH_SHORT).show()
     }
 
     private fun importCartLabel(source: Uri, romUri: String) {
@@ -2415,12 +2416,12 @@ class MainActivity : Activity() {
             } ?: throw IllegalArgumentException("Cannot open label image")
             val signature = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
             require(bytes.size >= 8 && bytes.copyOfRange(0, 8).contentEquals(signature)) {
-                "Cartridge artwork must be a PNG"
+                "Labels must be a PNG up to 2048 × 2048."
             }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             require(bounds.outWidth in 1..2048 && bounds.outHeight in 1..2048) {
-                "Unsupported cartridge-label dimensions"
+                "Labels must be a PNG up to 2048 × 2048."
             }
             val target = cartLabelFile(romUri)
             target.parentFile?.mkdirs()
@@ -2434,10 +2435,11 @@ class MainActivity : Activity() {
                 throw error
             }
             nativeReloadCartLabel(romUri)
-            SlotToast.makeText(this, "Cart artwork updated.", Toast.LENGTH_SHORT).show()
+            SlotToast.makeText(this, "Label updated.", Toast.LENGTH_SHORT).show()
         } catch (error: Exception) {
             Log.e(TAG, "Could not import cartridge label", error)
-            SlotToast.makeText(this, "Couldn't import cart artwork: " + error.message, Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, error.message?.takeIf { it.startsWith("Labels must") }
+                ?: "Couldn't import this label.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2460,7 +2462,7 @@ class MainActivity : Activity() {
                     if (selected != null) nativeReloadCartLabel(selected)
                 } catch (error: Exception) {
                     Log.e(TAG, "Studio changes could not refresh shelf", error)
-                    SlotToast.makeText(this, "Cart Studio changes saved. Reopen slot. to refresh artwork.",
+                    SlotToast.makeText(this, "Labels saved. Restart slot. to see them.",
                         Toast.LENGTH_LONG).show()
                 }
             }
@@ -2502,7 +2504,7 @@ class MainActivity : Activity() {
                         .putString(key, uri.toString()).apply()
                     val kind = if (requestCode == SAVE_REQUEST) "Save" else "Save State"
                     SlotToast.makeText(this,
-                        "$kind folder selected. RetroArch core subfolders will be used.",
+                        "$kind folder selected.",
                         Toast.LENGTH_LONG).show()
                 }
             }
@@ -2510,7 +2512,7 @@ class MainActivity : Activity() {
             if (requestCode == FOLDER_REQUEST) {
                 nativeSetShelfStatus(shelfPermissionError)
             } else {
-                SlotToast.makeText(this, "This folder needs storage access. Please select it again.", Toast.LENGTH_LONG).show()
+                SlotToast.makeText(this, "Couldn't access this folder. Select it again.", Toast.LENGTH_LONG).show()
             }
             Log.e(TAG, "Android folder permission error", error)
         }
@@ -2610,7 +2612,8 @@ class MainActivity : Activity() {
             }
         }
         if (!next.quiet) {
-            SlotToast.makeText(this, "Library updated: $count carts",
+            SlotToast.makeText(this,
+                if (count == 1) "1 cartridge ready." else "$count cartridges ready.",
                 Toast.LENGTH_SHORT).show()
         }
         // Brief subtle spinner only for a changed library; never for
@@ -2639,7 +2642,7 @@ class MainActivity : Activity() {
                         if (!isDestroyed && scanSerial.get() == serial && !quiet) {
                             nativeSetShelfStatus(shelfNone)
                             SlotToast.makeText(this,
-                                "ROM scan incomplete. Existing games kept.",
+                                "Couldn't read the whole ROM folder. Your cartridges were kept.",
                                 Toast.LENGTH_LONG).show()
                         }
                     }
@@ -2651,7 +2654,7 @@ class MainActivity : Activity() {
                     runOnUiThread {
                         if (!isDestroyed && scanSerial.get() == serial && !quiet) {
                             nativeSetShelfStatus(if (result.count == 0) shelfEmpty else shelfNone)
-                            SlotToast.makeText(this, "Library already up to date.",
+                            SlotToast.makeText(this, "Library is up to date.",
                                 Toast.LENGTH_SHORT).show()
                         }
                     }

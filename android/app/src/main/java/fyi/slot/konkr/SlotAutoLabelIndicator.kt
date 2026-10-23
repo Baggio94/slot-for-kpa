@@ -30,13 +30,13 @@ internal class SlotAutoLabelIndicator(context: Context, rail: LinearLayout) {
         visibility = View.GONE
     }
     private val caption: TextView =
-        SlotUi.label(context, "LABELS 0 SAVED", 9f, Color.WHITE)
+        SlotUi.label(context, "0 LABELS SAVED", 9f, SlotUi.ink)
     private val spinner = object : View(context) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = dim(2).toFloat()
             strokeCap = Paint.Cap.ROUND
-            color = Color.WHITE
+            color = SlotUi.ink
         }
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
@@ -60,7 +60,7 @@ internal class SlotAutoLabelIndicator(context: Context, rail: LinearLayout) {
     }
 
     fun setLightTheme(light: Boolean) {
-        val ink = if (light) Color.BLACK else Color.WHITE
+        val ink = if (light) Color.BLACK else SlotUi.ink
         caption.setTextColor(ink)
         if (spinner.paint.color != ink) {
             spinner.paint.color = ink
@@ -71,7 +71,7 @@ internal class SlotAutoLabelIndicator(context: Context, rail: LinearLayout) {
     fun begin() {
         finishAt = 0L
         spinner.visibility = View.VISIBLE
-        caption.text = "LABELS 0 SAVED"
+        caption.text = "0 LABELS SAVED"
         root.visibility = View.VISIBLE
         spinner.invalidate()
     }
@@ -79,10 +79,10 @@ internal class SlotAutoLabelIndicator(context: Context, rail: LinearLayout) {
     fun progress(checked: Int, total: Int, saved: Int) {
         if (root.visibility != View.VISIBLE) begin()
         caption.text = if (total > 0) {
-            String.format(Locale.ROOT, "LABELS %d/%d  SAVED %d",
+            String.format(Locale.ROOT, "LABELS %d/%d · %d SAVED",
                 checked.coerceIn(0, total), total, saved.coerceAtLeast(0))
         } else {
-            String.format(Locale.ROOT, "LABELS SAVED %d", saved.coerceAtLeast(0))
+            String.format(Locale.ROOT, "%d LABELS SAVED", saved.coerceAtLeast(0))
         }
     }
 
