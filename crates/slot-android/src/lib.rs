@@ -112,9 +112,6 @@ mod game;
 mod cart_render;
 #[cfg(any(target_os = "android", all(test, feature = "runtime-tests")))]
 mod runtime;
-// Shelf RetroAchievements progress: SAF URI -> ROM MD5, read off the GL thread.
-#[cfg(any(target_os = "android", test))]
-mod ra_progress;
 #[cfg(target_os = "android")]
 mod egl_presentation;
 

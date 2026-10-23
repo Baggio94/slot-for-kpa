@@ -47,7 +47,7 @@ pub use cart::{
 };
 pub use clock::{clock_label, date_time_text, hhmm, set_clock_hint_face, ClockPicker, Field};
 pub use draw::{Draw, TexId, OUT_H, OUT_W};
-pub use footer::{draw_footer, draw_footer_centre, draw_footer_with_ink, footer_ink, progress_face, Printed, MASTERED_INK};
+pub use footer::{draw_footer, draw_footer_with_ink, footer_ink, Printed};
 pub use hud::{
     badge_at, ff_badge, FfState, Hud, HudKind, LinkBadge, Millis, HUD_ICON_PX, HUD_INK, HUD_MS,
     LINK_HOST_INK, LINK_JOIN_INK, PLATE_H,
