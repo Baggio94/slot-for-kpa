@@ -2,7 +2,7 @@ use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
 use slot_store::{Cart, Platform};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::cart::{cart_box, gb_shell_of, label_colour, label_text, label_panel, gb_label_panel, GBC_LABEL_X, GBC_LABEL_Y, GBC_LABEL_W, CART_H, CART_W};
+use crate::cart::{cart_box, gb_shell_of, label_panel, gb_label_panel, GBC_LABEL_X, GBC_LABEL_Y, GBC_LABEL_W, CART_H, CART_W};
 use crate::hud::Millis;
 use crate::silhouette::GbShell;
 use crate::slot_chrome::{draw_empty_slot, MOUTH_H};
