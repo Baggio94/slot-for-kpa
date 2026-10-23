@@ -50,7 +50,9 @@ import android.opengl.GLSurfaceView
 import android.view.Choreographer
 import android.os.Bundle
 import android.util.Log
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -240,8 +242,12 @@ class MainActivity : Activity() {
     // swap pace the core, as RetroArch does.
     @Volatile private var raSwapLoopApplied = false
     // Beta A/B switch: adb shell am start -S -n fyi.slot.konkr/.MainActivity
-    // --es slot_latch_wait off|on (persisted; on by default).
-    @Volatile private var latchWaitEnabled = true
+    // --es slot_latch_wait off|on (persisted; off by default: RetroArch reads
+    // the buttons right after the swap, at a regular moment of each frame).
+    @Volatile private var latchWaitEnabled = false
+    // Last D-pad hat position (-1, 0, 1) when the pad reports one.
+    private var hatX = 0
+    private var hatY = 0
     @Volatile private var latestVsyncFrameNs = 0L
     // Beta10 read-only Choreographer delivery telemetry (UI thread).
     // These are UI callbacks, never confirmed display-present timestamps.
@@ -957,12 +963,16 @@ class MainActivity : Activity() {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("development_presenter").apply()
         val latchPrefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         when (intent?.getStringExtra("slot_latch_wait")) {
-            "off" -> latchPrefs.edit().putBoolean("latch_wait_v2", false).apply()
-            "on" -> latchPrefs.edit().putBoolean("latch_wait_v2", true).apply()
+            "off" -> latchPrefs.edit().putBoolean("latch_wait_v3", false).apply()
+            "on" -> latchPrefs.edit().putBoolean("latch_wait_v3", true).apply()
         }
-        latchWaitEnabled = latchPrefs.getBoolean("latch_wait_v2", true)
+        latchWaitEnabled = latchPrefs.getBoolean("latch_wait_v3", false)
         Log.i(TAG, "Latch wait: " + if (latchWaitEnabled) "on" else "off")
         view = SlotPresenter(this, renderer)
+        // Android batches joystick motion to the next UI frame; RetroArch's
+        // input queue reads it as soon as it arrives. Do the same for a
+        // D-pad that reports as a hat.
+        view.surfaceView.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_JOYSTICK)
         val frame = FrameLayout(this)
         frame.addView(view.surfaceView, FrameLayout.LayoutParams(-1, -1))
         shelfStatus = SlotStatusIndicators(this, frame)
@@ -1156,6 +1166,44 @@ class MainActivity : Activity() {
             nativeKey(keyCode, true)
         }
         return true
+    }
+
+    // A D-pad reporting as a hat (ABS_HAT0X/Y) reaches Android as joystick
+    // motion, which the framework only turns into DPAD keys afterwards.
+    // RetroArch reads the hat axes itself: so does slot., with no detour.
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        val device = event.device
+        if (event.action != MotionEvent.ACTION_MOVE ||
+            !event.isFromSource(InputDevice.SOURCE_JOYSTICK) ||
+            device?.getMotionRange(MotionEvent.AXIS_HAT_X) == null
+        ) return super.onGenericMotionEvent(event)
+        fun axis(value: Float) = if (value <= -0.5f) -1 else if (value >= 0.5f) 1 else 0
+        val x = axis(event.getAxisValue(MotionEvent.AXIS_HAT_X))
+        val y = axis(event.getAxisValue(MotionEvent.AXIS_HAT_Y))
+        if (x != hatX || y != hatY) {
+            EmulationDiagnostics.hat(event, (x != 0 && x != hatX) || (y != 0 && y != hatY))
+            warmedCandidate.set(null)
+            wakeCarouselRender()
+            if (x != hatX) {
+                if (hatX < 0) nativeKey(KeyEvent.KEYCODE_DPAD_LEFT, false)
+                if (hatX > 0) nativeKey(KeyEvent.KEYCODE_DPAD_RIGHT, false)
+                if (x < 0) nativeKey(KeyEvent.KEYCODE_DPAD_LEFT, true)
+                if (x > 0) nativeKey(KeyEvent.KEYCODE_DPAD_RIGHT, true)
+                hatX = x
+            }
+            if (y != hatY) {
+                if (hatY < 0) nativeKey(KeyEvent.KEYCODE_DPAD_UP, false)
+                if (hatY > 0) nativeKey(KeyEvent.KEYCODE_DPAD_DOWN, false)
+                if (y < 0) nativeKey(KeyEvent.KEYCODE_DPAD_UP, true)
+                if (y > 0) nativeKey(KeyEvent.KEYCODE_DPAD_DOWN, true)
+                hatY = y
+            }
+        }
+        // A stick on the same device still goes through Android's own
+        // stick-to-DPAD conversion; the hat state above is idempotent.
+        val stickMoved = Math.abs(event.getAxisValue(MotionEvent.AXIS_X)) >= 0.5f ||
+            Math.abs(event.getAxisValue(MotionEvent.AXIS_Y)) >= 0.5f
+        return if (stickMoved) super.onGenericMotionEvent(event) else true
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {

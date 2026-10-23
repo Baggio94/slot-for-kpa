@@ -3,6 +3,7 @@ package fyi.slot.konkr
 import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
+import android.view.MotionEvent
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicLongArray
@@ -33,6 +34,8 @@ internal object EmulationDiagnostics {
     private val pendingKeyEventNs = AtomicLong(0L)
     private val dispatchLagMsTotal = AtomicLong(0L)
     private val dispatchLagMsMax = AtomicLong(0L)
+    private val hatEvents = AtomicLong(0L)
+    @Volatile private var hatLogged = false
     private val audioChunks = AtomicLong(0L)
     private val audioSamples = AtomicLong(0L)
     private val audioEmpty = AtomicLong(0L)
@@ -65,6 +68,23 @@ internal object EmulationDiagnostics {
                 "device=${event.deviceId} scan=${event.scanCode} " +
                 "dispatch_lag_ms=$dispatchLagMs")
         }
+    }
+
+    /** A D-pad hat change; [pressed] when a direction went down. */
+    fun hat(event: MotionEvent, pressed: Boolean) {
+        hatEvents.incrementAndGet()
+        if (!hatLogged) {
+            hatLogged = true
+            Log.i(TAG, "INPUT d-pad reports as a hat: device=${event.deviceId} " +
+                "name=${event.device?.name}")
+        }
+        if (!pressed) return
+        keyCount.incrementAndGet()
+        pendingKeyDownNs.set(SystemClock.elapsedRealtimeNanos())
+        val dispatchLagMs = (SystemClock.uptimeMillis() - event.eventTime).coerceAtLeast(0L)
+        pendingKeyEventNs.compareAndSet(0L, event.eventTime * 1_000_000L)
+        dispatchLagMsTotal.addAndGet(dispatchLagMs)
+        dispatchLagMsMax.accumulateAndGet(dispatchLagMs, java.lang.Long::max)
     }
 
     /** Returns the press time this frame is the first to read, or 0. */
@@ -125,6 +145,7 @@ internal object EmulationDiagnostics {
         pendingKeyEventNs.set(0L)
         dispatchLagMsTotal.set(0L)
         dispatchLagMsMax.set(0L)
+        hatEvents.set(0L)
         audioChunks.set(0L)
         audioSamples.set(0L)
         audioEmpty.set(0L)
@@ -183,7 +204,7 @@ internal object EmulationDiagnostics {
                 "gl_gap_samples=%d gl_gap_p50_us=%d gl_gap_p95_us=%d gl_gap_p99_us=%d " +
                 "input_down=%d input_next_gl_count=%d input_next_gl_mean_us=%d " +
                 "input_next_gl_max_us=%d input_dispatch_lag_mean_ms=%d " +
-                "input_dispatch_lag_max_ms=%d audio_chunks=%d audio_pcm_shorts=%d " +
+                "input_dispatch_lag_max_ms=%d input_hat_events=%d audio_chunks=%d audio_pcm_shorts=%d " +
                 "audio_empty=%d audio_jump_candidates=%d audio_queued_ms=%.2f " +
                 "audiotrack_underruns=%d %s",
             spanMs, glRate, glSlow25.getAndSet(0L), glSlow40.getAndSet(0L),
@@ -191,7 +212,7 @@ internal object EmulationDiagnostics {
             keys, latencyCount, meanLatencyUs, maxLatencyUs,
             if (keys > 0L) dispatchLagMsTotal.getAndSet(0L) / keys
                 else { dispatchLagMsTotal.set(0L); 0L },
-            dispatchLagMsMax.getAndSet(0L),
+            dispatchLagMsMax.getAndSet(0L), hatEvents.getAndSet(0L),
             audioChunks.getAndSet(0L), audioSamples.getAndSet(0L),
             audioEmpty.getAndSet(0L), audioGapCandidates.getAndSet(0L),
             queuedMs, audioUnderruns, lastNative))
