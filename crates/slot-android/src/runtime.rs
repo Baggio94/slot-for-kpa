@@ -525,6 +525,18 @@ const MENU_TEXT: [&str; 117] = [
     "Clock",                             // 116, Its-TroyM PR #2 (Time Format)
 ];
 
+/// GB/GBC Bezel row value: OFF, SLOT., or a Watomsk overlay's name.
+fn bezel_value(bezel: crate::settings::Bezel) -> usize {
+    use crate::settings::Bezel;
+    match bezel {
+        Bezel::None => 5,
+        Bezel::Default => 46,
+        Bezel::Gb => 47,
+        Bezel::Pocket => 48,
+        Bezel::Color => 49,
+    }
+}
+
 /// Gameplay page labels and the Settings keys they change, in row order.
 const GAMEPLAY_ROWS: [usize; 6] = [27, 28, 37, 38, 30, 39];
 const GAMEPLAY_KEYS: [usize; 6] = [4, 5, 6, 7, 8, 9];
@@ -653,6 +665,8 @@ struct Engine {
     slot_light_faces: (slot_gfx::TexId, slot_gfx::TexId),
     gb_bezel_tex: slot_gfx::TexId,
     gbc_bezel_tex: slot_gfx::TexId,
+    /// Watomsk GB, Pocket and Color overlays.
+    overlay_texs: [slot_gfx::TexId; 3],
     custom_wallpaper_present: bool,
     setting_values: Vec<(slot_gfx::TexId, u32, u32)>,
     // The live Palette row shows the palette's own name, one face per palette.
@@ -826,6 +840,9 @@ impl Engine {
         let gb_bezel_tex=gpu.create_texture(w,h,&gb);
         let (gbc,w,h)=slot_ui::native_rgba(slot_ui::bitmaps::bezel_gbc(),720,480);
         let gbc_bezel_tex=gpu.create_texture(w,h,&gbc);
+        let overlay_texs=[slot_ui::bitmaps::overlay_gb(),slot_ui::bitmaps::overlay_pocket(),
+            slot_ui::bitmaps::overlay_color()].map(|rgba| gpu.create_texture(
+                slot_ui::bitmaps::OVERLAY_W,slot_ui::bitmaps::OVERLAY_H,rgba));
 
         let mut shelves = Vec::new();
 
@@ -1009,7 +1026,8 @@ impl Engine {
                                "LCD1x", "Simpletex + GBA", "AGB-001",
                                "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
                                "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN",
-                               "RA CLOCK LAB", "RETROARCH", "NATIVE"]
+                               "RA CLOCK LAB", "RETROARCH", "NATIVE",
+                               "SLOT.", "GAME BOY", "POCKET", "COLOR"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -1188,6 +1206,7 @@ impl Engine {
             slot_light_faces,
             gb_bezel_tex,
             gbc_bezel_tex,
+            overlay_texs,
             custom_wallpaper_present,
             setting_values,
             palette_values,
@@ -2660,15 +2679,22 @@ impl Engine {
                         });
                         return;
                     }
-                    // Slot original: GB/GBC L1 = Stretch, R1 = Actual.
+                    // GB/GBC: L1 = one size up, R1 = one size down
+                    // (Integer, Original Ratio, Stretch).
                     // On GBA the shoulder buttons remain owned by the core.
                     // SELECT+shoulder save/load is handled below and takes priority.
                     if self.current_cart_platform() != Platform::Gba && self.buttons & ButtonMask::SELECT == 0
                         && (code == 102 || code == 103) {
                         if pressed {
-                            self.set_video_mode(if code == 102 {
-                                VideoMode::Stretch
-                            } else { VideoMode::Actual });
+                            let mode = if code == 102 {
+                                self.video_mode.bigger()
+                            } else { self.video_mode.smaller() };
+                            if mode != self.video_mode {
+                                self.set_video_mode(mode);
+                                self.hud.toast(self.video_mode_toast(),
+                                    self.born.elapsed().as_millis() as u64);
+                                self.tell_hidden_bezel();
+                            }
                         }
                         return;
                     }
@@ -3334,15 +3360,39 @@ impl Engine {
         self.game_settings().shader_for(self.current_cart_platform())
     }
 
+    /// The top banner naming the new screen size.
+    fn video_mode_toast(&self) -> Toast {
+        match self.video_mode {
+            VideoMode::Actual => Toast::ScreenInteger,
+            VideoMode::Aspect => Toast::ScreenRatio,
+            VideoMode::Stretch => Toast::ScreenStretch,
+        }
+    }
+
+    /// A short Android message when the chosen bezel can't frame this size.
+    fn tell_hidden_bezel(&self) {
+        if self.current_cart_platform() == Platform::Gba {return;}
+        let bezel=self.game_settings().bezel_for(self.current_cart_platform());
+        if let Some(message)=video_mode::bezel_hidden_message(bezel,self.video_mode) {
+            set_message(message.into());
+        }
+    }
+
     /// Native 3:2 KONKR: GBA fills the panel and has no forced letterbox bezel.
-    /// GB/GBC preserve the official 720×480 transparent overlays.
+    /// GB/GBC preserve the official 720×480 transparent overlays and offer
+    /// Watomsk's; a bezel that can't frame the screen size is hidden, and
+    /// the setting is kept for later.
     fn game_bezel(&self) -> Option<slot_gfx::TexId> {
-        if self.game_settings().bezel_for(self.current_cart_platform())
-            == crate::settings::Bezel::None {return None;}
-        match self.current_cart_platform() {
-            Platform::Gba=>None,
-            Platform::Gb=>Some(self.gb_bezel_tex),
-            Platform::Gbc=>Some(self.gbc_bezel_tex),
+        use crate::settings::Bezel;
+        let bezel=self.game_settings().bezel_for(self.current_cart_platform());
+        if !video_mode::bezel_fits(bezel,self.video_mode) {return None;}
+        match (bezel,self.current_cart_platform()) {
+            (Bezel::None,_) | (_,Platform::Gba)=>None,
+            (Bezel::Default,Platform::Gb)=>Some(self.gb_bezel_tex),
+            (Bezel::Default,Platform::Gbc)=>Some(self.gbc_bezel_tex),
+            (Bezel::Gb,_)=>Some(self.overlay_texs[0]),
+            (Bezel::Pocket,_)=>Some(self.overlay_texs[1]),
+            (Bezel::Color,_)=>Some(self.overlay_texs[2]),
         }
     }
 
@@ -3501,6 +3551,7 @@ impl Engine {
             }
         } else { return; }
         self.game_emulation=Some(profile);
+        if matches!(key,26|27) {self.tell_hidden_bezel();}
         let view=self.game_settings();
         if matches!(key,0|1|21) {
             self.gpu.set_screen_effect(view.shader_for(platform).effect());
@@ -3985,8 +4036,8 @@ impl Engine {
             23 => if scoped.colour_correction_gbc {4}else{5},
             24 => if scoped.colour_correction_gb {4}else{5},
             25 => if scoped.bezel_gba==crate::settings::Bezel::None {5}else{4},
-            26 => if scoped.bezel_gbc==crate::settings::Bezel::None {5}else{4},
-            27 => if scoped.bezel_gb==crate::settings::Bezel::None {5}else{4},
+            26 => bezel_value(scoped.bezel_gbc),
+            27 => bezel_value(scoped.bezel_gb),
             28 => if self.settings.time_format==crate::settings::TimeFormat::TwelveHour
                 {35}else{36},
             _ => 5,

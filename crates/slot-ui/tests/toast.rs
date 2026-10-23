@@ -44,8 +44,9 @@ fn the_banner_says_what_happened_and_never_what_is_on_screen() {
         ],
         "a banner was added or dropped: every face is uploaded by its place in this list"
     );
+    let palettes = all.len() - GbPalette::all().count();
     assert_eq!(
-        all[14..],
+        all[palettes..],
         GbPalette::all().map(Toast::Palette).collect::<Vec<_>>()[..],
         "the palette banners do not follow the fixed ones in palette order"
     );

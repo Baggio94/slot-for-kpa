@@ -31,11 +31,14 @@ pub enum Toast {
     ShaderAgb001,
     ShaderAgs001,
     ShaderSharpBilinear,
+    ScreenInteger,
+    ScreenRatio,
+    ScreenStretch,
     Palette(GbPalette),
 }
 
 impl Toast {
-    const FIXED: [Toast; 22] = [
+    const FIXED: [Toast; 25] = [
         Toast::StateSaved,
         Toast::StateLoaded,
         Toast::NeedsGpsp,
@@ -58,6 +61,9 @@ impl Toast {
         Toast::ShaderAgb001,
         Toast::ShaderAgs001,
         Toast::ShaderSharpBilinear,
+        Toast::ScreenInteger,
+        Toast::ScreenRatio,
+        Toast::ScreenStretch,
     ];
 
     pub fn all() -> Vec<Toast> {
@@ -98,6 +104,9 @@ impl Toast {
             Toast::ShaderAgb001 => "Shader: AGB-001",
             Toast::ShaderAgs001 => "Shader: AGS-001",
             Toast::ShaderSharpBilinear => "Shader: Sharp Bilinear",
+            Toast::ScreenInteger => "Screen: Integer",
+            Toast::ScreenRatio => "Screen: Original Ratio",
+            Toast::ScreenStretch => "Screen: Stretch",
             Toast::Palette(p) => p.label(),
         }
     }
