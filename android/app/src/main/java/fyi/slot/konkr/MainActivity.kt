@@ -833,8 +833,8 @@ class MainActivity : Activity() {
             }
             override fun onDrawFrame(gl: GL10?) {
                 // Frame Pacing NATIVE: wait until the display has taken the
-                // frame before last before reading the buttons, so finished
-                // frames never pile up in front of the screen.
+                // last frame before reading the buttons, so only one finished
+                // frame ever waits in front of the screen (RetroArch's latency).
                 if (ready && raSwapLoopApplied && latchWaitEnabled && nativeIsPlaying()) {
                     nativeEglWaitForLatch()
                 }
@@ -956,10 +956,10 @@ class MainActivity : Activity() {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("development_presenter").apply()
         val latchPrefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         when (intent?.getStringExtra("slot_latch_wait")) {
-            "off" -> latchPrefs.edit().putBoolean("latch_wait_v2", false).apply()
-            "on" -> latchPrefs.edit().putBoolean("latch_wait_v2", true).apply()
+            "off" -> latchPrefs.edit().putBoolean("latch_wait", false).apply()
+            "on" -> latchPrefs.edit().putBoolean("latch_wait", true).apply()
         }
-        latchWaitEnabled = latchPrefs.getBoolean("latch_wait_v2", true)
+        latchWaitEnabled = latchPrefs.getBoolean("latch_wait", true)
         Log.i(TAG, "Latch wait: " + if (latchWaitEnabled) "on" else "off")
         view = SlotPresenter(this, renderer)
         val frame = FrameLayout(this)

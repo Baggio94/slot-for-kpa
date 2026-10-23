@@ -83,42 +83,25 @@ struct Probe {
     latch: LatchWait,
 }
 
-/// Keeps the queue in front of the display short. Without it the blocking
-/// swap lets several finished frames queue, each one adding a refresh
-/// between the buttons being read and the picture being shown (~110 ms
-/// measured on the KONKR). Android reports a latch ~10 ms after it happens,
-/// so waiting on the frame just swapped left too little time and halved the
-/// frame rate (beta12); waiting on the one before keeps 60 fps.
+/// Keeps at most one finished frame queued in front of the display, as
+/// RetroArch does when it waits for the last frame before running the next.
+/// Without it the blocking swap lets several frames queue, each one adding
+/// a refresh between the buttons being read and the picture being shown.
 #[derive(Default)]
 struct LatchWait {
     supported: bool,
     disabled: bool,
-    window_waits: u32,
-    window_timeouts: u32,
+    consecutive_timeouts: u32,
     waits: u64,
     wait_sum_us: u64,
     wait_max_us: u64,
     timeouts: u64,
 }
 
-impl LatchWait {
-    fn end_of_wait(&mut self) {
-        self.window_waits += 1;
-        if self.window_waits >= LATCH_WINDOW {
-            self.window_waits = 0;
-            self.window_timeouts = 0;
-        }
-    }
-}
-
-/// Wait for the frame swapped this many callbacks before the latest one.
-const LATCH_BACK: u64 = 1;
 /// Longer than one 60 Hz refresh: past it the compositor has skipped us.
 const LATCH_TIMEOUT_NS: i64 = 20_000_000;
-/// More than this many timeouts in a window of waits means the wait costs
-/// frames: give up for this surface and keep the plain swap-paced loop.
-const LATCH_WINDOW: u32 = 120;
-const LATCH_GIVE_UP: u32 = 4;
+/// Give up on a surface whose latch times never arrive.
+const LATCH_GIVE_UP: u32 = 30;
 
 impl Probe {
     fn new() -> Self {
@@ -206,7 +189,7 @@ impl Probe {
         if !self.latch.supported || self.latch.disabled { return; }
         if unsafe { eglGetCurrentDisplay() } != ext.display
             || unsafe { eglGetCurrentSurface(EGL_DRAW) } != ext.surface { return; }
-        let Some(id) = self.samples.frame_id_back(LATCH_BACK) else { return };
+        let Some(id) = self.samples.last_frame_id() else { return };
         let source = EglSource(ext);
         let started = crate::ra_sync::monotonic_ns();
         loop {
@@ -218,17 +201,16 @@ impl Probe {
             }
             if crate::ra_sync::monotonic_ns() - started >= LATCH_TIMEOUT_NS {
                 self.latch.timeouts += 1;
-                self.latch.window_timeouts += 1;
-                if self.latch.window_timeouts > LATCH_GIVE_UP {
+                self.latch.consecutive_timeouts += 1;
+                if self.latch.consecutive_timeouts >= LATCH_GIVE_UP {
                     self.latch.disabled = true;
                 }
-                self.latch.end_of_wait();
                 return;
             }
             std::thread::sleep(std::time::Duration::from_micros(250));
         }
         let us = ((crate::ra_sync::monotonic_ns() - started) / 1000).max(0) as u64;
-        self.latch.end_of_wait();
+        self.latch.consecutive_timeouts = 0;
         self.latch.waits += 1;
         self.latch.wait_sum_us += us;
         self.latch.wait_max_us = self.latch.wait_max_us.max(us);

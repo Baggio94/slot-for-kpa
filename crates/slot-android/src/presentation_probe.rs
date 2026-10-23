@@ -158,11 +158,9 @@ impl PresentationProbe {
         }
         self.query_time_us += started.elapsed().as_micros() as u64;
     }
-    /// EGL frame ID of the frame captured `back` callbacks before the latest
-    /// one (0 = the latest).
-    pub(crate) fn frame_id_back(&self, back: u64) -> Option<u64> {
-        let tick = self.ticks.checked_sub(back)?;
-        self.pending.iter().rev().find(|e| e.1 == tick).and_then(|e| e.0)
+    /// EGL frame ID of the frame captured by the latest callback.
+    pub(crate) fn last_frame_id(&self) -> Option<u64> {
+        self.pending.back().and_then(|&(id, tick, _)| (tick == self.ticks).then_some(id)).flatten()
     }
     pub(crate) fn report(&mut self, status: &str) -> String {
         let p95 = if self.gap_count == 0 {
@@ -320,18 +318,6 @@ mod tests {
         assert!(report.contains("input_to_present_count=1 "), "{report}");
         assert!(report.contains("input_to_present_mean_us=40000 "), "{report}");
         assert!(probe.report("supported").contains("input_to_present_mean_us=-1 "));
-    }
-
-    #[test]
-    fn frame_ids_are_found_by_callback_age() {
-        let mut probe = PresentationProbe::new();
-        let mut driver = Driver::default();
-        assert_eq!(probe.frame_id_back(0), None);
-        for _ in 0..5 {
-            probe.tick(&mut driver);
-        }
-        assert_eq!(probe.frame_id_back(0), Some(4));
-        assert_eq!(probe.frame_id_back(1), Some(3));
     }
 
     #[test]
