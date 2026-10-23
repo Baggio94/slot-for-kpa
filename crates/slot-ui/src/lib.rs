@@ -41,7 +41,7 @@ pub use board::{
     SLIDE_SHARE, SLIDE_UP, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
 };
 pub use cart::{
-    cart_box, cart_face, cart_interior_at, cart_face_with, cart_face_with_material, cart_interior, cart_backing, is_clear, cart_shadow, clean_label, gb_cart_shadow, gb_label_panel,
+    cart_box, cart_face, cart_face_with, cart_face_with_material, cart_interior, cart_backing, is_clear, cart_shadow, clean_label, gb_cart_shadow, gb_label_panel,
     gb_shell_of, label_colour, label_panel, label_size, label_tags, label_text, seated_box,
     CartFace, CART_H, CART_W, GB_CART_H, GB_CART_W, GB_LABEL_H, GB_LABEL_W, GB_LABEL_X, GB_LABEL_Y,
     LABEL_H, LABEL_W, LABEL_X, LABEL_Y,

@@ -9,7 +9,7 @@ use std::thread;
 
 use slot_store::Cart;
 use slot_ui::{cart_face_with_material, cart_face, cart_interior, cart_backing,
-    gb_shell_of, is_clear, CartFace};
+    is_clear, CartFace};
 
 /// A cart face in panel texels, the size the GL thread uploads. Dense faces
 /// were drawn for the panel already; 1x faces are filtered up as before.
@@ -105,7 +105,7 @@ impl CartRender {
                         let layers = if include_material && is_clear(&cart) {
                             let original = [
                                 cart_interior(&cart),
-                                cart_backing(gb_shell_of(&cart)),
+                                cart_backing(&cart),
                                 cart_face(&cart),
                             ];
                             Some(original.map(panel_face))
