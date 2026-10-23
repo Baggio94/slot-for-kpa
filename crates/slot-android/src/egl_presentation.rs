@@ -139,7 +139,7 @@ impl Probe {
         self.extension = Some(ext);
         self.status = "supported";
     }
-    fn tick(&mut self) {
+    fn tick(&mut self, input_ns: i64) {
         self.init();
         let Some(ext) = self.extension else { return };
         // GLSurfaceView can recreate its EGL window surface independently
@@ -150,7 +150,7 @@ impl Probe {
             self.init();
             return;
         }
-        self.samples.tick(&mut EglSource(ext));
+        self.samples.tick_with_input(&mut EglSource(ext), input_ns);
     }
     fn report(&mut self) -> String {
         self.samples.report(self.status)
@@ -170,9 +170,9 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeEglPresentationRes
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeEglPresentationTick(
-    _env: *mut c_void, _this: *mut c_void,
+    _env: *mut c_void, _this: *mut c_void, input_ns: i64,
 ) {
-    EGL_PROBE.with(|p| p.borrow_mut().tick());
+    EGL_PROBE.with(|p| p.borrow_mut().tick(input_ns));
 }
 
 #[unsafe(no_mangle)]

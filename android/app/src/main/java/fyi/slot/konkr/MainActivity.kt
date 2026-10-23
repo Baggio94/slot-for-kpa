@@ -94,7 +94,7 @@ class MainActivity : Activity() {
     external fun nativeDrawFrame(vsyncFrameNs: Long)
     // Beta9 optional actual display present timestamp via EGL. Read-only.
     external fun nativeEglPresentationReset()
-    external fun nativeEglPresentationTick()
+    external fun nativeEglPresentationTick(pressedNs: Long)
     external fun nativeEglPresentationReport(): String
     external fun nativeKey(code: Int, pressed: Boolean)
     external fun nativeResetInput()
@@ -806,6 +806,14 @@ class MainActivity : Activity() {
                 uiVsyncCallbacks.set(0L); uiVsyncOver25ms.set(0L); uiVsyncOver40ms.set(0L)
             }
             override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+                // The GL thread runs the core: give it Android's render-thread
+                // priority so background work never delays a frame.
+                try {
+                    android.os.Process.setThreadPriority(
+                        android.os.Process.THREAD_PRIORITY_DISPLAY)
+                } catch (error: Exception) {
+                    Log.w(TAG, "GL thread display priority unavailable", error)
+                }
                 resetTiming()
                 nativeEglPresentationReset()
                 ready = nativeSurfaceCreated()
@@ -832,7 +840,9 @@ class MainActivity : Activity() {
                         vsyncAgeCount++
                     }
                 }
-                if (nativeIsPlaying()) EmulationDiagnostics.frame()
+                // Press read by this callback, timed to its display present.
+                var pressedNs = 0L
+                if (nativeIsPlaying()) pressedNs = EmulationDiagnostics.frame()
                 var a12NativeUs = 0L
                 if (ready) {
                     val beginNativeNs = SystemClock.elapsedRealtimeNanos()
@@ -863,7 +873,7 @@ class MainActivity : Activity() {
                 // callback and query earlier EGL presentation timestamps.
                 // Driver can report unsupported; no rendering changes.
                 if (ready && displaySyncApplied && nativeIsPlaying()) {
-                    nativeEglPresentationTick()
+                    nativeEglPresentationTick(pressedNs)
                 }
                 // Diagnostic-only. EGL swaps after this callback returns:
                 // callback gaps are not true presentation timestamps.
@@ -1458,6 +1468,9 @@ class MainActivity : Activity() {
             var emptyAudioReads = 0
             var playedShorts = 0L
             var audioBufferBytes = 0
+            // Android's fast mixer (low-latency output) cannot time-stretch,
+            // so Fast Forward runs on an ordinary track instead.
+            var playerLowLatency = false
             // Diagnostic only: how fast AudioTrack's own playback-head clock
             // advances relative to submitted PCM. No buffer or DSP changes.
             var playbackHeadAtProbe = 0L
@@ -1484,7 +1497,8 @@ class MainActivity : Activity() {
                         SystemClock.sleep(35)
                         continue
                     }
-                    if (player == null || rate != wanted) {
+                    val lowLatency = nativeAudioSpeedPermille() <= 1000
+                    if (player == null || rate != wanted || lowLatency != playerLowLatency) {
                         player?.release()
                         val minBytes = AudioTrack.getMinBufferSize(
                             wanted, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT
@@ -1509,7 +1523,22 @@ class MainActivity : Activity() {
                                 .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
                             .setBufferSizeInBytes(bufferBytes)
                             .setTransferMode(AudioTrack.MODE_STREAM)
+                            .apply {
+                                // Like RetroArch's audio at the panel rate: skip
+                                // the normal mixer's extra buffering.
+                                if (lowLatency) setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                            }
                             .build()
+                        playerLowLatency = lowLatency
+                        // Rate control must target the buffer Android really gave us.
+                        val capacityFrames = player.bufferCapacityInFrames
+                        if (capacityFrames > 0 && capacityFrames != bufferBytes / 4) {
+                            audioBufferBytes = capacityFrames * 4
+                            nativeSetAudioOutputDepth(0, capacityFrames)
+                        }
+                        Log.i(TAG, "Audio output: low_latency_requested=$lowLatency " +
+                            "performance_mode=${player.performanceMode} " +
+                            "capacity_frames=$capacityFrames")
                         rate = wanted
                         requestedSpeed = 0
                         observedUnderruns = 0
@@ -1533,7 +1562,9 @@ class MainActivity : Activity() {
                         player.play()
                     }
                     val speed = nativeAudioSpeedPermille().coerceIn(1000, 6000)
-                    if (speed != requestedSpeed) {
+                    // A low-latency track always plays at 1x and may refuse
+                    // playback parameters; Fast Forward recreates the track.
+                    if (speed != requestedSpeed && !playerLowLatency) {
                         requestedSpeed = speed
                         try {
                             // Android time-stretches at the selected speed while preserving

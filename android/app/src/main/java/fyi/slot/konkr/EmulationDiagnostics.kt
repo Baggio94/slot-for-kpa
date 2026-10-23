@@ -28,6 +28,11 @@ internal object EmulationDiagnostics {
     private val keyToGlUsTotal = AtomicLong(0L)
     private val keyToGlCount = AtomicLong(0L)
     private val keyToGlUsMax = AtomicLong(0L)
+    // Hardware press time (CLOCK_MONOTONIC ns) of the press awaiting a frame,
+    // and how late Android's UI thread delivered presses to slot.
+    private val pendingKeyEventNs = AtomicLong(0L)
+    private val dispatchLagMsTotal = AtomicLong(0L)
+    private val dispatchLagMsMax = AtomicLong(0L)
     private val audioChunks = AtomicLong(0L)
     private val audioSamples = AtomicLong(0L)
     private val audioEmpty = AtomicLong(0L)
@@ -46,6 +51,11 @@ internal object EmulationDiagnostics {
         }
         val dispatchLagMs = (SystemClock.uptimeMillis() - event.eventTime)
             .coerceAtLeast(0L)
+        if (pressed && event.repeatCount == 0) {
+            pendingKeyEventNs.compareAndSet(0L, event.eventTime * 1_000_000L)
+            dispatchLagMsTotal.addAndGet(dispatchLagMs)
+            dispatchLagMsMax.accumulateAndGet(dispatchLagMs, java.lang.Long::max)
+        }
         // Per-event Log.i in production adds unpredictable work to the
         // latency-critical input callback; only the AVD debug build emits
         // detailed key logs. Release beta still aggregates counters at 5s.
@@ -57,7 +67,8 @@ internal object EmulationDiagnostics {
         }
     }
 
-    fun frame() {
+    /** Returns the press time this frame is the first to read, or 0. */
+    fun frame(): Long {
         val now = SystemClock.elapsedRealtimeNanos()
         if (glLastNs != 0L) {
             val gap = now - glLastNs
@@ -74,6 +85,7 @@ internal object EmulationDiagnostics {
             keyToGlCount.incrementAndGet()
             keyToGlUsMax.accumulateAndGet(delayUs, java.lang.Long::max)
         }
+        return pendingKeyEventNs.getAndSet(0L)
     }
 
     // F9: the PCM backing array is reused. Only its [0, count) prefix
@@ -110,6 +122,9 @@ internal object EmulationDiagnostics {
         keyToGlUsTotal.set(0L)
         keyToGlCount.set(0L)
         keyToGlUsMax.set(0L)
+        pendingKeyEventNs.set(0L)
+        dispatchLagMsTotal.set(0L)
+        dispatchLagMsMax.set(0L)
         audioChunks.set(0L)
         audioSamples.set(0L)
         audioEmpty.set(0L)
@@ -167,12 +182,16 @@ internal object EmulationDiagnostics {
             "SAMPLE span_ms=%d gl_callback_fps=%.3f gl_over25=%d gl_over40=%d " +
                 "gl_gap_samples=%d gl_gap_p50_us=%d gl_gap_p95_us=%d gl_gap_p99_us=%d " +
                 "input_down=%d input_next_gl_count=%d input_next_gl_mean_us=%d " +
-                "input_next_gl_max_us=%d audio_chunks=%d audio_pcm_shorts=%d " +
+                "input_next_gl_max_us=%d input_dispatch_lag_mean_ms=%d " +
+                "input_dispatch_lag_max_ms=%d audio_chunks=%d audio_pcm_shorts=%d " +
                 "audio_empty=%d audio_jump_candidates=%d audio_queued_ms=%.2f " +
                 "audiotrack_underruns=%d %s",
             spanMs, glRate, glSlow25.getAndSet(0L), glSlow40.getAndSet(0L),
             gapTotal, gapPercentileUs(50), gapPercentileUs(95), gapPercentileUs(99),
             keys, latencyCount, meanLatencyUs, maxLatencyUs,
+            if (keys > 0L) dispatchLagMsTotal.getAndSet(0L) / keys
+                else { dispatchLagMsTotal.set(0L); 0L },
+            dispatchLagMsMax.getAndSet(0L),
             audioChunks.getAndSet(0L), audioSamples.getAndSet(0L),
             audioEmpty.getAndSet(0L), audioGapCandidates.getAndSet(0L),
             queuedMs, audioUnderruns, lastNative))
