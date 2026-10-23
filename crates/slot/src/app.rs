@@ -2068,6 +2068,7 @@ impl App {
             dim,
             screen: self.screen,
             game: self.game_ready,
+            over: true,
             slot_faces: None,
         }
         .draw(out);
