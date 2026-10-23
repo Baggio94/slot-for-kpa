@@ -127,12 +127,12 @@ jobs:
         run: |
           set -euo pipefail
           grep -F 'external fun nativeReadAudioInto(samples: ShortArray): Int' android/app/src/main/java/fyi/slot/konkr/MainActivity.kt
-          grep -F 'fn Java_fyi_slot_konkr_MainActivity_nativeReadAudioInto(' crates/slot-android/src/runtime.rs
+          grep -F 'fn Java_fyi_slot_konkr_MainActivity_nativeReadAudioInto(' crates/slot-android/src/runtime/jni_exports.rs
           if grep -Fq 'external fun nativeReadAudio(): ShortArray' android/app/src/main/java/fyi/slot/konkr/MainActivity.kt; then
             echo '::error::Allocating audio JNI entrypoint restored'
             exit 1
           fi
-          if grep -Fq 'fn Java_fyi_slot_konkr_MainActivity_nativeReadAudio(' crates/slot-android/src/runtime.rs; then
+          if grep -Fq 'fn Java_fyi_slot_konkr_MainActivity_nativeReadAudio(' crates/slot-android/src/runtime/jni_exports.rs; then
             echo '::error::Allocating native audio reader restored'
             exit 1
           fi
