@@ -103,11 +103,11 @@ internal object RaAccount {
         val requested = username.trim()
         if (requested.isEmpty() || requested.length > 100 ||
             requested.any { it.isISOControl() } || password.isEmpty() || password.length > 1024
-        ) return Result.Failed("Enter a valid RetroAchievements username and password.")
+        ) return Result.Failed("Enter your RetroAchievements username and password.")
         // Phase 2 only supports initial onboarding. Changing accounts must safely
         // stop the existing native worker before replacing its configuration.
         if (configFile(root).exists()) {
-            return Result.Failed("An account is already configured. Account switching is coming later.")
+            return Result.Failed("An account is already signed in. Sign out first.")
         }
 
         var connection: HttpsURLConnection? = null
@@ -128,7 +128,7 @@ internal object RaAccount {
                 }
             connection.outputStream.use { it.write(form.toByteArray(Charsets.UTF_8)) }
             if (connection.responseCode != 200) {
-                return Result.Failed("RetroAchievements is unavailable. Try again online.")
+                return Result.Failed("Couldn't reach RetroAchievements. Check your internet connection.")
             }
             // API 31 does not guarantee Java 9 InputStream.readNBytes().
             // Read with a hard cap without depending on newer Android APIs.
@@ -150,19 +150,19 @@ internal object RaAccount {
             }
             val reply = JSONObject(String(payload, Charsets.UTF_8))
             if (!reply.optBoolean("Success", false)) {
-                return Result.Failed("RetroAchievements rejected the login. Check your credentials.")
+                return Result.Failed("Wrong username or password.")
             }
             val user = reply.optString("User", "")
             val token = reply.optString("Token", "")
             if (user.isBlank() || token.isBlank()) {
-                return Result.Failed("RetroAchievements did not return a session token.")
+                return Result.Failed("Unexpected RetroAchievements response.")
             }
             writePrivateConfig(root, user, token)
             Result.Connected(user)
         } catch (_: Exception) {
             // Errors may contain URLs or server response details: keep them out
             // of user-visible toasts and logs. No credentials are printed.
-            Result.Failed("Couldn't connect or save the account. Check internet and try again.")
+            Result.Failed("Couldn't sign in. Check your internet connection and try again.")
         } finally {
             connection?.disconnect()
         }
