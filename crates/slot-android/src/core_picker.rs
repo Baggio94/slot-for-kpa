@@ -46,6 +46,7 @@ struct Close {
 #[derive(Copy, Clone)]
 pub struct CorePicker {
     seat: Core,
+    right: Core,
     opened: Millis,
     started: Option<Millis>,
     hop: Option<Hop>,
@@ -55,8 +56,15 @@ pub struct CorePicker {
 
 impl CorePicker {
     pub fn open(seat: Core, now: Millis) -> Self {
+        Self::open_with(seat, Core::Gpsp, now)
+    }
+
+    /// The right-hand socket holds the cart's other core: gpSP on a GBA
+    /// board, Gambatte on a GB/GBC board. mGBA always sits on the left.
+    pub fn open_with(seat: Core, right: Core, now: Millis) -> Self {
         CorePicker {
             seat,
+            right,
             opened: now,
             started: None,
             hop: None,
@@ -79,6 +87,10 @@ impl CorePicker {
 
     pub fn seat(&self) -> Core {
         self.seat
+    }
+
+    pub fn right(&self) -> Core {
+        self.right
     }
 
     pub fn closing(&self) -> bool {
@@ -113,7 +125,7 @@ impl CorePicker {
                 return Outcome::Nothing;
             }
             Press::Left => Core::Mgba,
-            Press::Right => Core::Gpsp,
+            Press::Right => self.right,
         };
         if self.waiting() {
             return Outcome::Nothing;
@@ -148,7 +160,7 @@ impl CorePicker {
         let shake = self.refusal.map_or(0.0, |r| r.offset(now));
         match (self.hop, self.hop_progress(now)) {
             (Some(hop), Some(q)) => {
-                let rightward = hop.from == Core::Mgba;
+                let rightward = hop.from.socket() == 0;
                 let lean = if rightward { 1.0 } else { -1.0 };
                 let arc = (std::f32::consts::PI * q).sin();
                 Chip {
@@ -160,7 +172,7 @@ impl CorePicker {
                 }
             }
             _ => Chip {
-                across: self.seat.index() as f32,
+                across: self.seat.socket() as f32,
                 lift: 0.0,
                 tip: 0.0,
                 seated: Some(self.seat),

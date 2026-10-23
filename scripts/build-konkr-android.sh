@@ -17,13 +17,16 @@ fi
 if [ ! -f android/app/src/main/jniLibs/arm64-v8a/libgpsp_libretro.so ]; then
   bash scripts/build-gpsp-android.sh
 fi
+if [ ! -f android/app/src/main/jniLibs/arm64-v8a/libgambatte_libretro.so ]; then
+  bash scripts/build-gambatte-android.sh
+fi
 # Even local builds must use the exact upstream Slot keycaps, not the
 # generic Android font. The same exporter is verified by CI.
 cargo run --locked -p slot-ui --example export_apps_legend -- \
   android/app/src/main/assets/apps_controls
 cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build --release -p slot-android
 
-# Keep the validated mGBA/gpSP/Slot machine code and all exported JNI/libretro
+# Keep the validated mGBA/gpSP/Gambatte/Slot machine code and all exported JNI/libretro
 # symbols unchanged. The preview APK previously shipped .symtab/.strtab and
 # (in mGBA) multi-megabyte .debug_* sections that Android never uses.
 # Strip only nonessential symbol/debug tables before Gradle packages the .so.
@@ -42,7 +45,7 @@ if [ "${SLOT_NATIVE_STRIP:-1}" = "1" ]; then
     echo "Could not locate Android NDK llvm-strip at $NDK_ROOT" >&2
     exit 1
   fi
-  for lib in slot_android mgba_libretro gpsp_libretro; do
+  for lib in slot_android mgba_libretro gpsp_libretro gambatte_libretro; do
     native="android/app/src/main/jniLibs/arm64-v8a/lib${lib}.so"
     [ -s "$native" ] || { echo "Native library missing: $native" >&2; exit 1; }
     before="$(wc -c < "$native" | tr -d ' ')"

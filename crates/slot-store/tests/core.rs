@@ -200,5 +200,18 @@ fn a_line_naming_a_core_the_platform_cannot_run_is_dropped() {
 
 #[test]
 fn the_picker_board_has_exactly_two_sockets() {
-    assert_eq!(Core::ALL.len(), 2);
+    for platform in [Platform::Gba, Platform::Gb, Platform::Gbc] {
+        let pair = [Core::default_for(platform), Core::alternate_for(platform)];
+        assert_eq!(pair.map(Core::socket), [0, 1]);
+        assert!(pair.iter().all(|core| core.runs(platform)));
+    }
+}
+
+#[test]
+fn gambatte_runs_only_game_boy_carts() {
+    let d = tempfile::tempdir().unwrap();
+    write_selected_core(d.path(), "Tetris", Core::Gambatte).unwrap();
+    assert_eq!(core_for_platform(d.path(), "Tetris", Platform::Gb), Core::Gambatte);
+    assert_eq!(core_for_platform(d.path(), "Tetris", Platform::Gbc), Core::Gambatte);
+    assert_eq!(core_for_platform(d.path(), "Tetris", Platform::Gba), Core::Mgba);
 }

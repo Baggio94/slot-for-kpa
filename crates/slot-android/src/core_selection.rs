@@ -1,6 +1,6 @@
 //! Per-ROM core choice keyed by the opaque SAF URI; no filename collisions.
 use std::path::Path;
-use slot_store::{core_for, write_selected_core, Core};
+use slot_store::{core_for, core_for_platform, write_selected_core, Core, Platform};
 
 pub fn key(uri: &str) -> String {
     // Stable FNV-1a 64-bit digest; independent of RandomState and process.
@@ -14,6 +14,12 @@ pub fn key(uri: &str) -> String {
 
 pub fn selected(storage: &Path, uri: &str) -> Core {
     core_for(storage, &key(uri))
+}
+
+/// The core this cart actually runs on: a stale choice the platform
+/// cannot run (gpSP on a GB cart, Gambatte on a GBA cart) falls back.
+pub fn selected_for(storage: &Path, uri: &str, platform: Platform) -> Core {
+    core_for_platform(storage, &key(uri), platform)
 }
 
 pub fn set(storage: &Path, uri: &str, core: Core) -> std::io::Result<()> {
@@ -33,5 +39,6 @@ mod tests {
     fn core_file_matches_available_binary_names() {
         assert_eq!(Core::Mgba.as_str(), "mgba");
         assert_eq!(Core::Gpsp.as_str(), "gpsp");
+        assert_eq!(Core::Gambatte.as_str(), "gambatte");
     }
 }
