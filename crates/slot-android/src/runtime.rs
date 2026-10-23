@@ -974,7 +974,7 @@ impl Engine {
                               "DISPLAY SYNC", "TURBO A/B", "A/B",
                               "None", "Random", "Default", "DEFAULT BLUR",
                               "Dark", "Light", "Low", "Medium", "High", "Custom",
-                               "LCD Grid V2", "Grid V2 + GBA Color", "zfast LCD",
+                               "LCD Grid V2", "Grid V2 + GBA", "zfast LCD",
                                "LCD1x", "Simpletex + GBA", "AGB-001",
                                "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
                                "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN",
