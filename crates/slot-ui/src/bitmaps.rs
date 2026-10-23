@@ -51,6 +51,12 @@ const SOCKET_PNG: &[u8] = include_bytes!("../../../assets/socket.png");
 const CHIP_PNG: &[u8] = include_bytes!("../../../assets/chip.png");
 const BEZEL_GB_PNG: &[u8] = include_bytes!("../../../assets/bezel_gb.png");
 const BEZEL_GBC_PNG: &[u8] = include_bytes!("../../../assets/bezel_gbc.png");
+// Watomsk's overlays, cut for 3:2 by tools/watomsk-overlays/make.py.
+const OVERLAY_GB_PNG: &[u8] = include_bytes!("../../../assets/overlay_watomsk_gb.png");
+const OVERLAY_POCKET_PNG: &[u8] = include_bytes!("../../../assets/overlay_watomsk_pocket.png");
+const OVERLAY_COLOR_PNG: &[u8] = include_bytes!("../../../assets/overlay_watomsk_color.png");
+pub const OVERLAY_W: u32 = 960;
+pub const OVERLAY_H: u32 = 640;
 const SLOT_BACK_DARK_PNG: &[u8] = include_bytes!("../../../assets/slot_back_dark.png");
 const SLOT_BACK_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/slot_back_light.png");
 const SLOT_FRONT_DARK_PNG: &[u8] = include_bytes!("../../../assets/slot_front_dark.png");
@@ -200,6 +206,20 @@ pub fn bezel_gb() -> &'static [u8] {
 pub fn bezel_gbc() -> &'static [u8] {
     static P: OnceLock<Vec<u8>>=OnceLock::new();
     load(BEZEL_GBC_PNG,OUT_W,480,&P)
+}
+
+/// Watomsk full-panel overlays, already at the native 960x640.
+pub fn overlay_gb() -> &'static [u8] {
+    static P: OnceLock<Vec<u8>>=OnceLock::new();
+    load(OVERLAY_GB_PNG,OVERLAY_W,OVERLAY_H,&P)
+}
+pub fn overlay_pocket() -> &'static [u8] {
+    static P: OnceLock<Vec<u8>>=OnceLock::new();
+    load(OVERLAY_POCKET_PNG,OVERLAY_W,OVERLAY_H,&P)
+}
+pub fn overlay_color() -> &'static [u8] {
+    static P: OnceLock<Vec<u8>>=OnceLock::new();
+    load(OVERLAY_COLOR_PNG,OVERLAY_W,OVERLAY_H,&P)
 }
 
 pub fn slot_back() -> &'static [u8] {

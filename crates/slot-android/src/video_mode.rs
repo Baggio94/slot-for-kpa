@@ -3,6 +3,8 @@ use std::path::Path;
 use slot_gfx::{SRC_H, SRC_W, WHOLE_TEXTURE};
 use slot_store::{ini, Platform};
 
+use crate::settings::Bezel;
+
 pub const VIDEO_MODE_FILE: &str = "Config/video_mode.ini";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -49,10 +51,27 @@ impl VideoMode {
     }
 }
 
-/// The official Slot bezel's window is cut for integer scale only;
+/// The official Slot bezel's window is cut for integer scale only, the
+/// Watomsk overlays' for the full-height picture (integer fits inside it);
 /// nothing can frame a stretched picture.
-pub fn bezel_fits(mode: VideoMode) -> bool {
-    mode == VideoMode::Actual
+pub fn bezel_fits(bezel: Bezel, mode: VideoMode) -> bool {
+    match bezel {
+        Bezel::None => true,
+        Bezel::Default => mode == VideoMode::Actual,
+        Bezel::Gb | Bezel::Pocket | Bezel::Color => mode != VideoMode::Stretch,
+    }
+}
+
+/// Why `bezel` is hidden in `mode`, for the short Android message.
+pub fn bezel_hidden_message(bezel: Bezel, mode: VideoMode) -> Option<&'static str> {
+    if bezel_fits(bezel, mode) {
+        return None;
+    }
+    Some(if mode == VideoMode::Stretch {
+        "No bezel in Stretch."
+    } else {
+        "The slot. bezel needs Integer scale."
+    })
 }
 
 pub fn video_mode_for(root: &Path, stem: &str) -> VideoMode {
@@ -120,9 +139,21 @@ mod tests {
     }
 
     #[test]
-    fn the_slot_bezel_only_frames_integer_scale() {
-        assert!(bezel_fits(VideoMode::Actual));
-        assert!(!bezel_fits(VideoMode::Aspect));
-        assert!(!bezel_fits(VideoMode::Stretch));
+    fn each_bezel_fits_only_its_sizes() {
+        use VideoMode::*;
+        for mode in [Actual, Aspect, Stretch] {
+            assert!(bezel_fits(Bezel::None, mode));
+        }
+        assert!(bezel_fits(Bezel::Default, Actual));
+        assert!(!bezel_fits(Bezel::Default, Aspect));
+        for watomsk in [Bezel::Gb, Bezel::Pocket, Bezel::Color] {
+            assert!(bezel_fits(watomsk, Actual));
+            assert!(bezel_fits(watomsk, Aspect));
+            assert!(!bezel_fits(watomsk, Stretch));
+            assert_eq!(bezel_hidden_message(watomsk, Stretch), Some("No bezel in Stretch."));
+        }
+        assert_eq!(bezel_hidden_message(Bezel::Default, Stretch), Some("No bezel in Stretch."));
+        assert!(bezel_hidden_message(Bezel::Default, Aspect).unwrap().contains("Integer"));
+        assert_eq!(bezel_hidden_message(Bezel::Gb, Aspect), None);
     }
 }

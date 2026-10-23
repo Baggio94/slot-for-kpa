@@ -225,6 +225,7 @@ Special thanks to:
 - **[Brandon Kowalski](https://github.com/BrandonKowalski/slot)** — Creator of the original [slot.](https://slot-cfw.fyi/) and its wonderful cartridge-first experience.
 - **[Markus](https://github.com/MarkusMaribu)** — The beautiful skeuomorphic artwork that gives slot. its unique identity.
 - **[pvaibhav](https://github.com/pvaibhav/slot)** — Contributions and improvements inherited from the Slot fork.
+- **[Watomsk](https://github.com/Watomsk/Overlays)** — The Game Boy, Game Boy Pocket and Game Boy Color overlays, used with permission.
 - **[mGBA](https://mgba.io/), [gpSP](https://github.com/libretro/gpsp), [libretro](https://www.libretro.com/) and [RetroAchievements](https://retroachievements.org/)** — The projects and contributors powering emulation and achievements.
 
 This is an **unofficial community port**, not affiliated with or endorsed by the original Slot developers or the KONKR Pocket Advance manufacturer.
