@@ -471,8 +471,13 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeCoreForUri(
 ) -> jni::sys::jstring {
     let name = env.get_string(&uri).ok()
         .map(|uri| {
+            let uri = uri.to_string_lossy().into_owned();
+            let launch = LAUNCH_CORE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some((_, core)) = launch.filter(|(launched, _)| *launched == uri) {
+                return core.as_str();
+            }
             let paths=PATHS.lock().unwrap_or_else(|e|e.into_inner()).clone();
-            paths.map(|(storage,_)| core_selection::selected(&storage, &uri.to_string_lossy()))
+            paths.map(|(storage,_)| core_selection::selected(&storage, &uri))
                 .unwrap_or(Core::Mgba).as_str()
         }).unwrap_or("mgba");
     env.new_string(name).map_or(std::ptr::null_mut(), |s| s.into_raw())

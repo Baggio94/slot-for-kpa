@@ -114,6 +114,9 @@ enum Input {
 
 static INPUT: Mutex<VecDeque<Input>> = Mutex::new(VecDeque::new());
 static REQUEST: Mutex<Option<String>> = Mutex::new(None);
+// The core the requested cart boots on, as its platform resolves it: Android
+// names the save folder from it before the ROM is opened.
+static LAUNCH_CORE: Mutex<Option<(String, Core)>> = Mutex::new(None);
 static LABEL_PICK_REQUEST: Mutex<Option<String>> = Mutex::new(None);
 static UI_ACTION: Mutex<VecDeque<i32>> = Mutex::new(VecDeque::new());
 static SAVE_SYNC: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
@@ -405,7 +408,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 117] = [
+const MENU_TEXT: [&str; 119] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -523,6 +526,8 @@ const MENU_TEXT: [&str; 117] = [
     "DOWNLOADING...",                    // 114
     "AVAILABLE",                         // 115
     "Clock",                             // 116, Its-TroyM PR #2 (Time Format)
+    "SYSTEMS",                           // 117
+    "Default Core",                      // 118
 ];
 
 /// GB/GBC Bezel row value: OFF, SLOT., or a Watomsk overlay's name.
@@ -669,6 +674,8 @@ struct Engine {
     overlay_texs: [slot_gfx::TexId; 3],
     custom_wallpaper_present: bool,
     setting_values: Vec<(slot_gfx::TexId, u32, u32)>,
+    // Settings > Systems default cores, by Platform order.
+    default_cores: [Core; 3],
     // The live Palette row shows the palette's own name, one face per palette.
     palette_values: Vec<(slot_gfx::TexId, u32, u32)>,
     setting_carets: [(slot_gfx::TexId, u32, u32); 2],
@@ -1027,7 +1034,8 @@ impl Engine {
                                "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
                                "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN",
                                "RA CLOCK LAB", "RETROARCH", "NATIVE",
-                               "SLOT.", "GAME BOY", "POCKET", "COLOR"]
+                               "SLOT.", "GAME BOY", "POCKET", "COLOR",
+                               "mGBA", "gpSP", "Gambatte"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -1209,6 +1217,7 @@ impl Engine {
             overlay_texs,
             custom_wallpaper_present,
             setting_values,
+            default_cores: [Core::Mgba; 3],
             palette_values,
             setting_carets,
             settings_hints,
@@ -2830,8 +2839,11 @@ impl Engine {
                                 19 | 20 => self.overlay = ShelfOverlay::ScreenSettings {
                                     row: move_menu_row(row, code, 3),
                                 },
-                                96 => self.overlay=ShelfOverlay::ScreenSystemSettings {
-                                    platform:Self::screen_submenu_platform(row),row:0,
+                                96 => {
+                                    self.load_default_cores();
+                                    self.overlay=ShelfOverlay::ScreenSystemSettings {
+                                        platform:Self::screen_submenu_platform(row),row:0,
+                                    };
                                 },
                                 97 => self.overlay = ShelfOverlay::Settings { row: 1 },
                                 108 => self.overlay = ShelfOverlay::None,
@@ -2839,9 +2851,9 @@ impl Engine {
                             },
                             ShelfOverlay::ScreenSystemSettings { platform,row } => match code {
                                 19 | 20 => self.overlay=ShelfOverlay::ScreenSystemSettings {
-                                    platform,row:move_menu_row(row,code,Self::screen_rows(platform).len()),
+                                    platform,row:move_menu_row(row,code,Self::system_rows(platform).len()),
                                 },
-                                21 | 22 | 96 => if let Some(key)=Self::screen_keys(platform).get(row).copied(){
+                                21 | 22 | 96 => if let Some(key)=Self::system_keys(platform).get(row).copied(){
                                     self.change_setting(key,code!=21);
                                 },
                                 97 => self.overlay=ShelfOverlay::ScreenSettings {
@@ -2893,9 +2905,10 @@ impl Engine {
                                         22 => { picker.press(Press::Right, now); }
                                         96 => {
                                             let core = picker.seat();
-                                            let uri = self.shelves[self.active].carts
-                                                [self.shelves[self.active].index]
-                                                .rom.to_string_lossy().into_owned();
+                                            let cart = &self.shelves[self.active].carts
+                                                [self.shelves[self.active].index];
+                                            let uri = cart.rom.to_string_lossy().into_owned();
+                                            let platform = cart.platform;
                                             let paths = PATHS.lock()
                                                 .unwrap_or_else(|e| e.into_inner()).clone();
                                             if let Some((storage, library)) = paths {
@@ -2905,7 +2918,7 @@ impl Engine {
                                                     set_message(format!(
                                                         "{} isn't installed.", core.text()));
                                                 } else {
-                                                    match core_selection::set(&storage, &uri, core) {
+                                                    match core_selection::choose(&storage, &uri, platform, core) {
                                                         Ok(()) => {
                                                             // A core swap must invalidate the
                                                             // previous core's cached profile
@@ -3010,6 +3023,11 @@ impl Engine {
                             self.fresh_launch = false;
                             if uri.starts_with("content://") {
                                 let uri = uri.into_owned();
+                                let platform = selected.platform;
+                                *LAUNCH_CORE.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    PATHS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                                        .map(|(storage, _)| (uri.clone(),
+                                            core_selection::selected_for(storage, &uri, platform)));
                                 self.requested_uri = Some(uri.clone());
                                 self.awaiting_game = true;
                                 *REQUEST.lock().unwrap_or_else(|e| e.into_inner()) = Some(uri);
@@ -3410,6 +3428,47 @@ impl Engine {
             Platform::Gba=>&[0,22],
             Platform::Gbc=>&[21,23,26],
             Platform::Gb=>&[1,24,3,27],
+        }
+    }
+    // Settings > Systems opens with the system's default core, then the
+    // screen rows a paused game of that system also shows.
+    fn system_rows(platform: Platform)-> &'static [usize] {
+        match platform {
+            Platform::Gba=>&[118,34,29],
+            Platform::Gbc=>&[118,88,29,90],
+            Platform::Gb=>&[118,89,29,36,90],
+        }
+    }
+    fn system_keys(platform:Platform)-> &'static [usize] {
+        match platform {
+            Platform::Gba=>&[29,0,22],
+            Platform::Gbc=>&[30,21,23,26],
+            Platform::Gb=>&[31,1,24,3,27],
+        }
+    }
+    fn core_key_platform(key:usize)->Option<Platform> {
+        match key { 29=>Some(Platform::Gba), 30=>Some(Platform::Gbc), 31=>Some(Platform::Gb), _=>None }
+    }
+    fn load_default_cores(&mut self) {
+        let paths=PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some((storage,_))=paths {
+            self.default_cores=Platform::ALL.map(|platform| core_selection::default(&storage,platform));
+        }
+    }
+    /// The Default Core row swaps between mGBA and the system's other core.
+    fn cycle_default_core(&mut self, platform: Platform) {
+        let Some((storage,library))=PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+            else { return };
+        let at=platform as usize;
+        let core=if self.default_cores[at]==Core::Mgba { Core::alternate_for(platform) }
+            else { Core::Mgba };
+        if !library.join(format!("lib{}_libretro.so", core.as_str())).is_file() {
+            set_message(format!("{} isn't installed.", core.text()));
+            return;
+        }
+        match core_selection::set_default(&storage,platform,core) {
+            Ok(()) => self.default_cores[at]=core,
+            Err(err) => set_error_message("Couldn't save the default core.", &err),
         }
     }
     fn screen_title(platform:Platform)->usize {
@@ -3944,6 +4003,10 @@ impl Engine {
     }
 
     fn change_setting(&mut self, key: usize, right: bool) {
+        if let Some(platform)=Self::core_key_platform(key) {
+            self.cycle_default_core(platform);
+            return;
+        }
         if matches!(key,2|22) && self.settings.shader_gba.includes_gba_color() {
             set_message("This shader already includes color correction.".into());
             return;
@@ -4040,6 +4103,10 @@ impl Engine {
             27 => bezel_value(scoped.bezel_gb),
             28 => if self.settings.time_format==crate::settings::TimeFormat::TwelveHour
                 {35}else{36},
+            29..=31 => match Self::core_key_platform(key)
+                .map_or(Core::Mgba, |platform| self.default_cores[platform as usize]) {
+                Core::Mgba => 50, Core::Gpsp => 51, Core::Gambatte => 52,
+            },
             _ => 5,
         }
     }
@@ -4069,7 +4136,7 @@ impl Engine {
     fn draw_setting_values(&self, row: usize, keys: &[usize], out: &mut Vec<Draw>) {
         let top = settings_row_top(keys.len());
         for (index, key) in keys.iter().copied().enumerate() {
-            if key > 28 { continue; } // Action-only rows have no value.
+            if key > 31 { continue; } // Action-only rows have no value.
             let (tex, width, height) =
                 if key == 16 && matches!(self.settings.wallpaper,
                     crate::settings::WallpaperPick::File(_)) {
@@ -4262,7 +4329,7 @@ impl Engine {
                 self.draw_library_share_value(row, out);
             }
             ShelfOverlay::Settings { row } => {
-                self.draw_original_style_menu(26, &[81, 32, 33, 49, 58], row, out);
+                self.draw_original_style_menu(26, &[81, 117, 33, 49, 58], row, out);
             }
             ShelfOverlay::GeneralSettings { row } => {
                 let rows=self.general_rows();
@@ -4302,12 +4369,12 @@ impl Engine {
                 self.draw_setting_values(row, &[10, 11, 12], out);
             }
             ShelfOverlay::ScreenSettings { row } => {
-                self.draw_original_style_menu(32, &[91,92,93], row, out);
+                self.draw_original_style_menu(117, &[91,92,93], row, out);
             }
             ShelfOverlay::ScreenSystemSettings {platform,row} => {
                 self.draw_original_style_menu(Self::screen_title(platform),
-                    Self::screen_rows(platform),row,out);
-                self.draw_setting_values(row,Self::screen_keys(platform),out);
+                    Self::system_rows(platform),row,out);
+                self.draw_setting_values(row,Self::system_keys(platform),out);
             }
             ShelfOverlay::GameplaySettings { row } => {
                 self.draw_original_style_menu(33, &GAMEPLAY_ROWS, row, out);
@@ -4758,7 +4825,7 @@ impl Engine {
             ShelfOverlay::PauseEmulationSettings { row } => (9u8, row, 3usize),
             ShelfOverlay::ScreenSettings { row } => (5u8, row, 3usize),
             ShelfOverlay::ScreenSystemSettings { platform,row } =>
-                (16u8,row,Self::screen_rows(platform).len()),
+                (16u8,row,Self::system_rows(platform).len()),
             ShelfOverlay::GameplaySettings { row } => (6u8, row, GAMEPLAY_KEYS.len()),
             _ => (0, 0, 0),
         };

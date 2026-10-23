@@ -62,13 +62,18 @@ pub fn set(text: &str, key: &str, value: Option<&str>) -> std::io::Result<String
 }
 
 pub fn write(root: &Path, file: &str, key: &str, value: &str) -> std::io::Result<()> {
+    write_entry(root, file, key, Some(value))
+}
+
+/// Sets `key`, or removes its line when `value` is None.
+pub fn write_entry(root: &Path, file: &str, key: &str, value: Option<&str>) -> std::io::Result<()> {
     let path = root.join(file);
     let existing = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    let out = set(&existing, key, Some(value))
+    let out = set(&existing, key, value)
         .map_err(|e| std::io::Error::new(e.kind(), format!("{file} {e}")))?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
