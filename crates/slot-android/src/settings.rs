@@ -388,7 +388,7 @@ impl Settings {
             25 => self.bezel_gba=self.bezel_gba.step(),
             26 => self.bezel_gbc=self.bezel_gbc.step(),
             27 => self.bezel_gb=self.bezel_gb.step(),
-            3 => self.gb_palettes = !self.gb_palettes,
+            3 => step_palette(&mut self.gb_palettes, &mut self.gb_palette, right),
             4 => {
                 let at = SPEEDS.iter().position(|x| *x == self.ff_speed).unwrap_or(0);
                 let n = SPEEDS.len();
@@ -410,9 +410,26 @@ impl Settings {
         }
         *self != before
     }
+    pub fn palette_label(&self) -> &'static str {
+        GbPalette::all().nth(self.gb_palette as usize)
+            .unwrap_or(GbPalette::DEFAULT).label()
+    }
     pub fn palette_name(&self) -> &'static str {
         GbPalette::all().nth(self.gb_palette as usize)
             .unwrap_or(GbPalette::DEFAULT).core_name()
+    }
+}
+/// One live Palette row, as slot. 1.8.1: OFF, then every palette in order,
+/// then OFF again. Left walks the same ring backwards.
+fn step_palette(on: &mut bool, index: &mut u8, right: bool) {
+    let last = (GbPalette::COUNT - 1) as u8;
+    match (*on, right) {
+        (false, true) => { *on = true; *index = 0; }
+        (false, false) => { *on = true; *index = last; }
+        (true, true) if *index >= last => *on = false,
+        (true, false) if *index == 0 => *on = false,
+        (true, true) => *index += 1,
+        (true, false) => *index -= 1,
     }
 }
 /// Frame Pacing has two options, both RetroArch pacing (display-clocked
@@ -910,5 +927,23 @@ mod tests {
         assert_eq!(s.shader_gba, Shader::Off);
         assert_eq!(s.gb_palette, 1);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn palette_row_rings_off_then_every_palette_then_off() {
+        let mut s = Settings::default();
+        assert!(!s.gb_palettes);
+        assert!(s.change(3, true));
+        assert!(s.gb_palettes && s.gb_palette == 0);
+        assert!(s.change(3, false));
+        assert!(!s.gb_palettes, "left from the first palette is OFF");
+        assert!(s.change(3, false));
+        assert_eq!((s.gb_palettes, s.gb_palette as usize), (true, GbPalette::COUNT - 1));
+        assert_eq!(s.palette_label(), "SGB 4-H");
+        assert!(s.change(3, true));
+        assert!(!s.gb_palettes, "right from the last palette is OFF");
+        s.change(3, true);
+        s.change(3, true);
+        assert_eq!(s.palette_name(), "DMG Green");
     }
 }
