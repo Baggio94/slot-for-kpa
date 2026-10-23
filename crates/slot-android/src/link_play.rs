@@ -103,11 +103,11 @@ pub struct LinkPlay {
     // second diagnostic window this survives reporting boundaries.
     waiting_for_input_since: Option<Instant>,
     last_poll_at: Instant,
-    // TCP guarantees one input packet per sampled future frame; sending the
-    // same frame on every waiting draw floods both bounded socket queues.
-    last_sent_cable_frame: Option<u64>,
-    // The cable protocol deliberately has a 3-frame input delay, as upstream.
+    // The current Cable frame had to wait for the peer's input. Adaptive
+    // delay reacts to these waits; pauses and local GL gaps never count.
+    // Cable starts at upstream's 3-frame delay, then adapts (cable.rs).
     // Wireless passes bytes through the core's registered netpacket ABI.
+    stalled_for_input: bool,
 }
 
 impl LinkPlay {
@@ -179,7 +179,7 @@ impl LinkPlay {
             pacing: LinkPacing::new(),
             waiting_for_input_since: None,
             last_poll_at: Instant::now(),
-            last_sent_cable_frame: None,
+            stalled_for_input: false,
         })
     }
 
@@ -223,6 +223,7 @@ impl LinkPlay {
             // Don't count local inactivity as proof that the peer vanished;
             // TCP reader/writer still report real EOF/broken pipes directly.
             self.waiting_for_input_since = None;
+            self.stalled_for_input = false;
             let detail = format!("Link local GL scheduling gap: {gap:?}; suspended input deadline reset");
             #[cfg(target_os = "android")]
             crate::game::log_launch_timing(&detail);
@@ -261,8 +262,9 @@ impl LinkPlay {
             let avg_core_us = if pacing.core_calls == 0 { 0 }
                 else { pacing.core_total_us / pacing.core_calls };
             let report = format!(
-                "Link pacing: mode={:?} callbacks={} advanced={} effective_emu_fps={:.1} wait_peer={} wait_setup={} wait_paused={} stall_events={} max_stall_ms={} rx_pkts={} core_us_avg={} core_us_max={} link_call_us_max={} calls_over_16ms={} calls_over_33ms={}",
-                self.mode, pacing.attempts, pacing.advanced,
+                "Link pacing: mode={:?} input_delay={} callbacks={} advanced={} effective_emu_fps={:.1} wait_peer={} wait_setup={} wait_paused={} stall_events={} max_stall_ms={} rx_pkts={} core_us_avg={} core_us_max={} link_call_us_max={} calls_over_16ms={} calls_over_33ms={}",
+                self.mode, self.cable.as_ref().map_or(0, Cable::delay),
+                pacing.attempts, pacing.advanced,
                 pacing.advanced as f64 / seconds,
                 pacing.waiting_input, pacing.seeding, pacing.paused,
                 pacing.stall_events, pacing.max_stall_ms, pacing.packets,
@@ -286,6 +288,7 @@ impl LinkPlay {
         // Do not pump RFU or sample Cable input until BOTH peers resume.
         if self.local_paused || self.wire.peer_paused() {
             self.waiting_for_input_since = None;
+            self.stalled_for_input = false;
             return Frame::Waiting;
         }
 
@@ -388,10 +391,11 @@ impl LinkPlay {
             // stalled, so send each frame ONCE. A retransmission on every GL
             // callback previously filled the bounded write/receive queues
             // whenever the other device was briefly suspended.
-            let frame_index = cable.frame();
-            if self.last_sent_cable_frame != Some(frame_index) {
-                self.wire.send(NETPACKET_RELIABLE, &cable.sample(buttons));
-                self.last_sent_cable_frame = Some(frame_index);
+            let packets = cable.sample_adaptive(buttons);
+            if !packets.is_empty() {
+                for packet in &packets {
+                    self.wire.send(NETPACKET_RELIABLE, packet);
+                }
                 if self.wire.is_closed() { return self.fail(LinkError::Disconnected); }
             }
             if let Some((p0, p1)) = cable.ready() {
@@ -402,9 +406,10 @@ impl LinkPlay {
                 self.pacing.core_calls += 1;
                 self.pacing.core_total_us = self.pacing.core_total_us.saturating_add(us);
                 self.pacing.core_max_us = self.pacing.core_max_us.max(us);
-                cable.advance();
+                cable.advance_adaptive(std::mem::take(&mut self.stalled_for_input));
                 Frame::Advanced
             } else {
+                self.stalled_for_input = true;
                 let since = *self.waiting_for_input_since.get_or_insert_with(Instant::now);
                 if since.elapsed() >= CABLE_INPUT_TIMEOUT {
                     self.fail(LinkError::Timeout)

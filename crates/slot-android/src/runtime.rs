@@ -422,7 +422,7 @@ const MENU_TEXT: [&str; 117] = [
     "GAMEPLAY",                         // 33
     "GBA Shader",                       // 34
     "GB / GBC Shader",                  // 35
-    "GB Palettes",                      // 36
+    "GB Palette",                       // 36
     "Rewind",                           // 37
     "X/Y Buttons",                       // 38
     "Auto Save on Eject",               // 39
@@ -586,6 +586,9 @@ struct Engine {
     // A single account-scoped engine outlives individual games, allowing
     // queued offline awards to sync even after the cartridge is ejected.
     ra_service: Option<slot_achievements::Service>,
+    // Footer trophy for the selected cartridge: hash index + its last face.
+    ra_hashes: crate::ra_progress::RomHashes,
+    ra_progress_face: Option<(slot_achievements::GameProgress, bool, slot_gfx::TexId, u32)>,
     ra_signing_out: bool,
     buttons: u16,
     ff_held: bool,
@@ -631,6 +634,8 @@ struct Engine {
     gbc_bezel_tex: slot_gfx::TexId,
     custom_wallpaper_present: bool,
     setting_values: Vec<(slot_gfx::TexId, u32, u32)>,
+    // The live Palette row shows the palette's own name, one face per palette.
+    palette_values: Vec<(slot_gfx::TexId, u32, u32)>,
     setting_carets: [(slot_gfx::TexId, u32, u32); 2],
     settings_hints: [(slot_gfx::TexId, u32); 2],
     about_texture: Option<slot_gfx::TexId>,
@@ -984,6 +989,10 @@ impl Engine {
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
                 (tex, face.w, face.h)
             }).collect();
+        let palette_values = slot_store::GbPalette::all().map(|palette| {
+            let face = quick_value_face(palette.label(), true);
+            (gpu.create_texture(face.w, face.h, &face.rgba), face.w, face.h)
+        }).collect();
         let wallpaper_name_face = match &settings.wallpaper {
             crate::settings::WallpaperPick::File(_) => {
                 let name = settings.wallpaper.label();
@@ -1109,6 +1118,8 @@ impl Engine {
             link_starter: None,
             link_art,
             ra_service: None,
+            ra_hashes: Default::default(),
+            ra_progress_face: None,
             ra_signing_out: false,
             buttons: 0,
             ff_held: false,
@@ -1150,6 +1161,7 @@ impl Engine {
             gbc_bezel_tex,
             custom_wallpaper_present,
             setting_values,
+            palette_values,
             setting_carets,
             settings_hints,
             about_texture,
@@ -1219,6 +1231,36 @@ impl Engine {
             selected_title_face: Printed::default(),
             selected_title_texture: None,
         })
+    }
+
+    /// "<trophy> 12/40" between battery and clock for the selected cartridge,
+    /// once its RetroAchievements data is cached. Nothing for unknown ROMs.
+    fn draw_ra_progress(&mut self, light: bool, out: &mut Vec<Draw>) {
+        let Some(service) = self.ra_service.as_ref() else { return };
+        let shelf = &self.shelves[self.active];
+        let Some(cart) = shelf.carts.get(shelf.index) else { return };
+        let uri = cart.rom.to_string_lossy();
+        let Some(root) = PATHS.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().map(|(root, _)| root.clone()) else { return };
+        let Some(hash) = self.ra_hashes.hash(&root, &uri) else { return };
+        let Some(progress) = service.game_progress(&hash) else { return };
+        let tex = match self.ra_progress_face {
+            Some((shown, shown_light, tex, w)) if shown == progress && shown_light == light =>
+                Some((tex, w)),
+            previous => {
+                let face = slot_ui::progress_face(progress.unlocked, progress.total,
+                    self.shelf_footer_ink());
+                let tex = match previous {
+                    Some((_, _, tex, _)) => { self.gpu.update_texture(tex, face.w, face.h, &face.rgba); tex }
+                    None => self.gpu.create_texture(face.w, face.h, &face.rgba),
+                };
+                self.ra_progress_face = Some((progress, light, tex, face.w));
+                Some((tex, face.w))
+            }
+        };
+        if let Some((tex, w)) = tex {
+            slot_ui::draw_footer_centre(Printed::new(tex, w), out);
+        }
     }
 
     fn shelf_footer_ink(&self) -> [u8; 3] {
@@ -3443,7 +3485,20 @@ impl Engine {
         // This method is only called from the paused game, not the carousel.
         let mut profile=self.game_emulation
             .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
+        // The per-game profile keeps only Palette ON/OFF; which palette is
+        // the shared choice, exactly as the in-game SELECT shortcut keeps it.
+        let palette = (key==3).then(|| {
+            let mut view=self.game_settings();
+            view.change(3,right);
+            view.gb_palette
+        });
         if !profile.change_visual_and_gameplay(&self.settings,platform,key,right) { return; }
+        if let Some(index)=palette {
+            if self.settings.gb_palette!=index {
+                self.settings.gb_palette=index;
+                self.persist_settings();
+            }
+        }
         if let Some((root,_))=PATHS.lock().unwrap_or_else(|e|e.into_inner()).as_ref() {
             if let Err(error)=profile.save(root,&uri,core) {
                 set_error_message("Couldn't save this game's settings.", &error);
@@ -3842,6 +3897,14 @@ impl Engine {
         self.persist_settings();
     }
 
+    /// The Palette row's value face while a palette is on; None shows OFF.
+    fn palette_value(&self) -> Option<(slot_gfx::TexId, u32, u32)> {
+        let scoped = if matches!(self.overlay, ShelfOverlay::PauseScreenSettings { .. }) {
+            self.game_settings()
+        } else { self.settings.clone() };
+        scoped.gb_palettes.then(|| self.palette_values.get(scoped.gb_palette as usize).copied()).flatten()
+    }
+
     fn setting_value(&self, key: usize) -> usize {
         use crate::settings::Shader;
         let profile = if matches!(self.overlay, ShelfOverlay::PauseEmulationSettings { .. }) {
@@ -3941,6 +4004,8 @@ impl Engine {
                 if key == 16 && matches!(self.settings.wallpaper,
                     crate::settings::WallpaperPick::File(_)) {
                     self.wallpaper_name_face.unwrap_or(self.setting_values[26])
+                } else if let Some(face) = (key == 3).then(|| self.palette_value()).flatten() {
+                    face
                 } else {
                     self.setting_values[self.setting_value(key)]
                 };
@@ -5426,6 +5491,7 @@ impl Engine {
             slot_ui::draw_footer_with_ink(self.battery,self.battery_face,
                 Some(if light {self.bolt_light_texture} else {self.bolt_texture}),
                 self.clock_face,self.shelf_footer_ink(),&mut commands);
+            self.draw_ra_progress(light, &mut commands);
         }
         SHELF_INDICATOR_FLAGS.store(indicator_flags, Ordering::Release);
         self.gpu.fit(self.size);

@@ -632,14 +632,15 @@ fn dropped_frames_and_rewinds_reset_partial_hit_counts() {
         });
         let (notices, _) = mpsc::channel();
         let mut unsaved = BTreeMap::new();
-        evaluate(frame(1, 0, 0), &mut playing, &store, &notices, &mut unsaved);
-        evaluate(frame(2, 0, 1), &mut playing, &store, &notices, &mut unsaved);
+        evaluate(frame(1, 0, 0), &mut playing, &store, &notices, &mut unsaved, &Status::default());
+        evaluate(frame(2, 0, 1), &mut playing, &store, &notices, &mut unsaved, &Status::default());
         evaluate(
             frame(if timeline == 0 { 4 } else { 3 }, timeline, 1),
             &mut playing,
             &store,
             &notices,
             &mut unsaved,
+            &Status::default(),
         );
         assert!(store.lock().unwrap().unlocks.is_empty());
         evaluate(
@@ -648,6 +649,7 @@ fn dropped_frames_and_rewinds_reset_partial_hit_counts() {
             &store,
             &notices,
             &mut unsaved,
+            &Status::default(),
         );
         evaluate(
             frame(6, timeline, 1),
@@ -655,6 +657,7 @@ fn dropped_frames_and_rewinds_reset_partial_hit_counts() {
             &store,
             &notices,
             &mut unsaved,
+            &Status::default(),
         );
         evaluate(
             frame(7, timeline, 1),
@@ -662,6 +665,7 @@ fn dropped_frames_and_rewinds_reset_partial_hit_counts() {
             &store,
             &notices,
             &mut unsaved,
+            &Status::default(),
         );
         assert!(store.lock().unwrap().unlocks.contains_key(&7));
     }
@@ -755,8 +759,8 @@ fn unsaved_unlocks_retry_with_the_original_time_after_storage_recovers() {
     });
     let (notices, received) = mpsc::channel();
     let mut unsaved = BTreeMap::new();
-    evaluate(frame(1, 0, 0), &mut playing, &store, &notices, &mut unsaved);
-    evaluate(frame(2, 0, 1), &mut playing, &store, &notices, &mut unsaved);
+    evaluate(frame(1, 0, 0), &mut playing, &store, &notices, &mut unsaved, &Status::default());
+    evaluate(frame(2, 0, 1), &mut playing, &store, &notices, &mut unsaved, &Status::default());
     assert_eq!(unsaved.len(), 1);
     assert!(store.lock().unwrap().unlocks.is_empty());
     assert!(!received.try_iter().any(|n| n.kind == NoticeKind::Earned));
@@ -936,4 +940,43 @@ fn verified_save_wrapper_does_not_fallback_on_absent_or_failed_active_sram() {
     let failed = service.wrap(Box::new(ActiveSaveCore { active: 0x42, outcome: 2 }));
     assert!(matches!(failed.save_ram_verified(), Err(CoreError::State(message))
         if message == "active SRAM clone refused"));
+}
+
+#[test]
+fn shelf_progress_counts_server_and_offline_unlocks_without_blocking() {
+    let root = configured();
+    let dir = root.path().join("Saves/RetroAchievements")
+        .join(format!("{:x}", md5::compute("player")));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut second = achievement("0xH000001=1");
+    second.id = 8;
+    let mut third = achievement("0xH000002=1");
+    third.id = 9;
+    let mut unofficial = achievement("0xH000003=1");
+    unofficial.id = 10;
+    unofficial.flags = 5;
+    let mut full = game();
+    full.achievements.extend([second, third, unofficial]);
+    let hash = "0123456789abcdef0123456789abcdef";
+    storage::write(&dir.join(format!("{hash}.json")), &(&full, BTreeSet::from([7u32]))).unwrap();
+    storage::write(&dir.join("unlocks.json"), &BTreeMap::from([(8u32, Unlock {
+        id: 8, hash: hash.into(), earned_at: 1, synced: false,
+    })])).unwrap();
+    let empty = "fedcba9876543210fedcba9876543210";
+    let mut none = game();
+    none.id = 0;
+    storage::write(&dir.join(format!("{empty}.json")), &(&none, BTreeSet::<u32>::new())).unwrap();
+
+    let service = Service::start_with(root.path().into(), Offline);
+    wait_for(|| service.enabled.load(Ordering::Acquire));
+    assert_eq!(service.game_progress(hash), None, "first ask only queues the read");
+    wait_for(|| service.game_progress(hash).is_some());
+    let progress = service.game_progress(&hash.to_ascii_uppercase()).unwrap();
+    assert_eq!(progress, GameProgress { unlocked: 2, total: 3 });
+    assert!(!progress.mastered());
+    assert!(GameProgress { unlocked: 3, total: 3 }.mastered());
+    service.game_progress(empty);
+    wait_for(|| service.status.progress_cache.lock().unwrap().known.contains_key(empty));
+    assert_eq!(service.game_progress(empty), None, "a ROM without achievements shows nothing");
+    assert_eq!(service.game_progress("not-a-hash"), None);
 }
