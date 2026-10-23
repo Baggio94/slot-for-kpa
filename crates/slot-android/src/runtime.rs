@@ -2094,6 +2094,9 @@ impl Engine {
                 if self.game.is_some() {
                     self.exiting_screen = true;
                     self.eject_hold_remaining = EJECT_HOLD_S;
+                    // The next input is most likely a scroll: keep the shelf
+                    // at full rate (no 4 Hz idle) for 3.2 s after the eject.
+                    self.last_cart_navigation = Instant::now();
                 }
                 // The reversed cart animation will emit the original eject sound.
                 if self.progress > 0.0 || self.inserted { self.eject_sound_armed = true; }
@@ -4575,7 +4578,12 @@ impl Engine {
             }
         }
         let now = Instant::now();
-        let mut dt = (now - self.last).as_secs_f32().min(0.05);
+        // After an idle gap (the settled shelf draws at 4 Hz) the first frame
+        // advances one display frame, not a 50 ms jump: a scroll that wakes
+        // the carousel then starts as smoothly as one that continues.
+        let elapsed = (now - self.last).as_secs_f32();
+        let mut dt = if elapsed > 0.1 && self.game.is_none() { 1.0 / 60.0 }
+            else { elapsed.min(0.05) };
         self.last = now;
         let mut cover_with_hold = false;
 
