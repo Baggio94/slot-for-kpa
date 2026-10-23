@@ -2660,15 +2660,21 @@ impl Engine {
                         });
                         return;
                     }
-                    // Slot original: GB/GBC L1 = Stretch, R1 = Actual.
+                    // GB/GBC: L1 = one size up, R1 = one size down
+                    // (Integer, Original Ratio, Stretch).
                     // On GBA the shoulder buttons remain owned by the core.
                     // SELECT+shoulder save/load is handled below and takes priority.
                     if self.current_cart_platform() != Platform::Gba && self.buttons & ButtonMask::SELECT == 0
                         && (code == 102 || code == 103) {
                         if pressed {
-                            self.set_video_mode(if code == 102 {
-                                VideoMode::Stretch
-                            } else { VideoMode::Actual });
+                            let mode = if code == 102 {
+                                self.video_mode.bigger()
+                            } else { self.video_mode.smaller() };
+                            if mode != self.video_mode {
+                                self.set_video_mode(mode);
+                                self.hud.toast(self.video_mode_toast(),
+                                    self.born.elapsed().as_millis() as u64);
+                            }
                         }
                         return;
                     }
@@ -3334,11 +3340,26 @@ impl Engine {
         self.game_settings().shader_for(self.current_cart_platform())
     }
 
+    /// The new screen size, or why the chosen bezel is hidden in it.
+    fn video_mode_toast(&self) -> Toast {
+        let bezel = self.game_settings().bezel_for(self.current_cart_platform())
+            != crate::settings::Bezel::None;
+        match self.video_mode {
+            VideoMode::Stretch if bezel => Toast::NoBezelInStretch,
+            VideoMode::Aspect if bezel => Toast::BezelNeedsInteger,
+            VideoMode::Actual => Toast::ScreenInteger,
+            VideoMode::Aspect => Toast::ScreenRatio,
+            VideoMode::Stretch => Toast::ScreenStretch,
+        }
+    }
+
     /// Native 3:2 KONKR: GBA fills the panel and has no forced letterbox bezel.
-    /// GB/GBC preserve the official 720×480 transparent overlays.
+    /// GB/GBC preserve the official 720×480 transparent overlays, whose
+    /// window only fits integer scale; the setting is kept for later.
     fn game_bezel(&self) -> Option<slot_gfx::TexId> {
         if self.game_settings().bezel_for(self.current_cart_platform())
             == crate::settings::Bezel::None {return None;}
+        if !video_mode::bezel_fits(self.video_mode) {return None;}
         match self.current_cart_platform() {
             Platform::Gba=>None,
             Platform::Gb=>Some(self.gb_bezel_tex),
