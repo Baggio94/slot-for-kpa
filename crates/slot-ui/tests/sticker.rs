@@ -50,7 +50,7 @@ fn the_compliance_block_is_the_credits() {
         "OPEN SANS",
         "NERD",
         "LCD3X",
-        "CLAUDE",
+        "HANDHELD FANS",
     ] {
         assert!(all.contains(owed), "the credits do not mention {owed}");
     }
