@@ -4,10 +4,30 @@ use crate::pipeline::GamePass;
 use crate::quad::Quad;
 use crate::shaders::{BEZEL_FRAG, BLIT_FRAG, BLIT_VERT};
 use crate::surface::{blit_rect, GfxError, Surface, OUT_H, OUT_W};
+use std::time::Instant;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EndFrameCpuPhases {
+    /// Wall time for geometry/setup, binding the default framebuffer and
+    /// preparing/clearing its GL state; includes potential GLES driver waits.
+    pub setup_us: u64,
+    // Beta14: these five CPU-thread wall timers nest inside setup_us, never
+    // additional native callback work. Individual calls can wait on the driver.
+    pub geometry_us: u64,
+    pub bind_us: u64,
+    pub viewport_us: u64,
+    pub clear_us: u64,
+    pub state_us: u64,
+    /// Wall time to submit the final framebuffer quad(s) through GLES.
+    pub quad_us: u64,
+    /// Optional bezel GL submission wall time (zero without an active bezel).
+    pub bezel_us: u64,
+}
 
 pub const BACKDROP: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 pub struct Compositor {
+    context_lost: bool,
     fbo: gl::types::GLuint,
     tex: gl::types::GLuint,
     size: (u32, u32),
@@ -26,13 +46,33 @@ pub struct Compositor {
     u_bezel_gain: gl::types::GLint,
     u_bezel_alpha: gl::types::GLint,
     bezel: Option<gl::types::GLuint>,
+    bezel_pixels: Option<(u32, u32, Vec<u8>)>,
 }
 
 impl Compositor {
+    /// Mark names unusable before destroying a lost/unavailable context.
+    /// The host must stop all rendering until restore_after_context_loss succeeds.
+    pub fn abandon_context(&mut self) {
+        self.context_lost = true;
+        self.quad.abandon_context();
+        self.game.abandon_context();
+        self.sprites.abandon_context();
+    }
+
     pub fn new(surface: &dyn Surface) -> Result<Self, GfxError> {
         crate::gl::load(surface);
+        // Own fallible sub-passes before allocating the raw framebuffer names.
+        let game = GamePass::new()?;
+        let sprites = Sprites::new()?;
+        let quad = Quad::new();
         let blit = crate::shaders::program(BLIT_VERT, BLIT_FRAG)?;
-        let bezel_prog = crate::shaders::program(BLIT_VERT, BEZEL_FRAG)?;
+        let bezel_prog = match crate::shaders::program(BLIT_VERT, BEZEL_FRAG) {
+            Ok(program) => program,
+            Err(error) => {
+                unsafe { gl::DeleteProgram(blit) };
+                return Err(error);
+            }
+        };
         let tex = crate::gl::texture(OUT_W, OUT_H, gl::NEAREST, gl::CLAMP_TO_EDGE, gl::RGBA, None);
         unsafe {
             let mut fbo = 0;
@@ -72,6 +112,7 @@ impl Compositor {
             );
 
             Ok(Compositor {
+                context_lost: false,
                 fbo,
                 tex,
                 size: (OUT_W, OUT_H),
@@ -83,15 +124,57 @@ impl Compositor {
                 shake: 0.0,
                 lift: 1.0,
                 screen: 0.0,
-                quad: Quad::new(),
-                game: GamePass::new()?,
-                sprites: Sprites::new()?,
+                quad,
+                game,
+                sprites,
                 bezel_prog,
                 u_bezel_gain,
                 u_bezel_alpha,
                 bezel: None,
+                bezel_pixels: None,
             })
         }
+    }
+
+    /// Opt in before creating any interface texture. Game frames remain owned
+    /// by the session and must be uploaded again after successful recovery.
+    pub fn enable_context_recovery(&mut self) {
+        self.sprites.enable_recovery();
+    }
+
+    pub fn graphics_ready(&self) -> bool {
+        !self.context_lost
+    }
+
+    pub fn recovery_bytes(&self) -> usize {
+        self.sprites.recovery_bytes() + self.game.recovery_bytes() + self.bezel_pixels.as_ref().map_or(0, |p| p.2.len())
+    }
+
+    /// The old context MUST have been destroyed. Never deletes its GL names in
+    /// the replacement context. On failure CPU state survives for a later retry;
+    /// the caller must stop drawing until this method succeeds.
+    pub fn restore_after_context_loss(&mut self, surface: &dyn Surface) -> Result<(), GfxError> {
+        self.abandon_context();
+        let mut fresh = Self::new(surface)?;
+        self.sprites.restore_into(&mut fresh.sprites)?;
+        self.game.restore_settings_into(&mut fresh.game);
+        fresh.fit(self.size);
+        fresh.split = self.split;
+        fresh.gain = self.gain;
+        fresh.shake = self.shake;
+        fresh.lift = self.lift;
+        fresh.screen = self.screen;
+        if let Some((w, h, rgba)) = &self.bezel_pixels {
+            fresh.set_bezel(*w, *h, rgba);
+        }
+        // Check uploads as well as framebuffer/shader creation. A failed
+        // allocation must not make the host resume a partially restored UI.
+        let error = unsafe { gl::GetError() };
+        if error != gl::NO_ERROR {
+            return Err(GfxError::Context(format!("recovery GL error: 0x{error:x}")));
+        }
+        *self = fresh;
+        Ok(())
     }
 
     pub fn upload_game(&mut self, xrgb8888: &[u8]) {
@@ -243,6 +326,7 @@ impl Compositor {
     }
 
     pub fn set_bezel(&mut self, w: u32, h: u32, rgba: &[u8]) {
+        self.bezel_pixels = Some((w, h, rgba.to_vec()));
         let stride = w as usize * 4;
         let mut bottom_up = Vec::with_capacity(rgba.len());
         for row in rgba.chunks_exact(stride).rev() {
@@ -262,6 +346,19 @@ impl Compositor {
     }
 
     pub fn end_frame(&mut self, window: (u32, u32)) {
+        self.end_frame_inner(window, None);
+    }
+
+    /// Read-only diagnostic, no glFinish/glFlush/fence or extra draw.
+    /// Values measure CPU-thread wall time, *not* GPU execution or EGL swap.
+    pub fn end_frame_profiled(&mut self, window: (u32, u32)) -> EndFrameCpuPhases {
+        let mut phases = EndFrameCpuPhases::default();
+        self.end_frame_inner(window, Some(&mut phases));
+        phases
+    }
+
+    fn end_frame_inner(&mut self, window: (u32, u32), mut profile: Option<&mut EndFrameCpuPhases>) {
+        let setup_started = profile.is_some().then(Instant::now);
         let framed = crate::bezel::framed(window);
         let (x, mut y, w, h) = blit_rect(window, self.shake);
         let drop = if framed {
@@ -270,16 +367,45 @@ impl Compositor {
             0
         };
         y -= drop;
+        if let (Some(started), Some(p)) = (setup_started, profile.as_deref_mut()) {
+            p.geometry_us = started.elapsed().as_micros() as u64;
+        }
+
+        let bind_started = profile.is_some().then(Instant::now);
+        unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, 0) };
+        if let (Some(started), Some(p)) = (bind_started, profile.as_deref_mut()) {
+            p.bind_us = started.elapsed().as_micros() as u64;
+        }
+
+        let viewport_started = profile.is_some().then(Instant::now);
+        unsafe { gl::Viewport(0, 0, window.0 as i32, window.1 as i32) };
+        if let (Some(started), Some(p)) = (viewport_started, profile.as_deref_mut()) {
+            p.viewport_us = started.elapsed().as_micros() as u64;
+        }
+
+        let clear_started = profile.is_some().then(Instant::now);
         unsafe {
-            gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
-            gl::Viewport(0, 0, window.0 as i32, window.1 as i32);
             gl::ClearColor(0.0, 0.0, 0.0, 1.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
+        }
+        if let (Some(started), Some(p)) = (clear_started, profile.as_deref_mut()) {
+            p.clear_us = started.elapsed().as_micros() as u64;
+        }
+
+        let state_started = profile.is_some().then(Instant::now);
+        unsafe {
             gl::UseProgram(self.blit);
             gl::ActiveTexture(gl::TEXTURE0);
             gl::Uniform3f(self.u_gain, self.gain[0], self.gain[1], self.gain[2]);
+            gl::BindTexture(gl::TEXTURE_2D, self.tex);
         }
-        unsafe { gl::BindTexture(gl::TEXTURE_2D, self.tex) };
+        if let (Some(started), Some(p)) = (state_started, profile.as_deref_mut()) {
+            p.state_us = started.elapsed().as_micros() as u64;
+        }
+        if let (Some(started), Some(p)) = (setup_started, profile.as_deref_mut()) {
+            p.setup_us = started.elapsed().as_micros() as u64;
+        }
+        let quad_started = profile.is_some().then(Instant::now);
         let cut = self
             .split
             .filter(|_| framed && drop == 0)
@@ -305,9 +431,13 @@ impl Compositor {
             }
             None => self.blit_part(x, y, w, h, [0.0, 0.0, 1.0, 1.0]),
         }
+        if let (Some(started), Some(p)) = (quad_started, profile.as_deref_mut()) {
+            p.quad_us = started.elapsed().as_micros() as u64;
+        }
         let Some(bezel) = self.bezel.filter(|_| framed && self.screen > 0.0) else {
             return;
         };
+        let bezel_started = profile.is_some().then(Instant::now);
         let alpha = self.screen.clamp(0.0, 1.0);
         unsafe {
             gl::Viewport(0, -drop, window.0 as i32, window.1 as i32);
@@ -320,6 +450,9 @@ impl Compositor {
         }
         self.quad.draw();
         unsafe { gl::Disable(gl::BLEND) };
+        if let (Some(started), Some(p)) = (bezel_started, profile.as_deref_mut()) {
+            p.bezel_us = started.elapsed().as_micros() as u64;
+        }
     }
 }
 
@@ -345,6 +478,9 @@ pub fn canvas_size(window: (u32, u32)) -> (u32, u32) {
 
 impl Drop for Compositor {
     fn drop(&mut self) {
+        if self.context_lost {
+            return;
+        }
         unsafe {
             gl::DeleteFramebuffers(1, &self.fbo);
             gl::DeleteTextures(1, &self.tex);

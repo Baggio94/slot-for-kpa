@@ -1,0 +1,133 @@
+name: RetroArch parity development
+
+on:
+  push:
+    branches: ['dev/retroarch-parity-*']
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'crates/slot-android/**'
+      - 'crates/slot-gfx/**'
+      - '.github/workflows/retroarch-parity-foundation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parity-development-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: Session, Run-Ahead and presentation regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.96'
+      - name: Install EGL linker library for native runtime tests
+        run: sudo apt-get update -qq && sudo apt-get install -y libegl-dev libgl1-mesa-dri
+      - name: Test real EGL context destruction and graphics recovery
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: cargo test --locked -p slot-gfx --no-default-features --features test-support --test context_recovery
+      - name: Test the production session and runtime on Linux
+        run: |
+          set -euo pipefail
+          cargo test --locked -p slot-android --features runtime-tests --lib 2>&1 | tee "$RUNNER_TEMP/session-tests.log"
+          # A green run with Android modules compiled out is insufficient.
+          grep -F 'test game::runahead_tests::runahead_0_1_2_preserve_real_state_audio_and_battery_while_showing_future_video ... ok' "$RUNNER_TEMP/session-tests.log"
+          grep -F 'test game::runahead_tests::real_egl_recovery_keeps_runahead_session_and_rollback_quarantine ... ok' "$RUNNER_TEMP/session-tests.log"
+          grep -F 'test runtime::ui_feedback_tests::' "$RUNNER_TEMP/session-tests.log"
+          grep -F 'test presentation_probe::tests::reports_do_not_rejuvenate_frames_waiting_for_presentation ... ok' "$RUNNER_TEMP/session-tests.log"
+      - name: Test libretro and RetroAchievements contracts
+        run: cargo test --locked -p slot-retro -p slot-achievements --lib
+      - name: Test capture tools and report parsers
+        run: |
+          bash -n tools/retroarch-parity/capture_pair.sh
+          python3 -m unittest discover -s tools/emulation-lab -p 'test_*.py' -v
+          python3 -m unittest discover -s tools/retroarch-parity -p 'test_*.py' -v
+
+  android-compile:
+    name: Compile Android ARM64 JNI and run Kotlin tests (no APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.96'
+          targets: aarch64-linux-android
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Install pinned Android tools
+        run: |
+          set -euo pipefail
+          manager="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -maxdepth 3 -name sdkmanager -type f | sort -V | tail -1)"
+          test -n "$manager"
+          for attempt in 1 2 3 4; do
+            if "$manager" --sdk_root="$ANDROID_SDK_ROOT" --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' \
+                && test -s "$ANDROID_SDK_ROOT/ndk/27.2.12479018/source.properties"; then
+              break
+            fi
+            test "$attempt" -lt 4 || exit 1
+            sleep $((attempt * 5))
+          done
+      - name: Compile and link the real Android-only JNI and EGL adapter
+        run: |
+          set -euo pipefail
+          ndk_bin="$ANDROID_SDK_ROOT/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ndk_bin/aarch64-linux-android31-clang"
+          export CC_aarch64_linux_android="$ndk_bin/aarch64-linux-android31-clang"
+          export AR_aarch64_linux_android="$ndk_bin/llvm-ar"
+          cargo build --locked -p slot-android --lib --target aarch64-linux-android
+          test -s target/aarch64-linux-android/debug/libslot_android.so
+      - name: Compile Android app sources and run debug/release JVM tests
+        run: gradle --no-daemon -p android :app:testDebugUnitTest :app:testReleaseUnitTest
+
+  egl-lifecycle:
+    name: Real Android EGL surface lifecycle (diagnostic harness)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Enable KVM for the lifecycle emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 32
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: gradle --no-daemon -p android :app:connectedDebugAndroidTest
+      - name: Upload lifecycle evidence (no distributable APK)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controlled-egl-lifecycle-results
+          path: |
+            android/app/build/reports/androidTests/
+            android/app/build/outputs/androidTest-results/
+          if-no-files-found: warn

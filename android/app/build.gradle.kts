@@ -9,13 +9,14 @@ android {
 
     defaultConfig {
         applicationId = "fyi.slot.konkr"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         minSdk = 31
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // v1.2.2 stable candidate: SYNC LAB/RA0 fresh-install defaults, immutable existing settings, SleepManager API v1.
-        versionCode = 138
-        versionName = "1.2.2"
+        // 1.2.3: Frame Pacing NATIVE / RESPONSIVE.
+        versionCode = 164
+        versionName = "1.2.3"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
@@ -85,6 +86,9 @@ android {
 dependencies {
     implementation("androidx.core:core:1.13.1")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
     // Android's org.json methods are stubbed in local JVM tests.
     testImplementation("org.json:json:20240303")
 }

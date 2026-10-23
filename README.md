@@ -139,7 +139,7 @@ The KONKR's round top button is called **slot. cap** in this port. Since it cont
 |---|---|
 | <kbd>←</kbd> / <kbd>→</kbd> | Browse save states |
 | <kbd>A</kbd> | Load the selected state |
-| <kbd>Y</kbd> | Delete the selected state |
+| <kbd>Y</kbd> | Delete the selected state: <kbd>X</kbd> confirms, <kbd>B</kbd> keeps it |
 | <kbd>X</kbd> | Undo the last save or load (within 30 seconds) |
 | <kbd>B</kbd> | Return to the game |
 

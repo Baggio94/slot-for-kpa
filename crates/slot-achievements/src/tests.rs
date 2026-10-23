@@ -70,6 +70,96 @@ fn toml_config_accepts_comments_and_literal_credentials_without_leaking_errors()
     assert!(!service.enabled.load(Ordering::Acquire));
 }
 
+#[test]
+fn f10_wakeup_coalesces_without_blocking_frame_or_ui_thread() {
+    let (sender, receiver) = mpsc::sync_channel::<()>(1);
+    for _ in 0..1_000 { wake_evaluator(&sender); }
+    // Sending a thousand notifications cannot accumulate work or block.
+    assert_eq!(receiver.try_recv(), Ok(()));
+    assert_eq!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty));
+    wake_evaluator(&sender);
+    assert_eq!(receiver.try_recv(), Ok(()));
+}
+
+#[test]
+fn f10_disconnected_wakeup_never_panics_or_blocks() {
+    let (sender, receiver) = mpsc::sync_channel::<()>(1);
+    drop(receiver);
+    wake_evaluator(&sender);
+}
+
+#[test]
+fn f10_only_real_frames_trigger_nonblocking_evaluator_wakeup() {
+    let (controls, control_rx) = mpsc::channel();
+    let (frames, frame_rx) = mpsc::sync_channel(QUEUE_SIZE);
+    let (wake, wake_rx) = mpsc::sync_channel(1);
+    let (_, notices) = mpsc::channel();
+    let service = Service {
+        controls, frames, wake, notices,
+        enabled: Arc::new(AtomicBool::new(true)),
+        current: Arc::new(AtomicU64::new(0)),
+        flushing: AtomicBool::new(false),
+        flushed: Arc::new(AtomicBool::new(false)),
+        status: Arc::new(Status::default()),
+        stopping: AtomicBool::new(false),
+        evaluator_stopped: Arc::new(AtomicBool::new(false)),
+        http_shutdown: Arc::new(AtomicBool::new(false)),
+        http_stopped: Arc::new(AtomicBool::new(false)),
+    };
+    let mut core = service.wrap(Box::<TestCore>::default());
+    core.load(Path::new("test.gba")).unwrap();
+    assert_eq!(wake_rx.try_recv(), Ok(()), "load must wake");
+    assert!(matches!(control_rx.try_recv(), Ok(Control::Load(_))));
+    core.run_speculative_frame(ButtonMask(0));
+    assert_eq!(wake_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+    assert!(matches!(frame_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    core.run_frame(ButtonMask(1));
+    assert_eq!(wake_rx.try_recv(), Ok(()), "real frame must wake");
+    assert!(frame_rx.try_recv().is_ok(), "real frame must enter bounded queue");
+    drop(core);
+    assert_eq!(wake_rx.try_recv(), Ok(()), "unload must wake");
+    assert!(matches!(control_rx.try_recv(), Ok(Control::Unload(_))));
+}
+
+#[test]
+fn f10_online_and_cached_game_preparation_wakes_immediately_without_frames() {
+    let (prepared_tx, prepared_rx) = mpsc::channel();
+    let (wake_tx, wake_rx) = mpsc::sync_channel(1);
+    let prepared = network::Prepared {
+        generation: 42,
+        hash: "0123456789abcdef0123456789abcdef".into(),
+        game: game(),
+        unlocked: Default::default(),
+        cached: false,
+    };
+    network::signal_prepared(&prepared_tx, &wake_tx, prepared);
+    assert_eq!(wake_rx.try_recv(), Ok(()), "online game metadata must wake immediately");
+    let got = prepared_rx.try_recv().expect("network definitions must be available");
+    assert_eq!(got.generation, 42);
+    assert_eq!(got.game.achievements.len(), 1);
+    let cached = network::Prepared {
+        generation: 43,
+        hash: "fedcba9876543210fedcba9876543210".into(),
+        game: game(),
+        unlocked: Default::default(),
+        cached: true,
+    };
+    network::signal_prepared(&prepared_tx, &wake_tx, cached);
+    assert_eq!(wake_rx.try_recv(), Ok(()), "cached HTTP metadata must wake immediately");
+    assert!(prepared_rx.try_recv().unwrap().cached);
+}
+
+#[test]
+fn f10_control_flush_still_completes_when_no_frames_arrive() {
+    let root = configured();
+    let service = Service::start_with(root.path().into(), Offline);
+    wait_for(|| service.enabled.load(Ordering::Acquire));
+    // No core or frame ever exists in this test. The worker must consume the
+    // Flush control using the wake channel, without a gameplay event.
+    wait_for(|| service.flush_ready());
+    assert!(!service.has_unsaved_awards());
+}
+
 struct Offline;
 impl network::Transport for Offline {
     fn call(&mut self, _: &[(&str, String)]) -> Result<Value, network::Failure> {
@@ -419,13 +509,14 @@ fn an_unopened_library_is_prepared_automatically_without_starting_sessions() {
 fn sign_out_never_returns_ready_before_local_flush_and_both_workers_stop() {
     let (controls, controls_rx) = mpsc::channel();
     let (frames, _frame_rx) = mpsc::sync_channel(QUEUE_SIZE);
+    let (wake, _wake_rx) = mpsc::sync_channel(1);
     let (_, notices) = mpsc::channel();
     let evaluator_stopped=Arc::new(AtomicBool::new(false));
     let http_stopped=Arc::new(AtomicBool::new(false));
     let http_shutdown=Arc::new(AtomicBool::new(false));
     let flushed=Arc::new(AtomicBool::new(false));
     let service=Service {
-        controls, frames, notices,
+        controls, frames, wake, notices,
         enabled:Arc::new(AtomicBool::new(true)),
         current:Arc::new(AtomicU64::new(0)),
         flushing:AtomicBool::new(false),
@@ -452,10 +543,12 @@ fn sign_out_never_returns_ready_before_local_flush_and_both_workers_stop() {
 fn a_full_worker_queue_cannot_block_the_emulator() {
     let (controls, _controls_rx) = mpsc::channel();
     let (frames, _frames_rx) = mpsc::sync_channel(QUEUE_SIZE);
+    let (wake, _wake_rx) = mpsc::sync_channel(1);
     let (_, notices) = mpsc::channel();
     let service = Service {
         controls,
         frames,
+        wake,
         notices,
         enabled: Arc::new(AtomicBool::new(true)),
         current: Arc::new(AtomicU64::new(1)),
@@ -785,4 +878,62 @@ fn artwork_identity_follows_rom_bytes_instead_of_its_filename() {
     );
     std::fs::write(&moved, b"different rom bytes").unwrap();
     assert!(artwork_title(root.path(), &moved).is_none());
+}
+
+// A core whose ordinary libretro mirror intentionally remains stale after
+// rollback. Verified reads must preserve both current data and errors through
+// the same trait-object wrapper used by Android, even when tracking is disabled.
+struct ActiveSaveCore {
+    active: u8,
+    outcome: u8, // 0=data, 1=no battery, 2=read failure
+}
+impl RetroCore for ActiveSaveCore {
+    fn load(&mut self, _: &Path) -> Result<(), CoreError> { Ok(()) }
+    fn run_frame(&mut self, _: ButtonMask) { self.active += 1; }
+    fn video_xrgb8888(&self) -> &[u8] { &[] }
+    fn take_audio(&mut self) -> Vec<i16> { vec![] }
+    fn serialize(&mut self) -> Result<Vec<u8>, CoreError> { Ok(vec![self.active]) }
+    fn unserialize(&mut self, data: &[u8]) -> Result<(), CoreError> {
+        self.active = data[0];
+        Ok(())
+    }
+    fn save_ram(&self) -> Option<Vec<u8>> { Some(vec![0x11]) }
+    fn save_ram_verified(&self) -> Result<Option<Vec<u8>>, CoreError> {
+        match self.outcome {
+            0 => Ok(Some(vec![self.active])),
+            1 => Ok(None),
+            _ => Err(CoreError::State("active SRAM clone refused".into())),
+        }
+    }
+    fn load_save_ram(&mut self, _: &[u8]) -> Result<(), CoreError> { Ok(()) }
+    fn av_info(&self) -> AvInfo { AvInfo { fps: 59.728, sample_rate: 65536.0 } }
+}
+
+#[test]
+fn verified_save_survives_achievement_wrapping_and_speculative_rollback() {
+    let root = configured();
+    let service = Service::start_with(root.path().into(), Offline);
+    for enabled in [false, true] {
+        service.enabled.store(enabled, Ordering::Release);
+        for console in [4, 5, 6] {
+            let mut core = service.wrap_for_console(
+                Box::new(ActiveSaveCore { active: 0x42, outcome: 0 }), console);
+            let state = core.serialize().unwrap();
+            core.run_speculative_frame(ButtonMask(0));
+            core.restore_speculative_state(&state).unwrap();
+            assert_eq!(core.save_ram(), Some(vec![0x11]), "fixture must expose a stale mirror");
+            assert_eq!(core.save_ram_verified().unwrap(), Some(vec![0x42]));
+        }
+    }
+}
+
+#[test]
+fn verified_save_wrapper_does_not_fallback_on_absent_or_failed_active_sram() {
+    let root = configured();
+    let service = Service::start_with(root.path().into(), Offline);
+    let absent = service.wrap(Box::new(ActiveSaveCore { active: 0x42, outcome: 1 }));
+    assert_eq!(absent.save_ram_verified().unwrap(), None);
+    let failed = service.wrap(Box::new(ActiveSaveCore { active: 0x42, outcome: 2 }));
+    assert!(matches!(failed.save_ram_verified(), Err(CoreError::State(message))
+        if message == "active SRAM clone refused"));
 }

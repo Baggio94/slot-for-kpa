@@ -110,7 +110,28 @@ impl Bezel {
     }
 }
 
-pub const SPEEDS: [u8; 4] = [2, 3, 4, 6];
+pub const REWIND_SPEEDS: [u8; 4] = [1, 2, 3, 5];
+
+/// Port: 1x means ten stored snapshots/sec, 2x (upstream feel) means twenty,
+/// and 5x means fifty. Upstream captures 30/s, not 10/s.
+/// Hold L2 continuously; the memory meter indicates occupied history, not progress.
+pub fn rewind_step_seconds(speed: u8) -> f32 {
+    0.1 / f32::from(if REWIND_SPEEDS.contains(&speed) { speed } else { 2 })
+}
+
+fn cycle_rewind_setting(enabled: &mut bool, speed: &mut u8, right: bool) {
+    // Five values on the existing six-row Gameplay screen: OFF, 1x, 2x, 3x, 5x.
+    // No new row means original Slot's menu geometry and keycaps are preserved.
+    let at = if !*enabled { 0 } else {
+        REWIND_SPEEDS.iter().position(|v| *v == *speed).map_or(4, |i| i + 1)
+    };
+    let next = if right { (at + 1) % 5 } else { (at + 4) % 5 };
+    *enabled = next != 0;
+    if *enabled { *speed = REWIND_SPEEDS[next-1]; }
+}
+
+/// Original Slot 1.8.1 (#123): 0 means Fast Forward Off.
+pub const SPEEDS: [u8; 5] = [0, 2, 3, 4, 6];
 const NAME: &str = "slot-konkr-settings.json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +196,10 @@ pub struct Settings {
     pub colour_correction_gbc: bool,
     pub bezel_gba: Bezel, pub bezel_gbc: Bezel, pub bezel_gb: Bezel,
     pub gb_palettes: bool, pub gb_palette: u8, pub rewind: bool,
+    // Number of historical rewind snapshots restored per 100 ms of game time.
+    // Prior Android builds captured 10/s and replayed 10/s (1x). Original
+    // Slot captures ~30/s and replays ~60/s (2x). Optional 5x is faster.
+    pub rewind_speed: u8,
     // X/Y Buttons: true = Slot's original Turbo, false = Y=A and X=B.
     // Existing persisted turbo=false now selects the alternative A/B mapping.
     pub turbo: bool, pub eject_save: bool,
@@ -187,6 +212,15 @@ pub struct Settings {
     // real steps per VSync callback. Legacy beta7 flag remains readable.
     // Old JSON stays on its prior mode because serde(default) makes this false.
     pub hybrid_pacing: bool,
+    // Experimental timestamp-sourced mode, false for every legacy profile.
+    pub retroarch_clock_pacing: bool,
+    // RETROARCH: one core frame per display refresh with dynamic audio rate
+    // control. Every profile is migrated to it on load (see migrate_pacing).
+    pub retroarch_sync_pacing: bool,
+    // Frame Pacing: false = NATIVE (RetroArch's swap-paced loop), true =
+    // RESPONSIVE (Choreographer VSync loop, a little less lag, a little less
+    // smooth).
+    pub responsive_loop: bool,
     pub run_ahead_frames: u8,
     // Opt-in only. Old builds enabled these by default; the migration
     // below must not interpret those historical booleans as explicit consent.
@@ -215,9 +249,14 @@ impl Default for Settings {
             colour_correction_gbc: false,
             bezel_gba: Bezel::None, bezel_gbc: Bezel::Default, bezel_gb: Bezel::Default,
             gb_palettes: false, gb_palette: 1, rewind: true,
+            rewind_speed: 2,
             turbo: true, eject_save: true,
             show_fps: false, responsive_pacing: false,
             display_sync_pacing: false, hybrid_pacing: false,
+            retroarch_clock_pacing: false,
+            // Every pacing mode loads as RETROARCH (migrate_pacing), so
+            // this baseline only keeps a saved profile equal to itself.
+            retroarch_sync_pacing: true, responsive_loop: false,
             run_ahead_frames: 0,
             show_wifi: false, show_bluetooth: false, show_integrations: false,
             time_format: TimeFormat::TwentyFourHour,
@@ -236,12 +275,10 @@ impl Settings {
         settings.shader_gba=Shader::Lcd3x;
         settings.shader_gbc=Shader::Lcd3x;
         settings.shader_gb=Shader::Lcd3x;
-        // v1.2.2 RC: on-device Wario Land 4 tests found SYNC LAB stable
-        // without Run-Ahead, while Run-Ahead audio remains a 1.2.3 task.
-        // Fresh installs only: never change existing saved user choices.
-        settings.responsive_pacing=false;
-        settings.display_sync_pacing=false;
-        settings.hybrid_pacing=true;
+        // Frame Pacing NATIVE: RetroArch's loop, smoother than RetroArch
+        // itself on the KONKR (1.2.3 beta22 captures).
+        settings.retroarch_sync_pacing=true;
+        settings.responsive_loop=false;
         settings.run_ahead_frames=0;
         settings
     }
@@ -284,10 +321,10 @@ impl Settings {
                 if !Shader::GB.contains(&s.shader_gb) { s.shader_gb = Shader::Off; }
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
                 if s.gb_palette >= 48 { s.gb_palette = 1; }
-                if s.hybrid_pacing {
-                    s.responsive_pacing = false;
-                    s.display_sync_pacing = false;
-                } else if !s.responsive_pacing { s.display_sync_pacing = false; }
+                if !REWIND_SPEEDS.contains(&s.rewind_speed) { s.rewind_speed = 2; }
+                migrate_pacing(&mut s.responsive_pacing, &mut s.display_sync_pacing,
+                    &mut s.hybrid_pacing, &mut s.retroarch_clock_pacing,
+                    &mut s.retroarch_sync_pacing, &mut s.responsive_loop);
                 if s.run_ahead_frames > 2 { s.run_ahead_frames = 0; }
                 // Before this version all three toggles defaulted ON.
                 // A previously written settings file therefore isn't proof
@@ -304,15 +341,10 @@ impl Settings {
     }
     pub fn save(&self, dir: &Path) -> io::Result<()> {
         fs::create_dir_all(dir)?;
-        let target = dir.join(NAME);
-        let temporary = dir.join(format!("{NAME}.partial"));
         let bytes = serde_json::to_vec_pretty(&self).map_err(io::Error::other)?;
-        let write = (|| -> io::Result<()> {
-            fs::write(&temporary, bytes)?;
-            fs::rename(&temporary, target)
-        })();
-        if write.is_err() { let _ = fs::remove_file(temporary); }
-        write
+        // Durable like battery saves: a power cut must never leave an empty
+        // Settings.json that silently resets every preference.
+        slot_store::atomic_write(&dir.join(NAME), &bytes)
     }
     pub fn shader_for(&self, platform: slot_store::Platform)->Shader {
         match platform {
@@ -381,16 +413,21 @@ impl Settings {
             3 => self.gb_palettes = !self.gb_palettes,
             4 => {
                 let at = SPEEDS.iter().position(|x| *x == self.ff_speed).unwrap_or(0);
-                self.ff_speed = SPEEDS[if right { (at + 1) % 4 } else { (at + 3) % 4 }];
+                let n = SPEEDS.len();
+                self.ff_speed = SPEEDS[if right { (at + 1) % n } else { (at + n - 1) % n }];
             }
             5 => self.ff_sound = !self.ff_sound,
-            6 => self.rewind = !self.rewind,
+            6 => cycle_rewind_setting(&mut self.rewind, &mut self.rewind_speed, right),
             7 => self.turbo = !self.turbo,
             8 => self.rumble = !self.rumble,
             9 => self.eject_save = !self.eject_save,
             10 => self.show_fps = !self.show_fps,
-            11 => cycle_pacing(&mut self.responsive_pacing,
-                &mut self.display_sync_pacing, &mut self.hybrid_pacing, right),
+            11 => {
+                migrate_pacing(&mut self.responsive_pacing, &mut self.display_sync_pacing,
+                    &mut self.hybrid_pacing, &mut self.retroarch_clock_pacing,
+                    &mut self.retroarch_sync_pacing, &mut self.responsive_loop);
+                self.responsive_loop = !self.responsive_loop;
+            }
             12 => self.run_ahead_frames = cycle_u8(self.run_ahead_frames, 2, right),
             13 => self.show_wifi = !self.show_wifi,
             14 => self.show_bluetooth = !self.show_bluetooth,
@@ -405,19 +442,18 @@ impl Settings {
             .unwrap_or(GbPalette::DEFAULT).core_name()
     }
 }
-/// Keep old three choices unchanged; reuse the experimental fourth slot
-/// for beta8 SYNC LAB. The serialized flag is backward compatible.
-/// Mutually exclusive flags preserve all previously persisted profiles.
-pub fn cycle_pacing(
-    responsive: &mut bool, display_sync: &mut bool, hybrid: &mut bool, right: bool
+/// Frame Pacing has two options, both RETROARCH pacing (display-clocked
+/// core, resampled audio with rate control): NATIVE runs RetroArch's
+/// swap-paced loop, RESPONSIVE the Choreographer VSync loop. Every older
+/// mode (STANDARD, RESPONSIVE, DISPLAY SYNC, SYNC LAB, RA CLOCK LAB) becomes
+/// NATIVE; RETROARCH keeps its loop choice.
+pub fn migrate_pacing(
+    responsive: &mut bool, display_sync: &mut bool, hybrid: &mut bool,
+    ra_clock: &mut bool, ra_sync: &mut bool, responsive_loop: &mut bool,
 ) {
-    let modes = [(false, false, false), (true, false, false),
-        (true, true, false), (false, false, true)];
-    let current = modes.iter().position(|&(r, d, h)|
-        r == *responsive && d == *display_sync && h == *hybrid).unwrap_or(0);
-    let next = if right { (current + 1) % modes.len() }
-        else { (current + modes.len() - 1) % modes.len() };
-    (*responsive, *display_sync, *hybrid) = modes[next];
+    if !*ra_sync { *responsive_loop = false; }
+    (*responsive, *display_sync, *hybrid, *ra_clock, *ra_sync) =
+        (false, false, false, false, true);
 }
 
 /// SYNC LAB (experimental): the Display Sync implementation discards
@@ -427,6 +463,12 @@ pub fn cycle_pacing(
 /// No synthesized PCM, no duplicated simulation, no unbounded lag after
 /// Android suspension. Backlog is deliberately visible in diagnostics.
 pub fn frame_debt_hybrid(prev: f64, elapsed: f64, speed: f64, period: f64) -> f64 {
+    (prev + elapsed * speed).clamp(0.0, period * 4.0)
+}
+
+/// RA CLOCK LAB accumulates fractional GBA time using Choreographer VSync
+/// deltas, not jitter between GL callbacks. Still one real frame per callback.
+pub fn frame_debt_ra_clock(prev: f64, elapsed: f64, speed: f64, period: f64) -> f64 {
     (prev + elapsed * speed).clamp(0.0, period * 4.0)
 }
 
@@ -779,25 +821,30 @@ mod tests {
     }
 
     #[test]
-    fn frame_pacing_cycles_four_modes_without_changing_legacy_defaults() {
+    fn frame_pacing_is_native_or_responsive_and_old_modes_become_native() {
         let mut s = Settings::default();
-        assert!(!s.responsive_pacing && !s.display_sync_pacing);
+        assert!(s.retroarch_sync_pacing && !s.responsive_loop);
         assert!(s.change(11, true));
-        assert!(s.responsive_pacing && !s.display_sync_pacing);
-        assert!(s.change(11, true));
-        assert!(s.responsive_pacing && s.display_sync_pacing && !s.hybrid_pacing);
-        assert!(s.change(11, true));
-        assert!(s.hybrid_pacing && !s.responsive_pacing && !s.display_sync_pacing);
-        assert!(s.change(11, true));
-        assert!(!s.responsive_pacing && !s.display_sync_pacing && !s.hybrid_pacing);
+        assert!(s.retroarch_sync_pacing && s.responsive_loop);
         assert!(s.change(11, false));
-        assert!(s.hybrid_pacing && !s.responsive_pacing && !s.display_sync_pacing);
-        let old: Settings = serde_json::from_str(r#"{"responsive_pacing":true}"#).unwrap();
-        assert!(old.responsive_pacing && !old.display_sync_pacing && !old.hybrid_pacing);
-        let old_sync: Settings = serde_json::from_str(
-            r#"{"responsive_pacing":true,"display_sync_pacing":true}"#).unwrap();
-        assert!(old_sync.display_sync_pacing && !old_sync.hybrid_pacing);
-        assert!(Settings::first_install_defaults().hybrid_pacing);
+        assert!(s.retroarch_sync_pacing && !s.responsive_loop);
+        assert!(s.change(11, false) && s.responsive_loop);
+        let dir = std::env::temp_dir().join(format!("slot-konkr-pacing-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for old in [r#"{"responsive_pacing":false}"#, r#"{"responsive_pacing":true}"#,
+            r#"{"responsive_pacing":true,"display_sync_pacing":true}"#,
+            r#"{"hybrid_pacing":true}"#, r#"{"retroarch_clock_pacing":true}"#,
+            r#"{"retroarch_sync_pacing":false,"responsive_loop":true}"#] {
+            fs::write(dir.join(NAME), old).unwrap();
+            let s = Settings::load(&dir);
+            assert!(s.retroarch_sync_pacing && !s.responsive_loop, "{old}");
+            assert!(!s.responsive_pacing && !s.display_sync_pacing && !s.hybrid_pacing
+                && !s.retroarch_clock_pacing, "{old}");
+        }
+        fs::write(dir.join(NAME), r#"{"retroarch_sync_pacing":true,"responsive_loop":true}"#)
+            .unwrap();
+        assert!(Settings::load(&dir).responsive_loop);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -821,10 +868,9 @@ mod tests {
         // GAMEPLAY
         assert_eq!(s.ff_speed,2);
         assert!(s.ff_sound && s.rewind && s.turbo && s.rumble && s.eject_save);
-        // EMULATION: SYNC LAB is the exclusive hybrid-pacing flag.
-        // Preserve all three legacy serde defaults for old saved JSON.
+        // EMULATION: Frame Pacing NATIVE.
         assert!(!s.show_fps);
-        assert!(s.hybrid_pacing);
+        assert!(s.retroarch_sync_pacing && !s.responsive_loop && !s.hybrid_pacing);
         assert!(!s.responsive_pacing && !s.display_sync_pacing);
         assert_eq!(s.run_ahead_frames,0);
     }
@@ -905,18 +951,70 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn rewind_speed_steps_and_legacy_upgrade_do_not_change_unrelated_options() {
+        let old: Settings = serde_json::from_str(
+            r#"{"rewind":true,"ff_speed":4,"shader_gba":"dot","colour_correction_gba":true}"#
+        ).unwrap();
+        assert_eq!(old.rewind_speed, 2, "match upstream pacing for old profiles");
+        assert_eq!(rewind_step_seconds(1), 0.1);
+        assert!((rewind_step_seconds(5) - 0.02).abs() < 1e-6);
+        let mut s = old.clone();
+        s.rewind = false;
+        for (speed, rate) in [(1, 0.1_f32), (2, 0.05), (3, 1.0/30.0), (5, 0.02)] {
+            s.change(6,true);
+            assert!(s.rewind);
+            assert_eq!(s.rewind_speed,speed);
+            assert!((rewind_step_seconds(speed)-rate).abs()<1e-6);
+        }
+        assert_eq!(s.ff_speed,old.ff_speed);
+        assert_eq!(s.shader_gba,old.shader_gba);
+        assert_eq!(s.colour_correction_gba,old.colour_correction_gba);
+        let json=serde_json::to_string(&s).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(),s);
+        let invalid: Settings=serde_json::from_str(r#"{"rewind_speed":255}"#).unwrap();
+        assert_eq!(rewind_step_seconds(invalid.rewind_speed),0.05);
+    }
+
+    #[test]
+    fn shader_color_pipeline_never_applies_mgba_correction_twice() {
+        for shader in Shader::GBA {
+            for wanted in [false,true] {
+                let core=shader.core_colour(wanted);
+                assert!(!(core && shader.includes_gba_color()));
+                if !shader.includes_gba_color() { assert_eq!(core,wanted); }
+            }
+        }
+        for shader in Shader::GB {
+            assert!(!shader.includes_gba_color());
+            assert!(shader.core_colour(true));
+        }
+    }
+
+    #[test]
     fn screen_gameplay_original_choices_cycle() {
         let mut s = Settings::default();
         s.change(0, false); assert_eq!(s.shader_gba, Shader::Dot);
         s.change(1, false); assert_eq!(s.shader_gb, Shader::Simpletex);
+        // 2x wraps left to Off (original Slot 1.8.1), then back to 6x.
+        s.change(4, false); assert_eq!(s.ff_speed, 0);
         s.change(4, false); assert_eq!(s.ff_speed, 6);
+        s.change(4, true); assert_eq!(s.ff_speed, 0);
         s.change(4, true); assert_eq!(s.ff_speed, 2);
-        for i in [2, 3, 5, 6, 7, 8, 9] { assert!(s.change(i, true)); }
+        for i in [2, 3, 5, 7, 8, 9] { assert!(s.change(i, true)); }
+        for _ in 0..3 { assert!(s.change(6,true)); } // 2x -> 3x -> 5x -> OFF
         assert!(!s.change(16, true));
         assert!(!s.rewind && !s.turbo && !s.eject_save);
         assert!(s.change(10, true) && s.show_fps);
-        assert!(s.change(11, true) && s.responsive_pacing);
+        assert!(s.change(11, true) && s.responsive_loop);
         assert!(s.change(12, true) && s.run_ahead_frames == 1);
+    }
+    #[test]
+    fn fast_forward_off_survives_a_round_trip() {
+        let mut s = Settings::default();
+        s.ff_speed = 0;
+        let json = serde_json::to_vec(&s).unwrap();
+        let back: Settings = serde_json::from_slice(&json).unwrap();
+        assert_eq!(back.ff_speed, 0);
     }
     #[test]
     fn dev13_json_migrates_without_wiping_preferences() {

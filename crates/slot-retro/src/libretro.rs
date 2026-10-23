@@ -15,6 +15,9 @@ use crate::rumble::Rumble;
 const VIDEO_BYTES: usize = (GBA_W * GBA_H * 4) as usize;
 
 static LIVE: AtomicBool = AtomicBool::new(false);
+// Run-Ahead "second instance": one private prediction copy of the core,
+// loaded from a separate file so it owns its own globals.
+static SECONDARY_LIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum PixelFormat {
@@ -33,6 +36,7 @@ struct Host {
     save_dir: CString,
     rumble: Rumble,
     asked_for_rumble: bool,
+    suppress_speculative_rumble: bool,
     netpacket: Option<NetpacketCallback>,
     net: Link,
     net_peer: Option<u16>,
@@ -72,7 +76,12 @@ unsafe fn with_host<R>(f: impl FnOnce(&mut Host) -> R) -> Option<R> {
 unsafe extern "C" fn log_noop(_level: c_uint, _fmt: *const c_char) {}
 
 unsafe extern "C" fn set_rumble_state(port: c_uint, effect: c_uint, strength: u16) -> bool {
-    with_host(|h| h.rumble.set(port, effect, strength)).unwrap_or(false)
+    with_host(|h| {
+        // Speculative input prediction must never change real Android motor
+        // state. The host callback can outlive the predicted video frame.
+        if h.suppress_speculative_rumble { true }
+        else { h.rumble.set(port, effect, strength) }
+    }).unwrap_or(false)
 }
 
 unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
@@ -379,6 +388,22 @@ unsafe extern "C" fn video_refresh(
     });
 }
 
+// F9: return the last committed PCM Vec to libretro for the next frame.
+// A frame typically contains only ~1–2 KiB of PCM. mem::take() alone forces
+// a new heap allocation on every 59.7Hz callback; this reuses that capacity
+// without changing PCM content, ordering, sample rate, FF or AudioTrack.
+fn recycle_committed_pcm(destination: &mut Vec<i16>, mut buffer: Vec<i16>) {
+    // Never override audio that arrived from a native callback after take.
+    if !destination.is_empty() { return; }
+    // Do not retain an unexpectedly large audio burst forever. Normal GBA
+    // PCM buffers are far below 32,768 shorts (64 KiB).
+    if buffer.capacity() > 32_768 { return; }
+    buffer.clear();
+    if buffer.capacity() > destination.capacity() {
+        *destination = buffer;
+    }
+}
+
 unsafe extern "C" fn audio_sample(left: i16, right: i16) {
     with_host(|h| h.audio.extend_from_slice(&[left, right]));
 }
@@ -416,6 +441,10 @@ unsafe extern "C" fn input_state(port: c_uint, device: c_uint, _index: c_uint, i
 // unchanged: this memory exists only between speculative save and restore.
 type AudioSidecarFn = unsafe extern "C" fn(*mut c_void, usize, bool) -> bool;
 type AudioSidecarSizeFn = unsafe extern "C" fn() -> usize;
+// F5: KPA mGBA read-only active battery snapshot, independent of its
+// possibly stale libretro RETRO_MEMORY_SAVE_RAM mirror after unserialize.
+type ActiveBatteryFn = unsafe extern "C" fn(*mut c_void, usize, *mut usize) -> bool;
+type GpspBackendFn = unsafe extern "C" fn() -> c_int;
 struct AudioSidecar {
     transfer: AudioSidecarFn,
     snapshot: Vec<u8>,
@@ -426,9 +455,13 @@ pub struct LibretroCore {
     api: Api,
     is_gpsp: bool,
     gpsp_audio: Option<AudioSidecar>,
+    gpsp_backend: Option<GpspBackendFn>,
+    gpsp_last_backend: i32,
+    gpsp_backend_check_frames: u16,
     is_mgba: bool,
     mgba_audio_exports: Option<(AudioSidecarSizeFn, AudioSidecarFn)>,
     mgba_audio: Option<AudioSidecar>,
+    mgba_active_battery: Option<ActiveBatteryFn>,
     // mGBA's retro_serialize_size() serializes the whole core internally;
     // skip this duplicate work on stable-sized speculative snapshots.
     mgba_runahead_size_age: u16,
@@ -437,6 +470,7 @@ pub struct LibretroCore {
     rom_path: Option<CString>,
     av: AvInfo,
     loaded: bool,
+    secondary: bool,
     _lib: Library,
 }
 
@@ -457,6 +491,28 @@ impl LibretroCore {
         }
         Self::open_inner(dylib, system_dir, save_dir)
             .inspect_err(|_| LIVE.store(false, Ordering::SeqCst))
+    }
+
+    /// Open the Run-Ahead prediction instance. `dylib` must be a private
+    /// copy of the primary core file: the dynamic linker would otherwise
+    /// hand back the primary's library and both would share core globals.
+    /// Callers verify that with [`LibretroCore::instance_id`].
+    pub fn open_secondary(dylib: &Path, system_dir: &Path, save_dir: &Path)
+        -> Result<Self, CoreError>
+    {
+        if SECONDARY_LIVE.swap(true, Ordering::SeqCst) {
+            return Err(CoreError::Unsupported("a secondary core is already open".into()));
+        }
+        Self::open_inner(dylib, system_dir, save_dir)
+            .map(|mut core| { core.secondary = true; core })
+            .inspect_err(|_| SECONDARY_LIVE.store(false, Ordering::SeqCst))
+    }
+
+    /// Address of this library's `retro_run`. Two cores with the same id
+    /// share one loaded library (and its globals), so they are not
+    /// independent instances.
+    pub fn instance_id(&self) -> usize {
+        self.api.run as usize
     }
 
     fn try_init_mgba_audio(&mut self) {
@@ -542,6 +598,14 @@ impl LibretroCore {
                 _ => None,
             }
         } else { None };
+        let mgba_active_battery = if is_mgba {
+            unsafe { lib.get::<ActiveBatteryFn>(b"slot_mgba_clone_active_save_ram\0") }
+                .ok().map(|v| *v)
+        } else { None };
+        let gpsp_backend = if is_gpsp {
+            unsafe { lib.get::<GpspBackendFn>(b"slot_gpsp_backend_is_interpreter\0") }
+                .ok().map(|v| *v)
+        } else { None };
         // An unpatched/foreign gpSP must not run speculative frames: core
         // savestates intentionally omit its audio mixer ring.
         let gpsp_audio = if is_gpsp {
@@ -579,6 +643,7 @@ impl LibretroCore {
             save_dir: cdir(save_dir)?,
             rumble: Rumble::default(),
             asked_for_rumble: false,
+            suppress_speculative_rumble: false,
             netpacket: None,
             net: Link::default(),
             net_peer: None,
@@ -601,9 +666,13 @@ impl LibretroCore {
             api,
             is_gpsp,
             gpsp_audio,
+            gpsp_backend,
+            gpsp_last_backend: -1,
+            gpsp_backend_check_frames: 0,
             is_mgba,
             mgba_audio_exports,
             mgba_audio: None,
+            mgba_active_battery,
             mgba_runahead_size_age: 0,
             host,
             rom: Vec::new(),
@@ -613,6 +682,7 @@ impl LibretroCore {
                 sample_rate: 0.0,
             },
             loaded: false,
+            secondary: false,
             _lib: lib,
         })
     }
@@ -643,7 +713,11 @@ impl Drop for LibretroCore {
             let _a = Active::bind(&mut self.host);
             (self.api.deinit)();
         }
-        LIVE.store(false, Ordering::SeqCst);
+        if self.secondary {
+            SECONDARY_LIVE.store(false, Ordering::SeqCst);
+        } else {
+            LIVE.store(false, Ordering::SeqCst);
+        }
     }
 }
 
@@ -790,6 +864,8 @@ impl RetroCore for LibretroCore {
             return Err(CoreError::Load(format!("core refused {}", rom.display())));
         }
         self.loaded = true;
+        self.gpsp_last_backend = -1;
+        self.gpsp_backend_check_frames = 0;
         self.mgba_runahead_size_age = 0;
         self.try_init_mgba_audio();
         let mut av = SystemAvInfo::default();
@@ -815,11 +891,32 @@ impl RetroCore for LibretroCore {
             let _a = Active::bind(&mut self.host);
             unsafe { (self.api.run)() };
         }
+        // Read gpSP execution backend only on the first frame and at long
+        // intervals thereafter. Changing dynarec/JIT policy is intentionally
+        // not allowed here; log transitions for slow-emulation diagnostics.
+        if let Some(backend) = self.gpsp_backend {
+            self.gpsp_backend_check_frames = self.gpsp_backend_check_frames.wrapping_add(1);
+            if self.gpsp_last_backend < 0 || self.gpsp_backend_check_frames >= 300 {
+                self.gpsp_backend_check_frames = 0;
+                let selected = unsafe { backend() };
+                if selected != self.gpsp_last_backend {
+                    eprintln!("slot-gpsp: backend={} (read-only)",
+                        if selected == 0 { "dynarec" } else { "interpreter" });
+                    self.gpsp_last_backend = selected;
+                }
+            }
+        }
         // Retry after deferred initialization; never run an mGBA
         // speculative frame without a correctly sized audio snapshot.
         if self.is_mgba && self.mgba_audio.is_none() {
             self.try_init_mgba_audio();
         }
+    }
+
+    fn run_speculative_frame(&mut self, input: ButtonMask) {
+        self.host.suppress_speculative_rumble = true;
+        self.run_frame(input);
+        self.host.suppress_speculative_rumble = false;
     }
 
     fn set_frame_skip(&mut self, skip: bool) {
@@ -833,6 +930,10 @@ impl RetroCore for LibretroCore {
 
     fn take_audio(&mut self) -> Vec<i16> {
         std::mem::take(&mut self.host.audio)
+    }
+
+    fn recycle_audio(&mut self, audio: Vec<i16>) {
+        recycle_committed_pcm(&mut self.host.audio, audio);
     }
 
     fn discard_audio(&mut self) {
@@ -955,6 +1056,37 @@ impl RetroCore for LibretroCore {
         Some(unsafe { std::slice::from_raw_parts(data as *const u8, len) }.to_vec())
     }
 
+    fn save_ram_verified(&self) -> Result<Option<Vec<u8>>, CoreError> {
+        if !self.is_mgba {
+            return Ok(self.save_ram());
+        }
+        // Do not silently export a stale libretro mirror if a production
+        // mGBA build lacks our verified active-savedata accessor.
+        let clone = self.mgba_active_battery.ok_or_else(|| {
+            CoreError::Unsupported("mGBA active SRAM snapshot ABI missing".into())
+        })?;
+        const MAX_GBA_BATTERY: usize = 128 * 1024;
+        let mut bytes = vec![0u8; MAX_GBA_BATTERY];
+        let mut written = 0usize;
+        let ok = unsafe {
+            clone(bytes.as_mut_ptr().cast(), bytes.len(), &mut written)
+        };
+        if !ok {
+            return Err(CoreError::State("mGBA active SRAM copy failed; existing save preserved".into()));
+        }
+        if written == usize::MAX {
+            // A GB/GBC ROM uses a different backend: keep its libretro
+            // SRAM/RTC pointer and formats completely unchanged.
+            return Ok(self.save_ram());
+        }
+        if written > MAX_GBA_BATTERY {
+            return Err(CoreError::State("mGBA active SRAM exceeds 128 KiB".into()));
+        }
+        if written == 0 { return Ok(None); }
+        bytes.truncate(written);
+        Ok(Some(bytes))
+    }
+
     fn load_save_ram(&mut self, data: &[u8]) -> Result<(), CoreError> {
         let dst = unsafe { (self.api.get_memory_data)(MEMORY_SAVE_RAM) };
         let len = unsafe { (self.api.get_memory_size)(MEMORY_SAVE_RAM) };
@@ -1043,6 +1175,7 @@ mod tests {
             save_dir: CString::new(".").unwrap(),
             rumble: Rumble::default(),
             asked_for_rumble: false,
+            suppress_speculative_rumble: false,
             netpacket: None,
             net: Link::default(),
             net_peer: None,
@@ -1051,6 +1184,50 @@ mod tests {
             options_dirty,
             declared: HashMap::new(),
         })
+    }
+
+    #[test]
+    fn speculative_rumble_callback_never_leaks_to_real_host_motor() {
+        let mut host = host_with(HashMap::new(), false);
+        // Rumble is Arc-backed, just like the handle MainActivity polls.
+        let motor = host.rumble.clone();
+        assert_eq!(motor.strength(), 0);
+        host.suppress_speculative_rumble = true;
+        {
+            let _guard = Active::bind(&mut host);
+            assert!(unsafe { set_rumble_state(0, RUMBLE_STRONG, u16::MAX) });
+        }
+        assert_eq!(motor.strength(), 0,
+            "a predicted rumble must not survive libretro rollback");
+        host.suppress_speculative_rumble = false;
+        {
+            let _guard = Active::bind(&mut host);
+            assert!(unsafe { set_rumble_state(0, RUMBLE_STRONG, 1234) });
+        }
+        assert_eq!(motor.strength(), 1234);
+    }
+
+    #[test]
+    fn pcm_capacity_is_reused_without_replaying_samples() {
+        let mut destination = Vec::<i16>::new();
+        let mut frame = Vec::with_capacity(4096);
+        frame.extend_from_slice(&[12, -12, 54, -54]);
+        let ptr = frame.as_ptr();
+        recycle_committed_pcm(&mut destination, frame);
+        assert!(destination.is_empty());
+        assert_eq!(destination.as_ptr(), ptr);
+        assert!(destination.capacity() >= 4096);
+        // Speculative or late audio must not be overwritten by recycling.
+        destination.extend_from_slice(&[42, -42]);
+        recycle_committed_pcm(&mut destination, vec![10, 20, 30]);
+        assert_eq!(destination, vec![42, -42]);
+    }
+
+    #[test]
+    fn oversized_pcm_allocation_is_not_cached() {
+        let mut destination = Vec::<i16>::new();
+        recycle_committed_pcm(&mut destination, Vec::with_capacity(32_769));
+        assert_eq!(destination.capacity(), 0);
     }
 
     fn declaration(key: &str, value: &str) -> (Variable, CString, CString) {

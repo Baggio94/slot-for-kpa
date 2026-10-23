@@ -1,0 +1,55 @@
+name: RetroArch Reference Parity Lab
+
+on:
+  push:
+    branches:
+      - research/retroarch-reference-parity
+    paths:
+      - "tools/retroarch-parity/**"
+      - ".github/workflows/retroarch-parity.yml"
+  pull_request:
+    paths:
+      - "tools/retroarch-parity/**"
+      - ".github/workflows/retroarch-parity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-parity-lab:
+    name: Validate A/B tooling (no APK builds or device changes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell syntax and offline Python compilation
+        run: |
+          set -euo pipefail
+          bash -n tools/retroarch-parity/capture_pair.sh
+          python3 -m compileall -q tools/retroarch-parity
+      - name: Run 19 offline safety, frame pacing and statistics tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/retroarch-parity -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/retroarch-parity-tests.log"
+          grep -Eq '^Ran 19 tests in ' "$RUNNER_TEMP/retroarch-parity-tests.log"
+          grep -q '^OK$' "$RUNNER_TEMP/retroarch-parity-tests.log"
+      - name: Package ready-to-run Mac/Linux lab
+        run: |
+          set -euo pipefail
+          mkdir -p retroarch-parity-kit/tools/retroarch-parity
+          mkdir -p retroarch-parity-kit/tools/emulation-lab
+          cp tools/retroarch-parity/*.py tools/retroarch-parity/*.sh \
+             tools/retroarch-parity/*.md retroarch-parity-kit/tools/retroarch-parity/
+          cp tools/emulation-lab/report.py retroarch-parity-kit/tools/emulation-lab/
+          chmod +x retroarch-parity-kit/tools/retroarch-parity/*.sh
+          test -s retroarch-parity-kit/tools/emulation-lab/report.py
+          # README commands are relative to the extracted kit root.
+          tar -czf retroarch-parity-kit.tar.gz retroarch-parity-kit
+      - name: Upload validated parity kit
+        uses: actions/upload-artifact@v4
+        with:
+          name: retroarch-parity-lab-safe-kit
+          path: retroarch-parity-kit.tar.gz
+          if-no-files-found: error
+          retention-days: 14

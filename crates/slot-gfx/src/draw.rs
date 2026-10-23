@@ -44,16 +44,57 @@ pub enum Draw {
     },
 }
 
+#[derive(Clone)]
+struct TexturePixels {
+    w: u32,
+    h: u32,
+    filter: u32,
+    rgba: std::sync::Arc<[u8]>,
+}
+
 pub struct Sprites {
+    context_lost: bool,
     prog: gl::types::GLuint,
     white: gl::types::GLuint,
     textures: Vec<gl::types::GLuint>,
+    recovery: Option<Vec<TexturePixels>>,
     u_rect: gl::types::GLint,
     u_colour: gl::types::GLint,
     u_turn: gl::types::GLint,
 }
 
 impl Sprites {
+    pub(crate) fn abandon_context(&mut self) {
+        self.context_lost = true;
+    }
+
+    pub(crate) fn enable_recovery(&mut self) {
+        assert!(
+            self.textures.is_empty(),
+            "enable recovery before creating textures"
+        );
+        self.recovery = Some(Vec::new());
+    }
+
+    pub(crate) fn restore_into(&self, target: &mut Self) -> Result<(), GfxError> {
+        let pixels = self
+            .recovery
+            .as_ref()
+            .ok_or_else(|| GfxError::Context("texture recovery was not enabled".into()))?;
+        // Upload first without allocating a second CPU copy of every texture.
+        for p in pixels {
+            target.push(p.w, p.h, &p.rgba, p.filter);
+        }
+        target.recovery = Some(pixels.clone());
+        Ok(())
+    }
+
+    pub(crate) fn recovery_bytes(&self) -> usize {
+        self.recovery
+            .as_ref()
+            .map_or(0, |p| p.iter().map(|p| p.rgba.len()).sum())
+    }
+
     pub fn new() -> Result<Self, GfxError> {
         let prog = crate::shaders::program(SPRITE_VERT, SPRITE_FRAG)?;
         let white = crate::gl::texture(
@@ -78,9 +119,11 @@ impl Sprites {
             u_turn = crate::gl::uniform_location(prog, "u_turn");
         }
         Ok(Sprites {
+            context_lost: false,
             prog,
             white,
             textures: Vec::new(),
+            recovery: None,
             u_rect,
             u_colour,
             u_turn,
@@ -98,6 +141,14 @@ impl Sprites {
     fn push(&mut self, w: u32, h: u32, rgba: &[u8], filter: gl::types::GLenum) -> TexId {
         let tex = crate::gl::texture(w, h, filter, gl::CLAMP_TO_EDGE, gl::RGBA, Some(rgba));
         self.textures.push(tex);
+        if let Some(pixels) = &mut self.recovery {
+            pixels.push(TexturePixels {
+                w,
+                h,
+                filter,
+                rgba: rgba.into(),
+            });
+        }
         TexId(self.textures.len() - 1)
     }
 
@@ -107,6 +158,11 @@ impl Sprites {
         };
         if rgba.len() < (w * h * 4) as usize {
             return;
+        }
+        if let Some(pixels) = self.recovery.as_mut().and_then(|r| r.get_mut(id.0)) {
+            pixels.w = w;
+            pixels.h = h;
+            pixels.rgba = rgba.into();
         }
         unsafe {
             gl::BindTexture(gl::TEXTURE_2D, *tex);
@@ -183,6 +239,9 @@ impl Sprites {
 
 impl Drop for Sprites {
     fn drop(&mut self) {
+        if self.context_lost {
+            return;
+        }
         unsafe {
             gl::DeleteTextures(self.textures.len() as i32, self.textures.as_ptr());
             gl::DeleteTextures(1, &self.white);

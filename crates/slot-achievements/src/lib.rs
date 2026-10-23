@@ -22,6 +22,15 @@ use storage::{Config, Store, Unlock};
 const RAM_SIZE: usize = 0x58000;
 const GB_COVERAGE_SIZE: usize = 0x17000;
 const QUEUE_SIZE: usize = 8;
+// F10: if nothing arrives, poll HTTP preparation / award retries at most
+// four times per second. Frames and controls signal the evaluator instantly.
+const EVALUATOR_IDLE_WATCHDOG: Duration = Duration::from_millis(250);
+
+fn wake_evaluator(wake: &mpsc::SyncSender<()>) {
+    // Coalesce signals: only one pending wake is necessary. Never allow a
+    // network/evaluator wakeup to backpressure a libretro frame or Android UI.
+    let _ = wake.try_send(());
+}
 
 /// A passive shelf indicator. Reading it never acquires a worker's lock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +128,7 @@ struct Frame {
 pub struct Service {
     controls: mpsc::Sender<Control>,
     frames: mpsc::SyncSender<Frame>,
+    wake: mpsc::SyncSender<()>,
     notices: mpsc::Receiver<Notice>,
     enabled: Arc<AtomicBool>,
     current: Arc<AtomicU64>,
@@ -139,6 +149,8 @@ impl Service {
     fn start_with(root: PathBuf, transport: impl network::Transport + Send + 'static) -> Self {
         let (controls, control_rx) = mpsc::channel();
         let (frames, frame_rx) = mpsc::sync_channel(QUEUE_SIZE);
+        let (wake, wake_rx) = mpsc::sync_channel(1);
+        let network_signal = wake.clone();
         let (notice_tx, notices) = mpsc::channel();
         let enabled = Arc::new(AtomicBool::new(false));
         let current = Arc::new(AtomicU64::new(0));
@@ -163,6 +175,8 @@ impl Service {
                     worker_enabled.clone(),
                     control_rx,
                     frame_rx,
+                    wake_rx,
+                    network_signal,
                     notice_tx,
                     worker_status,
                     network_stop,
@@ -183,6 +197,7 @@ impl Service {
         Self {
             controls,
             frames,
+            wake,
             notices,
             enabled,
             current,
@@ -230,19 +245,20 @@ impl Service {
             || hash.len() != 32 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
             return false;
         }
-        self.controls.send(Control::PrefetchHash(hash.to_ascii_lowercase(), console)).is_ok()
+        let sent = self.controls.send(Control::PrefetchHash(hash.to_ascii_lowercase(), console)).is_ok();
+        if sent { wake_evaluator(&self.wake); }
+        sent
     }
 
     /// Poll during power-off. The UI keeps rendering while the evaluator drains final
     /// frames and fsyncs their awards; an HTTP request is never part of this barrier.
     pub fn flush_ready(&self) -> bool {
-        if !self.flushing.swap(true, Ordering::AcqRel)
-            && self
-                .controls
-                .send(Control::Flush(self.flushed.clone()))
-                .is_err()
-        {
-            self.flushed.store(true, Ordering::Release);
+        if !self.flushing.swap(true, Ordering::AcqRel) {
+            if self.controls.send(Control::Flush(self.flushed.clone())).is_err() {
+                self.flushed.store(true, Ordering::Release);
+            } else {
+                wake_evaluator(&self.wake);
+            }
         }
         self.flushed.load(Ordering::Acquire)
     }
@@ -256,7 +272,9 @@ impl Service {
         }
         if !self.stopping.swap(true, Ordering::AcqRel) {
             self.http_shutdown.store(true, Ordering::Release);
-            let _ = self.controls.send(Control::Shutdown);
+            if self.controls.send(Control::Shutdown).is_ok() {
+                wake_evaluator(&self.wake);
+            }
         }
         self.evaluator_stopped.load(Ordering::Acquire)
             && self.http_stopped.load(Ordering::Acquire)
@@ -301,6 +319,8 @@ fn run(
     enabled: Arc<AtomicBool>,
     controls: mpsc::Receiver<Control>,
     frames: mpsc::Receiver<Frame>,
+    wake: mpsc::Receiver<()>,
+    wake_network: mpsc::SyncSender<()>,
     notices: mpsc::Sender<Notice>,
     status: Arc<Status>,
     http_shutdown: Arc<AtomicBool>,
@@ -358,6 +378,7 @@ fn run(
                 load_rx,
                 prefetch_rx,
                 prepared_tx,
+                wake_network,
                 network_notices,
                 network_status,
                 network_stop,
@@ -378,7 +399,6 @@ fn run(
     let mut unsaved = BTreeMap::new();
     let mut retried = Instant::now();
     let mut presence_updated = Instant::now();
-    let mut last_frame_received = Instant::now();
     loop {
         if retried.elapsed() >= Duration::from_secs(1) {
             retry_unsaved(&mut unsaved, &store, &notices);
@@ -549,21 +569,14 @@ fn run(
                 warned_gap: false,
             });
         }
-        // Keep normal 5ms responsiveness during gameplay. When Android
-        // suspends the GL thread and no frames arrive, park for up to 40ms
-        // (still below the 8-frame queue at 120Hz). On the empty shelf the
-        // evaluator only needs a 100ms control wakeup. HTTP prefetch proceeds
-        // independently while the device is awake.
-        let wait = if playing.is_none() { 100 }
-            else if last_frame_received.elapsed() > Duration::from_millis(250) { 40 }
-            else { 5 };
-        match frames.recv_timeout(Duration::from_millis(wait)) {
-            Ok(frame) => {
-                last_frame_received = Instant::now();
-                evaluate(frame, &mut playing, &store, &notices, &mut unsaved);
-            }
+        // F10: frames and controls now wake this worker immediately with
+        // a bounded, nonblocking notification. On silence (paused, ejected,
+        // sleeping), park for 250ms rather than polling at 5/40/100ms.
+        // Retain a watchdog to consume HTTP-prepared games, retry unsaved
+        // awards every second and refresh rich presence even if no signal.
+        match wake.recv_timeout(EVALUATOR_IDLE_WATCHDOG) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
         if presence_updated.elapsed() >= Duration::from_secs(1) {
             *status.presence.lock().unwrap() = playing

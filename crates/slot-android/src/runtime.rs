@@ -12,7 +12,7 @@ use crate::core_selection;
 use crate::cart_render::CartRender;
 use crate::core_picker::{CorePicker, Press};
 use slot_retro::ButtonMask;
-use jni::{JNIEnv, objects::{JObject, JString}, sys::{jint, jboolean, jshortArray, jlongArray, jstring}};
+use jni::{JNIEnv, objects::{JObject, JString, JShortArray}, sys::{jint, jboolean, jlongArray, jstring}};
 use std::sync::Mutex;
 use std::time::Instant;
 use std::net::Ipv4Addr;
@@ -130,7 +130,9 @@ const SHELF_STATUS_TEXT: [&str; 8] = [
     "CANNOT READ ROM FOLDER", "FOLDER PICKER UNAVAILABLE",
     "FOLDER PERMISSION FAILED",
 ];
-const REWIND_STEP_S: f32 = 0.10;  // Original Slot's time-travel HUD + ~10 Hz restoration.
+// Original Slot records ~30 rewind states/sec and replays ~60/sec (~2x).
+// Android v1.2.2 recorded/replayed ~10/sec (~1x). Playback rate is computed
+// by settings::rewind_step_seconds, never confused with capture frequency.
 
 const FF_DOUBLE_TAP_MS: u128 = 320;
 static MESSAGE: Mutex<Option<String>> = Mutex::new(None);
@@ -138,6 +140,9 @@ static MESSAGE: Mutex<Option<String>> = Mutex::new(None);
 // and forwards bounded, sanitized user-facing notices to Android's main thread.
 static RA_NOTICES: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static RA_STATUS: Mutex<Option<String>> = Mutex::new(None);
+// F10: do not allocate, stringify and lock a new RA JSON status on every
+// 60/120Hz GL draw. Only publish on actual status/progress changes.
+static RA_STATUS_KEY: AtomicU64 = AtomicU64::new(u64::MAX);
 const RA_NOTICE_LIMIT: usize = 8;
 // Up to 96 prepared cartridge faces (~70 MiB worst-case native RGBA artwork).
 // KONKR has 4 GiB shared RAM; the LRU still reuses existing GLES textures.
@@ -184,11 +189,25 @@ static SYNC_LAB_PCM_QUEUED_SHORTS: AtomicU64 = AtomicU64::new(0);
 static SYNC_LAB_EMPTY_PCM_FRAMES: AtomicU64 = AtomicU64::new(0);
 static SYNC_LAB_NO_STEP_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 static SYNC_LAB_OVERDUE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+// F9: loss diagnostics only; never used to pace or drop native PCM.
+// Count all modes, not just solo SYNC LAB. Saturating cumulative atomics
+// are sampled as deltas by the Android audio worker every ~5 seconds.
+static AUDIO_FIFO_OVERFLOW_EVENTS: AtomicU64 = AtomicU64::new(0);
+static AUDIO_FIFO_DROPPED_SHORTS: AtomicU64 = AtomicU64::new(0);
 
 static AUDIO: Mutex<VecDeque<i16>> = Mutex::new(VecDeque::new());
 static PLAYING: AtomicBool = AtomicBool::new(false);
 static SAMPLE_RATE: AtomicI32 = AtomicI32::new(0);
+// RETROARCH pacing inputs from Kotlin: the panel refresh rate (mHz) and the
+// AudioTrack queue depth/capacity in frames, sampled by the audio worker.
+static DISPLAY_REFRESH_MILLIHZ: AtomicI32 = AtomicI32::new(0);
+static AUDIO_OUT_QUEUED_FRAMES: AtomicI32 = AtomicI32::new(0);
+static AUDIO_OUT_CAPACITY_FRAMES: AtomicI32 = AtomicI32::new(0);
 static DISPLAY_SYNC: AtomicBool = AtomicBool::new(false);
+// Frame Pacing NATIVE for the running solo game: Kotlin renders
+// continuously and the blocking buffer swap paces the core (RetroArch's own
+// loop). False (RESPONSIVE, menus, Link) renders on Choreographer VSyncs.
+static RA_SWAP_LOOP: AtomicBool = AtomicBool::new(false);
 // Updated by the GL owner after an entirely settled, fully preloaded shelf frame.
 // Kotlin may switch the idle carousel to requestRender without affecting games.
 static CAROUSEL_QUIET: AtomicBool = AtomicBool::new(false);
@@ -225,6 +244,9 @@ struct SystemStatus {
 static SYSTEM_STATUS: Mutex<SystemStatus> = Mutex::new(SystemStatus {
     clock: String::new(), battery: None,
 });
+// Android's existing status push owns the generation. The GL loop should not
+// clone a String, acquire SYSTEM_STATUS, or reformat the clock every frame.
+static SYSTEM_STATUS_REV: AtomicU64 = AtomicU64::new(1);
 
 fn controls(code: i32) -> u16 {
     match code {
@@ -317,6 +339,9 @@ impl A12DrawProbe {
 }
 thread_local! {
     static A12_DRAW_PROBE: RefCell<Option<A12DrawProbe>> = const { RefCell::new(None) };
+    // GL-owner only, no atomics, Java JNI roundtrip or per-frame logging.
+    static FRAME_PHASE_PROBE: RefCell<Option<crate::frame_phases::PhaseWindow>> =
+        const { RefCell::new(None) };
 }
 fn a12_draw_sample(linked: bool, steps: usize, native_us: u64, recovery: bool) {
     A12_DRAW_PROBE.with(|probe| {
@@ -495,6 +520,10 @@ const MENU_TEXT: [&str; 117] = [
     "Time Format",                       // 116, Its-TroyM PR #2
 ];
 
+/// Gameplay page labels and the Settings keys they change, in row order.
+const GAMEPLAY_ROWS: [usize; 6] = [27, 28, 37, 38, 30, 39];
+const GAMEPLAY_KEYS: [usize; 6] = [4, 5, 6, 7, 8, 9];
+
 const INTERFACE_ROWS: [usize; 4] = [63, 64, 65, 116];
 const INTERFACE_KEYS: [usize; 4] = [13, 14, 15, 28];
 
@@ -503,6 +532,7 @@ struct LiveGameOptions {
     ff_speed: u8,
     ff_sound: bool,
     rewind: bool,
+    rewind_speed: u8,
     turbo: bool, // KONKR X/Y Buttons
     rumble: bool,
     eject_save: bool,
@@ -514,6 +544,7 @@ impl LiveGameOptions {
             ff_speed,
             ff_sound:p.and_then(|v|v.ff_sound_override).unwrap_or(global.ff_sound),
             rewind:p.and_then(|v|v.rewind_override).unwrap_or(global.rewind),
+            rewind_speed:p.and_then(|v|v.rewind_speed_override).unwrap_or(global.rewind_speed),
             turbo:p.and_then(|v|v.turbo_override).unwrap_or(global.turbo),
             rumble:p.and_then(|v|v.rumble_override).unwrap_or(global.rumble),
             eject_save:p.and_then(|v|v.eject_save_override).unwrap_or(global.eject_save),
@@ -581,6 +612,15 @@ struct Engine {
     requested_uri: Option<String>,
     prepared_rom: Option<String>,
     game_accum: f64,
+    ra_clock: crate::ra_clock_lab::Clock,
+    ra_sync_steps: crate::ra_sync::VsyncSteps,
+    ra_resampler: crate::ra_sync::Resampler,
+    ra_resampled: Vec<i16>,
+    ra_adjust: f64,
+    /// RETROARCH mode's automatic Frame Delay; `frame_delay_used_ns` is the
+    /// wait applied in this callback.
+    frame_delay: crate::ra_sync::FrameDelay,
+    frame_delay_used_ns: Option<i64>,
     perf_last: Instant,
     perf_rendered: u32,
     perf_emulated: u32,
@@ -653,6 +693,7 @@ struct Engine {
     polaroid_title_texture: Option<slot_gfx::TexId>,
     hud: Hud,
     clock_text: String,
+    last_system_status_rev: u64,
     clock_texture: Option<slot_gfx::TexId>,
     clock_face: Printed,
     battery_percent: Option<u8>,
@@ -726,6 +767,7 @@ impl Engine {
             .unwrap_or_else(Settings::first_install_defaults);
         // Upstream Slot delegates colour correction to libretro core options.
         // Disable the dev13 approximate GPU grade to avoid double correction.
+        gpu.enable_context_recovery();
         gpu.set_colour_correction(false);
         FF_AUDIO_ENABLED.store(settings.ff_sound, Ordering::Release);
         let visuals_root = PATHS.lock().unwrap_or_else(|e| e.into_inner())
@@ -951,7 +993,8 @@ impl Engine {
                                "LCD Grid V2", "Grid V2 + GBA Color", "zfast LCD",
                                "LCD1x", "Simpletex + GBA", "AGB-001",
                                "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
-                               "SYNC LAB"]
+                               "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN",
+                               "RA CLOCK LAB", "RETROARCH", "NATIVE"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_texture(face.w, face.h, &face.rgba);
@@ -1093,6 +1136,13 @@ impl Engine {
             requested_uri: None,
             prepared_rom: None,
             game_accum: 0.0,
+            ra_clock: crate::ra_clock_lab::Clock::default(),
+            ra_sync_steps: crate::ra_sync::VsyncSteps::default(),
+            ra_resampler: crate::ra_sync::Resampler::default(),
+            ra_resampled: Vec::with_capacity(4096),
+            ra_adjust: 1.0,
+            frame_delay: crate::ra_sync::FrameDelay::default(),
+            frame_delay_used_ns: None,
             perf_last: now,
             perf_rendered: 0,
             perf_emulated: 0,
@@ -1162,6 +1212,7 @@ impl Engine {
             polaroid_title_texture: None,
             hud,
             clock_text: String::new(),
+            last_system_status_rev: 0,
             clock_texture: None,
             clock_face: Printed::default(),
             battery_percent: None,
@@ -1207,7 +1258,10 @@ impl Engine {
     }
 
     fn refresh_system_status(&mut self) {
+        let revision = SYSTEM_STATUS_REV.load(Ordering::Acquire);
+        if self.last_system_status_rev == revision { return; }
         let status = SYSTEM_STATUS.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        self.last_system_status_rev = revision;
         let clock = self.settings.time_format.format_clock(&status.clock);
         if clock != self.clock_text {
             self.clock_text = clock;
@@ -1305,10 +1359,22 @@ impl Engine {
                 }, time);
             }
             100 => {
+                let platform=self.current_cart_platform();
+                if self.game_settings().shader_for(platform).includes_gba_color() {
+                    set_message("Color correction is built into this shader".into());
+                    return true;
+                }
                 if self.game.is_some() {
                     self.change_game_screen_or_gameplay(2,true);
-                } else { self.change_setting(2,true); }
-                self.hud.toast(if self.game_settings().colour_correction {
+                } else {
+                    // Global shortcut should toggle the selected platform,
+                    // not the old GBA-only compatibility setting.
+                    let key=match platform {
+                        Platform::Gba=>22, Platform::Gbc=>23, Platform::Gb=>24
+                    };
+                    self.change_setting(key,true);
+                }
+                self.hud.toast(if self.game_settings().colour_for(platform) {
                     Toast::ColourOn
                 } else { Toast::ColourOff }, time);
             }
@@ -1971,6 +2037,39 @@ impl Engine {
                 AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
             }
             Input::Exit => {
+                // A failed battery/RTC/auto-state write must not destroy the
+                // only live emulator state. Keep gameplay and the save menu
+                // available so a storage issue can be resolved and retried.
+                let with_state = self.live_game_options().eject_save;
+                let eject_saved = match self.game.as_mut() {
+                    Some(session) if session.runahead_rollback_failed() => {
+                        // The in-memory core may be from speculative time.
+                        // First Exit must NEVER persist it; require a second
+                        // explicit Exit to discard and reload from last disk
+                        // checkpoint. This branch has NO SAVE_SYNC event.
+                        if !session.confirm_rollback_discard() {
+                            set_message("Run-Ahead rollback failed. Game frozen to protect saves. Select Save & Eject AGAIN to exit WITHOUT saving.".into());
+                            self.overlay = ShelfOverlay::GameMenu { row: 0 };
+                            self.game_accum = 0.0;
+                            return;
+                        }
+                        crate::game::log_launch_timing(
+                            "Unsafe Run-Ahead core discarded WITHOUT SRAM/state/RetroArch export");
+                        false
+                    }
+                    Some(session) => match session.save_for_eject(with_state) {
+                        Ok(saved) => saved,
+                        Err(error) => {
+                            crate::game::log_launch_timing(&format!(
+                                "Save & Eject cancelled; core preserved: {error}"));
+                            set_message(format!("Save failed: {error}. Try Save & Eject again."));
+                            self.overlay = ShelfOverlay::GameMenu { row: 0 };
+                            self.game_accum = 0.0;
+                            return;
+                        }
+                    },
+                    None => false,
+                };
                 self.hud.set_link(LinkBadge::Off);
                 self.cancel_link_discovery();
                 self.link_identity = None;
@@ -1984,9 +2083,11 @@ impl Engine {
                 }
                 // The reversed cart animation will emit the original eject sound.
                 if self.progress > 0.0 || self.inserted { self.eject_sound_armed = true; }
-                if let Some(mut session) = self.game.take() {
-                    let saved = session.save(self.live_game_options().eject_save);
-                    if saved && !session.is_link_sandbox() {
+                if let Some(session) = self.game.take() {
+                    // A durable checkpoint was verified BEFORE taking/drop-
+                    // ping the session. Never report a false success from a
+                    // battery error masked by an unrelated RTC/state write.
+                    if eject_saved && !session.is_link_sandbox() {
                         if let Some(uri) = self.requested_uri.as_deref() {
                             let paths = PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone();
                             let core = paths.as_ref().map(|(storage, _)| {
@@ -2173,7 +2274,12 @@ impl Engine {
                     } else if let Some(since) = self.mode_down_at.take() {
                         if since.elapsed().as_millis() >= 650 {
                             self.mode_last_tap = None;
-                            if self.game.is_some() { self.handle(Input::Exit); }
+                            if self.game.is_some() {
+                                crate::game::log_launch_timing(&format!(
+                                    "Exit requested by MODE key release (rewind_held={})",
+                                    self.rewind_held));
+                                self.handle(Input::Exit);
+                            }
                         } else if self.game.as_ref().is_some_and(GameSession::requires_relaunch) {
                             self.mode_last_tap = None;
                             self.overlay = ShelfOverlay::GameMenu { row: 0 };
@@ -2289,6 +2395,22 @@ impl Engine {
                     }
                     return;
                 }
+                if self.game.is_some() && matches!(self.overlay, ShelfOverlay::States)
+                    && self.polaroids.as_ref().is_some_and(Polaroids::confirming) {
+                    // Original Slot 1.8: while "Delete this state?" shows,
+                    // only X deletes and B keeps; every other key is ignored.
+                    if pressed {
+                        match code {
+                            99 => self.delete_selected_polaroid(),
+                            97 => {
+                                if let Some(p) = self.polaroids.as_mut() { p.keep(); }
+                                self.update_polaroid_title();
+                            }
+                            _ => {}
+                        }
+                    }
+                    return;
+                }
                 if self.game.is_some() && matches!(self.overlay, ShelfOverlay::States) {
                     if pressed {
                         match code {
@@ -2310,19 +2432,8 @@ impl Engine {
                                 }
                                 self.overlay=ShelfOverlay::None;
                             }
-                            100 => { // Y deletes one Slot history entry only.
-                                if let (Some(game),Some(p))=(self.game.as_mut(),self.polaroids.as_mut()) {
-                                    if let Some(entry)=p.selected() {
-                                        if let Err(err)=game.delete_manual(&entry.stamp) {
-                                            set_message(format!("State delete failed: {err}"));
-                                        } else {
-                                            p.remove_selected();
-                                        }
-                                    }
-                                }
-                                if self.polaroids.as_ref().is_some_and(|p|p.is_empty()) {
-                                    self.overlay=ShelfOverlay::None;
-                                } else {
+                            100 => { // Y asks before deleting one Slot history entry.
+                                if self.polaroids.as_mut().is_some_and(Polaroids::ask_delete) {
                                     self.update_polaroid_title();
                                 }
                             }
@@ -2418,9 +2529,9 @@ impl Engine {
                             },
                             ShelfOverlay::PauseGameplaySettings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::PauseGameplaySettings {
-                                    row: move_menu_row(row,code,6),
+                                    row: move_menu_row(row,code,GAMEPLAY_KEYS.len()),
                                 },
-                                21 | 22 => self.change_game_screen_or_gameplay(row+4,code==22),
+                                21 | 22 => self.change_game_screen_or_gameplay(GAMEPLAY_KEYS[row],code==22),
                                 97 => self.overlay = ShelfOverlay::PauseSettings { row: 1 },
                                 _ => {}
                             },
@@ -2491,6 +2602,8 @@ impl Engine {
                         return;
                     }
                     if code == 105 {
+                        // Fast Forward Off (original Slot 1.8.1): R2 does nothing.
+                        if pressed && self.live_game_options().ff_speed == 0 { return; }
                         if pressed {
                             if self.ff_latched {
                                 self.ff_latched = false;
@@ -2689,9 +2802,9 @@ impl Engine {
                             },
                             ShelfOverlay::GameplaySettings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::GameplaySettings {
-                                    row: move_menu_row(row, code, 6),
+                                    row: move_menu_row(row, code, GAMEPLAY_KEYS.len()),
                                 },
-                                21 | 22 => self.change_setting(row + 4, code == 22),
+                                21 | 22 => self.change_setting(GAMEPLAY_KEYS[row], code == 22),
                                 97 => self.overlay = ShelfOverlay::Settings { row: 2 },
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
@@ -3124,7 +3237,19 @@ impl Engine {
                         started.elapsed().as_millis(),
                         self.insert_started.map_or(0, |at| at.elapsed().as_millis())
                     ));
+                    // Keep launch bookkeeping INSIDE the cartridge seated
+                    // hold, not the first visible gameplay frame. Recording
+                    // the selected game performs synchronous focus/Recents
+                    // writes and can rebuild the carousel rack on the GL
+                    // thread. That caused avoidable work right when the CRT
+                    // first switched on. A failed core launch never reaches
+                    // this point, so failed games are not recorded.
                     self.pending_game = Some(session);
+                    let recents_started = Instant::now();
+                    self.record_recent();
+                    crate::game::log_launch_timing(&format!(
+                        "Recents staged during cartridge hold: {}ms",
+                        recents_started.elapsed().as_millis()));
                 }
                 Err(error) => {
                     set_message(format!("{}: {error}", core.text()));
@@ -3308,6 +3433,32 @@ impl Engine {
         }
     }
 
+    /// The Frame Delay to apply in this callback: only while a solo game
+    /// runs at 1x in RETROARCH mode with the display clocking the core.
+    fn frame_delay_wanted(&self, vsync_frame_ns: i64) -> Option<i64> {
+        let session = self.game.as_ref()?;
+        let display_hz = f64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire)) / 1000.0;
+        let clocked = vsync_frame_ns > 0
+            && matches!(self.overlay, ShelfOverlay::None)
+            && !self.exiting_screen && !self.rewind_held
+            && !self.ff_held && !self.ff_latched && !session.linked()
+            && self.current_emulation().retroarch_sync_pacing
+            && !RA_SWAP_LOOP.load(Ordering::Acquire)
+            && crate::ra_sync::display_can_clock_core(display_hz, session.fps);
+        clocked.then(|| self.frame_delay.delay_ns())
+    }
+
+    /// Called once the frame is drawn: feeds this callback's cost (VSync to
+    /// now, minus the delay) back into the automatic Frame Delay.
+    fn observe_frame_delay(&mut self, vsync_frame_ns: i64) {
+        let Some(delay) = self.frame_delay_used_ns.take() else { return };
+        let reported = f64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire)) / 1000.0;
+        if !(reported > 0.0) { return; }
+        let period = (1e9 / self.ra_sync_steps.display_hz(reported)) as i64;
+        let cost = crate::ra_sync::monotonic_ns() - vsync_frame_ns - delay;
+        self.frame_delay.observe_frame(cost, period);
+    }
+
     fn current_emulation(&self) -> EmulationProfile {
         let mut profile = self.game_emulation
             .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
@@ -3347,6 +3498,12 @@ impl Engine {
         let Some(uri)=self.selected_rom_uri() else { return };
         let core=self.selected_emulation_core();
         let platform=self.current_cart_platform();
+        if key == 2 && self.game_settings().shader_for(platform).includes_gba_color() {
+            // These two RetroArch presets bake GBA Color into the shader.
+            // Never silently toggle an option that cannot affect the picture.
+            set_message("Color correction is built into this shader".into());
+            return;
+        }
         let linked=self.game.as_ref().is_some_and(GameSession::linked);
         let relaunch=self.game.as_ref().is_some_and(GameSession::requires_relaunch);
         // Shader and color-correction are display-only and safe while linked;
@@ -3433,6 +3590,9 @@ impl Engine {
         // timing policy, and discard any prior predictive video/audio frame.
         // The core stays alive; edits take effect on the first resumed frame.
         self.game_accum = 0.0;
+        self.ra_clock.reset();
+        self.ra_sync_steps.reset();
+        self.frame_delay.reset();
         AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
     fn reset_game_emulation(&mut self) {
@@ -3731,7 +3891,14 @@ impl Engine {
     }
 
     fn change_setting(&mut self, key: usize, right: bool) {
+        if matches!(key,2|22) && self.settings.shader_gba.includes_gba_color() {
+            set_message("Color correction is built into this shader".into());
+            return;
+        }
         if !self.settings.change(key, right) { return; }
+        // Clock formatting can change independently of Android's next
+        // status event. Force one re-render of the existing clock value.
+        if key == 28 { self.last_system_status_rev = 0; }
         if key == 5 {
             FF_AUDIO_ENABLED.store(self.settings.ff_sound, Ordering::Release);
             AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -3768,18 +3935,19 @@ impl Engine {
         match key {
             0 => shader(scoped.shader_gba),
             1 => shader(scoped.shader_gb),
-            2 => if scoped.colour_for(self.current_cart_platform()) {4}else{5},
+            2 => if scoped.shader_for(self.current_cart_platform()).includes_gba_color() {42}
+                 else if scoped.colour_for(self.current_cart_platform()) {4}else{5},
             3 => if scoped.gb_palettes { 4 } else { 5 },
-            4 => match scoped.ff_speed { 2 => 0, 3 => 1, 4 => 2, _ => 3 },
+            4 => match scoped.ff_speed { 0 => 5, 2 => 0, 3 => 1, 4 => 2, _ => 3 },
             5 => if scoped.ff_sound { 4 } else { 5 },
-            6 => if scoped.rewind { 4 } else { 5 },
+            6 => if !scoped.rewind { 5 } else {
+                match scoped.rewind_speed { 1 => 38, 2 => 39, 3 => 40, _ => 41 }
+            },
             7 => if scoped.turbo { 15 } else { 16 },
             8 => if scoped.rumble { 4 } else { 5 },
             9 => if scoped.eject_save { 4 } else { 5 },
             10 => if profile.show_fps { 4 } else { 5 },
-            11 => if profile.hybrid_pacing { 37 }
-                else if profile.display_sync_pacing { 14 }
-                else if profile.responsive_pacing { 11 } else { 10 },
+            11 => if profile.responsive_loop { 11 } else { 45 },
             12 => match profile.run_ahead_frames { 1 => 12, 2 => 13, _ => 5 },
             13 => if self.settings.show_wifi { 4 } else { 5 },
             14 => if self.settings.show_bluetooth { 4 } else { 5 },
@@ -3802,7 +3970,8 @@ impl Engine {
             19 => if self.settings.show_recents {4}else{5},
             20 => if self.settings.show_titles {4}else{5},
             21 => shader(scoped.shader_gbc),
-            22 => if scoped.colour_correction_gba {4}else{5},
+            22 => if scoped.shader_gba.includes_gba_color() { 42 }
+                else if scoped.colour_correction_gba {4}else{5},
             23 => if scoped.colour_correction_gbc {4}else{5},
             24 => if scoped.colour_correction_gb {4}else{5},
             25 => if scoped.bezel_gba==crate::settings::Bezel::None {17}else{19},
@@ -4083,8 +4252,8 @@ impl Engine {
                 self.draw_setting_values(row,Self::screen_keys(platform),out);
             }
             ShelfOverlay::GameplaySettings { row } => {
-                self.draw_original_style_menu(33, &[27, 28, 37, 38, 30, 39], row, out);
-                self.draw_setting_values(row, &[4, 5, 6, 7, 8, 9], out);
+                self.draw_original_style_menu(33, &GAMEPLAY_ROWS, row, out);
+                self.draw_setting_values(row, &GAMEPLAY_KEYS, out);
             }
             ShelfOverlay::About { row } => {
                 // The native KONKR sticker stays intact, shifted up to make room
@@ -4178,8 +4347,8 @@ impl Engine {
                 self.draw_setting_values(row,&keys,out);
             }
             ShelfOverlay::PauseGameplaySettings { row } => {
-                self.draw_original_style_menu(33, &[27,28,37,38,30,39], row, out);
-                self.draw_setting_values(row,&[4,5,6,7,8,9],out);
+                self.draw_original_style_menu(33, &GAMEPLAY_ROWS, row, out);
+                self.draw_setting_values(row, &GAMEPLAY_KEYS, out);
             }
             ShelfOverlay::Multiplayer => self.draw_multiplayer(out),
             ShelfOverlay::Core => {
@@ -4283,9 +4452,29 @@ impl Engine {
         }
     }
 
+    fn delete_selected_polaroid(&mut self) {
+        if let (Some(game),Some(p))=(self.game.as_mut(),self.polaroids.as_mut()) {
+            if let Some(entry)=p.selected() {
+                if let Err(err)=game.delete_manual(&entry.stamp) {
+                    set_message(format!("State delete failed: {err}"));
+                    p.keep();
+                } else {
+                    p.remove_selected();
+                }
+            }
+        }
+        if self.polaroids.as_ref().is_some_and(|p|p.is_empty()) {
+            self.overlay=ShelfOverlay::None;
+        } else {
+            self.update_polaroid_title();
+        }
+    }
+
     fn update_polaroid_title(&mut self) {
         let Some(p)=self.polaroids.as_mut() else {return;};
-        let face=title_face(&p.title(&stamp_now()));
+        let title=if p.confirming() { slot_ui::CONFIRM_TITLE.to_owned() }
+            else { p.title(&stamp_now()) };
+        let face=title_face(&title);
         let tex=match self.polaroid_title_texture {
             Some(tex)=>{
                 self.gpu.update_texture(tex,face.w,face.h,&face.rgba);
@@ -4328,6 +4517,11 @@ impl Engine {
             self.gpu.create_texture(face.w,face.h,&face.rgba)
         });
         polaroids.set_hint_faces(hint_faces.to_vec());
+        let confirm_faces=slot_ui::CONFIRM_LEGEND.map(|(key,label)| {
+            let face=hint_face(key,label);
+            self.gpu.create_texture(face.w,face.h,&face.rgba)
+        });
+        polaroids.set_confirm_faces(confirm_faces.to_vec());
         if game.undo_available() {polaroids.set_undo(Some("undo"));}
         self.polaroids=Some(polaroids);
         self.update_polaroid_title();
@@ -4350,24 +4544,35 @@ impl Engine {
         self.handle(Input::Key(key,true));
         self.menu_repeat_dispatch=false;
     }
-    fn draw(&mut self, mut on_pcm_ready: impl FnMut()) {
+    fn draw(&mut self, vsync_frame_ns: i64, mut on_pcm_ready: impl FnMut()) {
+        if !self.gpu.graphics_ready() { return; }
+        // Includes Slot-side input/menu/RA/status preparation in "other_us".
+        // The enclosing JNI caller's library gate and later EGL swap remain
+        // outside the scope; Kotlin times the broader nativeDrawFrame call.
+        let phase_native_started = Instant::now();
         self.tick_menu_repeat();
         self.refresh_system_status();
         // Poll the already-running achievement evaluator without blocking GL.
         // Only Android's foreground UI displays notices; the worker never
         // touches JNI, an Activity, the renderer or the filesystem here.
         if let Some(service) = self.ra_service.as_ref() {
-            let status = format!("{:?}", service.sync_status());
+            let status = service.sync_status();
             let progress = service.sync_progress();
             let pending = service.sync_pending();
             let unsaved = service.has_unsaved_awards();
-            let snapshot = serde_json::json!({
-                "state": status,
-                "pending": pending,
-                "unsaved": unsaved,
-                "progress": progress,
-            }).to_string();
-            *RA_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot);
+            let key = u64::from(status as u8)
+                | (u64::from(progress.map_or(256u16, u16::from)) << 8)
+                | ((pending as u64) << 24)
+                | ((unsaved as u64) << 25);
+            if RA_STATUS_KEY.swap(key, Ordering::AcqRel) != key {
+                let snapshot = serde_json::json!({
+                    "state": format!("{status:?}"),
+                    "pending": pending,
+                    "unsaved": unsaved,
+                    "progress": progress,
+                }).to_string();
+                *RA_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot);
+            }
             // Bound per-frame overhead and pending Android UI messages.
             for _ in 0..4 {
                 let Some(notice) = service.take_notice() else { break };
@@ -4406,19 +4611,26 @@ impl Engine {
                     |g| (g.fps, g.core_kind().as_str(), g.linked()));
                 let profile = self.current_emulation();
                 let requested = profile.run_ahead_frames;
-                let pacing_mode = if profile.hybrid_pacing { "sync_lab" }
+                let pacing_mode = if profile.retroarch_sync_pacing { "retroarch" }
+                    else if profile.retroarch_clock_pacing { "ra_clock_lab" }
+                    else if profile.hybrid_pacing { "sync_lab" }
                     else if profile.display_sync_pacing { "display_sync" }
                     else if profile.responsive_pacing { "responsive" } else { "standard" };
                 let probe = self.game.as_mut()
                     .map(|g| g.take_runahead_probe()).unwrap_or_default();
                 *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
                     Some(format!(
-                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} linked={linked}",
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} runahead_second_instance_calls={} runahead_preemptive_rollbacks={} ra_sync_rate_adjust={:.5} ra_display_hz={:.3} frame_delay_ms={:.1} ra_loop={} linked={linked}",
                         self.game_accum * 1000.0,
                         self.perf_step0, self.perf_step1, self.perf_step_multi,
                         requested, probe.calls, probe.snapshots_us,
                         probe.speculative_us, probe.restores_us, probe.max_us,
-                        probe.failures));
+                        probe.failures, probe.second_instance_calls,
+                        probe.preemptive_rollbacks, self.ra_adjust,
+                        self.ra_sync_steps.display_hz(
+                            f64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire)) / 1000.0),
+                        self.frame_delay.delay_ns() as f64 / 1e6,
+                        if RA_SWAP_LOOP.load(Ordering::Acquire) { "swap" } else { "vsync" }));
                 if show_fps {
                     *PERF_STATUS.lock().unwrap_or_else(|e|e.into_inner()) =
                         Some(format!("EMU {emu:.1}/{target:.1} | DISPLAY {render:.1} | CATCHUP {catchup:.0}%"));
@@ -4445,6 +4657,13 @@ impl Engine {
             }
         }
 
+        // RetroArch Frame Delay: wait after VSync before reading the buttons,
+        // so the core runs on fresher input for the same refresh.
+        self.frame_delay_used_ns = self.frame_delay_wanted(vsync_frame_ns);
+        if let Some(delay) = self.frame_delay_used_ns {
+            let wait = (vsync_frame_ns + delay - crate::ra_sync::monotonic_ns()).min(delay);
+            if wait > 0 { std::thread::sleep(Duration::from_nanos(wait as u64)); }
+        }
         let events: Vec<Input> = INPUT
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -4469,7 +4688,7 @@ impl Engine {
             ShelfOverlay::PauseSettings { row } => (13u8, row, self.pause_settings_rows().len()),
             ShelfOverlay::PauseScreenSettings { row } =>
                 (14u8, row, self.pause_screen_rows().len()),
-            ShelfOverlay::PauseGameplaySettings { row } => (15u8, row, 6usize),
+            ShelfOverlay::PauseGameplaySettings { row } => (15u8, row, GAMEPLAY_KEYS.len()),
             ShelfOverlay::Multiplayer => (11u8, 0, 0usize),
             ShelfOverlay::Settings { row } => (4u8, row, 5usize),
             ShelfOverlay::GeneralSettings { row } =>
@@ -4481,7 +4700,7 @@ impl Engine {
             ShelfOverlay::ScreenSettings { row } => (5u8, row, 3usize),
             ShelfOverlay::ScreenSystemSettings { platform,row } =>
                 (16u8,row,Self::screen_rows(platform).len()),
-            ShelfOverlay::GameplaySettings { row } => (6u8, row, 6usize),
+            ShelfOverlay::GameplaySettings { row } => (6u8, row, GAMEPLAY_KEYS.len()),
             _ => (0, 0, 0),
         };
         if kind != self.menu_seen {
@@ -4544,6 +4763,8 @@ impl Engine {
             && self.mode_down_at.is_some_and(|t| t.elapsed().as_millis() >= 650)
         {
             self.mode_down_at = None;
+            crate::game::log_launch_timing(&format!(
+                "Exit requested by held MODE key (rewind_held={})", self.rewind_held));
             self.handle(Input::Exit);
         }
 
@@ -4579,9 +4800,17 @@ impl Engine {
                         self.insert_started.map_or(0, |at| at.elapsed().as_millis())
                     ));
                     self.buttons = 0;
-                    SAMPLE_RATE.store(session.sample_rate, Ordering::Release);
+                    // RETROARCH resamples to 48kHz; open AudioTrack there once.
+                    let ra_sync = self.current_emulation().retroarch_sync_pacing
+                        && !session.linked();
+                    SAMPLE_RATE.store(if ra_sync { crate::ra_sync::OUTPUT_RATE }
+                        else { session.sample_rate }, Ordering::Release);
+                    self.ra_resampler.reset();
+                    self.ra_sync_steps.reset();
                     self.game = Some(session);
-                    self.record_recent();
+                    // Focus and Recents were persisted during core
+                    // preparation; avoid synchronous IO/rebuilding the
+                    // carousel in the first game-frame callback.
                     self.game_accum = 0.0;
                     self.gpu.set_screen_effect(self.game_shader().effect());
                     // The exact Slot upstream geometry: GB/GBC 160x144
@@ -4696,6 +4925,14 @@ impl Engine {
         let bezel=self.game_bezel(); // resolved before mutably borrowing GameSession
         let live=self.live_game_options(); // Copy, zero allocations on 60/120Hz callback
         FF_AUDIO_ENABLED.store(live.ff_sound,Ordering::Release);
+        if live.ff_speed == 0 && (self.ff_held || self.ff_latched) {
+            // Fast Forward was set to Off while held or latched: a 0x
+            // multiplier would freeze the game, so drop back to 1x.
+            self.ff_held = false;
+            self.ff_latched = false;
+            AUDIO_SPEED_PERMILLE.store(1000, Ordering::Release);
+            self.hud.set_ff(FfState::Off);
+        }
         // Android's frame callback changes GLSurfaceView renderMode only when
         // an active game explicitly selected DISPLAY SYNC. No engine work or
         // GL resource ownership ever moves away from the GL render thread.
@@ -4703,14 +4940,20 @@ impl Engine {
         // Display Sync, but its real core frame budget is separate.
         // Linked sessions keep their prior render/pacing configuration.
         DISPLAY_SYNC.store(self.game.is_some()
-            && (profile.display_sync_pacing || profile.hybrid_pacing)
-            && !(profile.hybrid_pacing && self.game.as_ref()
-                .is_some_and(GameSession::linked)),
+            && (profile.display_sync_pacing || profile.hybrid_pacing
+                || profile.retroarch_clock_pacing || profile.retroarch_sync_pacing)
+            && !((profile.hybrid_pacing || profile.retroarch_clock_pacing
+                || profile.retroarch_sync_pacing)
+                && self.game.as_ref().is_some_and(GameSession::linked)),
+            Ordering::Release);
+        RA_SWAP_LOOP.store(profile.retroarch_sync_pacing && !profile.responsive_loop
+            && self.game.as_ref().is_some_and(|session| !session.linked()),
             Ordering::Release);
         // Grab clear-cart textures before borrowing the mutable emulator
         // session. They are used only for the 220ms CRT start transition.
         let (transition_back, transition_front) = self.clear_layers();
         let a12_native_started = Instant::now();
+        let mut frame_phases = crate::frame_phases::FramePhaseSample::default();
         if let Some(session) = self.game.as_mut() {
             // Resume only after the remote has also left its pause menu;
             // LinkPlay::frame holds either core while peer_paused is true.
@@ -4720,15 +4963,29 @@ impl Engine {
             SHELF_INDICATOR_FLAGS.store(0, Ordering::Release);
             let mut stepped = 0;
             let mut peer_unplugged = None;
+            // RETROARCH mode runs Run-Ahead as RetroArch's Preemptive Frames.
+            let mut preemptive = false;
             if self.rewind_held {
+                self.ra_clock.reset();
+                self.ra_sync_steps.reset();
                 // Rewind is mutually exclusive with forward libretro frames.
                 // Restore up to 3 historical snapshots per render frame and
                 // never pass rewound audio into the normal AudioTrack.
                 self.game_accum = 0.0;
+                // At 1x this restores 10 snapshots/s; at 2x (upstream feel)
+                // 20/s; at 5x, 50/s. Native Slot replays ~60 of its 30
+                // captures per second. Each restored state
+                // refreshes just one video frame, with no forward PCM or
+                // speculative Run-Ahead; keep bounded work per callback.
+                let rewind_period = crate::settings::rewind_step_seconds(live.rewind_speed);
                 self.rewind_accum = (self.rewind_accum + dt).min(0.30);
-                while self.rewind_accum >= REWIND_STEP_S && stepped < 3 {
-                    self.rewind_accum -= REWIND_STEP_S;
-                    if !session.rewind_step() {
+                while self.rewind_accum >= rewind_period && stepped < 3 {
+                    self.rewind_accum -= rewind_period;
+                    let rewind_started = Instant::now();
+                    let rewound = session.rewind_step();
+                    frame_phases.rewind_work_us = frame_phases.rewind_work_us
+                        .saturating_add(rewind_started.elapsed().as_micros() as u64);
+                    if !rewound {
                         self.rewind_accum = 0.0;
                         break;
                     }
@@ -4753,6 +5010,56 @@ impl Engine {
                 // core frame per callback. No skipped intermediate pictures.
                 // Never affect Link sessions, FF or the existing three modes.
                 let hybrid = profile.hybrid_pacing && !fast && !session.linked();
+                // RETROARCH: the display refresh clocks the core whenever the
+                // panel is within RetroArch's 5% timing skew of the core rate.
+                // Audio is always resampled to 48kHz in this mode (also while
+                // fast-forwarding) so the AudioTrack is never rebuilt.
+                let ra_sync = profile.retroarch_sync_pacing && !session.linked();
+                let display_hz = f64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire)) / 1000.0;
+                let ra_display_clocked = ra_sync && !fast
+                    && crate::ra_sync::display_can_clock_core(display_hz, session.fps);
+                let wanted_rate = if ra_sync { crate::ra_sync::OUTPUT_RATE } else { session.sample_rate };
+                let current_rate = SAMPLE_RATE.load(Ordering::Acquire);
+                if current_rate != 0 && current_rate != wanted_rate {
+                    // Mode switched mid-game: never play PCM at the wrong rate.
+                    SAMPLE_RATE.store(wanted_rate, Ordering::Release);
+                    AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    AUDIO_OUT_QUEUED_FRAMES.store(0, Ordering::Release);
+                    self.ra_resampler.reset();
+                }
+                let ra_ratio = if ra_sync {
+                    let core_rate = f64::from(session.sample_rate);
+                    let base = if ra_display_clocked {
+                        crate::ra_sync::base_ratio(core_rate, session.fps,
+                            self.ra_sync_steps.display_hz(display_hz))
+                    } else { f64::from(crate::ra_sync::OUTPUT_RATE) / core_rate };
+                    self.ra_adjust = if fast { 1.0 } else {
+                        let fifo_frames = AUDIO.lock().unwrap_or_else(|e| e.into_inner()).len() / 2;
+                        let track = AUDIO_OUT_QUEUED_FRAMES.load(Ordering::Acquire).max(0) as usize;
+                        let capacity = AUDIO_OUT_CAPACITY_FRAMES.load(Ordering::Acquire).max(0) as usize;
+                        crate::ra_sync::rate_control_adjust(fifo_frames + track, capacity)
+                    };
+                    base * self.ra_adjust
+                } else {
+                    self.ra_adjust = 1.0;
+                    self.ra_resampler.reset();
+                    1.0
+                };
+                // Only the opt-in modes use UI VSync instead of GL wall time.
+                // RETROARCH falls back to it when the panel cannot clock the core.
+                let ra_clock = (profile.retroarch_clock_pacing || (ra_sync && !ra_display_clocked))
+                    && !fast && !session.linked();
+                let ra_elapsed = if ra_clock {
+                    self.ra_clock.sample(vsync_frame_ns, f64::from(dt))
+                } else {
+                    self.ra_clock.reset();
+                    f64::from(dt)
+                };
+                // Preemptive Frames: only real frames are shown, and the core
+                // rolls back and replays only when the buttons change.
+                preemptive = ra_sync && !fast;
+                session.set_preemptive_frames(
+                    if preemptive { profile.run_ahead_frames } else { 0 });
                 // A11: this is the *same* double-GBA lockstep on both ends,
                 // even for equal ROMs. One late packet must not make gameplay
                 // and audio permanently lose an emulated frame. Restrict
@@ -4763,9 +5070,21 @@ impl Engine {
                 // Preserve a little more fractional game time in the
                 // opt-in DISPLAY SYNC mode ONLY. No extra libretro frames
                 // can run in any single callback; Beta 4 catch-up stays gone.
-                if mgba_cable_pacing {
+                if ra_display_clocked {
+                    // No fractional debt: run exactly the refreshes that elapsed.
+                    let refreshes = if RA_SWAP_LOOP.load(Ordering::Acquire) {
+                        self.ra_sync_steps.swap_paced_steps(vsync_frame_ns, display_hz)
+                    } else {
+                        self.ra_sync_steps.steps(vsync_frame_ns, display_hz)
+                    };
+                    self.game_accum = period * refreshes as f64;
+                } else if mgba_cable_pacing {
+                    self.ra_sync_steps.reset();
                     self.game_accum = crate::settings::frame_debt_mgba_cable(
                         self.game_accum, f64::from(dt), period);
+                } else if ra_clock {
+                    self.game_accum = crate::settings::frame_debt_ra_clock(
+                        self.game_accum, ra_elapsed, multiplier, period);
                 } else if hybrid {
                     self.game_accum = crate::settings::frame_debt_hybrid(
                         self.game_accum, f64::from(dt), multiplier, period);
@@ -4783,9 +5102,10 @@ impl Engine {
                 // strictly one committed frame per solo SYNC LAB callback.
                 // Keep the beta13 causal PCM diagnostics to investigate
                 // audio without concealing a latency regression.
-                let frame_limit = if mgba_cable_pacing { 2 }
+                let frame_limit = if ra_display_clocked { 2 }
+                    else if mgba_cable_pacing { 2 }
                     else if fast { usize::from(live.ff_speed) * 4 }
-                    else if hybrid {
+                    else if hybrid || ra_clock {
                         crate::settings::sync_lab_reactivity_first_frame_budget()
                     }
                     else if responsive { 1 } else { 4 };
@@ -4797,8 +5117,16 @@ impl Engine {
                     // Cable lockstep must not consume emulation time while
                     // the remote frame has not arrived. NEVER invent a solo
                     // frame or perform speculative Run-Ahead on a held link.
-                    if !session.advance(self.buttons, live.turbo,
-                        live.rewind && !session.linked()) {
+                    let advanced = session.advance(self.buttons, live.turbo,
+                        live.rewind && !session.linked());
+                    let timing = session.last_step_timings();
+                    frame_phases.core_us = frame_phases.core_us
+                        .saturating_add(timing.core_us);
+                    frame_phases.rewind_work_us = frame_phases.rewind_work_us
+                        .saturating_add(timing.rewind_work_us);
+                    frame_phases.periodic_battery_us = frame_phases.periodic_battery_us
+                        .saturating_add(timing.periodic_battery_us);
+                    if !advanced {
                         // A waiting mGBA Cable frame is NOT an emulated frame.
                         // Retain at most two frames of debt; only real remote
                         // inputs can advance them later. Never preserve debt
@@ -4832,6 +5160,7 @@ impl Engine {
                         break;
                     }
                     self.perf_emulated = self.perf_emulated.saturating_add(1);
+                    frame_phases.core_steps = frame_phases.core_steps.saturating_add(1);
                     self.game_accum -= period;
                     stepped += 1;
                     let samples = session.take_audio();
@@ -4856,21 +5185,46 @@ impl Engine {
                         // speculative Run-Ahead MUST never supply audio.
                         {
                             let mut audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
-                            let overflow = audio.len().saturating_add(samples.len()).saturating_sub(96_000);
-                            for _ in 0..overflow.min(audio.len()) { audio.pop_front(); }
-                            audio.extend(samples);
+                            // Extracted, host-tested copy of the beta8 FIFO
+                            // policy. The observed dropped-old count never
+                            // changes ordering, capacity or playback timing.
+                            let pcm: &[i16] = if ra_sync {
+                                self.ra_resampled.clear();
+                                self.ra_resampler.process(&samples, ra_ratio, &mut self.ra_resampled);
+                                &self.ra_resampled
+                            } else { &samples };
+                            // RETROARCH keeps at most one output buffer
+                            // waiting here, so audio can never lag the picture
+                            // by more than that even if production runs fast.
+                            let limit = if ra_sync && !fast {
+                                crate::ra_sync::fifo_limit_shorts(
+                                    AUDIO_OUT_CAPACITY_FRAMES.load(Ordering::Acquire).max(0) as usize)
+                            } else { 96_000 };
+                            let dropped = crate::audio_pcm::enqueue_pcm_bounded(
+                                &mut audio, pcm, limit);
+                            if dropped > 0 {
+                                AUDIO_FIFO_OVERFLOW_EVENTS.fetch_add(1, Ordering::Relaxed);
+                                AUDIO_FIFO_DROPPED_SHORTS.fetch_add(dropped as u64, Ordering::Relaxed);
+                            }
                         }
                         // Beta10 isolated experiment: the legacy Android
                         // notification happens only AFTER speculation + GLES.
                         // Wake AudioTrack immediately after committed PCM
                         // exists, so its writer can run during speculation.
                         // VSync, input and saved-state ownership are unchanged.
-                        if early_pcm_wake_allowed(hybrid, profile.run_ahead_frames, fast,
-                            session.linked(), true) {
+                        if (ra_sync && !fast) || early_pcm_wake_allowed(hybrid,
+                            profile.run_ahead_frames, fast, session.linked(), true) {
                             on_pcm_ready();
                         }
                     }
+                    // The only consumer has already queued/muted these samples.
+                    // Retain its Vec allocation for the next committed frame.
+                    // No changes to packet contents, audio scheduling or
+                    // speculative Run-Ahead frame ordering.
+                    session.recycle_audio(samples);
                 }
+                // RETROARCH never carries fractional time between refreshes.
+                if ra_display_clocked { self.game_accum = 0.0; }
             }
             // Observe whether sync-lab callbacks had sufficient accumulated
             // game time to run a committed frame, and how often the one-frame
@@ -4886,11 +5240,28 @@ impl Engine {
                 }
             }
             if stepped > 0 && !self.rewind_held && !self.ff_held && !self.ff_latched
-                && profile.run_ahead_frames > 0 {
+                && profile.run_ahead_frames > 0 && !preemptive {
                 // The normal frames and their audio are already consumed.
                 // Predicted video never advances the real saved/RA timeline.
+                let speculation_started = Instant::now();
                 session.prepare_runahead(self.buttons, live.turbo,
                     profile.run_ahead_frames);
+                frame_phases.speculative_us = speculation_started.elapsed().as_micros() as u64;
+            }
+            // Run-Ahead or Preemptive Frames may have quarantined the session.
+            if session.runahead_rollback_failed() {
+                // A partially restored speculative core must never tick
+                // or reach any periodic/manual/eject save path. Stop audio
+                // and force a visible, retryable unsaved-exit warning.
+                self.game_accum = 0.0;
+                self.rewind_held = false;
+                self.ff_held = false;
+                self.ff_latched = false;
+                RUMBLE_STRENGTH.store(0, Ordering::Release);
+                PLAYING.store(false, Ordering::Release);
+                AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                self.overlay = ShelfOverlay::GameMenu { row: 0 };
+                set_message("Run-Ahead restore failed; game paused to protect saves. Exit twice to discard this session WITHOUT saving.".into());
             }
             match stepped {
                 0 => self.perf_step0 = self.perf_step0.saturating_add(1),
@@ -4905,7 +5276,9 @@ impl Engine {
                     self.select_tap_frames = self.select_tap_frames.saturating_sub(stepped as u8);
                     if self.select_tap_frames == 0 { self.buttons &= !ButtonMask::SELECT; }
                 }
+                let upload_started = Instant::now();
                 self.gpu.upload_game(session.frame());
+                frame_phases.gpu_upload_us = upload_started.elapsed().as_micros() as u64;
                 RUMBLE_STRENGTH.store(
                     if live.rumble && !self.rewind_held {
                         i32::from(session.rumble_strength())
@@ -4913,8 +5286,13 @@ impl Engine {
                     Ordering::Release,
                 );
             }
+            // CPU wall time issuing the GL draw work. This is NOT asynchronous
+            // GPU execution and excludes Android's later eglSwapBuffers.
+            let submit_started = Instant::now();
             self.gpu.fit(self.size);
             self.gpu.begin_frame();
+            frame_phases.submit_setup_us = submit_started.elapsed().as_micros() as u64;
+            let build_started = Instant::now();
             let mut commands = Vec::new();
             if self.screen_power < 1.0 {
                 // Native Slot v1.7 draws the seated cart and slot behind the
@@ -4944,8 +5322,33 @@ impl Engine {
                 });
             }
             self.hud.draw(self.born.elapsed().as_millis() as u64, &mut commands);
+            frame_phases.submit_build_us = build_started.elapsed().as_micros() as u64;
+            let draw_started = Instant::now();
             self.gpu.draw_list(&commands);
-            self.gpu.end_frame(self.size);
+            frame_phases.submit_draw_us = draw_started.elapsed().as_micros() as u64;
+            let blit_started = Instant::now();
+            let end_phases = self.gpu.end_frame_profiled(self.size);
+            frame_phases.submit_blit_us = blit_started.elapsed().as_micros() as u64;
+            frame_phases.end_setup_us = end_phases.setup_us;
+            frame_phases.end_geometry_us = end_phases.geometry_us;
+            frame_phases.end_bind_us = end_phases.bind_us;
+            frame_phases.end_viewport_us = end_phases.viewport_us;
+            frame_phases.end_clear_us = end_phases.clear_us;
+            frame_phases.end_state_us = end_phases.state_us;
+            frame_phases.end_quad_us = end_phases.quad_us;
+            frame_phases.end_bezel_us = end_phases.bezel_us;
+            // The nested setup/build/draw/blit timers are subsets of submit;
+            // do not add them a second time in the native residual.
+            frame_phases.gpu_submit_us = submit_started.elapsed().as_micros() as u64;
+            frame_phases.native_total_us = phase_native_started.elapsed().as_micros() as u64;
+            FRAME_PHASE_PROBE.with(|probe| {
+                let mut probe = probe.borrow_mut();
+                let window = probe.get_or_insert_with(crate::frame_phases::PhaseWindow::new);
+                if let Some(summary) = window.add(frame_phases) {
+                    // Exactly one log entry per ~5s; never stringify each draw.
+                    crate::game::log_launch_timing(&summary.report());
+                }
+            });
             a12_draw_sample(session.linked() && session.core_kind() == Core::Mgba,
                 stepped, a12_native_started.elapsed().as_micros() as u64,
                 MGBA_CABLE_RECOVERY.load(Ordering::Acquire));
@@ -4969,6 +5372,12 @@ impl Engine {
             return;
         }
 
+        // Shelf mode clears the opt-in clock between cartridges.
+        self.ra_clock.reset();
+        self.ra_sync_steps.reset();
+        self.frame_delay.reset();
+        // Shelf mode is not emulation: do not merge idle UI into game phases.
+        FRAME_PHASE_PROBE.with(|probe| *probe.borrow_mut() = None);
         let ms = self.born.elapsed().as_millis() as u64;
         let repeated_letter = if !self.inserted && matches!(self.overlay,ShelfOverlay::None) {
             self.shelves[self.active].tick(ms)
@@ -5959,8 +6368,27 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSurfaceCreated(
     ENGINE.with(|holder| {
         let started = Instant::now();
         LIBRARY_UPDATE_SAFE.store(false, Ordering::Release);
-        *holder.borrow_mut() = None;
-        *RA_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        if let Some(engine) = holder.borrow_mut().as_mut() {
+            // GLSurfaceView calls this on its existing owner thread after EGL
+            // context recreation. Do not reload a core, auto-state or settings.
+            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            let result = engine.gpu.restore_after_context_loss(&AndroidSurface { size: engine.size });
+            if let Err(error) = result {
+                eprintln!("slot-konkr: graphics recovery failed; session retained: {error}");
+                return 0;
+            }
+            if let Some(session) = engine.game.as_ref() { engine.gpu.upload_game(session.frame()); }
+            engine.last = Instant::now();
+            engine.game_accum = 0.0;
+            engine.ra_clock.reset();
+            engine.ra_sync_steps.reset();
+            crate::game::log_launch_timing(&format!(
+                "Graphics recovered in {}ms; retained UI pixels={} bytes",
+                started.elapsed().as_millis(), engine.gpu.recovery_bytes()));
+            return 1;
+        }
+        RA_STATUS_KEY.store(u64::MAX, Ordering::Release);
+    *RA_STATUS.lock().unwrap_or_else(|e| e.into_inner()) = None;
         RA_NOTICES.lock().unwrap_or_else(|e| e.into_inner()).clear();
         PLAYING.store(false, Ordering::Release);
         CAROUSEL_QUIET.store(false, Ordering::Release);
@@ -5984,6 +6412,66 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSurfaceCreated(
             }
         }
     })
+}
+
+/// All four presenter lifecycle calls run on the same persistent owner as Engine.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeGraphicsReady(
+    _env: *mut c_void, _activity: *mut c_void,
+) -> u8 {
+    ENGINE.with(|holder| holder.borrow().as_ref().is_some_and(|e| e.gpu.graphics_ready()) as u8)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeGraphicsContextLost(
+    _env: *mut c_void, _activity: *mut c_void,
+) {
+    ENGINE.with(|holder| {
+        if let Some(engine) = holder.borrow_mut().as_mut() { engine.gpu.abandon_context(); }
+    });
+    LIBRARY_UPDATE_SAFE.store(false, Ordering::Release);
+    AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePresentationResume(
+    _env: *mut c_void, _activity: *mut c_void,
+) {
+    ENGINE.with(|holder| {
+        if let Some(engine) = holder.borrow_mut().as_mut() {
+            engine.last = Instant::now();
+            engine.game_accum = 0.0;
+            engine.ra_clock.reset();
+            engine.ra_sync_steps.reset();
+            engine.perf_last = Instant::now();
+            engine.perf_rendered = 0;
+            engine.perf_emulated = 0;
+            engine.perf_catchup = 0;
+            engine.perf_step0 = 0;
+            engine.perf_step1 = 0;
+            engine.perf_step_multi = 0;
+        }
+    });
+    AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRendererShutdown(
+    _env: *mut c_void, _activity: *mut c_void, context_current: u8,
+) {
+    ENGINE.with(|holder| {
+        let mut engine = holder.borrow_mut().take();
+        if context_current == 0 {
+            if let Some(engine) = engine.as_mut() { engine.gpu.abandon_context(); }
+        }
+        // The normal suspend checkpoint precedes shutdown. Dropping a session
+        // does not serialize or save a speculative/poisoned core.
+        drop(engine);
+    });
+    PLAYING.store(false, Ordering::Release);
+    SAMPLE_RATE.store(0, Ordering::Release);
+    LIBRARY_UPDATE_SAFE.store(false, Ordering::Release);
+    AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 #[unsafe(no_mangle)]
@@ -6033,8 +6521,11 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeReloadVisualAssets
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
     mut env: JNIEnv<'_>,
     activity: JObject<'_>,
+    vsync_frame_ns: jni::sys::jlong,
 ) {
     ENGINE.with(|holder| {
+        // Even a direct JNI draw must not advance or save while recovery failed.
+        if holder.borrow().as_ref().is_some_and(|e| !e.gpu.graphics_ready()) { return; }
         let safe = holder.borrow().as_ref().is_some_and(|e|
             may_apply_library_update(e.game.is_some(), e.inserted, e.awaiting_game));
         LIBRARY_UPDATE_SAFE.store(safe, Ordering::Release);
@@ -6082,7 +6573,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
             }
         }
         if let Some(engine) = holder.borrow_mut().as_mut() {
-            engine.draw(|| {
+            engine.draw(vsync_frame_ns, || {
                 // One callback per committed core frame maximum; SYNC LAB
                 // itself runs only one real frame per GL callback. Never
                 // invoke Java while holding the native PCM queue mutex.
@@ -6090,6 +6581,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
                     let _ = env.exception_clear();
                 }
             });
+            engine.observe_frame_delay(vsync_frame_ns);
         }
         let now_safe = holder.borrow().as_ref().is_some_and(|e|
             may_apply_library_update(e.game.is_some(), e.inserted, e.awaiting_game));
@@ -6449,7 +6941,10 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSystemStatus(
         Some(Battery { percent: percent as u8,
             charge: if charging != 0 { Charge::Charging } else { Charge::Discharging } })
     } else { None };
-    *SYSTEM_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = SystemStatus { clock, battery };
+    {
+        *SYSTEM_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = SystemStatus { clock, battery };
+    }
+    SYSTEM_STATUS_REV.fetch_add(1, Ordering::Release);
 }
 
 /// App-private files directory and nativeLibraryDir (where mGBA is packaged).
@@ -6544,13 +7039,14 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetMgbaLinkRecover
 #[unsafe(no_mangle)]
 /// Beta12 diagnostic-only counters in this stable order:
 /// callbacks, committed real frames, PCM shorts generated, PCM shorts queued,
-/// no-PCM real frames, zero-step callbacks, overdue-after-callback frames.
+/// no-PCM real frames, zero-step callbacks, overdue-after-callback frames,
+/// PCM FIFO overflow events and discarded-old PCM shorts (all modes).
 /// The GL thread owns libretro. The Android audio thread only reads atomics.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioClockCounters(
     mut env: JNIEnv<'_>, _this: JObject<'_>,
 ) -> jlongArray {
-    let values: [i64; 7] = [
+    let values: [i64; 9] = [
         SYNC_LAB_CALLBACKS.load(Ordering::Relaxed) as i64,
         SYNC_LAB_COMMITTED_FRAMES.load(Ordering::Relaxed) as i64,
         SYNC_LAB_PCM_PRODUCED_SHORTS.load(Ordering::Relaxed) as i64,
@@ -6558,6 +7054,8 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioClockCounters
         SYNC_LAB_EMPTY_PCM_FRAMES.load(Ordering::Relaxed) as i64,
         SYNC_LAB_NO_STEP_CALLBACKS.load(Ordering::Relaxed) as i64,
         SYNC_LAB_OVERDUE_CALLBACKS.load(Ordering::Relaxed) as i64,
+        AUDIO_FIFO_OVERFLOW_EVENTS.load(Ordering::Relaxed) as i64,
+        AUDIO_FIFO_DROPPED_SHORTS.load(Ordering::Relaxed) as i64,
     ];
     let Ok(result) = env.new_long_array(values.len() as i32) else {
         return std::ptr::null_mut();
@@ -6574,23 +7072,57 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioQueuedShorts(
         .len().min(i32::MAX as usize) as jint
 }
 
+/// RETROARCH pacing: the panel refresh rate, in mHz (0 = unknown).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetDisplayRefresh(
+    _env: *mut c_void, _this: *mut c_void, millihz: jint,
+) { DISPLAY_REFRESH_MILLIHZ.store(millihz.max(0), Ordering::Release); }
+
+/// Frame Pacing NATIVE: the running solo game wants the swap-paced loop.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRaSwapLoop(
+    _env: *mut c_void, _this: *mut c_void,
+) -> jboolean { if RA_SWAP_LOOP.load(Ordering::Acquire) { 1 } else { 0 } }
+
+/// RETROARCH pacing: AudioTrack frames waiting to play and the size of its
+/// buffer, sampled by the audio worker before each write. Read-only for
+/// every other mode.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetAudioOutputDepth(
+    _env: *mut c_void, _this: *mut c_void, queued_frames: jint, capacity_frames: jint,
+) {
+    AUDIO_OUT_QUEUED_FRAMES.store(queued_frames.max(0), Ordering::Release);
+    AUDIO_OUT_CAPACITY_FRAMES.store(capacity_frames.max(0), Ordering::Release);
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioSampleRate(
     _env: *mut c_void, _this: *mut c_void,
 ) -> jint { SAMPLE_RATE.load(Ordering::Acquire) }
 
+/// F9: Kotlin owns a single reused PCM16 buffer for the lifetime of each
+/// AudioTrack worker. Copy <=4096 interleaved shorts from the FIFO into a
+/// fixed stack array, release AUDIO's mutex, then fill that same Java array.
+/// Returning the valid count avoids replaying the unused tail of a short read.
+/// No Vec/ShortArray allocation occurs on the normal per-chunk JNI path.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeReadAudio(
-    mut env: JNIEnv<'_>, _this: JObject<'_>,
-) -> jshortArray {
-    let samples: Vec<i16> = {
-        let mut audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
-        let n = audio.len().min(4096);
-        audio.drain(..n).collect()
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeReadAudioInto(
+    mut env: JNIEnv<'_>, _this: JObject<'_>, out: JShortArray<'_>,
+) -> jint {
+    let capacity = match env.get_array_length(&out) {
+        Ok(length) if length >= 0 => length as usize,
+        _ => return -1,
     };
-    let Ok(out) = env.new_short_array(samples.len() as i32) else { return std::ptr::null_mut(); };
-    let _ = env.set_short_array_region(&out, 0, &samples);
-    out.into_raw()
+    let mut chunk = [0i16; crate::audio_pcm::PCM_READ_MAX_SHORTS];
+    let count = {
+        let mut audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
+        let available = capacity.min(chunk.len());
+        crate::audio_pcm::drain_pcm_into(&mut audio, &mut chunk[..available])
+    };
+    if count > 0 && env.set_short_array_region(&out, 0, &chunk[..count]).is_err() {
+        return -1;
+    }
+    count as jint
 }
 
 #[unsafe(no_mangle)]
@@ -6600,4 +7132,53 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePollMessage(
     match MESSAGE.lock().unwrap_or_else(|e| e.into_inner()).take().and_then(|v| env.new_string(v).ok()) {
         Some(v) => v.into_raw(), None => std::ptr::null_mut(),
     }
+}
+
+/// Real-context fixture used by the session tests. Runs the production JNI
+/// surface-created callback, including a failed reconstruction and retry.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn exercise_session_graphics_recovery(game: GameSession) -> GameSession {
+    let surface = slot_gfx::TestEgl::new();
+    let mut engine = Engine::new(0, None).unwrap();
+    engine.game = Some(game);
+    engine.inserted = true;
+    engine.game_accum = 42.0;
+    let session_address = engine.game.as_ref().unwrap().frame().as_ptr();
+    let retained = engine.gpu.recovery_bytes();
+    assert!(retained > 0);
+    eprintln!("bundled UI recovery pixels: {retained} bytes");
+    ENGINE.with(|holder| *holder.borrow_mut() = Some(engine));
+    Java_fyi_slot_konkr_MainActivity_nativeGraphicsContextLost(std::ptr::null_mut(), std::ptr::null_mut());
+    assert_eq!(Java_fyi_slot_konkr_MainActivity_nativeGraphicsReady(std::ptr::null_mut(), std::ptr::null_mut()), 0);
+    drop(surface);
+    let replacement = slot_gfx::TestEgl::new();
+    let enable: unsafe extern "system" fn(u32) = unsafe {
+        std::mem::transmute(replacement.proc_address("glEnable"))
+    };
+    unsafe { enable(0xffff_ffff) };
+    let create = || Java_fyi_slot_konkr_MainActivity_nativeSurfaceCreated(
+        std::ptr::null_mut(), std::ptr::null_mut());
+    assert_eq!(create(), 0);
+    ENGINE.with(|holder| {
+        let mut guard = holder.borrow_mut();
+        let e = guard.as_mut().unwrap();
+        assert!(!e.gpu.graphics_ready());
+        e.draw(0, || panic!("audio must not advance during failed recovery"));
+        assert_eq!(e.game_accum, 42.0);
+        assert_eq!(e.game.as_ref().unwrap().frame().as_ptr(), session_address);
+    });
+    assert_eq!(create(), 1);
+    Java_fyi_slot_konkr_MainActivity_nativePresentationResume(std::ptr::null_mut(), std::ptr::null_mut());
+    let game = ENGINE.with(|holder| {
+        let mut guard = holder.borrow_mut();
+        let engine = guard.as_mut().unwrap();
+        assert!(engine.gpu.graphics_ready());
+        assert_eq!(engine.game_accum, 0.0);
+        assert_eq!(engine.gpu.recovery_bytes(), retained);
+        assert_eq!(engine.game.as_ref().unwrap().frame().as_ptr(), session_address);
+        engine.game.take().unwrap()
+    });
+    Java_fyi_slot_konkr_MainActivity_nativeRendererShutdown(std::ptr::null_mut(), std::ptr::null_mut(), 1);
+    assert_eq!(Java_fyi_slot_konkr_MainActivity_nativeGraphicsReady(std::ptr::null_mut(), std::ptr::null_mut()), 0);
+    game
 }

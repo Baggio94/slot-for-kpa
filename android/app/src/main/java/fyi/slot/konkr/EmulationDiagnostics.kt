@@ -76,14 +76,17 @@ internal object EmulationDiagnostics {
         }
     }
 
-    fun audio(pcm: ShortArray) {
-        if (pcm.isEmpty()) {
+    // F9: the PCM backing array is reused. Only its [0, count) prefix
+    // belongs to this callback; trailing shorts are from earlier chunks.
+    fun audio(pcm: ShortArray, count: Int = pcm.size) {
+        require(count in 0..pcm.size)
+        if (count == 0) {
             audioEmpty.incrementAndGet()
             return
         }
         audioChunks.incrementAndGet()
-        audioSamples.addAndGet(pcm.size.toLong())
-        if (hasAudioTail && pcm.size >= 2) {
+        audioSamples.addAndGet(count.toLong())
+        if (hasAudioTail && count >= 2) {
             // Heuristic only. Natural loud transients can also exceed this
             // threshold; correlate with underruns before interpreting.
             val differenceLeft = kotlin.math.abs(pcm[0].toInt() - lastLeftSample)
@@ -91,9 +94,9 @@ internal object EmulationDiagnostics {
             if (differenceLeft > 24_576 || differenceRight > 24_576)
                 audioGapCandidates.incrementAndGet()
         }
-        if (pcm.size >= 2) {
-            lastLeftSample = pcm[pcm.size - 2].toInt()
-            lastRightSample = pcm[pcm.size - 1].toInt()
+        if (count >= 2) {
+            lastLeftSample = pcm[count - 2].toInt()
+            lastRightSample = pcm[count - 1].toInt()
             hasAudioTail = true
         }
     }

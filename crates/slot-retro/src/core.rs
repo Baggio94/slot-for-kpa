@@ -129,6 +129,13 @@ pub trait RetroCore: Send {
     fn capture_speculative_audio(&mut self) -> Result<(), CoreError> { Ok(()) }
     fn restore_speculative_audio(&mut self) -> Result<(), CoreError> { Ok(()) }
     fn save_ram(&self) -> Option<Vec<u8>>;
+    /// Strict, current-timeline battery snapshot. mGBA's usual libretro
+    /// memory pointer may remain stale after savestate masking; the official
+    /// KPA core exposes its actual active savedata via a read-only clone.
+    /// Unknown cores retain the existing behavior without changing formats.
+    fn save_ram_verified(&self) -> Result<Option<Vec<u8>>, CoreError> {
+        Ok(self.save_ram())
+    }
     fn load_save_ram(&mut self, data: &[u8]) -> Result<(), CoreError>;
     /// Optional libretro RETRO_MEMORY_RTC (Game Boy / Color battery clock).
     fn save_rtc(&self) -> Option<Vec<u8>> { None }

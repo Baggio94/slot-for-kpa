@@ -1,5 +1,8 @@
 //! Native libretro mGBA / gpSP game session. All core calls occur on GLSurfaceView's GL thread.
 //! Android's SAF bridge materializes a **bounded private cache** copy of each selected ROM.
+#[cfg(test)]
+#[path = "game_runahead_tests.rs"]
+mod runahead_tests;
 use crate::pokemon_flash::pokemon_flash_complete_bank_count;
 use slot_retro::{ButtonMask, LibretroCore, RetroCore, LinkChannel};
 use crate::link_kind::LinkKind;
@@ -9,6 +12,7 @@ use slot_store::{atomic_write, Core, Platform, StateEntry, StateRing, stamp_now,
 use crate::thumb;
 use crate::retroarch_state;
 use crate::rewind::{RewindThread, REWIND_BYTES};
+use crate::battery_writer::{BatterySnapshot, BatteryWriter};
 use std::path::{Path, PathBuf};
 use std::io::{Read, Seek, SeekFrom};
 use std::time::{Duration, Instant};
@@ -51,6 +55,20 @@ pub(crate) struct RunaheadProbe {
     pub restores_us: u64,
     pub max_us: u64,
     pub failures: u32,
+    /// Calls served by the second-instance prediction core.
+    pub second_instance_calls: u32,
+    /// Preemptive Frames rollbacks (one per button change).
+    pub preemptive_rollbacks: u32,
+}
+
+/// F8: WALL time spent inside the core and synchronous rewind work or
+/// optional battery capture on the GL owner, measured once per real step.
+/// Never infer hardware GPU or EGL swap timing from these values.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FrameStepTimings {
+    pub core_us: u64,
+    pub rewind_work_us: u64,
+    pub periodic_battery_us: u64,
 }
 
 /// Cartridge header code, not a localized filename: FireRed, LeafGreen,
@@ -70,6 +88,15 @@ fn drill_dozer_mgba_gbp_bypass(rom: &Path, which: Core, platform: Platform) -> b
     let mut code = [0u8; 4];
     file.read_exact(&mut code).is_ok()
         && code.starts_with(b"V49") && code[3].is_ascii_uppercase()
+}
+
+/// The core's own PCM rate, never altered except for absurd values. mGBA
+/// emits Game Boy / Color audio at 131072Hz: the old 96kHz ceiling played it
+/// 27% slow (and, once the queue filled, chopped) in every pacing mode, and
+/// made RETROARCH resample it for the wrong rate. AudioTrack takes up to
+/// 192kHz on every Android this app supports (minSdk 31).
+pub(crate) fn core_sample_rate(reported: i32) -> i32 {
+    reported.clamp(8_000, 192_000)
 }
 
 fn sma4_runahead_guard(rom: &Path, platform: Platform) -> bool {
@@ -173,7 +200,19 @@ pub struct GameSession {
     // Preserve the libretro state allocation across speculative frames.
     runahead_state: Vec<u8>,
     runahead_unavailable: bool,
+    // A failed rollback after speculative frames poisons the current core.
+    // Never advance/save it; require explicit unsaved exit or full reinit.
+    runahead_rollback_failed: bool,
+    runahead_discard_confirm: bool,
     runahead_probe: RunaheadProbe,
+    // Second instance: a private prediction copy of the core, booted on
+    // first use. The real core is then never rewound for Run-Ahead.
+    runahead_secondary_spec: Option<crate::runahead_secondary::Spec>,
+    runahead_secondary: Option<Box<dyn RetroCore>>,
+    runahead_secondary_unavailable: bool,
+    // Preemptive Frames: states at the start of the last real frames.
+    preempt: crate::preemptive::Preempt,
+    last_step_timings: FrameStepTimings,
     // Keep mGBA speculative frames away from Pokémon Gen III FLASH1M.
     mgba_flash_runahead_guard: bool,
     sma4_runahead_guard: bool,
@@ -181,6 +220,8 @@ pub struct GameSession {
     core_kind: Core,
     pending_undo: Option<(Instant, PendingUndo)>,
     last_sram: Instant,
+    // F7: owns at most one immutable periodic SRAM/RTC write per solo session.
+    battery_writer: Option<BatteryWriter>,
     pub sample_rate: i32,
     pub fps: f64,
 }
@@ -452,6 +493,15 @@ impl GameSession {
         let console = match platform {
             Platform::Gb => 4, Platform::Gba => 5, Platform::Gbc => 6,
         };
+        // Second-instance Run-Ahead boots its copy from these, solo only.
+        let runahead_secondary_spec = linked_boot.is_none().then(|| crate::runahead_secondary::Spec {
+            core_file: core_file.to_path_buf(),
+            system_dir: bios.clone(),
+            scratch_dir: storage.join("RunAheadInstance"),
+            rom: rom.to_path_buf(),
+            options: core.options(),
+            primary_id: core.instance_id(),
+        });
         let mut core: Box<dyn RetroCore> = match achievements {
             Some(service) => service.wrap_for_console(Box::new(core), console),
             None => Box::new(core),
@@ -617,6 +667,19 @@ impl GameSession {
         if sma4_guard {
             log_launch_timing("Super Mario Advance 4: Run-Ahead OFF for mGBA/gpSP to protect SRAM");
         }
+        // A worker only owns immutable copies of SOLO battery files. Private
+        // Link sessions retain their existing synchronous checkpointing.
+        // Thread startup failure safely falls back to the old GL writes.
+        let battery_writer = if linked_boot.is_none() {
+            match BatteryWriter::spawn() {
+                Ok(worker) => Some(worker),
+                Err(error) => {
+                    log_launch_timing(&format!(
+                        "F7 async battery unavailable; using synchronous writes: {error}"));
+                    None
+                }
+            }
+        } else { None };
         Ok(Self {
             core, link: None, link_touched: false, linked_boot, gpsp_serial,
             rom_path: rom.to_path_buf(), rom_stem: rom_stem.to_owned(),
@@ -625,11 +688,17 @@ impl GameSession {
             frame_count: 0, palette_live, core_kind: which,
             runahead_video: Vec::new(), runahead_state: Vec::new(),
             runahead_unavailable: false,
+            runahead_rollback_failed: false,
+            runahead_discard_confirm: false,
             runahead_probe: RunaheadProbe::default(),
+            runahead_secondary_spec, runahead_secondary: None,
+            runahead_secondary_unavailable: false,
+            preempt: crate::preemptive::Preempt::default(),
+            last_step_timings: FrameStepTimings::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
-            pending_undo: None, last_sram: Instant::now(),
-            sample_rate: sample_rate.clamp(8_000, 96_000),
+            pending_undo: None, last_sram: Instant::now(), battery_writer,
+            sample_rate: core_sample_rate(sample_rate),
             fps,
         })
     }
@@ -637,6 +706,8 @@ impl GameSession {
     /// False while cable lockstep is awaiting the other player. The caller
     /// must not subtract an emulated-frame budget until this returns true.
     pub fn advance(&mut self, buttons: u16, turbo: bool, record_rewind: bool) -> bool {
+        self.last_step_timings = FrameStepTimings::default();
+        if self.runahead_rollback_failed { return false; }
         // A suspended or ended Multiplayer session must not fall through
         // to core.run_frame() merely because self.link became None. This
         // also handles Android onPause outside the Multiplayer overlay.
@@ -644,31 +715,43 @@ impl GameSession {
             return false;
         }
         self.runahead_video.clear();
+        if self.link.is_none() && !self.preempt_before_frame(buttons, turbo) { return false; }
         let pressed = ButtonMask(buttons);
         let mapped = xy_buttons(pressed, turbo, self.frame_count);
-        if let Some(link) = self.link.as_mut() {
-            match link.frame(self.core.as_mut(), mapped) {
-                LinkFrame::Advanced => {},
-                LinkFrame::Waiting | LinkFrame::Failed(_) => return false,
-            }
+        let core_started = Instant::now();
+        let advanced = if let Some(link) = self.link.as_mut() {
+            matches!(link.frame(self.core.as_mut(), mapped), LinkFrame::Advanced)
         } else {
             self.core.run_frame(mapped);
-        }
+            true
+        };
+        self.last_step_timings.core_us = core_started.elapsed().as_micros() as u64;
+        if !advanced { return false; }
         self.frame_count = self.frame_count.wrapping_add(1);
         if record_rewind && !self.link_touched {
             self.rewind_frames += 1;
             if self.rewind_frames >= REWIND_CAPTURE_FRAMES {
                 self.rewind_frames = 0;
                 // Original XOR/LZ4 history; never export it to RetroArch.
+                let capture_started = Instant::now();
                 if let Ok(snapshot) = self.core.serialize() {
                     self.rewind.push(snapshot);
                 }
+                self.last_step_timings.rewind_work_us =
+                    capture_started.elapsed().as_micros() as u64;
             }
         } else { self.rewind_frames = 0; }
         if self.last_sram.elapsed() >= SRAM_PERIOD {
+            let battery_started = Instant::now();
             self.save_sram();
+            self.last_step_timings.periodic_battery_us =
+                battery_started.elapsed().as_micros() as u64;
         }
         true
+    }
+
+    pub(crate) fn last_step_timings(&self) -> FrameStepTimings {
+        self.last_step_timings
     }
 
     /// The pinned mGBA libretro core is SINGLE-PLAYER (it ignores controller
@@ -711,6 +794,7 @@ impl GameSession {
         self.link = Some(link);
         self.link_touched = true;
         self.runahead_video.clear();
+        self.preempt.clear();
         self.rewind_frames = 0;
         self.pending_undo = None;
         Ok(())
@@ -755,9 +839,12 @@ impl GameSession {
         if self.linked_boot.is_some() || self.link_touched {
             return Err("Cannot restore a solo checkpoint inside a Link session".into());
         }
+        // A previous real-frame battery copy cannot land after recovery.
+        self.flush_periodic_battery();
         restore_solo_checkpoint_to_core(self.core.as_mut(), saved)?;
         // Clear presentation/input time travel from any pre-recovery state.
         self.runahead_video.clear();
+        self.preempt.clear();
         self.rewind_frames = 0;
         self.pending_undo = None;
         Ok(())
@@ -766,13 +853,18 @@ impl GameSession {
     /// Save the solo state before replacing the entire libretro core with
     /// the linked dual-GBA engine. Abort rather than discard solo progress.
     pub fn preserve_solo_for_link(&mut self) -> Result<Vec<u8>, String> {
+        if self.runahead_rollback_failed { return Err("Unsafe Run-Ahead state; Link checkpoint blocked".into()); }
         if self.linked_boot.is_some() || self.link_touched {
             return Err("Only a clean solo game can start mGBA Link".into());
         }
+        // A periodic save must not complete after this Link checkpoint and
+        // replace the fresh solo state with an earlier battery generation.
+        self.flush_periodic_battery();
         // A13: never seed a Pokémon Cable session from a malformed FLASH1M
         // image. The in-memory core can differ from the verified disk save,
         // so check it BEFORE writing the checkpoint or dropping the solo core.
-        let battery = self.core.save_ram();
+        let battery = self.core.save_ram_verified()
+            .map_err(|e| format!("Cannot read active battery before Link: {e}"))?;
         self.ensure_pokemon_flash(battery.as_deref(), "before Link")?;
         let bytes = self.core.serialize().map_err(|e| e.to_string())?;
         crate::linked_storage::validate_solo_snapshot(&bytes)?;
@@ -815,7 +907,8 @@ impl GameSession {
                 .ok_or("Cannot extract local mGBA from SLK1 pair")?
         } else { full };
         crate::linked_storage::validate_solo_snapshot(&snapshot)?;
-        let ram = self.core.save_ram();
+        let ram = self.core.save_ram_verified()
+            .map_err(|e| format!("Cannot read active Link battery: {e}"))?;
         // A13: a corrupt local Link player must never become the solo save,
         // even when its SLK1 snapshot itself deserializes correctly.
         self.ensure_pokemon_flash(ram.as_deref(), "after Link")?;
@@ -877,6 +970,7 @@ impl GameSession {
                 .map_err(|e| format!("Core rejected local Link RTC: {e}"))?;
         }
         self.runahead_video.clear();
+        self.preempt.clear();
         self.rewind_frames = 0;
         self.pending_undo = None;
         Ok(())
@@ -899,12 +993,14 @@ impl GameSession {
         }
         // No publication to SOLO unless the new core has the exact local
         // FLASH and at least one complete generation after the transition.
-        self.ensure_pokemon_flash(self.core.save_ram().as_deref(), "before promotion")?;
+        let battery = self.core.save_ram_verified()
+            .map_err(|e| format!("Cannot verify active battery before promotion: {e}"))?;
+        self.ensure_pokemon_flash(battery.as_deref(), "before promotion")?;
         let resumed = self.core.serialize()
             .map_err(|e| format!("Cannot verify resumed solo state: {e}"))?;
         crate::linked_storage::validate_solo_snapshot(&resumed)?;
         if let Some(expected) = rejoin.ram.as_deref() {
-            if self.core.save_ram().as_deref() != Some(expected) {
+            if battery.as_deref() != Some(expected) {
                 return Err("Recovered solo SRAM differs from Link original; refusing promotion".into());
             }
         }
@@ -951,11 +1047,24 @@ impl GameSession {
             link.end(self.core.as_mut());
         }
         self.runahead_video.clear();
+        self.preempt.clear();
         self.rewind_frames = 0;
     }
 
     pub fn mgba_flash_runahead_blocked(&self) -> bool { self.mgba_flash_runahead_guard }
     pub fn sma4_runahead_blocked(&self) -> bool { self.sma4_runahead_guard }
+
+    /// True only after prediction has mutated the core and full restoration
+    /// failed. Treat all save paths as unsafe until a fresh session is loaded.
+    pub fn runahead_rollback_failed(&self) -> bool { self.runahead_rollback_failed }
+
+    /// Require two deliberate Exit actions before discarding a poisoned
+    /// in-memory session. Do not touch existing on-disk checkpoints.
+    pub fn confirm_rollback_discard(&mut self) -> bool {
+        if !self.runahead_rollback_failed { return false; }
+        if self.runahead_discard_confirm { true }
+        else { self.runahead_discard_confirm = true; false }
+    }
 
     pub fn runahead_supported(&self) -> bool {
         !self.mgba_flash_runahead_guard && !self.sma4_runahead_guard
@@ -974,9 +1083,10 @@ impl GameSession {
     pub fn prepare_runahead(&mut self, buttons: u16, turbo: bool, frames: u8) {
         let started = Instant::now();
         self.runahead_video.clear();
-        if frames == 0 || frames > 2 || self.mgba_flash_runahead_guard ||
+        if frames == 0 || frames > 2 || self.runahead_rollback_failed || self.mgba_flash_runahead_guard ||
             self.sma4_runahead_guard ||
             self.runahead_unavailable || self.link_touched || self.linked_boot.is_some() { return; }
+        if self.prepare_runahead_second_instance(buttons, turbo, frames) { return; }
         if !self.core.speculative_audio_supported() {
             self.runahead_probe.failures += 1;
             self.runahead_unavailable = true;
@@ -998,8 +1108,12 @@ impl GameSession {
         let snapshot_us = started.elapsed().as_micros() as u64;
         let predicted = Instant::now();
         let pressed = ButtonMask(buttons);
-        let mapped = xy_buttons(pressed, turbo, self.frame_count);
-        for _ in 0..frames {
+        // Turbo flips every three REAL frames. Each predicted frame must
+        // sample its own future phase; reusing one mask for all offsets
+        // predicts incorrect key presses across a three-frame boundary.
+        for future in 0..frames {
+            let mapped = xy_buttons(pressed, turbo,
+                self.frame_count.wrapping_add(u32::from(future)));
             self.core.run_speculative_frame(mapped);
             // Discard predicted audio without reallocating libretro's buffer.
             self.core.discard_audio();
@@ -1018,22 +1132,176 @@ impl GameSession {
             started.elapsed().as_micros() as u64);
         if let Err(error) = restored {
             self.runahead_probe.failures += 1;
-            // Never display a frame if the core could not restore its real state.
+            // A speculative frame HAS mutated the core. Disabling Run-Ahead
+            // alone would continue gameplay and silently overwrite a valid
+            // save with the wrong timeline. Fail CLOSED: freeze the session,
+            // reject every automatic/export/manual/periodic save and only
+            // allow a separately confirmed discard without writing.
             self.runahead_video.clear();
             self.runahead_unavailable = true;
-            log_launch_timing(&format!("Run-Ahead disabled: restore failed: {error}"));
+            self.runahead_rollback_failed = true;
+            log_launch_timing(&format!(
+                "Run-Ahead ROLLBACK FAILED: session quarantined, ALL saves disabled: {error}"));
             return;
         }
 
     }
 
+    /// RetroArch "second instance" Run-Ahead. Returns false when the copy is
+    /// unavailable, so the caller uses the single-instance path instead.
+    /// The real core is only serialized, never rewound: a failure here can
+    /// never corrupt the real timeline.
+    fn prepare_runahead_second_instance(&mut self, buttons: u16, turbo: bool, frames: u8) -> bool {
+        if self.runahead_secondary_unavailable { return false; }
+        let started = Instant::now();
+        if self.runahead_secondary.is_none() {
+            let Some(spec) = self.runahead_secondary_spec.as_ref() else {
+                self.runahead_secondary_unavailable = true;
+                return false;
+            };
+            let battery = self.core.save_ram_verified().ok().flatten();
+            match crate::runahead_secondary::open(spec, battery.as_deref()) {
+                Ok(copy) => {
+                    log_launch_timing(&format!(
+                        "Run-Ahead second instance ready in {}ms", started.elapsed().as_millis()));
+                    self.runahead_secondary = Some(copy);
+                }
+                Err(error) => {
+                    self.runahead_secondary_unavailable = true;
+                    log_launch_timing(&format!(
+                        "Run-Ahead second instance unavailable, using single instance: {error}"));
+                    return false;
+                }
+            }
+        }
+        if let Err(error) = self.core.serialize_into(&mut self.runahead_state) {
+            self.runahead_probe.failures += 1;
+            self.runahead_unavailable = true;
+            log_launch_timing(&format!("Run-Ahead disabled: serialize failed: {error}"));
+            return true;
+        }
+        let snapshot_us = started.elapsed().as_micros() as u64;
+        let predicted = Instant::now();
+        let pressed = ButtonMask(buttons);
+        // Turbo flips every three REAL frames; each predicted frame samples
+        // its own future phase, exactly like the single-instance path.
+        let mut inputs = [ButtonMask::default(); 2];
+        for future in 0..usize::from(frames) {
+            inputs[future] = xy_buttons(pressed, turbo,
+                self.frame_count.wrapping_add(future as u32));
+        }
+        let copy = self.runahead_secondary.as_deref_mut().expect("booted above");
+        match crate::runahead_secondary::predict(copy, &self.runahead_state,
+            &inputs[..usize::from(frames)]) {
+            Ok(video) => self.runahead_video.extend_from_slice(video),
+            Err(error) => {
+                // Only the copy is affected: drop it and keep playing.
+                self.runahead_probe.failures += 1;
+                self.runahead_secondary = None;
+                self.runahead_secondary_unavailable = true;
+                log_launch_timing(&format!(
+                    "Run-Ahead second instance stopped, using single instance: {error}"));
+                return false;
+            }
+        }
+        let speculative_us = predicted.elapsed().as_micros() as u64;
+        self.runahead_probe.calls = self.runahead_probe.calls.saturating_add(1);
+        self.runahead_probe.second_instance_calls =
+            self.runahead_probe.second_instance_calls.saturating_add(1);
+        self.runahead_probe.snapshots_us += snapshot_us;
+        self.runahead_probe.speculative_us += speculative_us;
+        self.runahead_probe.max_us = self.runahead_probe.max_us.max(
+            started.elapsed().as_micros() as u64);
+        true
+    }
+
+    /// RetroArch "Preemptive Frames" instead of Run-Ahead: `frames` real
+    /// frames are kept and replayed when the buttons change. 0 turns it off.
+    /// The Run-Ahead guards apply: Pokémon FLASH1M, SMA4, Link, and cores
+    /// whose audio cannot be rolled back.
+    pub fn set_preemptive_frames(&mut self, frames: u8) {
+        let allowed = !self.runahead_rollback_failed && !self.runahead_unavailable
+            && !self.mgba_flash_runahead_guard && !self.sma4_runahead_guard
+            && !self.link_touched && self.linked_boot.is_none()
+            && self.core.speculative_audio_supported();
+        self.preempt.set_frames(if allowed { usize::from(frames) } else { 0 });
+    }
+
+    /// Before each real solo frame: replay the window with the new buttons
+    /// if they changed, then keep the state this frame starts from. False
+    /// only when a rollback failed and the session was quarantined.
+    fn preempt_before_frame(&mut self, buttons: u16, turbo: bool) -> bool {
+        let n = self.preempt.frames();
+        if n == 0 || self.link_touched || self.linked_boot.is_some() { return true; }
+        let input = (buttons, turbo);
+        if self.preempt.needs_rollback(input) {
+            let started = Instant::now();
+            // The replayed frames rewrite the last n frames with the new
+            // buttons; their audio was already played and is dropped. The
+            // Run-Ahead audio sidecar is NOT restored afterwards: it holds
+            // the old timeline's sound channels, and restoring it would
+            // silence a sound the new buttons just started (a GB jump sound
+            // heard frames late). After the replay the core's audio already
+            // belongs to the new timeline, as in RetroArch.
+            let pressed = ButtonMask(buttons);
+            let first = self.frame_count.wrapping_sub(n as u32);
+            let mut replayed = self.core.restore_speculative_state(self.preempt.state(0));
+            for k in 0..n {
+                if replayed.is_err() { break; }
+                if k > 0 { replayed = self.core.serialize_into(self.preempt.state_mut(k)); }
+                if replayed.is_err() { break; }
+                self.core.run_speculative_frame(
+                    xy_buttons(pressed, turbo, first.wrapping_add(k as u32)));
+                self.core.discard_audio();
+            }
+            let elapsed_us = started.elapsed().as_micros() as u64;
+            self.runahead_probe.preemptive_rollbacks =
+                self.runahead_probe.preemptive_rollbacks.saturating_add(1);
+            self.runahead_probe.restores_us += elapsed_us;
+            self.runahead_probe.max_us = self.runahead_probe.max_us.max(elapsed_us);
+            if let Err(error) = replayed {
+                // The core is somewhere inside the window: fail closed
+                // exactly like a failed Run-Ahead rollback.
+                self.runahead_probe.failures += 1;
+                self.runahead_unavailable = true;
+                self.runahead_rollback_failed = true;
+                self.preempt.set_frames(0);
+                log_launch_timing(&format!(
+                    "Preemptive Frames ROLLBACK FAILED: session quarantined, ALL saves disabled: {error}"));
+                return false;
+            }
+        }
+        let started = Instant::now();
+        if let Err(error) = self.core.serialize_into(self.preempt.push(input)) {
+            self.runahead_probe.failures += 1;
+            self.runahead_unavailable = true;
+            self.preempt.set_frames(0);
+            log_launch_timing(&format!("Preemptive Frames disabled: serialize failed: {error}"));
+            return true;
+        }
+        self.runahead_probe.calls = self.runahead_probe.calls.saturating_add(1);
+        self.runahead_probe.snapshots_us += started.elapsed().as_micros() as u64;
+        true
+    }
+
     pub fn rewind_step(&mut self) -> bool {
-        if self.link_touched || self.linked_boot.is_some() { return false; }
+        if self.runahead_rollback_failed || self.link_touched || self.linked_boot.is_some() { return false; }
         self.runahead_video.clear();
+        self.preempt.clear();
+        // Rewind is a real state restoration: finish any older disk snapshot
+        // once before moving the core backward in time.
+        self.flush_periodic_battery();
         let Some(previous) = self.rewind.pop() else { return false; };
-        if self.core.unserialize(&previous).is_err() { return false; }
-        // Most libretro cores only refresh video after retro_run. Run a single
-        // input-free frame so the renderer shows the restored moment.
+        if let Err(error) = self.core.unserialize(&previous) {
+            // A failed state restore must never silently eject the cartridge.
+            // Leave the game alive and surface a diagnostic for real-device QA.
+            log_launch_timing(&format!(
+                "Rewind state restore was refused; staying in game: {error}"));
+            return false;
+        }
+        // Match original Slot's rewind: force frame rendering (never inherit
+        // an FF/speculative frame-skip state) before refreshing the picture.
+        self.core.set_frame_skip(false);
         self.core.run_frame(ButtonMask(0));
         let _ = self.core.take_audio();
         self.rewind_frames = 0;
@@ -1046,17 +1314,25 @@ impl GameSession {
 
     pub fn set_gb_palette(&mut self, name: &str) {
         if self.palette_live {
-            self.core.set_option("mgba_gb_colors_preset", "0");
-            self.core.set_option("mgba_gb_colors", name);
+            self.set_core_option("mgba_gb_colors_preset", "0");
+            self.set_core_option("mgba_gb_colors", name);
         }
+    }
+
+    /// Live option change on the real core, mirrored to the second-instance
+    /// prediction copy so predicted pictures keep the same colours.
+    fn set_core_option(&mut self, key: &str, value: &str) {
+        self.core.set_option(key, value);
+        if let Some(spec) = self.runahead_secondary_spec.as_mut() { spec.set_option(key, value); }
+        if let Some(copy) = self.runahead_secondary.as_mut() { copy.set_option(key, value); }
     }
 
     /// Per-game GB palette enable/disable is applied through mGBA's live core
     /// options, without restarting libretro or touching ROM SRAM/RTC.
     pub fn set_gb_palette_mode(&mut self, enabled: bool, name: &str) {
         if !self.palette_live { return; }
-        self.core.set_option("mgba_gb_colors_preset", if enabled { "0" } else { "1" });
-        if enabled { self.core.set_option("mgba_gb_colors", name); }
+        self.set_core_option("mgba_gb_colors_preset", if enabled { "0" } else { "1" });
+        if enabled { self.set_core_option("mgba_gb_colors", name); }
     }
 
     pub fn set_colour_correction(&mut self, enabled: bool) {
@@ -1066,7 +1342,7 @@ impl GameSession {
             Core::Gpsp => ("gpsp_color_correction",
                 if enabled { "enabled" } else { "disabled" }),
         };
-        self.core.set_option(key, value);
+        self.set_core_option(key, value);
     }
 
     pub fn rumble_strength(&self) -> u16 {
@@ -1086,64 +1362,188 @@ impl GameSession {
         self.core.take_audio()
     }
 
-    fn save_sram(&mut self) -> bool {
-        let success = match self.core.save_ram() {
-            Some(bytes) if self.mgba_flash_runahead_guard &&
-                pokemon_flash_complete_bank_count(&bytes) == 0 => {
-                // A Flash erase/program operation can span several GBA
-                // frames. Never publish an incomplete battery image over
-                // the last known-good save or push it into RetroArch SAF.
-                // This does not modify emulator memory and never repairs
-                // corruption silently: the in-game error remains visible.
-                log_launch_timing("mGBA Pokemon FLASH1M: incomplete/corrupt bank; protected existing SRAM, no disk export");
-                false
-            }
-            Some(bytes) => match atomic_write(&self.save, &bytes) {
-                Ok(()) => true,
-                Err(err) => {
-                    eprintln!("slot-konkr: SRAM save failed: {err}");
-                    false
-                }
-            },
-            None => false,
-        };
-        // RTC may exist independently of SRAM on GB/GBC cartridges.
-        let rtc_saved = self.core.save_rtc().is_some_and(|bytes|
-            match atomic_write(&self.rtc, &bytes) {
-                Ok(()) => true,
-                Err(err) => {
-                    eprintln!("slot-konkr: RTC save failed: {err}");
-                    false
-                }
-            });
-        self.last_sram = Instant::now();
-        success || rtc_saved
+    /// Caller consumed the REAL frame's PCM (or muted fast-forward PCM).
+    /// Return its allocation to the libretro host before the next frame.
+    /// Audio stays owned by the core during speculative Run-Ahead.
+    pub fn recycle_audio(&mut self, audio: Vec<i16>) {
+        self.core.recycle_audio(audio);
     }
 
-    pub fn save(&mut self, with_state: bool) -> bool {
-        let saved_sram = self.save_sram();
-        let mut state_written = false;
-        // Exporting a single-core state during linked play would silently
-        // corrupt the shared timeline. SRAM/RTC can still be saved safely.
-        if with_state && !self.link_touched && self.linked_boot.is_none() {
-            if let Ok(data) = self.core.serialize() {
-                if let Err(err) = atomic_write(&self.state, &data) {
-                    eprintln!("slot-konkr: state save failed: {err}");
+    /// Build immutable real-core data on GL, but never do the 30-second
+    /// fsync/rename on a frame callback. No speculative data crosses to disk.
+    fn periodic_battery_snapshot(&self) -> Result<BatterySnapshot, String> {
+        if self.runahead_rollback_failed {
+            return Err("Unsafe Run-Ahead timeline; periodic save blocked".into());
+        }
+        let ram = self.core.save_ram_verified()
+            .map_err(|error| format!("Active battery snapshot: {error}"))?;
+        if self.mgba_flash_runahead_guard && ram.as_ref().is_some_and(|bytes|
+            pokemon_flash_complete_bank_count(bytes) == 0) {
+            return Err("Pokémon Flash save incomplete; prior checkpoint protected".into());
+        }
+        Ok(BatterySnapshot {
+            save: self.save.clone(), rtc_path: self.rtc.clone(),
+            ram, rtc: self.core.save_rtc(),
+        })
+    }
+
+    /// Order all earlier optional writes before any newer mandatory write.
+    /// Errors are logged; a fresh checked checkpoint below must still be
+    /// attempted, because it can repair an earlier storage failure.
+    fn flush_periodic_battery(&mut self) {
+        if let Some(writer) = self.battery_writer.as_mut() {
+            if let Err(error) = writer.flush() {
+                log_launch_timing(&format!(
+                    "F7 periodic checkpoint failed before mandatory save: {error}"));
+            }
+        }
+    }
+
+    fn save_sram(&mut self) -> bool {
+        if let Some(writer) = self.battery_writer.as_mut() {
+            // Poll only every ~30 seconds; one pending snapshot maximum.
+            // When disk is slow, skip this OPTIONAL generation, never wait
+            // for an fsync on the GL callback or enqueue stale copies.
+            if let Err(error) = writer.poll() {
+                log_launch_timing(&format!("F7 periodic battery write failed: {error}"));
+            }
+            if writer.busy() {
+                // Storage is still busy: throttle the next non-blocking poll
+                // rather than querying the channel on every emulated frame.
+                self.last_sram = Instant::now();
+                return false;
+            }
+            let snapshot = match self.periodic_battery_snapshot() {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    self.last_sram = Instant::now();
+                    log_launch_timing(&format!("F7 battery snapshot rejected: {error}"));
+                    return false;
                 }
-                match retroarch_state::encode(&data) {
-                    Ok(container) => match atomic_write(&self.retroarch_export, &container) {
-                        Ok(()) => state_written = true,
-                        Err(error) => eprintln!("slot-konkr: RetroArch state export failed: {error}"),
-                    },
-                    Err(error) => eprintln!("slot-konkr: RetroArch container error: {error}"),
+            };
+            let has_data = snapshot.ram.is_some() || snapshot.rtc.is_some();
+            if !has_data {
+                self.last_sram = Instant::now();
+                return false;
+            }
+            let outcome = self.battery_writer.as_mut()
+                .expect("writer previously verified").enqueue(snapshot);
+            match outcome {
+                Ok(()) => {
+                    self.last_sram = Instant::now();
+                    true
+                }
+                Err(error) => {
+                    // A failed worker must not silently disable 30-second
+                    // checkpoints for the rest of the session. Join it first
+                    // (no stale concurrent write), then use the proven sync
+                    // implementation until this game is closed.
+                    log_launch_timing(&format!(
+                        "F7 battery writer unavailable, falling back to sync: {error}"));
+                    self.battery_writer.take();
+                    match self.save_sram_checked() {
+                        Ok(written) => written,
+                        Err(error) => {
+                            log_launch_timing(&format!(
+                                "Battery/RTC fallback write failed: {error}"));
+                            false
+                        }
+                    }
+                }
+            }
+        } else {
+            // No worker can be started, or the core is a private Link sandbox.
+            match self.save_sram_checked() {
+                Ok(written) => written,
+                Err(error) => {
+                    log_launch_timing(&format!("Battery/RTC periodic write failed: {error}"));
+                    false
                 }
             }
         }
-        saved_sram || state_written
+    }
+
+    /// The battery and RTC are independent persistent files. The legacy
+    /// boolean used OR, so a successful RTC could hide a failed battery write.
+    /// Return every attempted file write's error to callers that must retain
+    /// the session (Save & Eject); none means the cartridge has no such file.
+    fn save_sram_checked(&mut self) -> Result<bool, String> {
+        // Mandatory suspend/eject: wait for all older periodic generations
+        // before writing fresh SRAM/RTC and optionally a matching state.
+        self.flush_periodic_battery();
+        if self.runahead_rollback_failed {
+            return Err("Run-Ahead rollback failed; unsafe timeline cannot be saved".into());
+        }
+        let mut wrote = false;
+        let mut error: Option<String> = None;
+        match self.core.save_ram_verified()
+            .map_err(|e| format!("Active battery snapshot: {e}"))? {
+            Some(bytes) if self.mgba_flash_runahead_guard &&
+                pokemon_flash_complete_bank_count(&bytes) == 0 => {
+                error = Some("Pokémon Flash save is incomplete; previous save protected".into());
+            }
+            Some(bytes) => match atomic_write(&self.save, &bytes) {
+                Ok(()) => wrote = true,
+                Err(err) => error = Some(format!("Battery save: {err}")),
+            },
+            None => {}
+        }
+        if let Some(bytes) = self.core.save_rtc() {
+            match atomic_write(&self.rtc, &bytes) {
+                Ok(()) => wrote = true,
+                Err(err) => {
+                    let reason = format!("RTC save: {err}");
+                    if let Some(previous) = error.as_mut() {
+                        previous.push_str("; ");
+                        previous.push_str(&reason);
+                    } else { error = Some(reason); }
+                }
+            }
+        }
+        self.last_sram = Instant::now();
+        error.map_or(Ok(wrote), Err)
+    }
+
+    /// Mandatory ejection checkpoint: do not drop the only live core if its
+    /// primary battery/RTC/state/export cannot be persisted. This never
+    /// rewrites a corrupt battery over a known-good file. An absent battery
+    /// on a ROM that does not implement SRAM is not an I/O failure.
+    pub fn save_for_eject(&mut self, with_state: bool) -> Result<bool, String> {
+        if self.runahead_rollback_failed {
+            return Err("Run-Ahead rollback failed; exit without saving instead".into());
+        }
+        let battery = self.save_sram_checked()?;
+        if !with_state || self.link_touched || self.linked_boot.is_some() {
+            return Ok(battery);
+        }
+        let data = self.core.serialize()
+            .map_err(|e| format!("Auto state capture: {e}"))?;
+        atomic_write(&self.state, &data)
+            .map_err(|e| format!("Auto state write: {e}"))?;
+        let container = retroarch_state::encode(&data)
+            .map_err(|e| format!("RetroArch state encoding: {e}"))?;
+        atomic_write(&self.retroarch_export, &container)
+            .map_err(|e| format!("RetroArch state export: {e}"))?;
+        Ok(true)
+    }
+
+    pub fn save(&mut self, with_state: bool) -> bool {
+        // Suspend/Android lifecycle also requires a fully durable generation
+        // before requesting RetroArch SAF export. It must not treat an RTC
+        // success as proof that SRAM/state writes succeeded.
+        match self.save_for_eject(with_state) {
+            Ok(saved) => saved,
+            Err(error) => {
+                log_launch_timing(&format!(
+                    "Save failed; keeping existing on-disk checkpoint: {error}"));
+                false
+            }
+        }
     }
     /// Original Slot ring: 10 timestamped states per ROM/core, each with
     /// a 240×160 PNG thumbnail. Independent from RetroArch's manual slots.
     pub fn save_manual(&mut self) -> Result<String, String> {
+        if self.runahead_rollback_failed { return Err("Unsafe Run-Ahead state; manual save blocked".into()); }
         if self.link_touched || self.linked_boot.is_some() { return Err("Save States unavailable for Multiplayer sessions".into()); }
         let state = self.core.serialize().map_err(|e|e.to_string())?;
         let preview = thumb::png(self.core.video_xrgb8888()).unwrap_or_default();
@@ -1179,9 +1579,14 @@ impl GameSession {
     }
 
     pub fn load_manual(&mut self, stamp:&str) -> Result<(), String> {
+        if self.runahead_rollback_failed { return Err("Run-Ahead state unsafe; restart from disk".into()); }
         if self.link_touched || self.linked_boot.is_some() { return Err("Load State unavailable during Multiplayer".into()); }
         let (bytes, _) = self.ring.read(stamp).map_err(|e|e.to_string())?;
         let prior = self.core.serialize().map_err(|e|e.to_string())?;
+        // Ensure a queued newer-generation battery write cannot race with
+        // this explicit time-travel restore (the game state may move back).
+        self.flush_periodic_battery();
+        self.preempt.clear();
         self.core.unserialize(&bytes).map_err(|e|e.to_string())?;
         self.pending_undo=Some((Instant::now(), PendingUndo::Loaded {prior}));
         Ok(())
@@ -1199,13 +1604,17 @@ impl GameSession {
     }
 
     pub fn undo_manual(&mut self)->Result<(),String> {
+        if self.runahead_rollback_failed { return Err("Run-Ahead state unsafe; restart from disk".into()); }
         if self.link_touched || self.linked_boot.is_some() { return Err("Undo unavailable during Multiplayer".into()); }
         let Some((since,_))=&self.pending_undo else { return Err("Nothing to undo".into())};
         if since.elapsed()>UNDO_WINDOW {
             self.pending_undo=None;
             return Err("Undo expired (30 seconds)".into());
         }
+        // An undo may restore an earlier memory timeline.
+        self.flush_periodic_battery();
         let (_, pending)=self.pending_undo.take().unwrap();
+        self.preempt.clear();
         match pending {
             PendingUndo::Loaded {prior} =>
                 self.core.unserialize(&prior).map_err(|e|e.to_string()),
@@ -1236,6 +1645,13 @@ impl Drop for GameSession {
 #[cfg(test)]
 mod pokemon_flash_guard_tests {
     use super::*;
+    #[test]
+    fn game_boy_audio_keeps_its_131072hz_rate() {
+        assert_eq!(core_sample_rate(131_072), 131_072, "mGBA GB/GBC");
+        assert_eq!(core_sample_rate(65_536), 65_536, "mGBA GBA, gpSP");
+        assert_eq!(core_sample_rate(1_000_000), 192_000);
+        assert_eq!(core_sample_rate(0), 8_000);
+    }
     #[test]
     fn flash_guard_accepts_complete_checksum_banks_and_rejects_partial_erase() {
         fn write_sector(image: &mut [u8], physical: usize, section: usize, counter: u32) {

@@ -229,3 +229,45 @@ fn nothing_on_the_plate_moves_when_the_charge_state_changes() {
         );
     }
 }
+
+#[test]
+fn y_only_asks_and_b_keeps_the_state() {
+    let d = Path::new("/nonexistent");
+    let mut p = Polaroids::new(vec![entry(d, "2026-08-09_00-00-02")]);
+    assert!(p.ask_delete());
+    assert!(p.confirming());
+    let keys: Vec<_> = p.hints().iter().map(|h| (h.key, h.label.clone())).collect();
+    assert_eq!(keys, vec![("B", "Keep".to_string()), ("X", "Delete".to_string())]);
+    p.keep();
+    assert!(!p.confirming());
+    assert_eq!(p.entries.len(), 1, "keeping must not delete anything");
+    assert_eq!(p.hints()[1].label, "Delete");
+}
+
+#[test]
+fn deleting_ends_the_question_and_an_empty_switcher_never_asks() {
+    let d = Path::new("/nonexistent");
+    let mut p = Polaroids::new(vec![entry(d, "2026-08-09_00-00-02")]);
+    assert!(p.ask_delete());
+    p.remove_selected();
+    assert!(!p.confirming());
+    assert!(!p.ask_delete());
+}
+
+#[test]
+fn the_question_draws_its_two_legends_without_panicking() {
+    let d = Path::new("/nonexistent");
+    let mut p = Polaroids::new(vec![entry(d, "2026-08-09_00-00-02")]);
+    p.set_confirm_faces(vec![TexId::from_raw(1), TexId::from_raw(2)]);
+    p.ask_delete();
+    let mut out = Vec::new();
+    p.draw(None, Printed::default(), None, Printed::default(), &mut out);
+    let faces: Vec<_> = out
+        .iter()
+        .filter_map(|d| match *d {
+            Draw::Tex { tex, .. } => Some(tex),
+            _ => None,
+        })
+        .collect();
+    assert!(faces.contains(&TexId::from_raw(1)) && faces.contains(&TexId::from_raw(2)));
+}

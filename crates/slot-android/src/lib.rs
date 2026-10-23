@@ -8,7 +8,28 @@ mod recents;
 mod favorites;
 mod selection;
 mod emulation;
+// VSync-clock experiment: host-tested, Android-only active mode.
+mod ra_clock_lab;
+// RETROARCH pacing: display-clocked core + dynamic audio rate control.
+mod ra_sync;
+// Run-Ahead second instance: predictions run on a private core copy.
+mod runahead_secondary;
+// Preemptive Frames: roll back and replay only when the buttons change.
+#[cfg(any(test, target_os = "android"))]
+mod preemptive;
 mod pokemon_flash;
+// F11: compile and EXECUTE F7's pure-Rust durability and ordering tests on
+// the Linux CI host. Android production shares this exact implementation.
+#[cfg(any(test, target_os = "android"))]
+mod battery_writer;
+// F9: both Linux CI tests and Android JNI use one PCM drain implementation.
+#[cfg(any(test, target_os = "android"))]
+mod audio_pcm;
+// F8 beta11: native-frame stage telemetry executes in Linux CI and Android.
+#[cfg(any(test, target_os = "android"))]
+mod frame_phases;
+#[cfg(any(test, target_os = "android"))]
+mod presentation_probe;
 // Directly compile the original Cart Studio No-Intro DAT matching code and tests.
 // Pinned verbatim at third_party/slot-cart-studio, never reinterpret CRCs.
 #[allow(dead_code)]
@@ -92,11 +113,11 @@ mod original_link_animation_tests {
 mod cable;
 #[path = "../../slot/src/link_state.rs"]
 mod link_state;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(test, feature = "runtime-tests")))]
 mod game;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(test, feature = "runtime-tests")))]
 mod cart_render;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", all(test, feature = "runtime-tests")))]
 mod runtime;
 #[cfg(target_os = "android")]
 mod egl_presentation;

@@ -4,7 +4,7 @@ use std::sync::{mpsc, Arc};
 
 use slot_retro::{AvInfo, ButtonMask, CoreError, Link, RetroCore, Rumble};
 
-use crate::{network, Control, Frame, Service, QUEUE_SIZE, RAM_SIZE, GB_COVERAGE_SIZE};
+use crate::{network, wake_evaluator, Control, Frame, Service, QUEUE_SIZE, RAM_SIZE, GB_COVERAGE_SIZE};
 
 static NEXT_GAME: AtomicU64 = AtomicU64::new(1);
 
@@ -12,6 +12,7 @@ pub(crate) struct Tracked {
     core: Box<dyn RetroCore>,
     controls: mpsc::Sender<Control>,
     frames: mpsc::SyncSender<Frame>,
+    wake: mpsc::SyncSender<()>,
     recycled: mpsc::Receiver<Vec<u8>>,
     recycle: mpsc::SyncSender<Vec<u8>>,
     enabled: Arc<AtomicBool>,
@@ -30,6 +31,7 @@ impl Tracked {
             core,
             controls: service.controls.clone(),
             frames: service.frames.clone(),
+            wake: service.wake.clone(),
             recycled,
             recycle,
             enabled: service.enabled.clone(),
@@ -69,9 +71,12 @@ impl Tracked {
         };
         // In particular, never use send(): HTTPS, fsync, or evaluation must not backpressure
         // gameplay. Sequence gaps reset the worker's hit/delta state before it proceeds.
-        if let Err(error) = self.frames.try_send(frame) {
-            let (mpsc::TrySendError::Full(frame) | mpsc::TrySendError::Disconnected(frame)) = error;
-            let _ = self.recycle.try_send(frame.ram);
+        match self.frames.try_send(frame) {
+            Ok(()) => wake_evaluator(&self.wake),
+            Err(error) => {
+                let (mpsc::TrySendError::Full(frame) | mpsc::TrySendError::Disconnected(frame)) = error;
+                let _ = self.recycle.try_send(frame.ram);
+            }
         }
     }
 }
@@ -81,11 +86,13 @@ impl RetroCore for Tracked {
         self.core.load(rom)?;
         self.generation = NEXT_GAME.fetch_add(1, Ordering::Relaxed);
         self.current.store(self.generation, Ordering::Release);
-        let _ = self.controls.send(Control::Load(network::Load {
+        if self.controls.send(Control::Load(network::Load {
             generation: self.generation,
             path: rom.to_path_buf(),
             console: self.console,
-        }));
+        })).is_ok() {
+            wake_evaluator(&self.wake);
+        }
         Ok(())
     }
     fn run_frame(&mut self, input: ButtonMask) {
@@ -149,6 +156,12 @@ impl RetroCore for Tracked {
     fn save_ram(&self) -> Option<Vec<u8>> {
         self.core.save_ram()
     }
+    fn save_ram_verified(&self) -> Result<Option<Vec<u8>>, CoreError> {
+        // Preserve the active-timeline SRAM accessor AND its failure. The
+        // trait fallback calls save_ram(), which may expose mGBA's stale
+        // libretro mirror after rollback. Tracking must not weaken F5.
+        self.core.save_ram_verified()
+    }
     fn load_save_ram(&mut self, data: &[u8]) -> Result<(), CoreError> {
         self.core.load_save_ram(data)
     }
@@ -198,7 +211,9 @@ impl RetroCore for Tracked {
 
 impl Drop for Tracked {
     fn drop(&mut self) {
-        let _ = self.controls.send(Control::Unload(self.generation));
+        if self.controls.send(Control::Unload(self.generation)).is_ok() {
+            wake_evaluator(&self.wake);
+        }
         let _ =
             self.current
                 .compare_exchange(self.generation, 0, Ordering::AcqRel, Ordering::Relaxed);

@@ -24,14 +24,8 @@ pub fn append_previous(previous: &[String], uri: &str) -> Vec<String> {
 }
 pub fn store(root: &Path, list: &[String]) -> std::io::Result<()> {
     std::fs::create_dir_all(root)?;
-    let output=root.join(FILE);
-    let tmp=root.join(format!("{FILE}.partial"));
     let bytes=serde_json::to_vec_pretty(list).map_err(std::io::Error::other)?;
-    std::fs::write(&tmp,bytes)?;
-    match std::fs::rename(&tmp,&output) {
-        Ok(())=>Ok(()),
-        Err(e)=>{let _=std::fs::remove_file(tmp);Err(e)}
-    }
+    slot_store::atomic_write(&root.join(FILE),&bytes)
 }
 /// Ignore missing library entries rather than reintroducing ghost cartridges;
 /// duplicate ROM URIs always select the same existing source cart.

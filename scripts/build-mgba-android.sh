@@ -56,9 +56,30 @@ do
     exit 1
   fi
 done
-# Keep the transient audio rollback ABI on top of the Multiplayer patch.
-# Persistent RetroArch state format is unchanged.
+# Port upstream fixes absent from the v1.2.2 Android build. A restored
+# FLASH1M savestate must preserve its active bank through mask/unmask; the
+# DMG palette must follow a live option change and savestate restoration.
+# MBC2 games (Kirby's Pinball Land) must get a valid SRAM bank pointer
+# instead of freezing on their first save RAM read (upstream 543a19758).
+# Apply strictly: never continue on a mismatched or half-patched checkout.
+for patch in flash-bank-survives-mask.patch gb-dmg-palette-follows-option.patch \
+  543a19758-mbc2-sram-bank.patch; do
+  patch_file="$ROOT/cores/mgba/$patch"
+  if git -C "$SRC" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+    echo "Already applied: $patch"
+  elif git -C "$SRC" apply --check "$patch_file"; then
+    git -C "$SRC" apply "$patch_file"
+    echo "Applied: $patch"
+  else
+    echo "Patch mismatch (refusing to use unsafe mGBA source): $patch" >&2
+    exit 1
+  fi
+done
+# Keep transient audio rollback ABI after upstream safety fixes.
+# Persistent RetroArch state format and RA saves remain unchanged.
 python3 "$ROOT/scripts/patch-mgba-speculative-audio.py" "$SRC"
+# F5: never export a potentially stale libretro save mirror after state mask.
+python3 "$ROOT/scripts/patch-mgba-active-sram.py" "$SRC"
 cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 \
@@ -84,7 +105,7 @@ esac
 NM="$NDK/toolchains/llvm/prebuilt/$NDK_HOST/bin/llvm-nm"
 [ -x "$NM" ] || { echo "Android NDK llvm-nm missing: $NM" >&2; exit 1; }
 SYMBOLS="$("$NM" -D --defined-only "$CORE")"
-for symbol in retro_init retro_load_game retro_run retro_serialize retro_unserialize slot_mgba_audio_sidecar slot_mgba_audio_sidecar_size; do
+for symbol in retro_init retro_load_game retro_run retro_serialize retro_unserialize slot_mgba_audio_sidecar slot_mgba_audio_sidecar_size slot_mgba_clone_active_save_ram; do
   grep -q " $symbol$" <<< "$SYMBOLS" || {
     echo "mGBA ABI symbol missing: $symbol" >&2
     exit 1
@@ -108,4 +129,9 @@ mkdir -p "$ROOT/android/app/src/main/assets/licenses"
 if [ -f "$SRC/LICENSE" ]; then
   cp "$SRC/LICENSE" "$ROOT/android/app/src/main/assets/licenses/mgba-LICENSE.txt"
 fi
+# F11: machine-readable provenance shipped INSIDE the APK. These fields
+# record the exact pinned source and safety patches used in this binary.
+cat > "$ROOT/android/app/src/main/assets/core-build-mgba.json" <<EOF
+{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py"]}
+EOF
 echo "mGBA arm64 libretro: $DEST/libmgba_libretro.so"

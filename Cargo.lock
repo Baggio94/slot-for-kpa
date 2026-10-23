@@ -2231,6 +2231,7 @@ dependencies = [
  "slot-retro",
  "slot-store",
  "slot-ui",
+ "tempfile",
 ]
 
 [[package]]
