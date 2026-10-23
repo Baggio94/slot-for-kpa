@@ -66,6 +66,7 @@ impl PresentationProbe {
             last_report: Instant::now(),
         }
     }
+    #[cfg(test)]
     pub(crate) fn tick(&mut self, source: &mut impl Source) {
         self.tick_with_input(source, 0);
     }
@@ -156,6 +157,10 @@ impl PresentationProbe {
             }
         }
         self.query_time_us += started.elapsed().as_micros() as u64;
+    }
+    /// EGL frame ID of the frame captured by the latest callback.
+    pub(crate) fn last_frame_id(&self) -> Option<u64> {
+        self.pending.back().and_then(|&(id, tick, _)| (tick == self.ticks).then_some(id)).flatten()
     }
     pub(crate) fn report(&mut self, status: &str) -> String {
         let p95 = if self.gap_count == 0 {

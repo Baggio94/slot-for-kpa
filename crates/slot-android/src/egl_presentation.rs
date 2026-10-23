@@ -26,6 +26,7 @@ type FrameTimestamps = unsafe extern "C" fn(
 const EGL_DRAW: i32 = 0x3059;
 const EGL_EXTENSIONS: i32 = 0x3055;
 const EGL_TIMESTAMPS_ANDROID: i32 = 0x3430;
+const EGL_COMPOSITION_LATCH_TIME_ANDROID: i32 = 0x3436;
 const EGL_DISPLAY_PRESENT_TIME_ANDROID: i32 = 0x343A;
 const EGL_TIMESTAMP_PENDING_ANDROID: i64 = -2;
 const EGL_TIMESTAMP_INVALID_ANDROID: i64 = -1;
@@ -48,10 +49,9 @@ struct Ext {
     timestamps: FrameTimestamps,
 }
 struct EglSource(Ext);
-impl Source for EglSource {
-    fn timestamp(&mut self, id: u64) -> Result<Timestamp, ()> {
+impl EglSource {
+    fn query(&self, id: u64, name: i32) -> Result<Timestamp, ()> {
         let ext = self.0;
-        let name = EGL_DISPLAY_PRESENT_TIME_ANDROID;
         let mut time = EGL_TIMESTAMP_PENDING_ANDROID;
         if unsafe { (ext.timestamps)(ext.display, ext.surface, id, 1, &name, &mut time) } == 0 {
             return Err(());
@@ -61,6 +61,11 @@ impl Source for EglSource {
             EGL_TIMESTAMP_INVALID_ANDROID => Timestamp::Invalid,
             time => Timestamp::Presented(time),
         })
+    }
+}
+impl Source for EglSource {
+    fn timestamp(&mut self, id: u64) -> Result<Timestamp, ()> {
+        self.query(id, EGL_DISPLAY_PRESENT_TIME_ANDROID)
     }
     fn next_id(&mut self) -> Result<u64, ()> {
         let ext = self.0;
@@ -75,13 +80,35 @@ struct Probe {
     tried: bool,
     status: &'static str,
     samples: PresentationProbe,
+    latch: LatchWait,
 }
+
+/// Keeps at most one finished frame queued in front of the display, as
+/// RetroArch does when it waits for the last frame before running the next.
+/// Without it the blocking swap lets several frames queue, each one adding
+/// a refresh between the buttons being read and the picture being shown.
+#[derive(Default)]
+struct LatchWait {
+    supported: bool,
+    disabled: bool,
+    consecutive_timeouts: u32,
+    waits: u64,
+    wait_sum_us: u64,
+    wait_max_us: u64,
+    timeouts: u64,
+}
+
+/// Longer than one 60 Hz refresh: past it the compositor has skipped us.
+const LATCH_TIMEOUT_NS: i64 = 20_000_000;
+/// Give up on a surface whose latch times never arrive.
+const LATCH_GIVE_UP: u32 = 30;
 
 impl Probe {
     fn new() -> Self {
         Self {
             extension: None, tried: false, status: "pending",
             samples: PresentationProbe::new(),
+            latch: LatchWait::default(),
         }
     }
     fn init(&mut self) {
@@ -136,6 +163,9 @@ impl Probe {
             self.status = "timestamps_enable_failed";
             return;
         }
+        self.latch.supported = unsafe {
+            (ext.supported)(display, surface, EGL_COMPOSITION_LATCH_TIME_ANDROID)
+        } != 0;
         self.extension = Some(ext);
         self.status = "supported";
     }
@@ -152,8 +182,53 @@ impl Probe {
         }
         self.samples.tick_with_input(&mut EglSource(ext), input_ns);
     }
+    /// Waits until the compositor has taken the frame swapped by the last
+    /// callback, so the next one reads the buttons as late as possible.
+    fn wait_for_latch(&mut self) {
+        let Some(ext) = self.extension else { return };
+        if !self.latch.supported || self.latch.disabled { return; }
+        if unsafe { eglGetCurrentDisplay() } != ext.display
+            || unsafe { eglGetCurrentSurface(EGL_DRAW) } != ext.surface { return; }
+        let Some(id) = self.samples.last_frame_id() else { return };
+        let source = EglSource(ext);
+        let started = crate::ra_sync::monotonic_ns();
+        loop {
+            match source.query(id, EGL_COMPOSITION_LATCH_TIME_ANDROID) {
+                Ok(Timestamp::Pending) => {}
+                Ok(Timestamp::Presented(_)) => break,
+                // Dropped or unknown frame: nothing to wait for.
+                Ok(Timestamp::Invalid) | Err(()) => return,
+            }
+            if crate::ra_sync::monotonic_ns() - started >= LATCH_TIMEOUT_NS {
+                self.latch.timeouts += 1;
+                self.latch.consecutive_timeouts += 1;
+                if self.latch.consecutive_timeouts >= LATCH_GIVE_UP {
+                    self.latch.disabled = true;
+                }
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(250));
+        }
+        let us = ((crate::ra_sync::monotonic_ns() - started) / 1000).max(0) as u64;
+        self.latch.consecutive_timeouts = 0;
+        self.latch.waits += 1;
+        self.latch.wait_sum_us += us;
+        self.latch.wait_max_us = self.latch.wait_max_us.max(us);
+    }
     fn report(&mut self) -> String {
-        self.samples.report(self.status)
+        let latch = &mut self.latch;
+        let state = if !latch.supported { "unsupported" }
+            else if latch.disabled { "gave_up" } else { "on" };
+        let result = format!("{} latch_wait={} latch_waits={} latch_wait_mean_us={} \
+             latch_wait_max_us={} latch_timeouts={}",
+            self.samples.report(self.status), state, latch.waits,
+            if latch.waits > 0 { (latch.wait_sum_us / latch.waits) as i64 } else { -1 },
+            latch.wait_max_us, latch.timeouts);
+        latch.waits = 0;
+        latch.wait_sum_us = 0;
+        latch.wait_max_us = 0;
+        latch.timeouts = 0;
+        result
     }
 }
 
@@ -173,6 +248,13 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeEglPresentationTic
     _env: *mut c_void, _this: *mut c_void, input_ns: i64,
 ) {
     EGL_PROBE.with(|p| p.borrow_mut().tick(input_ns));
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeEglWaitForLatch(
+    _env: *mut c_void, _this: *mut c_void,
+) {
+    EGL_PROBE.with(|p| p.borrow_mut().wait_for_latch());
 }
 
 #[unsafe(no_mangle)]
