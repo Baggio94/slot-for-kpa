@@ -580,6 +580,9 @@ struct Engine {
     shelf_frame_at: Option<Instant>,
     shelf_hitch_logs: u32,
     frame_uploads: u32,
+    // One shelf frame is drawn under the black eject hold so the first
+    // visible shelf frame after a game is not the expensive one.
+    shelf_warmed: bool,
     select_down_at: Option<Instant>,
     // HOME release must not close the Link screen opened by SELECT + HOME.
     select_home_consumed: bool,
@@ -1121,6 +1124,7 @@ impl Engine {
             shelf_frame_at: None,
             shelf_hitch_logs: 0,
             frame_uploads: 0,
+            shelf_warmed: false,
             select_down_at: None,
             select_home_consumed: false,
             select_chorded: false,
@@ -2106,6 +2110,7 @@ impl Engine {
                     self.ejected_at = Some(Instant::now());
                     self.shelf_frame_at = None;
                     self.shelf_hitch_logs = 0;
+                    self.shelf_warmed = false;
                 }
                 // The reversed cart animation will emit the original eject sound.
                 if self.progress > 0.0 || self.inserted { self.eject_sound_armed = true; }
@@ -3829,6 +3834,30 @@ impl Engine {
         self.letter_shown_at=Some(Instant::now());
     }
 
+    /// The CRT-off / black-hold picture: dark slot, seated cartridge.
+    fn push_hold_scene(&self, commands: &mut Vec<Draw>) {
+        commands.push(Draw::Rect {
+            x: 0.0, y: 0.0, w: OUT_W as f32, h: OUT_H as f32,
+            colour: [0.085, 0.085, 0.093, 1.0],
+        });
+        if let Some(shelf) = self.shelves.get(self.active) {
+            if let Some(cart) = shelf.carts.get(shelf.index) {
+                let (rest, scale) = shelf.selected_at();
+                // Match upstream slot. v1.7: neighbours move out/fade in sync with
+                // the 450ms seat animation and return on reverse ejection.
+                shelf.draw_row(Some(cart.stem.as_str()), 0.0, self.progress, 1.0, commands);
+                SlotChrome {
+                    cart, face: shelf.face(shelf.index), rest, scale,
+                    seat: self.progress, alert: None, dim: 0.0,
+                    screen: self.screen_power, game: true, over: false,
+                    slot_faces: self.slot_faces,
+                }.draw_with_material(commands,self.clear_layers().0,self.clear_layers().1);
+            } else {
+                commands.push(Draw::Game);
+            }
+        }
+    }
+
     fn refresh_selected_title(&mut self) {
         if !self.settings.show_titles || self.game.is_some() {return;}
         // Original v1.7 shelf Game Titles use label_text() (cleaned
@@ -4569,8 +4598,9 @@ impl Engine {
             }
         }
         let now = Instant::now();
-        let dt = (now - self.last).as_secs_f32().min(0.05);
+        let mut dt = (now - self.last).as_secs_f32().min(0.05);
         self.last = now;
+        let mut cover_with_hold = false;
 
         // Measure real libretro simulation FPS independently of the optional
         // performance HUD. No display toggles or simulation timing changes.
@@ -4704,32 +4734,24 @@ impl Engine {
                 self.eject_hold_remaining = (self.eject_hold_remaining - dt).max(0.0);
             }
             self.gpu.set_screen_power(self.screen_power);
-            let mut commands = vec![Draw::Rect {
-                x: 0.0, y: 0.0, w: OUT_W as f32, h: OUT_H as f32,
-                colour: [0.085, 0.085, 0.093, 1.0],
-            }];
-            if let Some(shelf) = self.shelves.get(self.active) {
-                if let Some(cart) = shelf.carts.get(shelf.index) {
-                    let (rest, scale) = shelf.selected_at();
-                    // Match upstream slot. v1.7: neighbours move out/fade in sync with
-                    // the 450ms seat animation and return on reverse ejection.
-                    shelf.draw_row(Some(cart.stem.as_str()), 0.0, self.progress, 1.0, &mut commands);
-                    SlotChrome {
-                        cart, face: shelf.face(shelf.index), rest, scale,
-                        seat: self.progress, alert: None, dim: 0.0,
-                        screen: self.screen_power, game: true, over: false,
-                        slot_faces: self.slot_faces,
-                    }.draw_with_material(&mut commands,self.clear_layers().0,self.clear_layers().1);
-                } else {
-                    commands.push(Draw::Game);
-                }
+            if !self.exiting_screen && !self.shelf_warmed && self.game.is_none() {
+                // Build and draw one full shelf frame, frozen (dt = 0) and
+                // hidden under the identical hold picture.
+                self.shelf_warmed = true;
+                cover_with_hold = true;
+                dt = 0.0;
+            } else {
+                let mut commands = Vec::new();
+                self.push_hold_scene(&mut commands);
+                self.gpu.fit(self.size);
+                self.gpu.begin_frame();
+                self.gpu.draw_list(&commands);
+                self.gpu.end_frame(self.size);
+                if self.screen_power <= 0.0 { self.exiting_screen = false; }
+                // The hold is not a shelf frame for the hitch probe.
+                self.shelf_frame_at = None;
+                return;
             }
-            self.gpu.fit(self.size);
-            self.gpu.begin_frame();
-            self.gpu.draw_list(&commands);
-            self.gpu.end_frame(self.size);
-            if self.screen_power <= 0.0 { self.exiting_screen = false; }
-            return;
         }
         if self.game.is_some() {
             self.screen_power = (self.screen_power + dt / SCREEN_POWER_ON_S).min(1.0);
@@ -5485,6 +5507,14 @@ impl Engine {
             }
         }
         self.draw_overlay(&mut commands);
+        if cover_with_hold {
+            self.push_hold_scene(&mut commands);
+            self.gpu.fit(self.size);
+            self.gpu.begin_frame();
+            self.gpu.draw_list(&commands);
+            self.gpu.end_frame(self.size);
+            return;
+        }
         // Keep the upper indicators on the identical visibility lifecycle
         // as Slot's footer: only on an idle, menu-free cartridge carousel.
         let chrome = self.progress == 0.0 && matches!(self.overlay, ShelfOverlay::None);
