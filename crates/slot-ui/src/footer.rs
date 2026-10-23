@@ -3,7 +3,7 @@ use slot_power::Battery;
 
 use crate::battery::{draw_gauge_with_ink, GAUGE_H};
 use crate::hud::HUD_INK;
-use crate::plate::HINT_H;
+use crate::plate::{word_ink, UndoFace, HINT_H};
 use crate::slot_chrome::MOUTH_H;
 
 const FOOTER_Y: f32 = OUT_H as f32 - MOUTH_H + (MOUTH_H - HINT_H as f32) / 2.0;
@@ -86,5 +86,70 @@ mod theme_tests {
     fn upstream_footer_ink_switches_whole_palette() {
         assert_eq!(footer_ink(false), [255, 255, 255]);
         assert_eq!(footer_ink(true), [0, 0, 0]);
+    }
+}
+
+/// RetroAchievements gold, kept for a mastered game's trophy in both themes.
+pub const MASTERED_INK: [u8; 3] = [0xe8, 0xa8, 0x18];
+// Material Design "trophy" (Pictogrammers, Apache-2.0), a 24-unit square.
+const TROPHY_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="white" d="M18 2C17.1 2 16 3 16 4H8C8 3 6.9 2 6 2H2V11C2 12 3 13 4 13H6.2C6.6 15 7.9 16.7 11 17V19.08C8 19.54 8 22 8 22H16C16 22 16 19.54 13 19.08V17C16.1 16.7 17.4 15 17.8 13H20C21 13 22 12 22 11V2H18M6 11H4V4H6V11M20 11H18V4H20V11Z"/></svg>"#;
+const TROPHY_PX: u32 = 16;
+const TROPHY_GAP: u32 = 4;
+
+/// Shelf footer progress, "<trophy> 12/40", in the footer ink. A mastered
+/// game shows its trophy in gold. Built only when the numbers or theme change.
+pub fn progress_face(unlocked: u16, total: u16, ink: [u8; 3]) -> UndoFace {
+    let word = word_ink(&format!("{unlocked}/{total}"), ink);
+    let trophy_ink = if total > 0 && unlocked >= total { MASTERED_INK } else { ink };
+    let Some(cov) = crate::silhouette::rasterise_svg(TROPHY_SVG, TROPHY_PX, TROPHY_PX) else {
+        return word;
+    };
+    let tw = TROPHY_PX;
+    let w = tw + TROPHY_GAP + word.w;
+    let h = HINT_H;
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    let top = (h - TROPHY_PX) / 2;
+    for gy in 0..TROPHY_PX {
+        for gx in 0..tw {
+            let a = cov[(gy * tw + gx) as usize];
+            if a == 0 {
+                continue;
+            }
+            let o = (((top + gy) * w + gx) * 4) as usize;
+            rgba[o..o + 4].copy_from_slice(&[trophy_ink[0], trophy_ink[1], trophy_ink[2], a]);
+        }
+    }
+    let x0 = tw + TROPHY_GAP;
+    for y in 0..h.min(word.h) {
+        let src = (y * word.w * 4) as usize;
+        let dst = ((y * w + x0) * 4) as usize;
+        rgba[dst..dst + (word.w * 4) as usize].copy_from_slice(&word.rgba[src..src + (word.w * 4) as usize]);
+    }
+    UndoFace { rgba, w, h }
+}
+
+/// Centre slot of the shelf footer, between the battery and the clock.
+pub fn draw_footer_centre(p: Printed, out: &mut Vec<Draw>) {
+    if p.face.is_some() {
+        printed(((OUT_W as f32 - p.w as f32) / 2.0).round(), p, out);
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn progress_face_has_a_trophy_and_turns_gold_only_when_mastered() {
+        let white = [255, 255, 255];
+        let word = word_ink("12/40", white);
+        let face = progress_face(12, 40, white);
+        assert!(face.w > word.w, "the trophy glyph sits before the numbers");
+        assert_eq!(face.h, HINT_H);
+        let gold = |f: &UndoFace| f.rgba.chunks_exact(4)
+            .any(|p| p[3] > 0 && p[..3] == MASTERED_INK);
+        assert!(!gold(&face));
+        assert!(gold(&progress_face(40, 40, white)));
+        assert!(gold(&progress_face(40, 40, [0, 0, 0])), "gold in the light theme too");
     }
 }

@@ -580,6 +580,9 @@ struct Engine {
     // A single account-scoped engine outlives individual games, allowing
     // queued offline awards to sync even after the cartridge is ejected.
     ra_service: Option<slot_achievements::Service>,
+    // Footer trophy for the selected cartridge: hash index + its last face.
+    ra_hashes: crate::ra_progress::RomHashes,
+    ra_progress_face: Option<(slot_achievements::GameProgress, bool, slot_gfx::TexId, u32)>,
     ra_signing_out: bool,
     buttons: u16,
     ff_held: bool,
@@ -1103,6 +1106,8 @@ impl Engine {
             link_starter: None,
             link_art,
             ra_service: None,
+            ra_hashes: Default::default(),
+            ra_progress_face: None,
             ra_signing_out: false,
             buttons: 0,
             ff_held: false,
@@ -1213,6 +1218,36 @@ impl Engine {
             selected_title_face: Printed::default(),
             selected_title_texture: None,
         })
+    }
+
+    /// "<trophy> 12/40" between battery and clock for the selected cartridge,
+    /// once its RetroAchievements data is cached. Nothing for unknown ROMs.
+    fn draw_ra_progress(&mut self, light: bool, out: &mut Vec<Draw>) {
+        let Some(service) = self.ra_service.as_ref() else { return };
+        let shelf = &self.shelves[self.active];
+        let Some(cart) = shelf.carts.get(shelf.index) else { return };
+        let uri = cart.rom.to_string_lossy();
+        let Some(root) = PATHS.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().map(|(root, _)| root.clone()) else { return };
+        let Some(hash) = self.ra_hashes.hash(&root, &uri) else { return };
+        let Some(progress) = service.game_progress(&hash) else { return };
+        let tex = match self.ra_progress_face {
+            Some((shown, shown_light, tex, w)) if shown == progress && shown_light == light =>
+                Some((tex, w)),
+            previous => {
+                let face = slot_ui::progress_face(progress.unlocked, progress.total,
+                    self.shelf_footer_ink());
+                let tex = match previous {
+                    Some((_, _, tex, _)) => { self.gpu.update_texture(tex, face.w, face.h, &face.rgba); tex }
+                    None => self.gpu.create_texture(face.w, face.h, &face.rgba),
+                };
+                self.ra_progress_face = Some((progress, light, tex, face.w));
+                Some((tex, face.w))
+            }
+        };
+        if let Some((tex, w)) = tex {
+            slot_ui::draw_footer_centre(Printed::new(tex, w), out);
+        }
     }
 
     fn shelf_footer_ink(&self) -> [u8; 3] {
@@ -5413,6 +5448,7 @@ impl Engine {
             slot_ui::draw_footer_with_ink(self.battery,self.battery_face,
                 Some(if light {self.bolt_light_texture} else {self.bolt_texture}),
                 self.clock_face,self.shelf_footer_ink(),&mut commands);
+            self.draw_ra_progress(light, &mut commands);
         }
         SHELF_INDICATOR_FLAGS.store(indicator_flags, Ordering::Release);
         self.gpu.fit(self.size);
