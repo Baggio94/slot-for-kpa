@@ -723,11 +723,13 @@ class MainActivity : Activity() {
                 if (target != null && target.core == core) {
                     gameLoader.execute {
                         val stamp = payload.optString("manual_stamp", "")
+                        val exportStart = SystemClock.elapsedRealtime()
                         val failures = if (stamp.isNotEmpty()) {
                             RetroArchStorage.exportManualState(this@MainActivity, target, stamp)
                         } else {
                             RetroArchStorage.exportAfterSave(this@MainActivity, target)
                         }
+                        Log.i(TAG, "Save export: ${SystemClock.elapsedRealtime() - exportStart}ms")
                         if (failures.isNotEmpty()) {
                             runOnUiThread {
                                 if (!isDestroyed) {
