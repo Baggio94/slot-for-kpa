@@ -1,20 +1,25 @@
-# slot. for KONKR Pocket Advance — v1.2.2
+# slot. for KONKR Pocket Advance — v1.2.3
 
-This update brings smoother emulation, better game compatibility, and several quality-of-life improvements.
+This update is all about smoothness: a new RetroArch-style frame pacing, better audio, and safer saves.
 
 ### What's New
 
-- **Smoother gameplay** — Improved performance, audio stability, and controller responsiveness. SYNC LAB is now the default, with Run-Ahead turned off for the best overall experience.
-- **Full ZIP support** — Play GB, GBC, and GBA games directly from ZIP files, with saves and RetroAchievements support.
-- **Better cartridge artwork** — More reliable label downloads and improved cartridge designs for GB and GBC games.
-- **Improved game compatibility** — Fixes for titles like *Drill Dozer*, along with various stability improvements.
-- **SleepManager integration** — The status icon now accurately shows whether SleepManager is running or stopped.
+- **New Frame Pacing: Native** — The screen now drives the emulator, exactly like RetroArch, with high-quality audio that adapts to the display. In our tests on the KONKR it is as smooth as RetroArch, with slightly lower input latency. Native is the new default.
+- **Responsive mode** — Prefer the lowest possible latency? Switch Frame Pacing to Responsive in Emulation settings.
+- **Better Run-Ahead** — Run-Ahead now works like RetroArch's, with a second instance and Preemptive Frames. It stays OFF by default.
+- **Game Boy / Game Boy Color audio fix** — Sound now plays at the correct rate, with no more delay or crackling.
+- **Rewind speed** — Choose 1x, 2x, 3x or 5x rewind, globally or per game. 2x is the default, as in the original slot.
+- **Fast Forward can be turned Off** — R2 then does nothing.
+- **Safer save states** — Deleting a save state now asks for confirmation.
+- **More reliable saves** — Settings, game profiles, favorites and in-game saves are written more safely, including when ejecting a cartridge.
+- **Faster achievements** — RetroAchievements unlock as soon as they are earned.
+- **Compatibility fixes** — Upstream mGBA fixes for MBC2 and 1 Mbit flash saves and the Game Boy palette option.
 
 ### Installation
 
 Download the APK below and install it over your existing version. Your games, saves, and settings will be preserved.
 
-**Note:** SYNC LAB and Run-Ahead OFF are the defaults for new installations. Existing preferences remain unchanged.
+**Note:** Previous Frame Pacing modes (SYNC LAB, Standard and the lab modes) are replaced by Native, including per-game settings. Multiplayer (Link) keeps its own pacing.
 
 ### Credits
 

@@ -14,9 +14,9 @@ android {
         targetSdk = 32
         // Dedicated KONKR ARM64 build; retain the stable package and signing
         // identity so adb install -r preserves existing data and SAF grants.
-        // 1.2.3 release candidate: Frame Pacing NATIVE / RESPONSIVE.
-        versionCode = 163
-        versionName = "1.2.3-rc1"
+        // 1.2.3: Frame Pacing NATIVE / RESPONSIVE.
+        versionCode = 164
+        versionName = "1.2.3"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 

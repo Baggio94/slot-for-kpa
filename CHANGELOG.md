@@ -2,7 +2,22 @@
 
 This changelog covers the public releases of the dedicated KONKR Pocket Advance Android port. Earlier development experiments are preserved in Git history.
 
-## v1.2.2 — release pending approval
+## v1.2.3 — release pending approval
+
+- New **Native** Frame Pacing, the default: the display clocks the core as in RetroArch, with a 48 kHz windowed-sinc resampler, dynamic audio rate control and GPU hard sync. Measured on KONKR as smooth as RetroArch (2 late frames in 2 minutes) at lower latency.
+- **Responsive** Frame Pacing for the lowest latency (VSync callback loop with automatic Frame Delay).
+- All previous pacing modes (SYNC LAB, Standard, Display Sync and lab modes), global and per game, migrate to Native. Link keeps its own lockstep pacing.
+- RetroArch-style Run-Ahead with a second instance and Preemptive Frames; Run-Ahead stays OFF by default.
+- Game Boy / Game Boy Color audio played at its real 131072 Hz rate.
+- Rewind speed 1x/2x/3x/5x, per ROM and core; 2x default as in original slot.
+- Fast Forward can be set to Off (from original slot. 1.8.1).
+- Save State Switcher asks before deleting a state (from original slot. 1.8.0).
+- Durable settings, profiles, favorites and recents; battery saves written off the graphics thread with barriers before rewind, state restore, suspend, eject and Link.
+- Event-driven RetroAchievements evaluation.
+- Upstream mGBA MBC2 save RAM, FLASH1M bank and DMG palette fixes; gpSP serial session fix.
+- Smoother game start and fewer per-frame allocations in audio and rendering.
+
+## v1.2.2 — 20 October 2026
 
 - **SYNC LAB** emulation pacing; new installs default to SYNC LAB with Run-Ahead OFF. Existing settings and per-game overrides remain unchanged.
 - ZIP ROM loading for GBA/GB/GBC with bounded, read-only extraction, stable game identity and RetroArch saves/RetroAchievements compatibility.
