@@ -4414,9 +4414,9 @@ impl Engine {
             alpha: 0.8 * lift,
         });
         let (mut behind,front)=self.clear_layers();
-        // The board has left a GB/GBC pak: its lifted front shows only its
-        // own plastic and label, not the board a clear shell shows on the shelf.
-        if platform != Platform::Gba && front.is_some() { behind = [None, None]; }
+        // The board has left the cart: its lifted front shows only its own
+        // plastic and label, not the board a clear shell shows on the shelf.
+        if front.is_some() { behind = [None, None]; }
         let face=grown(lid,TURN_PAD as f32*lid.w/cart_box(platform).0 as f32);
         for tex in behind.into_iter().flatten()
             .chain(front.or_else(||shelf.face(shelf.index))) {
