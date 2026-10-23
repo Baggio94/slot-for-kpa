@@ -28,11 +28,9 @@ use crate::library::{carts_by_platform, RomEntry, LIBRARY};
 use slot_ui::{
     board_face, chip_face, chip_shadow_face, socket_face, quick_value_face, cart_face_with_material,
     cart_shadow, gb_cart_shadow, board_from, board_zoom, lift_of, shelf_cart_at,
-    on_board, lid_from, grown, draw_empty_slot, Draw, GbShell, Shelf, SlotChrome,
-    BOARD_X, BOARD_W, SOCKET_U, SOCKET_V, SOCKET_W, SOCKET_H,
+    on_board, lid_from, grown, Draw, GbShell, Shelf, SlotChrome, SOCKET_U, SOCKET_V, SOCKET_W, SOCKET_H,
     CHIP_U, CHIP_V, CHIP_W, CHIP_H, HOP_LIFT, TURN_PAD, SHADOW_W, SHADOW_H,
-    CART_W, hint_face, arrows_hint_face, title_face, photo_face, Polaroids, Printed, HINT_H, HINT_EDGE,
-    draw_footer, draw_slot_name, draw_platform_name, word_face, platform_name_face,
+    CART_W, hint_face, arrows_hint_face, title_face, photo_face, Polaroids, Printed, HINT_H, HINT_EDGE, draw_slot_name, draw_platform_name, platform_name_face,
     icon_face, badge_face, menu_face, Icon, LinkBadge, BOLT_PX, HUD_INK,
     Hud, HudKind, FfState, Toast, toast_face, QUICK_PITCH, opening, edge, centred_hints, LEGEND_GAP,
     sticker_face_konkr, StickerFields, STICKER_W, STICKER_H, quick_caret_face,
@@ -172,26 +170,9 @@ fn queue_ra_notice(queue: &mut VecDeque<String>, payload: String) {
 }
 
 static PATHS: Mutex<Option<(PathBuf, PathBuf)>> = Mutex::new(None);
-/// Beta10 opt-in: only SOLO SYNC LAB with a speculative frame can
-/// signal PCM early. Every pre-existing mode retains its legacy wake path.
-fn early_pcm_wake_allowed(sync_lab: bool, runahead: u8, fast: bool,
-                          linked: bool, committed_pcm: bool) -> bool {
-    sync_lab && runahead > 0 && !fast && !linked && committed_pcm
-}
-
-// Beta12 read-only solo SYNC LAB production counters. Read by the existing
-// Android audio worker every ~5s. Cumulative atomics deliberately survive
-// report-boundary jitter; no extra libretro frames or thread ownership change.
-static SYNC_LAB_CALLBACKS: AtomicU64 = AtomicU64::new(0);
-static SYNC_LAB_COMMITTED_FRAMES: AtomicU64 = AtomicU64::new(0);
-static SYNC_LAB_PCM_PRODUCED_SHORTS: AtomicU64 = AtomicU64::new(0);
-static SYNC_LAB_PCM_QUEUED_SHORTS: AtomicU64 = AtomicU64::new(0);
-static SYNC_LAB_EMPTY_PCM_FRAMES: AtomicU64 = AtomicU64::new(0);
-static SYNC_LAB_NO_STEP_CALLBACKS: AtomicU64 = AtomicU64::new(0);
-static SYNC_LAB_OVERDUE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 // F9: loss diagnostics only; never used to pace or drop native PCM.
-// Count all modes, not just solo SYNC LAB. Saturating cumulative atomics
-// are sampled as deltas by the Android audio worker every ~5 seconds.
+// Cumulative atomics, sampled as deltas by the Android audio worker
+// every ~5 seconds.
 static AUDIO_FIFO_OVERFLOW_EVENTS: AtomicU64 = AtomicU64::new(0);
 static AUDIO_FIFO_DROPPED_SHORTS: AtomicU64 = AtomicU64::new(0);
 
@@ -392,8 +373,6 @@ enum ShelfOverlay {
     PauseGameplaySettings { row: usize },
     PauseEmulationSettings { row: usize },
     About { row: usize },
-    Scraping,
-    Achievements,
     Core,
     GameMenu { row: usize },
     Multiplayer,
@@ -675,7 +654,6 @@ struct Engine {
     link_connected_hints: [(slot_gfx::TexId, u32); 2],
     link_failed_hints: [(slot_gfx::TexId, u32); 1],
     board_texture: Option<slot_gfx::TexId>,
-    chip_texture: slot_gfx::TexId,
     picker: Option<CorePicker>,
     socket_textures: [slot_gfx::TexId; 2],
     chip_textures: [slot_gfx::TexId; 2],
@@ -1194,7 +1172,6 @@ impl Engine {
             link_connected_hints,
             link_failed_hints,
             board_texture: None,
-            chip_texture,
             picker: None,
             socket_textures,
             chip_textures,
@@ -1468,8 +1445,6 @@ impl Engine {
                 set_message("This GBA game's link protocol is not yet verified in gpSP. Try Pokemon FireRed or Emerald.".into());
                 return;
             }
-            let automatic = link_kind::link_kind(&identity.code, &identity.title,
-                identity.clean_header);
             self.link_mode = self.link_mode_override.unwrap_or_else(||
                 link_kind::preferred_mode(&identity.code, &identity.title,
                     identity.clean_header));
@@ -2826,29 +2801,6 @@ impl Engine {
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
-                            ShelfOverlay::Scraping | ShelfOverlay::Achievements => match code {
-                                96 if matches!(self.overlay, ShelfOverlay::Scraping) => {
-                                    if let Some(cart) = self.shelves[self.active].carts
-                                        .get(self.shelves[self.active].index) {
-                                        *LABEL_PICK_REQUEST.lock()
-                                            .unwrap_or_else(|e| e.into_inner()) =
-                                            Some(cart.rom.to_string_lossy().into_owned());
-                                        UI_ACTION.lock().unwrap_or_else(|e| e.into_inner())
-                                            .push_back(13);
-                                    } else {
-                                        set_message("Choose a cartridge first".into());
-                                    }
-                                }
-                                96 if matches!(self.overlay, ShelfOverlay::Achievements) => {
-                                    UI_ACTION.lock().unwrap_or_else(|e| e.into_inner()).push_back(3);
-                                    self.external_pending = true;
-                                }
-                                97 => self.overlay = ShelfOverlay::Menu {
-                                    row: if matches!(self.overlay, ShelfOverlay::Scraping) { 1 } else { 2 },
-                                },
-                                108 => self.overlay = ShelfOverlay::None,
-                                _ => {}
-                            },
                             ShelfOverlay::Core => {
                                 let now = self.born.elapsed().as_millis() as u64;
                                 if let Some(picker) = self.picker.as_mut() {
@@ -2892,7 +2844,6 @@ impl Engine {
                                 }
                             },
                             ShelfOverlay::GameMenu { .. } | ShelfOverlay::Multiplayer |
-                            ShelfOverlay::ScreenSystemSettings { .. } |
                             ShelfOverlay::PauseSettings { .. } | ShelfOverlay::PauseScreenSettings { .. } |
                             ShelfOverlay::PauseGameplaySettings { .. } | ShelfOverlay::PauseEmulationSettings { .. } |
                             ShelfOverlay::States | ShelfOverlay::None => {}
@@ -3264,15 +3215,6 @@ impl Engine {
         }
     }
 
-    fn add_text(&self, index: usize, x: f32, y: f32, out: &mut Vec<Draw>) {
-        self.add_text_alpha(index, x, y, 1.0, out);
-    }
-
-    fn add_text_alpha(&self, index: usize, x: f32, y: f32, alpha: f32, out: &mut Vec<Draw>) {
-        let (tex, w, h) = self.menu_textures[index];
-        out.push(Draw::Tex { x, y, w: w as f32, h: h as f32, tex, alpha });
-    }
-
     fn text_fit(&self, index: usize, x: f32, y: f32, max_w: f32,
                 alpha: f32, out: &mut Vec<Draw>) {
         let (tex, raw_w, raw_h) = self.menu_textures[index];
@@ -3284,29 +3226,6 @@ impl Engine {
             x, y, w: raw_w as f32 * scale, h: raw_h as f32 * scale,
             tex, alpha,
         });
-    }
-
-    fn modal(&self, x: f32, y: f32, w: f32, h: f32,
-             out: &mut Vec<Draw>, dim: f32) {
-        out.push(Draw::Rect {
-            x: 0.0, y: 0.0, w: OUT_W as f32, h: OUT_H as f32,
-            colour: [0.0, 0.0, 0.0, dim],
-        });
-        out.push(Draw::Rect {
-            x, y, w, h, colour: [0.085, 0.085, 0.093, 1.0],
-        });
-        out.push(Draw::Rect {
-            x, y, w, h: 2.0, colour: [0.69, 0.69, 0.72, 1.0],
-        });
-    }
-
-    fn draw_menu_hints(&self, x: f32, y: f32, out: &mut Vec<Draw>) {
-        let mut x = x;
-        for (tex, w) in self.menu_hints {
-            out.push(Draw::Tex { x, y, w: w as f32, h: HINT_H as f32,
-                tex, alpha: 1.0 });
-            x += w as f32 + 24.0;
-        }
     }
 
     fn prepare_about(&mut self) {
@@ -3442,7 +3361,6 @@ impl Engine {
             && matches!(self.overlay, ShelfOverlay::None)
             && !self.exiting_screen && !self.rewind_held
             && !self.ff_held && !self.ff_latched && !session.linked()
-            && self.current_emulation().retroarch_sync_pacing
             && !RA_SWAP_LOOP.load(Ordering::Acquire)
             && crate::ra_sync::display_can_clock_core(display_hz, session.fps);
         clocked.then(|| self.frame_delay.delay_ns())
@@ -4149,13 +4067,6 @@ impl Engine {
         }
     }
 
-    fn update_caption(&self) -> usize {
-        match self.update_status {
-            1 | 5 => 100, 2 => 101, 3 => 102, 4 => 103,
-            _ => 99,
-        }
-    }
-
     /// Draw an optional version label on a common vertical centerline and
     /// return the true right edge for the following AVAILABLE glyph.
     fn draw_update_value(&self, face: Option<(slot_gfx::TexId,u32,u32)>,
@@ -4318,22 +4229,11 @@ impl Engine {
                     });
                 }
             }
-            ShelfOverlay::Scraping | ShelfOverlay::Achievements => {
-                self.modal(110.0, 127.0, 500.0, 227.0, out, 0.78);
-                let (header, detail) = if matches!(self.overlay, ShelfOverlay::Scraping) {
-                    (11, 12)
-                } else {
-                    (13, 14)
-                };
-                self.text_fit(header, 141.0, 152.0, 438.0, 1.0, out);
-                self.text_fit(detail, 141.0, 230.0, 438.0, 0.65, out);
-                self.draw_menu_hints(141.0, 311.0, out);
-            }
             ShelfOverlay::GameMenu { row } => {
                 let linked = self.game.as_ref().is_some_and(GameSession::linked);
                 let relaunch = self.game.as_ref().is_some_and(GameSession::requires_relaunch);
                 let indices: Vec<usize> = pause_rows(linked, relaunch).iter()
-                    .map(|item| pause_row_text(*item, linked, relaunch)).collect();
+                    .map(|item| pause_row_text(*item, relaunch)).collect();
                 self.draw_original_style_menu(19, &indices, row, out);
             }
             ShelfOverlay::PauseSettings { row } => {
@@ -4611,16 +4511,11 @@ impl Engine {
                     |g| (g.fps, g.core_kind().as_str(), g.linked()));
                 let profile = self.current_emulation();
                 let requested = profile.run_ahead_frames;
-                let pacing_mode = if profile.retroarch_sync_pacing { "retroarch" }
-                    else if profile.retroarch_clock_pacing { "ra_clock_lab" }
-                    else if profile.hybrid_pacing { "sync_lab" }
-                    else if profile.display_sync_pacing { "display_sync" }
-                    else if profile.responsive_pacing { "responsive" } else { "standard" };
                 let probe = self.game.as_mut()
                     .map(|g| g.take_runahead_probe()).unwrap_or_default();
                 *EMULATION_DIAGNOSTICS.lock().unwrap_or_else(|e|e.into_inner()) =
                     Some(format!(
-                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode={pacing_mode} frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} runahead_second_instance_calls={} runahead_preemptive_rollbacks={} ra_sync_rate_adjust={:.5} ra_display_hz={:.3} frame_delay_ms={:.1} ra_loop={} linked={linked}",
+                        "core={core} emu_fps={emu:.3} target_fps={target:.3} display_callbacks_fps={render:.3} catchup_percent={catchup:.1} pacing_mode=retroarch frame_debt_ms={:.3} emu_step0_1s={} emu_step1_1s={} emu_step_multi_1s={} runahead_requested={} runahead_calls={} runahead_snapshot_us={} runahead_speculative_us={} runahead_restore_us={} runahead_max_us={} runahead_failures={} runahead_second_instance_calls={} runahead_preemptive_rollbacks={} ra_sync_rate_adjust={:.5} ra_display_hz={:.3} frame_delay_ms={:.1} ra_loop={} linked={linked}",
                         self.game_accum * 1000.0,
                         self.perf_step0, self.perf_step1, self.perf_step_multi,
                         requested, probe.calls, probe.snapshots_us,
@@ -4801,8 +4696,7 @@ impl Engine {
                     ));
                     self.buttons = 0;
                     // RETROARCH resamples to 48kHz; open AudioTrack there once.
-                    let ra_sync = self.current_emulation().retroarch_sync_pacing
-                        && !session.linked();
+                    let ra_sync = !session.linked();
                     SAMPLE_RATE.store(if ra_sync { crate::ra_sync::OUTPUT_RATE }
                         else { session.sample_rate }, Ordering::Release);
                     self.ra_resampler.reset();
@@ -4933,22 +4827,13 @@ impl Engine {
             AUDIO_SPEED_PERMILLE.store(1000, Ordering::Release);
             self.hud.set_ff(FfState::Off);
         }
-        // Android's frame callback changes GLSurfaceView renderMode only when
-        // an active game explicitly selected DISPLAY SYNC. No engine work or
-        // GL resource ownership ever moves away from the GL render thread.
-        // SYNC LAB uses the same Choreographer frame-request path as
-        // Display Sync, but its real core frame budget is separate.
-        // Linked sessions keep their prior render/pacing configuration.
-        DISPLAY_SYNC.store(self.game.is_some()
-            && (profile.display_sync_pacing || profile.hybrid_pacing
-                || profile.retroarch_clock_pacing || profile.retroarch_sync_pacing)
-            && !((profile.hybrid_pacing || profile.retroarch_clock_pacing
-                || profile.retroarch_sync_pacing)
-                && self.game.as_ref().is_some_and(GameSession::linked)),
-            Ordering::Release);
-        RA_SWAP_LOOP.store(profile.retroarch_sync_pacing && !profile.responsive_loop
-            && self.game.as_ref().is_some_and(|session| !session.linked()),
-            Ordering::Release);
+        // Android's frame callback switches GLSurfaceView to Choreographer
+        // frame requests while a solo game runs (RetroArch pacing). No engine
+        // work or GL resource ownership ever leaves the GL render thread.
+        // Linked sessions keep continuous rendering and wall-clock pacing.
+        let solo = self.game.as_ref().is_some_and(|session| !session.linked());
+        DISPLAY_SYNC.store(solo, Ordering::Release);
+        RA_SWAP_LOOP.store(solo && !profile.responsive_loop, Ordering::Release);
         // Grab clear-cart textures before borrowing the mutable emulator
         // session. They are used only for the 220ms CRT start transition.
         let (transition_back, transition_front) = self.clear_layers();
@@ -4999,22 +4884,11 @@ impl Engine {
                 let fast = self.ff_held || self.ff_latched;
                 let multiplier = if fast { f64::from(live.ff_speed) } else { 1.0 };
                 let period = 1.0 / session.fps;
-                // RC4 Beta 5 restores Beta 3's less aggressive RESPONSIVE mode:
-                // never insert catch-up frames on a single display callback.
-                // A slightly lower EMU FPS is preferable to observable bursts
-                // and inconsistent input response on the physical KONKR.
-                // STANDARD and fast-forward are not changed.
-                let responsive = profile.responsive_pacing && !fast;
-                // Beta8 experiment: VSync-triggered rendering, keep overdue
-                // simulation time across callbacks but execute ONE real
-                // core frame per callback. No skipped intermediate pictures.
-                // Never affect Link sessions, FF or the existing three modes.
-                let hybrid = profile.hybrid_pacing && !fast && !session.linked();
                 // RETROARCH: the display refresh clocks the core whenever the
                 // panel is within RetroArch's 5% timing skew of the core rate.
-                // Audio is always resampled to 48kHz in this mode (also while
+                // Audio is always resampled to 48kHz in solo play (also while
                 // fast-forwarding) so the AudioTrack is never rebuilt.
-                let ra_sync = profile.retroarch_sync_pacing && !session.linked();
+                let ra_sync = !session.linked();
                 let display_hz = f64::from(DISPLAY_REFRESH_MILLIHZ.load(Ordering::Acquire)) / 1000.0;
                 let ra_display_clocked = ra_sync && !fast
                     && crate::ra_sync::display_can_clock_core(display_hz, session.fps);
@@ -5045,10 +4919,9 @@ impl Engine {
                     self.ra_resampler.reset();
                     1.0
                 };
-                // Only the opt-in modes use UI VSync instead of GL wall time.
-                // RETROARCH falls back to it when the panel cannot clock the core.
-                let ra_clock = (profile.retroarch_clock_pacing || (ra_sync && !ra_display_clocked))
-                    && !fast && !session.linked();
+                // When the panel cannot clock the core, accumulate UI VSync
+                // time instead of GL wall time (RA CLOCK).
+                let ra_clock = ra_sync && !ra_display_clocked && !fast;
                 let ra_elapsed = if ra_clock {
                     self.ra_clock.sample(vsync_frame_ns, f64::from(dt))
                 } else {
@@ -5067,9 +4940,6 @@ impl Engine {
                 let mgba_cable_pacing = session.linked()
                     && session.core_kind() == Core::Mgba && !fast
                     && MGBA_CABLE_RECOVERY.load(Ordering::Acquire);
-                // Preserve a little more fractional game time in the
-                // opt-in DISPLAY SYNC mode ONLY. No extra libretro frames
-                // can run in any single callback; Beta 4 catch-up stays gone.
                 if ra_display_clocked {
                     // No fractional debt: run exactly the refreshes that elapsed.
                     let refreshes = if RA_SWAP_LOOP.load(Ordering::Acquire) {
@@ -5085,30 +4955,16 @@ impl Engine {
                 } else if ra_clock {
                     self.game_accum = crate::settings::frame_debt_ra_clock(
                         self.game_accum, ra_elapsed, multiplier, period);
-                } else if hybrid {
-                    self.game_accum = crate::settings::frame_debt_hybrid(
-                        self.game_accum, f64::from(dt), multiplier, period);
-                } else if profile.display_sync_pacing && responsive {
-                    self.game_accum = crate::settings::frame_debt_display_sync(
-                        self.game_accum, f64::from(dt), multiplier, period);
                 } else {
                     self.game_accum = crate::settings::frame_debt(
-                        self.game_accum, f64::from(dt), multiplier, period, fast, responsive);
+                        self.game_accum, f64::from(dt), multiplier, fast);
                 }
-                // Beta15: reactivity-first rollback. A beta14 physical
-                // KONKR test reached zero underruns with 373 callbacks
-                // executing two mGBA frames, but the owner perceived
-                // worse motion smoothness and control response. Restore
-                // strictly one committed frame per solo SYNC LAB callback.
-                // Keep the beta13 causal PCM diagnostics to investigate
-                // audio without concealing a latency regression.
+                // RA CLOCK commits strictly one frame per callback: two-frame
+                // catch-up measured worse motion and controls on the KONKR.
                 let frame_limit = if ra_display_clocked { 2 }
                     else if mgba_cable_pacing { 2 }
                     else if fast { usize::from(live.ff_speed) * 4 }
-                    else if hybrid || ra_clock {
-                        crate::settings::sync_lab_reactivity_first_frame_budget()
-                    }
-                    else if responsive { 1 } else { 4 };
+                    else if ra_clock { 1 } else { 4 };
                 // A13.1: revert the experimental second-frame budget.
                 // Real-world A13 KONKR/AVD tests suffered repeated Link
                 // wait_peer stalls and severe AudioTrack starvation.
@@ -5167,18 +5023,6 @@ impl Engine {
                     let queue_pcm = (!fast || (live.ff_sound &&
                         FF_AUDIO_SUPPORTED.load(Ordering::Acquire)))
                         && !samples.is_empty();
-                    if hybrid {
-                        SYNC_LAB_COMMITTED_FRAMES.fetch_add(1, Ordering::Relaxed);
-                        SYNC_LAB_PCM_PRODUCED_SHORTS
-                            .fetch_add(samples.len() as u64, Ordering::Relaxed);
-                        if samples.is_empty() {
-                            SYNC_LAB_EMPTY_PCM_FRAMES.fetch_add(1, Ordering::Relaxed);
-                        }
-                        if queue_pcm {
-                            SYNC_LAB_PCM_QUEUED_SHORTS
-                                .fetch_add(samples.len() as u64, Ordering::Relaxed);
-                        }
-                    }
                     if queue_pcm {
                         // Only the committed timeline's PCM is forwarded.
                         // Drop AUDIO's lock before waking its Java writer;
@@ -5207,15 +5051,11 @@ impl Engine {
                                 AUDIO_FIFO_DROPPED_SHORTS.fetch_add(dropped as u64, Ordering::Relaxed);
                             }
                         }
-                        // Beta10 isolated experiment: the legacy Android
-                        // notification happens only AFTER speculation + GLES.
-                        // Wake AudioTrack immediately after committed PCM
-                        // exists, so its writer can run during speculation.
-                        // VSync, input and saved-state ownership are unchanged.
-                        if (ra_sync && !fast) || early_pcm_wake_allowed(hybrid,
-                            profile.run_ahead_frames, fast, session.linked(), true) {
-                            on_pcm_ready();
-                        }
+                        // The Android notification otherwise happens only
+                        // AFTER speculation + GLES. Wake AudioTrack as soon
+                        // as committed PCM exists, so its writer can run
+                        // during speculation.
+                        if ra_sync && !fast { on_pcm_ready(); }
                     }
                     // The only consumer has already queued/muted these samples.
                     // Retain its Vec allocation for the next committed frame.
@@ -5225,19 +5065,6 @@ impl Engine {
                 }
                 // RETROARCH never carries fractional time between refreshes.
                 if ra_display_clocked { self.game_accum = 0.0; }
-            }
-            // Observe whether sync-lab callbacks had sufficient accumulated
-            // game time to run a committed frame, and how often the one-frame
-            // budget leaves a real backlog. These counters NEVER change debt.
-            if profile.hybrid_pacing && !self.ff_held && !self.ff_latched
-                && !session.linked() && !self.rewind_held {
-                SYNC_LAB_CALLBACKS.fetch_add(1, Ordering::Relaxed);
-                if stepped == 0 {
-                    SYNC_LAB_NO_STEP_CALLBACKS.fetch_add(1, Ordering::Relaxed);
-                }
-                if self.game_accum >= 1.0 / session.fps {
-                    SYNC_LAB_OVERDUE_CALLBACKS.fetch_add(1, Ordering::Relaxed);
-                }
             }
             if stepped > 0 && !self.rewind_held && !self.ff_held && !self.ff_latched
                 && profile.run_ahead_frames > 0 && !preemptive {
@@ -5706,7 +5533,7 @@ fn pause_rows(linked: bool, requires_relaunch: bool) -> &'static [PauseRow] {
     else if linked { LINK_PAUSE_ROWS }
     else { SOLO_PAUSE_ROWS }
 }
-fn pause_row_text(row: PauseRow, linked: bool, requires_relaunch: bool) -> usize {
+fn pause_row_text(row: PauseRow, requires_relaunch: bool) -> usize {
     match row {
         PauseRow::Resume => 20,
         PauseRow::States => 22,
@@ -6038,8 +5865,8 @@ mod ui_feedback_tests {
         }
         assert!(game_menu_ejects(0,true,true));
         assert!(!game_menu_ejects(0,true,false));
-        assert_eq!(pause_row_text(PauseRow::SaveEject,true,true),78);
-        assert_eq!(pause_row_text(PauseRow::Settings,true,false),25);
+        assert_eq!(pause_row_text(PauseRow::SaveEject,true),78);
+        assert_eq!(pause_row_text(PauseRow::Settings,false),25);
         assert!(!pause_rows(true,false).contains(&PauseRow::States));
     }
 
@@ -6212,21 +6039,6 @@ mod ui_feedback_tests {
         assert_eq!(move_menu_row(1, 19, 3), 0);
         assert_eq!(move_menu_row(1, 20, 3), 2);
         assert_eq!(move_menu_row(1, 96, 3), 1);
-    }
-
-    #[test]
-    fn beta10_early_audio_wake_is_solo_sync_lab_runahead_only() {
-        assert!(early_pcm_wake_allowed(true, 1, false, false, true));
-        assert!(early_pcm_wake_allowed(true, 2, false, false, true));
-        for (sync, ra, ff, linked, pcm) in [
-            (false, 1, false, false, true), // Standard and Display Sync
-            (true, 0, false, false, true),  // no RA: stable original path
-            (true, 1, true, false, true),   // fast forward
-            (true, 1, false, true, true),   // multiplayer link
-            (true, 1, false, false, false), // no committed PCM
-        ] {
-            assert!(!early_pcm_wake_allowed(sync, ra, ff, linked, pcm));
-        }
     }
 
     #[test]
@@ -6574,8 +6386,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
         }
         if let Some(engine) = holder.borrow_mut().as_mut() {
             engine.draw(vsync_frame_ns, || {
-                // One callback per committed core frame maximum; SYNC LAB
-                // itself runs only one real frame per GL callback. Never
+                // One callback per committed core frame maximum. Never
                 // invoke Java while holding the native PCM queue mutex.
                 if env.call_method(&activity, "onNativePcmReady", "()V", &[]).is_err() {
                     let _ = env.exception_clear();
@@ -6762,7 +6573,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeExternalReturn(
 /// The underlying libretro emulation budget remains RESPONSIVE (one frame).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeWarmRomCandidate(
-    mut env: JNIEnv<'_>, _this: JObject<'_>,
+    env: JNIEnv<'_>, _this: JObject<'_>,
 ) -> jstring {
     WARM_ROM_URI.lock().unwrap_or_else(|e|e.into_inner())
         .clone()
@@ -7036,24 +6847,14 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetMgbaLinkRecover
     });
 }
 
-#[unsafe(no_mangle)]
-/// Beta12 diagnostic-only counters in this stable order:
-/// callbacks, committed real frames, PCM shorts generated, PCM shorts queued,
-/// no-PCM real frames, zero-step callbacks, overdue-after-callback frames,
-/// PCM FIFO overflow events and discarded-old PCM shorts (all modes).
-/// The GL thread owns libretro. The Android audio thread only reads atomics.
+/// Diagnostic-only cumulative counters, in this stable order: PCM FIFO
+/// overflow events and discarded-old PCM shorts. The GL thread owns
+/// libretro; the Android audio thread only reads atomics.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioClockCounters(
-    mut env: JNIEnv<'_>, _this: JObject<'_>,
+    env: JNIEnv<'_>, _this: JObject<'_>,
 ) -> jlongArray {
-    let values: [i64; 9] = [
-        SYNC_LAB_CALLBACKS.load(Ordering::Relaxed) as i64,
-        SYNC_LAB_COMMITTED_FRAMES.load(Ordering::Relaxed) as i64,
-        SYNC_LAB_PCM_PRODUCED_SHORTS.load(Ordering::Relaxed) as i64,
-        SYNC_LAB_PCM_QUEUED_SHORTS.load(Ordering::Relaxed) as i64,
-        SYNC_LAB_EMPTY_PCM_FRAMES.load(Ordering::Relaxed) as i64,
-        SYNC_LAB_NO_STEP_CALLBACKS.load(Ordering::Relaxed) as i64,
-        SYNC_LAB_OVERDUE_CALLBACKS.load(Ordering::Relaxed) as i64,
+    let values: [i64; 2] = [
         AUDIO_FIFO_OVERFLOW_EVENTS.load(Ordering::Relaxed) as i64,
         AUDIO_FIFO_DROPPED_SHORTS.load(Ordering::Relaxed) as i64,
     ];
@@ -7107,7 +6908,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeAudioSampleRate(
 /// No Vec/ShortArray allocation occurs on the normal per-chunk JNI path.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeReadAudioInto(
-    mut env: JNIEnv<'_>, _this: JObject<'_>, out: JShortArray<'_>,
+    env: JNIEnv<'_>, _this: JObject<'_>, out: JShortArray<'_>,
 ) -> jint {
     let capacity = match env.get_array_length(&out) {
         Ok(length) if length >= 0 => length as usize,

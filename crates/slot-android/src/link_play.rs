@@ -210,8 +210,6 @@ impl LinkPlay {
         }
     }
 
-    pub fn peer_paused(&self) -> bool { self.wire.peer_paused() }
-
 
     /// A pending packet must never block a GPU frame. The emulation is held
     /// at the exact same frame until both input masks are available.

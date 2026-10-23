@@ -74,25 +74,12 @@ No physical-device pacing, driver behavior or memory budget is validated by Mesa
 The runtime logs retained CPU pixel bytes after successful recovery so the actual
 KONKR reserve can be measured with its populated library and artwork.
 
-## P2 prototype implemented (opt-in)
+## P2 prototype (removed in 1.3.0)
 
-The same app now includes `ControlledEglPresenter` and the GLSurfaceView reference
-adapter, both using the same native renderer callback. The controlled path owns
-EGL on a persistent HandlerThread, parks the context on a pbuffer while its window
-is absent, and uses owner-thread Choreographer with a single outstanding frame
-request. The UI scheduler is disabled on that path. Ordered commands continue
-through pause/detach; surface destruction waits for the owner to release it.
-
-EGL errors retain the session, abandon names and stop drawing until a lifecycle
-retry. Resume resets timing debt. Shutdown releases the native engine while its
-context is current, before destroying EGL. Logs identify backend, surface epoch,
-owner and swap CPU wall time. The default remains the reference backend.
-
-See [controlled-egl-presenter.md](controlled-egl-presenter.md) for selection,
-measurements, device checks and limitations. The source includes a diagnostic-only
-Android instrumentation harness for real attach/detach/pause/shutdown transitions.
-It exercises the presenter with a GL test renderer, without loading a ROM or JNI.
-Native session recovery and safety are tested separately with real Mesa EGL.
+A controlled-EGL presenter (EGL owned by a persistent HandlerThread, owner-thread
+Choreographer) was prototyped as an opt-in developer path. KONKR captures measured
+it worse than GLSurfaceView, so 1.3.0 removed it; GLSurfaceView is the only
+presenter. Native session recovery remains tested with real Mesa EGL.
 
 ## Remaining presentation work
 

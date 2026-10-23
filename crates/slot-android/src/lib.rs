@@ -109,6 +109,7 @@ mod original_link_animation_tests {
 
 // Original Slot 3-frame cable input lockstep and paired savestate framing.
 // Import by path so Android and original never diverge on these wire formats.
+#[allow(dead_code)] // shared with crates/slot, which uses all of it
 #[path = "../../slot/src/cable.rs"]
 mod cable;
 #[path = "../../slot/src/link_state.rs"]
@@ -124,6 +125,7 @@ mod egl_presentation;
 
 // Reuse upstream Slot's unmodified mechanical core picker: 420ms open,
 // 180ms chip hop, 320ms close and refusal shake.
+#[allow(dead_code)] // shared with crates/slot, which uses all of it
 #[path = "../../slot/src/core_picker.rs"]
 mod core_picker;
 

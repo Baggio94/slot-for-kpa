@@ -8,7 +8,7 @@ use slot_retro::{ButtonMask, LibretroCore, RetroCore, LinkChannel};
 use crate::link_kind::LinkKind;
 use crate::link_play::{Frame as LinkFrame, LinkError, LinkPlay};
 use crate::multiplayer::Role;
-use slot_store::{atomic_write, Core, Platform, StateEntry, StateRing, stamp_now, parse_stamp, format_stamp, RING_MAX};
+use slot_store::{atomic_write, Core, Platform, StateEntry, StateRing, stamp_now, format_stamp, RING_MAX};
 use crate::thumb;
 use crate::retroarch_state;
 use crate::rewind::{RewindThread, REWIND_BYTES};
@@ -190,7 +190,6 @@ pub struct GameSession {
     manual_export_prefix: PathBuf,
     state: PathBuf,
     retroarch_export: PathBuf,
-    retroarch_import: PathBuf,
     ring: StateRing,
     rewind: RewindThread,
     rewind_frames: u8,
@@ -683,7 +682,7 @@ impl GameSession {
         Ok(Self {
             core, link: None, link_touched: false, linked_boot, gpsp_serial,
             rom_path: rom.to_path_buf(), rom_stem: rom_stem.to_owned(),
-            save, rtc, manual_export_prefix, state, retroarch_export, retroarch_import, ring,
+            save, rtc, manual_export_prefix, state, retroarch_export, ring,
             rewind: RewindThread::spawn(REWIND_BYTES), rewind_frames: 0,
             frame_count: 0, palette_live, core_kind: which,
             runahead_video: Vec::new(), runahead_state: Vec::new(),
@@ -811,10 +810,6 @@ impl GameSession {
     /// sending any artificial GBA serial packets.
     pub fn set_link_paused(&mut self, paused: bool) {
         if let Some(link) = self.link.as_mut() { link.set_local_paused(paused); }
-    }
-
-    pub fn link_peer_paused(&self) -> bool {
-        self.link.as_ref().is_some_and(|link| link.peer_paused())
     }
 
     /// An ended link must never become a local solo timeline. Eject and

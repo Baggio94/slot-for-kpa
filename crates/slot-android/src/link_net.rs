@@ -47,8 +47,6 @@ fn report_link_rom_phase(stage: &str, details: &str) {
 }
 const POLL_MS: u64 = 50;
 
-pub const HOST_BOUND: Duration = Duration::from_secs(30);
-
 /// How long either end gives the other to say or answer the greeting. Short: it is one small
 /// packet on a network measured in milliseconds, and a host that cannot manage it in this time
 /// is not the one this joiner wants.
@@ -192,36 +190,6 @@ pub struct TcpLink {
 }
 
 impl TcpLink {
-    /// WiFi a link session actually runs over. On the private network that is the whole
-    /// defence, since only the other handheld is there to connect; on the home network
-    /// `host_greeted_until` is the one to use, which also turns away anything that does not
-    /// open with the right greeting. See the module doc for why this transport does not
-    /// hardcode which address that is.
-    pub fn host_until(
-        addr: &str,
-        port: u16,
-        bound: Duration,
-        cancel: &Cancel,
-    ) -> std::io::Result<TcpLink> {
-        TcpLink::host_inner(addr, port, bound, cancel, None, None, || {})
-    }
-
-    /// `host_until` for a shared network, where anything on it can reach the listener. Only a
-    /// peer that opens with this game's greeting is accepted; anything else is dropped without
-    /// a word and the wait goes on, still bounded. `listening` runs once the port is bound and
-    /// before the first wait, which is when a host on a shared network announces itself: a
-    /// joiner that found it any sooner would be refused.
-    pub fn host_greeted_until(
-        addr: &str,
-        port: u16,
-        bound: Duration,
-        cancel: &Cancel,
-        game: &str,
-        listening: impl FnOnce(),
-    ) -> std::io::Result<TcpLink> {
-        TcpLink::host_inner(addr, port, bound, cancel, Some(greeting(game).to_vec()), None, listening)
-    }
-
     /// Lab-only strict negotiation: backend, Cable/Wireless mode, exact ROM,
     /// compiled libretro core and active GBA BIOS must all match BEFORE Ready.
     pub fn host_lab_greeted_until(
@@ -282,49 +250,6 @@ impl TcpLink {
         }
     }
 
-    pub fn host(addr: &str, port: u16) -> std::io::Result<TcpLink> {
-        TcpLink::host_until(addr, port, HOST_BOUND, &Cancel::new())
-    }
-
-    pub fn join_until(
-        addr: &str,
-        port: u16,
-        bound: Duration,
-        cancel: &Cancel,
-    ) -> std::io::Result<TcpLink> {
-        let deadline = Instant::now() + bound;
-        loop {
-            if cancel.is_cancelled() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "cancelled while reaching for the host",
-                ));
-            }
-            if let Ok(stream) = TcpStream::connect((addr, port)) {
-                return TcpLink::wrap(stream);
-            }
-            if Instant::now() >= deadline {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "never reached the host",
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(POLL_MS));
-        }
-    }
-
-    pub fn join(addr: &str, port: u16) -> std::io::Result<TcpLink> {
-        TcpLink::wrap(TcpStream::connect((addr, port))?)
-    }
-
-    /// One attempt to reach a host on a shared network: connect, open with this game's
-    /// greeting, and wait for the host to accept it. Both waits are short and neither retries,
-    /// because the caller is walking a list of hosts that answered and the next one is the
-    /// retry. A host that turns it away closes the socket, which reads here as an error.
-    pub fn join_greeted(addr: std::net::SocketAddr, game: &str) -> std::io::Result<TcpLink> {
-        TcpLink::join_with_greeting(addr, &greeting(game))
-    }
-
     pub fn join_lab_greeted(addr: std::net::SocketAddr,
                             identity: &LabGreeting) -> std::io::Result<TcpLink> {
         {
@@ -345,20 +270,6 @@ impl TcpLink {
         }
     }
 
-    fn join_with_greeting(addr: std::net::SocketAddr, bytes: &[u8]) -> std::io::Result<TcpLink> {
-        let mut stream = TcpStream::connect_timeout(&addr, GREET_WAIT)?;
-        stream.set_write_timeout(Some(GREET_WAIT))?;
-        stream.write_all(bytes)?;
-        stream.set_read_timeout(Some(GREET_WAIT))?;
-        let mut ack = [0u8; 1];
-        stream.read_exact(&mut ack)?;
-        if ack[0] != GREETING_ACK {
-            return Err(std::io::Error::other("host did not accept the greeting"));
-        }
-        stream.set_read_timeout(None)?;
-        stream.set_write_timeout(None)?;
-        TcpLink::wrap(stream)
-    }
 
     fn wrap(stream: TcpStream) -> std::io::Result<TcpLink> {
         Self::wrap_identified(stream, None)

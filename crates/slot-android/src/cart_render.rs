@@ -232,14 +232,14 @@ mod tests {
         };
         renderer.request((4, 0), &favorite, false);
         assert!(renderer.queued((4, 0)));
-        let (((key, epoch), _, _)) = work.0.lock().unwrap().jobs.pop_front().expect("FAVORITES job");
+        let ((key, epoch), _, _) = work.0.lock().unwrap().jobs.pop_front().expect("FAVORITES job");
         assert_eq!(key, (4, 0));
         assert_eq!(epoch, 0);
         renderer.invalidate_shelf(4);
         assert!(!renderer.queued((4, 0)));
         renderer.request((4, 0), &favorite, false);
         assert!(renderer.queued((4, 0)));
-        let (((new_key, new_epoch), _, _)) = work.0.lock().unwrap().jobs.pop_front().expect("new FAVORITES job");
+        let ((new_key, new_epoch), _, _) = work.0.lock().unwrap().jobs.pop_front().expect("new FAVORITES job");
         assert_eq!((new_key,new_epoch), ((4,0),1));
         let face = || CartFace { rgba: vec![255; 4], w: 1, h: 1 };
         completed.send((((4,0),0),face(),None)).unwrap();

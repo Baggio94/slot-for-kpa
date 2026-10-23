@@ -309,7 +309,7 @@ mod cross_abi_fingerprint_tests {
         std::fs::write(&bios, b"exact same BIOS").unwrap();
         std::fs::write(&mac, b"ELF-for-x86_64").unwrap();
         std::fs::write(&konkr, b"ELF-for-arm64-different-bytes").unwrap();
-        let mut left = LinkConfig {
+        let left = LinkConfig {
             game: "BPRE".into(), rom: rom.clone(), core_file: mac,
             bios_file: bios.clone(), backend: Backend::MgbaSlotCable,
             mode: LinkKind::Cable,

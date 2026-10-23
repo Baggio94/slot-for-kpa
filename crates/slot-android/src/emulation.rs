@@ -11,11 +11,6 @@ pub struct EmulationProfile {
     // None means a legacy per-game profile inherits global Show Stats.
     // A newly edited profile persists its own explicit ON/OFF selection.
     pub show_fps_override: Option<bool>,
-    pub responsive_pacing: bool,
-    pub display_sync_pacing: bool,
-    pub hybrid_pacing: bool,
-    pub retroarch_clock_pacing: bool,
-    pub retroarch_sync_pacing: bool,
     // Frame Pacing RESPONSIVE (Choreographer loop) instead of NATIVE.
     pub responsive_loop: bool,
     pub run_ahead_frames: u8,
@@ -36,9 +31,7 @@ pub struct EmulationProfile {
 impl Default for EmulationProfile {
     fn default() -> Self {
         Self { show_fps: false, show_fps_override: None,
-            responsive_pacing: false, display_sync_pacing: false,
-            hybrid_pacing: false, retroarch_clock_pacing: false,
-            retroarch_sync_pacing: true, responsive_loop: false, run_ahead_frames: 0,
+            responsive_loop: false, run_ahead_frames: 0,
             screen_shader: None, screen_bezel: None,
             colour_correction_override: None,
             gb_palettes_override: None, ff_speed_override: None,
@@ -52,11 +45,6 @@ impl EmulationProfile {
     pub fn from_settings(settings: &Settings) -> Self {
         Self { show_fps: settings.show_fps,
             show_fps_override: None,
-            responsive_pacing: settings.responsive_pacing,
-            display_sync_pacing: settings.display_sync_pacing,
-            hybrid_pacing: settings.hybrid_pacing,
-            retroarch_clock_pacing: settings.retroarch_clock_pacing,
-            retroarch_sync_pacing: settings.retroarch_sync_pacing,
             responsive_loop: settings.responsive_loop,
             run_ahead_frames: settings.run_ahead_frames,
             screen_shader: None, screen_bezel: None,
@@ -137,9 +125,6 @@ impl EmulationProfile {
     }
 
     pub fn sanitize(mut self) -> Self {
-        settings::migrate_pacing(&mut self.responsive_pacing, &mut self.display_sync_pacing,
-            &mut self.hybrid_pacing, &mut self.retroarch_clock_pacing,
-            &mut self.retroarch_sync_pacing, &mut self.responsive_loop);
         if self.run_ahead_frames > 2 { self.run_ahead_frames = 0; }
         if self.rewind_speed_override.is_some_and(|speed|
             !settings::REWIND_SPEEDS.contains(&speed)) {
@@ -157,13 +142,7 @@ impl EmulationProfile {
                 self.show_fps = !self.show_fps;
                 self.show_fps_override = Some(self.show_fps);
             },
-            11 => {
-                settings::migrate_pacing(&mut self.responsive_pacing,
-                    &mut self.display_sync_pacing, &mut self.hybrid_pacing,
-                    &mut self.retroarch_clock_pacing, &mut self.retroarch_sync_pacing,
-                    &mut self.responsive_loop);
-                self.responsive_loop = !self.responsive_loop;
-            }
+            11 => self.responsive_loop = !self.responsive_loop,
             12 => self.run_ahead_frames =
                 settings::cycle_u8(self.run_ahead_frames, 2, right),
             _ => return false,
@@ -181,21 +160,24 @@ impl EmulationProfile {
     /// old profile never migrates or deletes it: the other core can still
     /// inherit it until the user customizes or resets that core explicitly.
     pub fn load(root: &Path, uri: &str, core: Core) -> Option<Self> {
-        match fs::read(Self::path(root, uri, core)) {
+        let value: serde_json::Value = match fs::read(Self::path(root, uri, core)) {
             Ok(bytes) => {
                 let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
                 // A reset must mask legacy ROM-only overrides for this core.
                 if value.get("inherit_global").and_then(|v| v.as_bool()) == Some(true) {
                     return None;
                 }
-                serde_json::from_value::<Self>(value).ok().map(Self::sanitize)
+                value
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let bytes = fs::read(Self::legacy_path(root, uri)).ok()?;
-                serde_json::from_slice::<Self>(&bytes).ok().map(Self::sanitize)
-            }
-            Err(_) => None,
-        }
+            Err(error) if error.kind() == io::ErrorKind::NotFound =>
+                serde_json::from_slice(&fs::read(Self::legacy_path(root, uri)).ok()?).ok()?,
+            Err(_) => return None,
+        };
+        let native = settings::legacy_pacing_is_native(&value);
+        serde_json::from_value::<Self>(value).ok().map(|mut profile| {
+            if native { profile.responsive_loop = false; }
+            profile.sanitize()
+        })
     }
     fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
         fs::create_dir_all(path.parent().expect("app-owned profile path"))?;
@@ -242,9 +224,9 @@ mod tests {
     #[test]
     fn legacy_globals_inherited_until_game_is_customized() {
         let mut settings = Settings::default();
-        settings.responsive_pacing = true;
+        settings.responsive_loop = true;
         let mut profile = EmulationProfile::from_settings(&settings);
-        assert!(profile.responsive_pacing);
+        assert!(profile.responsive_loop);
         assert!(profile.change(12, true));
         assert_eq!(profile.run_ahead_frames, 1);
         assert!(profile.change(12, true));
@@ -256,28 +238,34 @@ mod tests {
 
     #[test]
     fn old_per_game_pacing_modes_become_native() {
+        let root = std::env::temp_dir().join(format!(
+            "slot-konkr-emulation-pacing-{}", std::process::id()));
+        let uri = "content://roms/pacing";
+        let path = EmulationProfile::path(&root, uri, Core::Mgba);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
         for old in [r#"{"responsive_pacing":true,"run_ahead_frames":1}"#,
             r#"{"responsive_pacing":true,"display_sync_pacing":true}"#,
             r#"{"hybrid_pacing":true}"#, r#"{"retroarch_clock_pacing":true}"#,
-            r#"{"responsive_pacing":false,"retroarch_sync_pacing":false}"#] {
-            let p = serde_json::from_str::<EmulationProfile>(old).unwrap().sanitize();
-            assert!(p.retroarch_sync_pacing && !p.responsive_loop, "{old}");
-            assert!(!p.responsive_pacing && !p.display_sync_pacing && !p.hybrid_pacing
-                && !p.retroarch_clock_pacing, "{old}");
+            r#"{"retroarch_sync_pacing":false,"responsive_loop":true}"#] {
+            fs::write(&path, old).unwrap();
+            let p = EmulationProfile::load(&root, uri, Core::Mgba).unwrap();
+            assert!(!p.responsive_loop, "{old}");
         }
-        let kept = serde_json::from_str::<EmulationProfile>(
+        fs::write(&path,
             r#"{"retroarch_sync_pacing":true,"responsive_loop":true,"run_ahead_frames":1}"#)
-            .unwrap().sanitize();
+            .unwrap();
+        let kept = EmulationProfile::load(&root, uri, Core::Mgba).unwrap();
         assert!(kept.responsive_loop && kept.run_ahead_frames == 1);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn per_game_frame_pacing_toggles_and_roundtrips_without_global_changes() {
         let globals = Settings::first_install_defaults();
         let mut profile = EmulationProfile::from_settings(&globals);
-        assert!(profile.retroarch_sync_pacing && !profile.responsive_loop);
+        assert!(!profile.responsive_loop);
         assert!(profile.change(11, true));
-        assert!(profile.retroarch_sync_pacing && profile.responsive_loop);
+        assert!(profile.responsive_loop);
         let json = serde_json::to_string(&profile).unwrap();
         let restored: EmulationProfile = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, profile);
@@ -289,8 +277,7 @@ mod tests {
     fn new_game_profiles_inherit_native_pacing_and_no_runahead() {
         let fresh = Settings::first_install_defaults();
         let game = EmulationProfile::from_settings(&fresh);
-        assert!(game.retroarch_sync_pacing && !game.responsive_loop);
-        assert!(!game.hybrid_pacing && !game.display_sync_pacing && !game.responsive_pacing);
+        assert!(!game.responsive_loop);
         assert_eq!(game.run_ahead_frames, 0);
         let mut responsive = fresh.clone();
         responsive.responsive_loop = true;

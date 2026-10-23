@@ -90,10 +90,6 @@ class MainActivity : Activity() {
     }
 
     external fun nativeSurfaceCreated(): Boolean
-    external fun nativeGraphicsReady(): Boolean
-    external fun nativeGraphicsContextLost()
-    external fun nativePresentationResume()
-    external fun nativeRendererShutdown(contextCurrent: Boolean)
     external fun nativeSurfaceChanged(width: Int, height: Int)
     external fun nativeDrawFrame(vsyncFrameNs: Long)
     // Beta9 optional actual display present timestamp via EGL. Read-only.
@@ -214,16 +210,12 @@ class MainActivity : Activity() {
     @Volatile private var diagnosticAudioUnderruns = 0
     // Prevent an empty-read 8ms sleep from missing a freshly produced frame.
     private val audioFrameSignal = java.util.concurrent.Semaphore(0)
-    // Beta10 experimental: this callback is invoked on GLSurfaceView's GL
-    // thread after a real core frame has queued PCM but BEFORE Run-Ahead's
-    // speculative frames and GLES presentation. Read-only counters below.
+    // Invoked on GLSurfaceView's GL thread after a real core frame has
+    // queued PCM but BEFORE Run-Ahead's speculative frames and GLES
+    // presentation, so the audio worker can write during them.
     private val earlyPcmWakes = AtomicInteger(0)
-    // The latest committed-PCM wake timestamp is diagnostic only. The audio
-    // worker reads it without ever blocking or calling into the GL core.
-    private val earlyPcmReadyNs = java.util.concurrent.atomic.AtomicLong(0L)
     @Suppress("unused")
     private fun onNativePcmReady() {
-        if (audioRunning.get()) earlyPcmReadyNs.set(SystemClock.elapsedRealtimeNanos())
         if (audioRunning.get() && audioFrameSignal.availablePermits() == 0) {
             audioFrameSignal.release()
             earlyPcmWakes.incrementAndGet()
@@ -259,12 +251,11 @@ class MainActivity : Activity() {
     private var raWasPlaying = false
     private var raPendingGameNotice: RaAchievementOverlay.Notice? = null
 
-    // Only attach Choreographer while DISPLAY SYNC or SYNC LAB is active.
-    // STANDARD and RESPONSIVE retain their original render policy.
+    // Only attached while Frame Pacing RESPONSIVE runs a solo game: NATIVE
+    // and the shelf render continuously.
     private val vsyncCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            if (!displaySyncApplied || raSwapLoopApplied || !resumed || isDestroyed ||
-                view.ownsScheduler) return
+            if (!displaySyncApplied || raSwapLoopApplied || !resumed || isDestroyed) return
             recordVsync(frameTimeNanos)
             view.requestRender()
             Choreographer.getInstance().postFrameCallback(this)
@@ -293,24 +284,17 @@ class MainActivity : Activity() {
     private fun updateDisplaySyncMode() {
         if (!::view.isInitialized) return
         val enabled = resumed && nativeIsPlaying() && nativeDisplaySyncEnabled()
-        val swapLoop = enabled && !view.ownsScheduler && nativeRaSwapLoop()
+        val swapLoop = enabled && nativeRaSwapLoop()
         if (enabled == displaySyncApplied && swapLoop == raSwapLoopApplied) return
         if (enabled) publishDisplayRefresh()
         // Diagnostic-only event: a switch from continuous GL rendering to
         // Choreographer during the first 100ms of gameplay could explain
         // an isolated startup hitch. Do not change frame scheduling here.
         Log.i(TAG, "Game display pacing transition: " +
-            (if (view.ownsScheduler) "EGL owner" else if (swapLoop) "Swap-paced"
-                else if (enabled) "Choreographer" else "Continuous") +
+            (if (swapLoop) "Swap-paced" else if (enabled) "Choreographer" else "Continuous") +
             ", playing=${nativeIsPlaying()}")
         displaySyncApplied = enabled
         raSwapLoopApplied = swapLoop
-        if (view.ownsScheduler) {
-            // Owner-thread Choreographer is the only producer in this path.
-            // Continuous/dirty here is controlled solely by the shelf policy.
-            Choreographer.getInstance().removeFrameCallback(vsyncCallback)
-            return
-        }
         if (enabled && !swapLoop) {
             view.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
             Choreographer.getInstance().removeFrameCallback(vsyncCallback)
@@ -906,7 +890,7 @@ class MainActivity : Activity() {
                             "vsync_gl_age_max_us=$vsyncAgeMaxUs " +
                             "early_pcm_wakes_5s=${earlyPcmWakes.getAndSet(0)}")
                         val frameCorrelation = glPacingCorrelation.snapshotAndReset()
-                        Log.i(TAG, "GL vsync correlation: scheduler=${if (view.ownsScheduler) "egl-owner" else "ui"} " +
+                        Log.i(TAG, "GL vsync correlation: scheduler=ui " +
                             "ui_vsync_callbacks=${uiVsyncCallbacks.getAndSet(0L)} " +
                             "ui_vsync_over25=${uiVsyncOver25ms.getAndSet(0L)} " +
                             "ui_vsync_over40=${uiVsyncOver40ms.getAndSet(0L)} " +
@@ -942,20 +926,10 @@ class MainActivity : Activity() {
                 }
             }
         }
-        val presenterPrefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val requestedPresenter = intent.getStringExtra("slot_presenter")
-        if (requestedPresenter in setOf("glsurfaceview", "controlled-egl")) {
-            presenterPrefs.edit().putString("development_presenter", requestedPresenter).apply()
-        }
-        val controlledEgl = presenterPrefs.getString("development_presenter", "glsurfaceview") == "controlled-egl"
-        Log.i(TAG, "Slot presenter: " + if (controlledEgl) "controlled-egl (experimental)" else "glsurfaceview (reference)")
-        view = if (controlledEgl) ControlledEglPresenter(this, renderer,
-            beforeFrame = { timestamp -> recordVsync(timestamp) },
-            contextLost = { nativeGraphicsContextLost() },
-            resumedClock = { nativePresentationResume(); nativeEglPresentationReset(); renderer.resetTiming() },
-            shutdown = { current -> nativeRendererShutdown(current) },
-            nativeReady = { nativeGraphicsReady() })
-        else ReferenceGlPresenter(this, renderer)
+        // The experimental controlled-EGL presenter measured worse than
+        // GLSurfaceView; drop the developer preference that selected it.
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("development_presenter").apply()
+        view = SlotPresenter(this, renderer)
         val frame = FrameLayout(this)
         frame.addView(view.surfaceView, FrameLayout.LayoutParams(-1, -1))
         shelfStatus = SlotStatusIndicators(this, frame)
@@ -1488,14 +1462,9 @@ class MainActivity : Activity() {
             var minimumOutputFrames = Long.MAX_VALUE
             var maximumOutputFrames = 0L
             var outputDepthSamples = 0
-            // Beta12: sync-lab committed frames and PCM generated by the
-            // GL owner are sampled on this SAME 5s audio-clock window.
+            // Native PCM FIFO loss, sampled on this SAME 5s window.
             // These observations never alter the AudioTrack write path.
             var nativeClockBaseline = LongArray(0)
-            var observedEarlyReadyNs = 0L
-            var earlyReadyToReadCount = 0L
-            var earlyReadyToReadTotalUs = 0L
-            var earlyReadyToReadMaxUs = 0L
             // Beta9: AudioTrack's hardware timestamp describes its playback
             // clock independently of the emulation and GLSurfaceView clocks.
             val hardwareTimestamp = AudioTimestamp()
@@ -1550,10 +1519,6 @@ class MainActivity : Activity() {
                         maximumOutputFrames = 0L
                         outputDepthSamples = 0
                         nativeClockBaseline = nativeAudioClockCounters()
-                        observedEarlyReadyNs = earlyPcmReadyNs.get()
-                        earlyReadyToReadCount = 0L
-                        earlyReadyToReadTotalUs = 0L
-                        earlyReadyToReadMaxUs = 0L
                         priorHardwareFrame = -1L
                         priorHardwareTimeNs = -1L
                     } else if (!awaitingFirstPcm &&
@@ -1586,24 +1551,9 @@ class MainActivity : Activity() {
                             } catch (_: Exception) { }
                         }
                     }
-                    val beforeReadNs = SystemClock.elapsedRealtimeNanos()
                     val sampleCount = nativeReadAudioInto(samples)
                     if (sampleCount < 0 || sampleCount > samples.size) {
                         throw IllegalStateException("Invalid native PCM read count: $sampleCount")
-                    }
-                    // Most-recent early-PCM-notification -> native-read start.
-                    // Sampling only, NOT end-to-end audio or input latency.
-                    if (sampleCount > 0) {
-                        val readyNs = earlyPcmReadyNs.get()
-                        if (readyNs > observedEarlyReadyNs && readyNs <= beforeReadNs) {
-                            val delayUs = (beforeReadNs - readyNs) / 1000L
-                            if (delayUs in 0L..200_000L) {
-                                earlyReadyToReadCount++
-                                earlyReadyToReadTotalUs += delayUs
-                                earlyReadyToReadMaxUs = maxOf(earlyReadyToReadMaxUs, delayUs)
-                            }
-                            observedEarlyReadyNs = readyNs
-                        }
                     }
                     EmulationDiagnostics.audio(samples, sampleCount)
                     if (sampleCount == 0) {
@@ -1709,11 +1659,10 @@ class MainActivity : Activity() {
                         val expected = wanted.toLong() * 2L * spanMs / 1000L
                         val nativeClockNow = nativeAudioClockCounters()
                         val nativeWindow = AudioClockWindow.between(
-                            nativeClockBaseline, nativeClockNow, spanMs, wanted)
+                            nativeClockBaseline, nativeClockNow)
                         nativeClockBaseline = nativeClockNow
-                        // F9 beta9: report the exact source of FIFO sample loss,
-                        // even when SYNC LAB is disabled (zero callbacks).
-                        // This is one 5s log line, never a per-audio-read probe.
+                        // Report the exact source of FIFO sample loss. This
+                        // is one 5s log line, never a per-audio-read probe.
                         if (nativeWindow != null) {
                             Log.i(TAG, "Audio FIFO loss: " +
                                 "overflow_events=${nativeWindow.fifoOverflowEvents} " +
@@ -1759,25 +1708,6 @@ class MainActivity : Activity() {
                             "speed_permille=$requestedSpeed " +
                             "empty_reads=$emptyAudioReads queued_shorts=${nativeAudioQueuedShorts()} " +
                             "underruns=${underflows - observedUnderruns}")
-                        if (nativeWindow != null && nativeWindow.callbacks > 0L) {
-                            Log.i(TAG, "SYNC LAB causal: " +
-                                "span_ms=$spanMs callbacks=${nativeWindow.callbacks} " +
-                                "real_frames=${nativeWindow.committedFrames} " +
-                                "real_fps=${"%.3f".format(java.util.Locale.ROOT, nativeWindow.frameRate)} " +
-                                "pcm_produced_shorts=${nativeWindow.pcmProducedShorts} " +
-                                "pcm_queued_shorts=${nativeWindow.pcmQueuedShorts} " +
-                                "pcm_produced_ms=${"%.3f".format(java.util.Locale.ROOT, nativeWindow.producedPcmMs)} " +
-                                "producer_deficit_ms=${"%.3f".format(java.util.Locale.ROOT, nativeWindow.producerDeficitMs)} " +
-                                "empty_pcm_frames=${nativeWindow.emptyPcmFrames} " +
-                                "no_step_callbacks=${nativeWindow.noStepCallbacks} " +
-                                "overdue_callbacks=${nativeWindow.overdueCallbacks} " +
-                                "wake_to_read_mean_us=${if (earlyReadyToReadCount > 0) earlyReadyToReadTotalUs / earlyReadyToReadCount else -1} " +
-                                "wake_to_read_max_us=$earlyReadyToReadMaxUs " +
-                                "wake_to_read_samples=$earlyReadyToReadCount")
-                        }
-                        earlyReadyToReadCount = 0L
-                        earlyReadyToReadTotalUs = 0L
-                        earlyReadyToReadMaxUs = 0L
                         observedUnderruns = underflows
                         playedShorts = 0L
                         minimumOutputFrames = Long.MAX_VALUE
@@ -2789,7 +2719,6 @@ class MainActivity : Activity() {
             displaySyncApplied = false
             raSwapLoopApplied = false
         }
-        if (view.ownsScheduler) view.onPause()
         stopAudio()
         cartSounds.pause()
         // Preserve SRAM and automatic resume state while the GL context is still current.
@@ -2800,7 +2729,7 @@ class MainActivity : Activity() {
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         }
-        if (!view.ownsScheduler) view.onPause()
+        view.onPause()
         // The final SRAM write above can enqueue a RetroArch/Sync export.
         drainPendingSaveFlush()
         nativeResetInput()

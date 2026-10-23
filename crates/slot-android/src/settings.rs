@@ -29,9 +29,6 @@ impl WallpaperPick {
         let n=choices.len();
         choices[if right {(at+1)%n}else{(at+n-1)%n}].clone()
     }
-    pub fn is_personal(&self, has_wallpapers: bool) -> bool {
-        matches!(self, Self::File(_)) || (matches!(self, Self::Random) && has_wallpapers)
-    }
     pub fn label(&self) -> String {
         match self {
             Self::None=>"None".into(),
@@ -203,21 +200,10 @@ pub struct Settings {
     // X/Y Buttons: true = Slot's original Turbo, false = Y=A and X=B.
     // Existing persisted turbo=false now selects the alternative A/B mapping.
     pub turbo: bool, pub eject_save: bool,
-    // Optional one-line FPS display and latency settings.
-    pub show_fps: bool, pub responsive_pacing: bool,
-    // Choreographer-driven display callbacks, with a single real core
-    // frame maximum per callback and fractional frame time carryover.
-    pub display_sync_pacing: bool,
-    // Beta8 experimental: preserve overdue emulation time but never run multiple
-    // real steps per VSync callback. Legacy beta7 flag remains readable.
-    // Old JSON stays on its prior mode because serde(default) makes this false.
-    pub hybrid_pacing: bool,
-    // Experimental timestamp-sourced mode, false for every legacy profile.
-    pub retroarch_clock_pacing: bool,
-    // RETROARCH: one core frame per display refresh with dynamic audio rate
-    // control. Every profile is migrated to it on load (see migrate_pacing).
-    pub retroarch_sync_pacing: bool,
-    // Frame Pacing: false = NATIVE (RetroArch's swap-paced loop), true =
+    // Optional one-line FPS display.
+    pub show_fps: bool,
+    // Frame Pacing is always RetroArch's (display-clocked core, resampled
+    // audio with rate control). false = NATIVE (swap-paced loop), true =
     // RESPONSIVE (Choreographer VSync loop, a little less lag, a little less
     // smooth).
     pub responsive_loop: bool,
@@ -251,12 +237,7 @@ impl Default for Settings {
             gb_palettes: false, gb_palette: 1, rewind: true,
             rewind_speed: 2,
             turbo: true, eject_save: true,
-            show_fps: false, responsive_pacing: false,
-            display_sync_pacing: false, hybrid_pacing: false,
-            retroarch_clock_pacing: false,
-            // Every pacing mode loads as RETROARCH (migrate_pacing), so
-            // this baseline only keeps a saved profile equal to itself.
-            retroarch_sync_pacing: true, responsive_loop: false,
+            show_fps: false, responsive_loop: false,
             run_ahead_frames: 0,
             show_wifi: false, show_bluetooth: false, show_integrations: false,
             time_format: TimeFormat::TwentyFourHour,
@@ -277,7 +258,6 @@ impl Settings {
         settings.shader_gb=Shader::Lcd3x;
         // Frame Pacing NATIVE: RetroArch's loop, smoother than RetroArch
         // itself on the KONKR (1.2.3 beta22 captures).
-        settings.retroarch_sync_pacing=true;
         settings.responsive_loop=false;
         settings.run_ahead_frames=0;
         settings
@@ -303,6 +283,7 @@ impl Settings {
                                 s.set_colour_for(platform,s.colour_correction);
                             }
                         }
+                        if legacy_pacing_is_native(json) { s.responsive_loop=false; }
                     }
                     // Beta RC1 imported user.png but lacked an option to turn
                     // it off. Preserve that picture on update to U1 instead
@@ -322,9 +303,6 @@ impl Settings {
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
                 if s.gb_palette >= 48 { s.gb_palette = 1; }
                 if !REWIND_SPEEDS.contains(&s.rewind_speed) { s.rewind_speed = 2; }
-                migrate_pacing(&mut s.responsive_pacing, &mut s.display_sync_pacing,
-                    &mut s.hybrid_pacing, &mut s.retroarch_clock_pacing,
-                    &mut s.retroarch_sync_pacing, &mut s.responsive_loop);
                 if s.run_ahead_frames > 2 { s.run_ahead_frames = 0; }
                 // Before this version all three toggles defaulted ON.
                 // A previously written settings file therefore isn't proof
@@ -422,12 +400,7 @@ impl Settings {
             8 => self.rumble = !self.rumble,
             9 => self.eject_save = !self.eject_save,
             10 => self.show_fps = !self.show_fps,
-            11 => {
-                migrate_pacing(&mut self.responsive_pacing, &mut self.display_sync_pacing,
-                    &mut self.hybrid_pacing, &mut self.retroarch_clock_pacing,
-                    &mut self.retroarch_sync_pacing, &mut self.responsive_loop);
-                self.responsive_loop = !self.responsive_loop;
-            }
+            11 => self.responsive_loop = !self.responsive_loop,
             12 => self.run_ahead_frames = cycle_u8(self.run_ahead_frames, 2, right),
             13 => self.show_wifi = !self.show_wifi,
             14 => self.show_bluetooth = !self.show_bluetooth,
@@ -442,74 +415,42 @@ impl Settings {
             .unwrap_or(GbPalette::DEFAULT).core_name()
     }
 }
-/// Frame Pacing has two options, both RETROARCH pacing (display-clocked
+/// Frame Pacing has two options, both RetroArch pacing (display-clocked
 /// core, resampled audio with rate control): NATIVE runs RetroArch's
-/// swap-paced loop, RESPONSIVE the Choreographer VSync loop. Every older
-/// mode (STANDARD, RESPONSIVE, DISPLAY SYNC, SYNC LAB, RA CLOCK LAB) becomes
-/// NATIVE; RETROARCH keeps its loop choice.
-pub fn migrate_pacing(
-    responsive: &mut bool, display_sync: &mut bool, hybrid: &mut bool,
-    ra_clock: &mut bool, ra_sync: &mut bool, responsive_loop: &mut bool,
-) {
-    if !*ra_sync { *responsive_loop = false; }
-    (*responsive, *display_sync, *hybrid, *ra_clock, *ra_sync) =
-        (false, false, false, false, true);
+/// swap-paced loop, RESPONSIVE the Choreographer VSync loop. Up to 1.2.3 the
+/// JSON also stored older modes (STANDARD, DISPLAY SYNC, SYNC LAB, RA CLOCK
+/// LAB) as `retroarch_sync_pacing: false`; every one of them loads as NATIVE.
+pub fn legacy_pacing_is_native(json: &serde_json::Value) -> bool {
+    json.get("retroarch_sync_pacing").and_then(serde_json::Value::as_bool) == Some(false)
 }
 
-/// SYNC LAB (experimental): the Display Sync implementation discards
-/// accumulated time at 1.95 frame periods even on short missed VSyncs.
-/// Retain a bounded FOUR-frame backlog for subsequent spare 60Hz callbacks,
-/// while the caller emits MAX ONE real video/audio frame each callback.
-/// No synthesized PCM, no duplicated simulation, no unbounded lag after
-/// Android suspension. Backlog is deliberately visible in diagnostics.
-pub fn frame_debt_hybrid(prev: f64, elapsed: f64, speed: f64, period: f64) -> f64 {
-    (prev + elapsed * speed).clamp(0.0, period * 4.0)
-}
-
-/// RA CLOCK LAB accumulates fractional GBA time using Choreographer VSync
-/// deltas, not jitter between GL callbacks. Still one real frame per callback.
+/// RA CLOCK: accumulate fractional GBA time from Choreographer VSync
+/// deltas, not jitter between GL callbacks. Used by RetroArch pacing when
+/// the panel cannot clock the core. Still one real frame per callback.
 pub fn frame_debt_ra_clock(prev: f64, elapsed: f64, speed: f64, period: f64) -> f64 {
     (prev + elapsed * speed).clamp(0.0, period * 4.0)
 }
 
-/// Preserve SYNC LAB's one committed frame per Choreographer callback.
-/// A beta14 experiment allowed a second frame to rescue AudioTrack, but
-/// physical KONKR testing confirmed unacceptable motion/input regression.
-/// Do not silently trade presentation cadence or controls for zero underruns.
-pub fn sync_lab_reactivity_first_frame_budget() -> usize { 1 }
 pub fn cycle_u8(value: u8, max: u8, right: bool) -> u8 {
     if right { if value >= max { 0 } else { value + 1 } }
     else if value == 0 || value > max { max } else { value - 1 }
 }
-/// Model of the frame-debt clamp. STANDARD retains RC3 behavior.
-/// RC4 Beta 5 restores the RC4 Beta 3 RESPONSIVE behavior requested after
-/// on-device testing: never allow more than 1.5 frame periods of debt and
-/// never execute more than one real emulation frame per display callback.
-pub fn frame_debt(prev: f64, elapsed: f64, speed: f64, period: f64,
-                  fast: bool, responsive: bool) -> f64 {
-    let max = if fast { 0.40 }
-        else if responsive { period * 1.5 }
-        else { 0.10 };
+
+/// Wall-clock frame debt for fast-forward and linked sessions, the only
+/// paths not clocked by the display.
+pub fn frame_debt(prev: f64, elapsed: f64, speed: f64, fast: bool) -> f64 {
+    let max = if fast { 0.40 } else { 0.10 };
     (prev + elapsed * speed).min(max)
 }
 
 /// A11: linked mGBA Cable can legitimately stall while awaiting a real
-/// remote input frame. Unlike solo RESPONSIVE, its lost emulation time must
-/// not be discarded, or the PCM producer permanently falls behind AudioTrack.
+/// remote input frame. Its lost emulation time must not be discarded, or
+/// the PCM producer permanently falls behind AudioTrack.
 /// The 2.5-frame cap avoids runaway catch-up after a long AVD/Wi-Fi hitch.
 /// The runtime may emulate at most TWO frames in one GL callback and each
 /// still requires confirmed local AND peer inputs: never predict link traffic.
 pub fn frame_debt_mgba_cable(prev: f64, elapsed: f64, period: f64) -> f64 {
     (prev + elapsed.max(0.0)).min(period * 2.5)
-}
-
-/// DISPLAY SYNC pacing: retain up to 0.95 frame of fractional carryover
-/// after each simulation step, tolerating occasional 60Hz callback jitter.
-/// The engine still executes a maximum of ONE real core frame per callback,
-/// so this cannot reintroduce the Beta 4 catch-up/input-lag regression.
-pub fn frame_debt_display_sync(prev: f64, elapsed: f64, speed: f64,
-                               period: f64) -> f64 {
-    (prev + elapsed * speed).min(period * 1.95)
 }
 
 #[cfg(test)]
@@ -689,145 +630,31 @@ mod tests {
     }
 
     #[test]
-    fn mgba_cable_recovery_does_not_change_solo_responsive() {
+    fn mgba_cable_keeps_more_debt_than_wall_clock_pacing() {
         let frame = 1.0 / 59.7275;
-        let solo = frame_debt(0.0, 0.1, 1.0, frame, false, true);
         let linked = frame_debt_mgba_cable(0.0, 0.1, frame);
-        assert!((solo - 1.5 * frame).abs() < 1e-9);
         assert!((linked - 2.5 * frame).abs() < 1e-9);
+        assert!((frame_debt(0.0, 0.05, 1.0, false) - 0.05).abs() < 1e-9);
+        assert!((frame_debt(0.0, 0.5, 1.0, false) - 0.10).abs() < 1e-9);
+        assert!((frame_debt(0.0, 0.35, 2.0, true) - 0.40).abs() < 1e-9);
     }
 
     #[test]
-    fn responsive_pacing_rejects_backlog_without_touching_standard() {
-        let frame = 1.0 / 59.7275;
-        assert!((frame_debt(0.0, 0.05, 1.0, frame, false, false) - 0.05).abs() < 1e-9);
-        assert!((frame_debt(0.0, 0.05, 1.0, frame, false, true) - frame * 1.5).abs() < 1e-9);
-        assert!((frame_debt(0.0, 0.35, 2.0, frame, true, true) - 0.40).abs() < 1e-9);
-    }
-
-    #[test]
-    fn responsive_discards_frame_debt_instead_of_catchup_bursts() {
-        let period = 1.0 / 59.7275;
-        let mut debt = 0.0;
-        // Simulate an uneven 60Hz swap and verify each display callback
-        // can emulate zero or one frames only, never two (Beta 4 regression).
-        for elapsed in [period, 0.04, 0.011, 0.028, 0.008, period] {
-            debt = frame_debt(debt, elapsed, 1.0, period, false, true);
-            assert!(debt <= period * 1.5 + 1e-9);
-            let mut frames = 0;
-            if debt >= period {
-                debt -= period;
-                frames += 1;
-            }
-            assert!(frames <= 1);
-        }
-    }
-
-    #[test]
-    fn display_sync_preserves_more_fractional_time_without_multi_frame_catchup() {
-        let period = 1.0 / 59.7275;
-        let mut beta7_debt = 0.0;
-        let mut beta8_debt = 0.0;
-        let mut beta7_frames = 0u32;
-        let mut beta8_frames = 0u32;
-        // A reproducible 60Hz callback sequence with small scheduler jitter
-        // and an occasional missed vsync, not a GPU throughput benchmark.
-        for i in 0..6000 {
-            let mut elapsed = 1.0 / 60.0;
-            if i % 8 == 0 { elapsed += 0.0018; }
-            if i % 8 == 1 || i % 8 == 2 { elapsed -= 0.001; }
-            if i % 240 == 27 { elapsed += 1.0 / 60.0; }
-            beta7_debt = frame_debt(beta7_debt, elapsed, 1.0, period, false, true);
-            beta8_debt = frame_debt_display_sync(beta8_debt, elapsed, 1.0, period);
-            // Both profiles have the same *single-frame* work limit.
-            if beta7_debt >= period {
-                beta7_debt -= period;
-                beta7_frames += 1;
-            }
-            if beta8_debt >= period {
-                beta8_debt -= period;
-                beta8_frames += 1;
-            }
-            assert!(beta8_debt < period);
-            assert!(beta8_debt >= 0.0);
-        }
-        assert!(beta8_frames > beta7_frames,
-            "do not discard extra fractions of emulation time");
-        assert!(beta8_frames - beta7_frames < 100,
-            "this must never simulate large catch-up bursts");
-    }
-
-    #[test]
-    fn beta15_rejects_multi_frame_sync_lab_catchup_after_physical_regression() {
-        assert_eq!(sync_lab_reactivity_first_frame_budget(), 1);
-        let period = 1.0 / 59.728;
-        let debt = frame_debt_hybrid(0.0, period * 4.0, 1.0, period);
-        assert_eq!(debt, period * 4.0);
-        // Even a full four-frame backlog must not execute more than one
-        // frame on the display callback. The debt stays for future draws.
-        let remaining = debt - period * sync_lab_reactivity_first_frame_budget() as f64;
-        assert!((remaining - period * 3.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn sync_lab_retains_missed_vsync_debt_but_steps_once() {
+    fn ra_clock_keeps_a_bounded_four_frame_backlog() {
         let p = 1.0 / 59.7275;
-        assert!((frame_debt_hybrid(0.0, 1.0 / 60.0, 1.0, p)
-            - 1.0 / 60.0).abs() < 1e-9);
-        assert!((frame_debt_hybrid(0.0, 0.1, 1.0, p)
-            - p * 4.0).abs() < 1e-9);
-        // Two missed frame periods must not be discarded at 1.95p.
-        let mut debt = frame_debt_hybrid(0.0, 3.0 * p, 1.0, p);
-        assert!((debt - 3.0 * p).abs() < 1e-9);
-        debt -= p; // one real libretro step; never skip intermediate video
-        assert!((debt - 2.0 * p).abs() < 1e-9);
-        assert!(debt > p); // late simulation remains queued for later vsyncs
-        // Short-term debt recovery is bounded; absurd delay cannot
-        // accumulate seconds of input/audio latency.
-        assert_eq!(frame_debt_hybrid(debt, 10.0, 1.0, p), 4.0 * p);
-    }
-
-    #[test]
-    fn sync_lab_recovers_more_real_frames_than_display_sync_without_bursts() {
-        let p = 1.0 / 59.7275;
-        let mut old_debt = 0.0;
-        let mut lab_debt = 0.0;
-        let mut old_frames = 0;
-        let mut lab_frames = 0;
-        // Synthetic 60Hz Choreographer callbacks, occasionally one is
-        // missed (so the next draw receives 33.3ms of wall-clock time).
-        // Only one true simulation step is allowed per GL callback.
-        for i in 0..6000 {
-            let dt = if i % 320 == 41 { 2.0 / 60.0 } else { 1.0 / 60.0 };
-            old_debt = frame_debt_display_sync(old_debt, dt, 1.0, p);
-            lab_debt = frame_debt_hybrid(lab_debt, dt, 1.0, p);
-            if old_debt >= p { old_frames += 1; old_debt -= p; }
-            if lab_debt >= p { lab_frames += 1; lab_debt -= p; }
-            assert!(lab_debt >= 0.0 && lab_debt <= p * 4.0);
-        }
-        assert!(lab_frames >= old_frames + 8,
-            "retained debt must recover otherwise dropped real frames");
-        assert!(lab_frames <= 6000,
-            "no callback may emit more than one real core step");
-    }
-
-    #[test]
-    fn display_sync_drops_large_hitches_without_overrunning_input() {
-        let period = 1.0 / 59.7275;
-        let debt = frame_debt_display_sync(
-            period * 0.2, period * 10.0, 1.0, period);
-        assert!((debt - period * 1.95).abs() < 1e-9);
-        assert_eq!(frame_debt_display_sync(0.0, 0.0, 1.0, period), 0.0);
+        assert!((frame_debt_ra_clock(0.0, 3.0 * p, 1.0, p) - 3.0 * p).abs() < 1e-9);
+        assert_eq!(frame_debt_ra_clock(0.0, 10.0, 1.0, p), 4.0 * p);
+        assert_eq!(frame_debt_ra_clock(0.0, -1.0, 1.0, p), 0.0);
     }
 
     #[test]
     fn frame_pacing_is_native_or_responsive_and_old_modes_become_native() {
         let mut s = Settings::default();
-        assert!(s.retroarch_sync_pacing && !s.responsive_loop);
+        assert!(!s.responsive_loop);
         assert!(s.change(11, true));
-        assert!(s.retroarch_sync_pacing && s.responsive_loop);
+        assert!(s.responsive_loop);
         assert!(s.change(11, false));
-        assert!(s.retroarch_sync_pacing && !s.responsive_loop);
+        assert!(!s.responsive_loop);
         assert!(s.change(11, false) && s.responsive_loop);
         let dir = std::env::temp_dir().join(format!("slot-konkr-pacing-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -836,10 +663,7 @@ mod tests {
             r#"{"hybrid_pacing":true}"#, r#"{"retroarch_clock_pacing":true}"#,
             r#"{"retroarch_sync_pacing":false,"responsive_loop":true}"#] {
             fs::write(dir.join(NAME), old).unwrap();
-            let s = Settings::load(&dir);
-            assert!(s.retroarch_sync_pacing && !s.responsive_loop, "{old}");
-            assert!(!s.responsive_pacing && !s.display_sync_pacing && !s.hybrid_pacing
-                && !s.retroarch_clock_pacing, "{old}");
+            assert!(!Settings::load(&dir).responsive_loop, "{old}");
         }
         fs::write(dir.join(NAME), r#"{"retroarch_sync_pacing":true,"responsive_loop":true}"#)
             .unwrap();
@@ -870,8 +694,7 @@ mod tests {
         assert!(s.ff_sound && s.rewind && s.turbo && s.rumble && s.eject_save);
         // EMULATION: Frame Pacing NATIVE.
         assert!(!s.show_fps);
-        assert!(s.retroarch_sync_pacing && !s.responsive_loop && !s.hybrid_pacing);
-        assert!(!s.responsive_pacing && !s.display_sync_pacing);
+        assert!(!s.responsive_loop);
         assert_eq!(s.run_ahead_frames,0);
     }
     #[test]
@@ -891,8 +714,7 @@ mod tests {
         customised.shader_gbc=Shader::Grid;
         customised.shader_gb=Shader::Simpletex;
         customised.wallpaper=WallpaperPick::Default;
-        customised.responsive_pacing=false;
-        customised.display_sync_pacing=false;
+        customised.responsive_loop=true;
         customised.run_ahead_frames=0;
         customised.show_recents=true;
         customised.show_wifi=true;
@@ -908,7 +730,7 @@ mod tests {
         assert_eq!(previous.shader_gb,Shader::Off);
         assert_eq!(previous.shader_gbc,Shader::Off);
         assert_eq!(previous.wallpaper,WallpaperPick::Default);
-        assert!(!previous.responsive_pacing && !previous.display_sync_pacing);
+        assert!(!previous.responsive_loop);
         assert_eq!(previous.run_ahead_frames,0);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1024,7 +846,7 @@ mod tests {
         assert_eq!(s.ff_speed, 4);
         assert!(!s.ff_sound && !s.rumble);
         assert!(s.rewind && s.turbo && s.eject_save);
-        assert!(!s.show_fps && !s.responsive_pacing);
+        assert!(!s.show_fps && !s.responsive_loop);
         assert_eq!(s.run_ahead_frames, 0);
     }
     #[test]
@@ -1038,10 +860,11 @@ mod tests {
             "audio_latency_ms": 96
         }"#;
         let parsed: Settings = serde_json::from_str(old).unwrap();
-        assert!(parsed.responsive_pacing && parsed.display_sync_pacing);
+        assert!(!parsed.responsive_loop);
         assert_eq!(parsed.run_ahead_frames, 1);
         let serialized = serde_json::to_string(&parsed).unwrap();
-        for removed in ["frame_delay_ms", "gpu_sync", "audio_latency_ms"] {
+        for removed in ["frame_delay_ms", "gpu_sync", "audio_latency_ms",
+            "responsive_pacing", "display_sync_pacing"] {
             assert!(!serialized.contains(removed),
                 "obsolete Beta 8 field must not survive next save: {removed}");
         }
