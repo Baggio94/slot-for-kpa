@@ -359,7 +359,7 @@ mod tests {
         assert_eq!(scoped.shader_gba,global.shader_gba);
         assert!(scoped.colour_correction_gbc);
         assert_eq!(scoped.colour_correction_gb,global.colour_correction_gb);
-        assert_eq!(scoped.bezel_gbc,Bezel::Gb);
+        assert_eq!(scoped.bezel_gbc,Bezel::Color);
         assert_eq!(global,Settings::default());
     }
 

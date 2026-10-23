@@ -107,15 +107,16 @@ pub enum Bezel {
 }
 impl Default for Bezel {fn default()->Self {Self::Default}}
 impl Bezel {
-    /// GBA keeps ON/OFF; GB/GBC also offer the three Watomsk overlays.
-    pub const GB: [Bezel; 5] = [Bezel::None, Bezel::Default, Bezel::Gb, Bezel::Pocket, Bezel::Color];
+    /// GBA keeps ON/OFF; GB adds Watomsk's Game Boy and Pocket, GBC his Color.
+    pub const GB: [Bezel; 4] = [Bezel::None, Bezel::Default, Bezel::Gb, Bezel::Pocket];
+    pub const GBC: [Bezel; 3] = [Bezel::None, Bezel::Default, Bezel::Color];
     pub fn step(self)->Self {
         match self {Self::None=>Self::Default,_=>Self::None}
     }
-    pub fn step_gb(self,right:bool)->Self {
-        let n=Self::GB.len();
-        let at=Self::GB.iter().position(|b| *b==self).unwrap_or(1);
-        Self::GB[if right {(at+1)%n} else {(at+n-1)%n}]
+    pub fn step_in(self,list:&[Bezel],right:bool)->Self {
+        let n=list.len();
+        let at=list.iter().position(|b| *b==self).unwrap_or(1);
+        list[if right {(at+1)%n} else {(at+n-1)%n}]
     }
 }
 
@@ -398,8 +399,8 @@ impl Settings {
                 !self.colour_correction_gb),
             21 => self.shader_gbc=self.shader_gbc.step(&Shader::GB,right),
             25 => self.bezel_gba=self.bezel_gba.step(),
-            26 => self.bezel_gbc=self.bezel_gbc.step_gb(right),
-            27 => self.bezel_gb=self.bezel_gb.step_gb(right),
+            26 => self.bezel_gbc=self.bezel_gbc.step_in(&Bezel::GBC,right),
+            27 => self.bezel_gb=self.bezel_gb.step_in(&Bezel::GB,right),
             3 => step_palette(&mut self.gb_palettes, &mut self.gb_palette, right),
             4 => {
                 let at = SPEEDS.iter().position(|x| *x == self.ff_speed).unwrap_or(0);
@@ -960,16 +961,16 @@ mod tests {
     }
 
     #[test]
-    fn gb_bezel_rows_offer_the_watomsk_overlays_and_gba_stays_on_off() {
+    fn each_bezel_row_offers_only_its_own_watomsk_overlays() {
         let mut s=Settings::default();
-        for want in [Bezel::Gb,Bezel::Pocket,Bezel::Color,Bezel::None,Bezel::Default] {
+        for want in [Bezel::Gb,Bezel::Pocket,Bezel::None,Bezel::Default] {
             s.change(27,true);
             assert_eq!(s.bezel_gb,want);
         }
-        s.change(26,false);
-        assert_eq!(s.bezel_gbc,Bezel::None);
-        s.change(26,false);
-        assert_eq!(s.bezel_gbc,Bezel::Color);
+        for want in [Bezel::Color,Bezel::None,Bezel::Default] {
+            s.change(26,true);
+            assert_eq!(s.bezel_gbc,want);
+        }
         assert_eq!(serde_json::to_string(&Bezel::Pocket).unwrap(),"\"pocket\"");
         s.change(25,true);
         assert_eq!(s.bezel_gba,Bezel::Default);
