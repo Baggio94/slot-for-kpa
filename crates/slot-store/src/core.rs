@@ -10,15 +10,17 @@ pub enum Core {
     #[default]
     Mgba,
     Gpsp,
+    Gambatte,
 }
 
 impl Core {
-    pub const ALL: [Core; 2] = [Core::Mgba, Core::Gpsp];
+    pub const ALL: [Core; 3] = [Core::Mgba, Core::Gpsp, Core::Gambatte];
 
     pub fn as_str(&self) -> &'static str {
         match self {
             Core::Mgba => "mgba",
             Core::Gpsp => "gpsp",
+            Core::Gambatte => "gambatte",
         }
     }
 
@@ -30,6 +32,7 @@ impl Core {
         match self {
             Core::Mgba => "mGBA",
             Core::Gpsp => "gpSP",
+            Core::Gambatte => "Gambatte",
         }
     }
 
@@ -37,6 +40,7 @@ impl Core {
         match s.trim().to_ascii_lowercase().as_str() {
             "mgba" => Some(Core::Mgba),
             "gpsp" => Some(Core::Gpsp),
+            "gambatte" => Some(Core::Gambatte),
             _ => None,
         }
     }
@@ -45,6 +49,23 @@ impl Core {
         match self {
             Core::Mgba => true,
             Core::Gpsp => platform == Platform::Gba,
+            Core::Gambatte => platform != Platform::Gba,
+        }
+    }
+
+    /// The second socket on the board: gpSP for GBA, Gambatte for GB/GBC.
+    pub fn alternate_for(platform: Platform) -> Core {
+        match platform {
+            Platform::Gba => Core::Gpsp,
+            Platform::Gb | Platform::Gbc => Core::Gambatte,
+        }
+    }
+
+    /// Which of the board's two sockets this core sits in.
+    pub fn socket(self) -> usize {
+        match self {
+            Core::Mgba => 0,
+            Core::Gpsp | Core::Gambatte => 1,
         }
     }
 

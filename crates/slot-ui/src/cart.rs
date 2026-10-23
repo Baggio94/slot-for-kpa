@@ -196,6 +196,12 @@ pub fn is_clear(cart: &Cart) -> bool {
 /// 80% opacity. A GBA cart uses `gba_interior.png`, a Game Boy pak `gb_interior.png`, and a Game
 /// Boy Color pak `gbc_interior.png`. Same size as that cart's board and face.
 pub fn cart_interior(cart: &Cart) -> CartFace {
+    cart_interior_at(cart, CLEAR_ALPHA)
+}
+
+/// The back plastic at a chosen opacity: the core picker opens a pak and
+/// shows its back half solid, with the board seated in it.
+pub fn cart_interior_at(cart: &Cart, alpha: u8) -> CartFace {
     let colour = shell_for(cart).colour;
     let (src, w, h, mask) = match gb_shell_of(cart) {
         None => (bitmaps::gba_interior(), BOARD_W, BOARD_H, None),
@@ -219,7 +225,7 @@ pub fn cart_interior(cart: &Cart) -> CartFace {
         for c in 0..3 {
             px[c] = overlay(px[c], colour[c]);
         }
-        px[3] = ((u32::from(px[3]) * u32::from(CLEAR_ALPHA) + 127) / 255) as u8;
+        px[3] = ((u32::from(px[3]) * u32::from(alpha) + 127) / 255) as u8;
     }
     dense_layer(CartFace { rgba, w, h })
 }
@@ -234,8 +240,26 @@ pub fn cart_backing(shell: Option<GbShell>) -> CartFace {
             h: BOARD_H,
         });
     };
+    pak_board(shell, bitmaps::gb_board())
+}
+
+/// The pak board with both big-chip footprints empty, for the core picker.
+pub fn cart_backing_open(shell: GbShell) -> CartFace {
+    pak_board(shell, bitmaps::gb_board_open())
+}
+
+/// The big pak chip the core picker hops between the footprints.
+pub fn pak_chip() -> CartFace {
+    dense_layer(CartFace {
+        rgba: bitmaps::gb_chip().to_vec(),
+        w: bitmaps::GB_CHIP_W,
+        h: bitmaps::GB_CHIP_H,
+    })
+}
+
+fn pak_board(shell: GbShell, board: &[u8]) -> CartFace {
     let s = spec(Shape::Gb(shell));
-    let mut rgba = bitmaps::gb_board().to_vec();
+    let mut rgba = board.to_vec();
     for (px, cover) in rgba.chunks_exact_mut(4).zip(s.mask) {
         px[3] = ((px[3] as u32 * *cover as u32 + 127) / 255) as u8;
     }
