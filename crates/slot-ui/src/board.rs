@@ -1,8 +1,8 @@
 use slot_gfx::OUT_W;
-use slot_store::{Cart, Core};
+use slot_store::{Cart, Core, Platform};
 
 use crate::art;
-use crate::cart::{clean_label, CartFace, CART_H, CART_W};
+use crate::cart::{cart_box, clean_label, CartFace, CART_H, CART_W};
 use crate::density::Face as _;
 use crate::density::{self, px, Canvas};
 use crate::shelf::foot_y;
@@ -211,6 +211,33 @@ pub fn shelf_cart_at(x: f32, scale: f32) -> Placed {
     }
 }
 
+/// The selected cart as the shelf draws it: GB/GBC carts keep their own
+/// taller box, so the lid that lifts off is the same shape as the cart.
+pub fn shelf_cart_for(platform: Platform, x: f32, scale: f32) -> Placed {
+    let (cw, ch) = cart_box(platform);
+    let (w, h) = (cw as f32 * scale, ch as f32 * scale);
+    Placed { x, y: foot_y(ch as f32) - h, w, h }
+}
+
+/// Where the lid is held above the board. A GB/GBC lid keeps its aspect and
+/// stays clear of the board, centred where the GBA lid rests.
+pub fn lid_rest(platform: Platform) -> Placed {
+    if platform == Platform::Gba { return LID_REST; }
+    let (cw, ch) = cart_box(platform);
+    let h = BOARD_Y - LID_REST.y - 8.0;
+    let w = h * cw as f32 / ch as f32;
+    Placed { x: LID_REST.x + (LID_REST.w - w) / 2.0, y: LID_REST.y, w, h }
+}
+
+pub fn lid_toward(shelf: Placed, rest: Placed, progress: f32) -> (Placed, f32) {
+    let slid = Placed {
+        y: shelf.y - SLIDE_UP * slide_of(progress),
+        ..shelf
+    };
+    let lift = lift_of(progress);
+    (lerp(slid, rest, lift), LID_TURN * lift)
+}
+
 pub fn board_at(progress: f32) -> Placed {
     board_from(shelf_cart(), progress)
 }
@@ -230,12 +257,7 @@ pub fn lid_at(progress: f32) -> (Placed, f32) {
 }
 
 pub fn lid_from(shelf: Placed, progress: f32) -> (Placed, f32) {
-    let slid = Placed {
-        y: shelf.y - SLIDE_UP * slide_of(progress),
-        ..shelf
-    };
-    let lift = lift_of(progress);
-    (lerp(slid, LID_REST, lift), LID_TURN * lift)
+    lid_toward(shelf, LID_REST, progress)
 }
 
 const UNITS_W: f32 = 240.0;

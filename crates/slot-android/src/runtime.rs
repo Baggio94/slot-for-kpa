@@ -27,10 +27,11 @@ use slot_power::{Battery, Charge};
 use crate::library::{carts_by_platform, RomEntry, LIBRARY};
 use slot_ui::{
     board_face, chip_face, chip_shadow_face, socket_face, quick_value_face, cart_face_with_material,
-    cart_shadow, gb_cart_shadow, board_from, board_zoom, lift_of, shelf_cart_at,
-    on_board, lid_from, grown, Draw, GbShell, Shelf, SlotChrome, SOCKET_U, SOCKET_V, SOCKET_W, SOCKET_H,
+    cart_shadow, gb_cart_shadow, board_from, board_zoom, lift_of, shelf_cart_for,
+    lid_rest, lid_toward, cart_box,
+    on_board, grown, Draw, GbShell, Shelf, SlotChrome, SOCKET_U, SOCKET_V, SOCKET_W, SOCKET_H,
     CHIP_U, CHIP_V, CHIP_W, CHIP_H, HOP_LIFT, TURN_PAD, SHADOW_W, SHADOW_H,
-    CART_W, hint_face, arrows_hint_face, title_face, photo_face, Polaroids, Printed, HINT_H, HINT_EDGE, draw_slot_name, draw_platform_name, platform_name_face,
+    hint_face, arrows_hint_face, title_face, photo_face, Polaroids, Printed, HINT_H, HINT_EDGE, draw_slot_name, draw_platform_name, platform_name_face,
     icon_face, badge_face, menu_face, Icon, LinkBadge, BOLT_PX, HUD_INK,
     Hud, HudKind, FfState, Toast, toast_face, QUICK_PITCH, opening, edge, centred_hints, LEGEND_GAP,
     sticker_face_konkr, StickerFields, STICKER_W, STICKER_H, quick_caret_face,
@@ -4343,7 +4344,8 @@ impl Engine {
         let lift = lift_of(progress);
         let shelf = &self.shelves[self.active];
         let (rest, scale) = shelf.selected_at();
-        let cart = shelf_cart_at(rest, scale);
+        let platform = shelf.carts.get(shelf.index).map_or(Platform::Gba, |c| c.platform);
+        let cart = shelf_cart_for(platform, rest, scale);
         let board = board_from(cart, progress);
         let zoom = board_zoom(board);
 
@@ -4388,7 +4390,7 @@ impl Engine {
 
         // The original lid slides up first (160ms), lifts and tilts (260ms)
         // and returns smoothly from any partial openness on B/A (320ms).
-        let (lid, turn) = lid_from(cart, progress);
+        let (lid, turn) = lid_toward(cart, lid_rest(platform), progress);
         let k = lid.w / slot_ui::lid_at(1.0).0.w;
         let (w, h) = (168.0 * k, 18.0 * k);
         out.push(Draw::Tex {
@@ -4399,7 +4401,7 @@ impl Engine {
             alpha: 0.8 * lift,
         });
         let (behind,front)=self.clear_layers();
-        let face=grown(lid,TURN_PAD as f32*lid.w/CART_W as f32);
+        let face=grown(lid,TURN_PAD as f32*lid.w/cart_box(platform).0 as f32);
         for tex in behind.into_iter().flatten()
             .chain(front.or_else(||shelf.face(shelf.index))) {
             out.push(Draw::Turned {
