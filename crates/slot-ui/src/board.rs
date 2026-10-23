@@ -2,7 +2,7 @@ use slot_gfx::OUT_W;
 use slot_store::{Cart, Core, Platform};
 
 use crate::art;
-use crate::cart::{cart_backing_open, cart_box, cart_interior_at, pak_chip, clean_label, gb_shell_of, CartFace, CART_H, CART_W};
+use crate::cart::{cart_backing_open, cart_box, cart_interior, cart_interior_at, is_clear, pak_chip, clean_label, gb_shell_of, CartFace, CART_H, CART_W};
 use crate::density::Face as _;
 use crate::density::{self, px, Canvas};
 use crate::shelf::foot_y;
@@ -71,7 +71,8 @@ pub fn board_face(cart: &Cart) -> CartFace {
         // An opened Game Boy / Game Boy Color pak: its own back plastic in
         // the game's colour with the original pak board seated in it, the
         // same board a clear GBC cart shows through its shell.
-        let mut face = cart_interior_at(cart, 255);
+        // A clear pak keeps its see-through back plastic, as on the shelf.
+        let mut face = if is_clear(cart) { cart_interior(cart) } else { cart_interior_at(cart, 255) };
         over(&mut face, &cart_backing_open(shell), 0, 0);
         return face;
     }
