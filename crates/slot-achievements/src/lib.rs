@@ -9,8 +9,8 @@ mod storage;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -43,6 +43,27 @@ pub enum SyncStatus {
     Attention,
 }
 
+/// Official achievements unlocked for one ROM, as the shelf shows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GameProgress {
+    pub unlocked: u16,
+    pub total: u16,
+}
+
+impl GameProgress {
+    pub fn mastered(self) -> bool {
+        self.total > 0 && self.unlocked >= self.total
+    }
+}
+
+// Per-ROM progress the shelf polls every frame: answered from memory, filled
+// by the evaluator worker. `None` means the ROM has no achievements.
+#[derive(Default)]
+struct ProgressCache {
+    known: HashMap<String, Option<GameProgress>>,
+    asked: HashSet<String>,
+}
+
 #[derive(Default)]
 struct Status {
     network: AtomicU8,
@@ -53,6 +74,7 @@ struct Status {
     pending: AtomicBool,
     // Shared only by the evaluator and HTTP workers, never gameplay/UI.
     presence: Mutex<Option<(u64, String)>>,
+    progress_cache: Mutex<ProgressCache>,
 }
 
 impl Status {
@@ -111,6 +133,7 @@ enum Control {
     Shutdown,
     // Android's SAF scanner sends only full-ROM MD5s; no ROM bytes go over HTTP.
     PrefetchHash(String, u32),
+    Progress(String),
 }
 
 struct Frame {
@@ -290,6 +313,23 @@ impl Service {
         Box::new(core::Tracked::new(core, self, console))
     }
 
+    /// Progress for a full-ROM MD5, without blocking. The first call for a
+    /// hash asks the worker to read its cache and returns None until then.
+    pub fn game_progress(&self, hash: &str) -> Option<GameProgress> {
+        if hash.len() != 32 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let hash = hash.to_ascii_lowercase();
+        let mut cache = self.status.progress_cache.lock().unwrap();
+        if let Some(known) = cache.known.get(&hash) {
+            return *known;
+        }
+        if cache.asked.insert(hash.clone()) && self.controls.send(Control::Progress(hash)).is_ok() {
+            wake_evaluator(&self.wake);
+        }
+        None
+    }
+
     pub fn take_notice(&self) -> Option<Notice> {
         while let Ok(notice) = self.notices.try_recv() {
             // Earned notices survive an eject; stale loading notices do not.
@@ -399,7 +439,14 @@ fn run(
     let mut unsaved = BTreeMap::new();
     let mut retried = Instant::now();
     let mut presence_updated = Instant::now();
+    let mut progress_retry = Instant::now();
     loop {
+        if progress_retry.elapsed() >= Duration::from_secs(30) {
+            let mut cache = status.progress_cache.lock().unwrap();
+            let ProgressCache { known, asked } = &mut *cache;
+            asked.retain(|hash| known.contains_key(hash));
+            progress_retry = Instant::now();
+        }
         if retried.elapsed() >= Duration::from_secs(1) {
             retry_unsaved(&mut unsaved, &store, &notices);
             retried = Instant::now();
@@ -410,11 +457,23 @@ fn run(
                 let Ok(frame) = frames.try_recv() else {
                     break;
                 };
-                evaluate(frame, &mut playing, &store, &notices, &mut unsaved);
+                evaluate(frame, &mut playing, &store, &notices, &mut unsaved, &status);
             }
             match controls.try_recv() {
                 Ok(Control::PrefetchHash(hash, console)) => {
                     let _ = prefetch_tx.send((hash, console));
+                }
+                Ok(Control::Progress(hash)) => {
+                    let store = store.lock().unwrap();
+                    let progress = cached_progress(&store.dir, &hash)
+                        .map(|(game, server)| count_progress(&game, &server, &store.unlocks, &unsaved));
+                    drop(store);
+                    let mut cache = status.progress_cache.lock().unwrap();
+                    match progress {
+                        Some(progress) => { cache.known.insert(hash, progress); }
+                        // Not prepared yet: ask again after the next refresh.
+                        None => {}
+                    }
                 }
                 Ok(Control::Flush(done)) => {
                     retry_unsaved(&mut unsaved, &store, &notices);
@@ -523,6 +582,8 @@ fn run(
                         || store.unlocks.contains_key(&achievement.id)
                         || unsaved.contains_key(&achievement.id)))
                 .count();
+            let progress = count_progress(&prepared.game, &prepared.unlocked, &store.unlocks, &unsaved);
+            status.progress_cache.lock().unwrap().known.insert(prepared.hash.clone(), progress);
             let game_icon = badges::game_icon_path(&store.dir, &prepared.game.image_icon);
             let mut achievements = BTreeMap::new();
             let mut unsupported = 0;
@@ -594,6 +655,7 @@ fn evaluate(
     store: &Arc<Mutex<Store>>,
     notices: &mpsc::Sender<Notice>,
     unsaved: &mut BTreeMap<u32, (Unlock, Notice)>,
+    status: &Status,
 ) {
     if let Some(game) = playing
         .as_mut()
@@ -645,6 +707,7 @@ fn evaluate(
                     match store.lock().unwrap().record(unlock.clone()) {
                         Ok(true) => {
                             let _ = notices.send(notice);
+                            bump_progress(status, &game.hash);
                         }
                         Ok(false) => {}
                         Err(error) => {
@@ -658,6 +721,41 @@ fn evaluate(
         }
     }
     let _ = frame.recycle.try_send(frame.ram);
+}
+
+fn cached_progress(dir: &Path, hash: &str) -> Option<(storage::Game, BTreeSet<u32>)> {
+    storage::read::<(storage::Game, BTreeSet<u32>)>(&dir.join(format!("{hash}.json"))).ok()
+}
+
+/// Server unlocks plus local (also pending-sync) awards, official set only.
+fn count_progress(
+    game: &storage::Game,
+    server: &BTreeSet<u32>,
+    local: &BTreeMap<u32, Unlock>,
+    unsaved: &BTreeMap<u32, (Unlock, Notice)>,
+) -> Option<GameProgress> {
+    if game.id == 0 {
+        return None;
+    }
+    let official = game.achievements.iter().filter(|a| a.flags == 3);
+    let total = official.clone().count();
+    if total == 0 {
+        return None;
+    }
+    let unlocked = official
+        .filter(|a| server.contains(&a.id) || local.contains_key(&a.id) || unsaved.contains_key(&a.id))
+        .count();
+    Some(GameProgress {
+        unlocked: unlocked.min(u16::MAX as usize) as u16,
+        total: total.min(u16::MAX as usize) as u16,
+    })
+}
+
+fn bump_progress(status: &Status, hash: &str) {
+    let mut cache = status.progress_cache.lock().unwrap();
+    if let Some(Some(progress)) = cache.known.get_mut(hash) {
+        progress.unlocked = progress.unlocked.saturating_add(1).min(progress.total);
+    }
 }
 
 fn retry_unsaved(
