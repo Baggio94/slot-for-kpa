@@ -52,6 +52,9 @@ pub fn hint_row(legend: &[(&'static str, &'static str)]) -> Vec<Hint> {
 }
 
 pub fn cap_width(key: &str) -> u32 {
+    if let Some(art) = crate::button_art::key_art(key) {
+        return art.w;
+    }
     let Some(font) = text::label_font() else {
         return CAP;
     };
@@ -73,15 +76,19 @@ pub fn hint_face(key: &str, label: &str) -> UndoFace {
     let mut rgba = vec![0u8; (w * HINT_H * 4) as usize];
 
     let cap_w = cap_width(key);
-    let mut cap = Vec::with_capacity((cap_w * CAP * 4) as usize);
-    for _ in 0..cap_w * CAP {
-        cap.extend_from_slice(&[INK[0], INK[1], INK[2], 255]);
+    if let Some(art) = crate::button_art::key_art(key) {
+        blit(&mut rgba, w, &art.rgba, art.w, art.h, 0, (HINT_H - art.h) / 2);
+    } else {
+        let mut cap = Vec::with_capacity((cap_w * CAP * 4) as usize);
+        for _ in 0..cap_w * CAP {
+            cap.extend_from_slice(&[INK[0], INK[1], INK[2], 255]);
+        }
+        if let Some(font) = text::label_font() {
+            let layout = text::fit(font, key, cap_w as f32, 1, KEY_PX, KEY_PX);
+            text::draw_centred(&mut cap, cap_w, CAP, &layout, CAP_INK);
+        }
+        blit(&mut rgba, w, &cap, cap_w, CAP, 0, (HINT_H - CAP) / 2);
     }
-    if let Some(font) = text::label_font() {
-        let layout = text::fit(font, key, cap_w as f32, 1, KEY_PX, KEY_PX);
-        text::draw_centred(&mut cap, cap_w, CAP, &layout, CAP_INK);
-    }
-    blit(&mut rgba, w, &cap, cap_w, CAP, 0, (HINT_H - CAP) / 2);
 
     let text_w = band_width(label);
     let mut band = vec![0u8; (text_w * HINT_H * 4) as usize];
@@ -307,23 +314,35 @@ pub const ARROW_GAP: u32 = 3;
 const LEFT_CARET: char = '\u{f0d9}';
 const RIGHT_CARET: char = '\u{f0da}';
 
+fn arrows_art() -> Option<UndoFace> {
+    crate::button_art::key_art("LEFT+RIGHT")
+}
+
+fn arrows_w() -> u32 {
+    arrows_art().map_or(2 * CAP + ARROW_GAP, |art| art.w)
+}
+
 pub fn arrows_hint_width(label: &str) -> u32 {
-    2 * CAP + ARROW_GAP + CAP_GAP + band_width(label) + EDGE
+    arrows_w() + CAP_GAP + band_width(label) + EDGE
 }
 
 pub fn arrows_hint_face(label: &str) -> UndoFace {
     let w = arrows_hint_width(label);
     let mut rgba = vec![0u8; (w * HINT_H * 4) as usize];
-    for (i, glyph) in [LEFT_CARET, RIGHT_CARET].into_iter().enumerate() {
-        blit(
-            &mut rgba,
-            w,
-            &glyph_cap(glyph),
-            CAP,
-            CAP,
-            i as u32 * (CAP + ARROW_GAP),
-            (HINT_H - CAP) / 2,
-        );
+    if let Some(art) = arrows_art() {
+        blit(&mut rgba, w, &art.rgba, art.w, art.h, 0, (HINT_H - art.h) / 2);
+    } else {
+        for (i, glyph) in [LEFT_CARET, RIGHT_CARET].into_iter().enumerate() {
+            blit(
+                &mut rgba,
+                w,
+                &glyph_cap(glyph),
+                CAP,
+                CAP,
+                i as u32 * (CAP + ARROW_GAP),
+                (HINT_H - CAP) / 2,
+            );
+        }
     }
     let text_w = band_width(label);
     let mut band = vec![0u8; (text_w * HINT_H * 4) as usize];
@@ -337,7 +356,7 @@ pub fn arrows_hint_face(label: &str) -> UndoFace {
         &band,
         text_w,
         HINT_H,
-        2 * CAP + ARROW_GAP + CAP_GAP,
+        arrows_w() + CAP_GAP,
         0,
     );
     UndoFace { rgba, w, h: HINT_H }
