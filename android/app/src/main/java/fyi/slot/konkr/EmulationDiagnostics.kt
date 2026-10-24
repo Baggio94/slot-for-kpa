@@ -35,6 +35,13 @@ internal object EmulationDiagnostics {
     private val dispatchLagMsTotal = AtomicLong(0L)
     private val dispatchLagMsMax = AtomicLong(0L)
     private val hatEvents = AtomicLong(0L)
+    // Hat presses alone: their lag shows whether Android still holds the
+    // D-pad back until its next UI frame. DPAD keys show if the pad also
+    // sends key events.
+    private val hatPresses = AtomicLong(0L)
+    private val hatLagMsTotal = AtomicLong(0L)
+    private val hatLagMsMax = AtomicLong(0L)
+    private val dpadKeys = AtomicLong(0L)
     @Volatile private var hatLogged = false
     private val audioChunks = AtomicLong(0L)
     private val audioSamples = AtomicLong(0L)
@@ -50,6 +57,7 @@ internal object EmulationDiagnostics {
     fun input(code: Int, pressed: Boolean, event: KeyEvent, mapped: Int) {
         if (pressed && event.repeatCount == 0) {
             keyCount.incrementAndGet()
+            if (code in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_RIGHT) dpadKeys.incrementAndGet()
             pendingKeyDownNs.set(SystemClock.elapsedRealtimeNanos())
         }
         val dispatchLagMs = (SystemClock.uptimeMillis() - event.eventTime)
@@ -85,6 +93,9 @@ internal object EmulationDiagnostics {
         pendingKeyEventNs.compareAndSet(0L, event.eventTime * 1_000_000L)
         dispatchLagMsTotal.addAndGet(dispatchLagMs)
         dispatchLagMsMax.accumulateAndGet(dispatchLagMs, java.lang.Long::max)
+        hatPresses.incrementAndGet()
+        hatLagMsTotal.addAndGet(dispatchLagMs)
+        hatLagMsMax.accumulateAndGet(dispatchLagMs, java.lang.Long::max)
     }
 
     /** Returns the press time this frame is the first to read, or 0. */
@@ -146,6 +157,10 @@ internal object EmulationDiagnostics {
         dispatchLagMsTotal.set(0L)
         dispatchLagMsMax.set(0L)
         hatEvents.set(0L)
+        hatPresses.set(0L)
+        hatLagMsTotal.set(0L)
+        hatLagMsMax.set(0L)
+        dpadKeys.set(0L)
         audioChunks.set(0L)
         audioSamples.set(0L)
         audioEmpty.set(0L)
@@ -204,7 +219,7 @@ internal object EmulationDiagnostics {
                 "gl_gap_samples=%d gl_gap_p50_us=%d gl_gap_p95_us=%d gl_gap_p99_us=%d " +
                 "input_down=%d input_next_gl_count=%d input_next_gl_mean_us=%d " +
                 "input_next_gl_max_us=%d input_dispatch_lag_mean_ms=%d " +
-                "input_dispatch_lag_max_ms=%d input_hat_events=%d audio_chunks=%d audio_pcm_shorts=%d " +
+                "input_dispatch_lag_max_ms=%d input_hat_events=%d input_hat_lag_mean_ms=%d input_hat_lag_max_ms=%d input_dpad_keys=%d audio_chunks=%d audio_pcm_shorts=%d " +
                 "audio_empty=%d audio_jump_candidates=%d audio_queued_ms=%.2f " +
                 "audiotrack_underruns=%d %s",
             spanMs, glRate, glSlow25.getAndSet(0L), glSlow40.getAndSet(0L),
@@ -213,6 +228,11 @@ internal object EmulationDiagnostics {
             if (keys > 0L) dispatchLagMsTotal.getAndSet(0L) / keys
                 else { dispatchLagMsTotal.set(0L); 0L },
             dispatchLagMsMax.getAndSet(0L), hatEvents.getAndSet(0L),
+            hatPresses.getAndSet(0L).let { presses ->
+                if (presses > 0L) hatLagMsTotal.getAndSet(0L) / presses
+                    else { hatLagMsTotal.set(0L); 0L }
+            },
+            hatLagMsMax.getAndSet(0L), dpadKeys.getAndSet(0L),
             audioChunks.getAndSet(0L), audioSamples.getAndSet(0L),
             audioEmpty.getAndSet(0L), audioGapCandidates.getAndSet(0L),
             queuedMs, audioUnderruns, lastNative))

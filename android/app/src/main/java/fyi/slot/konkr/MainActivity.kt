@@ -968,10 +968,6 @@ class MainActivity : Activity() {
         latchWaitEnabled = latchPrefs.getBoolean("latch_wait_v3", false)
         Log.i(TAG, "Latch wait: " + if (latchWaitEnabled) "on" else "off")
         view = SlotPresenter(this, renderer)
-        // Android batches joystick motion to the next UI frame; RetroArch's
-        // input queue reads it as soon as it arrives. Do the same for a
-        // D-pad that reports as a hat.
-        view.surfaceView.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_JOYSTICK)
         val frame = FrameLayout(this)
         frame.addView(view.surfaceView, FrameLayout.LayoutParams(-1, -1))
         shelfStatus = SlotStatusIndicators(this, frame)
@@ -1165,6 +1161,23 @@ class MainActivity : Activity() {
             nativeKey(keyCode, true)
         }
         return true
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && ::view.isInitialized) requestUnbufferedJoystick()
+    }
+
+    // Android batches joystick motion to the next UI frame; RetroArch's
+    // input queue reads it as soon as it arrives. Do the same for a D-pad
+    // that reports as a hat. The request only counts once the views are in
+    // the window and follows the focused view, so it is renewed whenever
+    // the window gains focus, on both the game view and the window root.
+    private fun requestUnbufferedJoystick() {
+        for (target in listOf<View>(view.surfaceView, window.decorView)) {
+            target.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_NONE)
+            target.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_JOYSTICK)
+        }
     }
 
     // A D-pad reporting as a hat (ABS_HAT0X/Y) reaches Android as joystick
