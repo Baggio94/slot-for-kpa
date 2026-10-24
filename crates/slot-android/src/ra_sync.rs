@@ -30,6 +30,13 @@ const PERIOD_SMOOTHING: f64 = 240.0;
 const PERIOD_TRUST: f64 = 0.02;
 /// On-time swaps averaged into one period sample in the swap-paced loop.
 const SWAP_WINDOW: u32 = 60;
+/// Frames the swap-paced loop may run ahead of the display, as RetroArch
+/// with three swapchain images: a swap queue of three buffers can free two
+/// at once.
+const SWAP_LEAD_FRAMES: f64 = 2.0;
+/// Refreshes over which a lead fades away, so a measured period a little
+/// off the real one never adds up to a skipped frame.
+const SWAP_LEAD_FADE: f64 = 120.0;
 
 /// Number of core frames for this display callback, derived from VSync
 /// timestamps. A repeated stamp runs nothing; one refresh runs one frame; a
@@ -48,6 +55,8 @@ pub struct VsyncSteps {
     /// swaps, averaged as one period sample so call jitter cancels out.
     window_start_ns: Option<i64>,
     window_frames: u32,
+    /// Swap-paced loop: refreshes the core has run ahead of the display.
+    lead: f64,
 }
 
 impl VsyncSteps {
@@ -56,6 +65,7 @@ impl VsyncSteps {
         self.last_vsync_ns = None;
         self.window_start_ns = None;
         self.window_frames = 0;
+        self.lead = 0.0;
     }
 
     /// The measured refresh rate, or `reported_hz` until it is known.
@@ -100,8 +110,11 @@ impl VsyncSteps {
     /// RetroArch's own loop: run a frame, draw it, and let the blocking
     /// buffer swap wait for the display. The swap is the clock, so every
     /// call runs exactly one frame; `frame_ns` is when the call started. A
-    /// call less than half a refresh after the last one means the swap did
-    /// not wait for VSync: it runs nothing, so the game never speeds up.
+    /// call soon after the last one (a late call followed by an on-time
+    /// one, or a swap that found a buffer already free) still runs a frame,
+    /// as RetroArch refills its swapchain instead of showing a picture
+    /// twice. Only a swap that keeps not waiting, two frames ahead of the
+    /// display, runs nothing, so the game never speeds up.
     pub fn swap_paced_steps(&mut self, frame_ns: i64, display_hz: f64) -> usize {
         if frame_ns <= 0 || !(display_hz > 0.0) {
             self.reset();
@@ -109,18 +122,24 @@ impl VsyncSteps {
         }
         let Some(previous) = self.last_vsync_ns else {
             self.last_vsync_ns = Some(frame_ns);
+            self.lead = 1.0;
             return 1;
         };
         let nominal = 1e9 / display_hz;
         let delta = (frame_ns - previous) as f64;
-        if delta < nominal / 2.0 && delta >= 0.0 { return 0; }
         self.last_vsync_ns = Some(frame_ns);
         if delta < 0.0 || delta > nominal * 1.5 {
             // Missed refresh or pause: start a new measuring run here.
             self.window_start_ns = Some(frame_ns);
             self.window_frames = 0;
+            self.lead = 1.0;
             return 1;
         }
+        let refreshes = delta / self.trusted_period(display_hz).unwrap_or(nominal);
+        let ahead = (self.lead - refreshes).max(0.0);
+        self.lead = ahead - ahead * refreshes / SWAP_LEAD_FADE;
+        if self.lead >= SWAP_LEAD_FRAMES { return 0; }
+        self.lead += 1.0;
         let start = *self.window_start_ns.get_or_insert(previous);
         self.window_frames += 1;
         if self.window_frames >= SWAP_WINDOW {
@@ -370,10 +389,41 @@ mod tests {
         // A late swap still runs one frame: the game slows, it never bursts.
         assert_eq!(v.swap_paced_steps(1_000_000_000 + 2 * p, 60.0), 1);
         assert_eq!(v.swap_paced_steps(1_000_000_000 + 3 * p, 60.0), 1);
-        // A swap that did not wait for VSync runs nothing.
-        assert_eq!(v.swap_paced_steps(1_000_000_000 + 3 * p + 2_000_000, 60.0), 0);
+        // A swap that found a buffer free still runs a frame, as RetroArch
+        // refills its swapchain; a third in a row would be three ahead.
+        assert_eq!(v.swap_paced_steps(1_000_000_000 + 3 * p + 1_000_000, 60.0), 1);
+        assert_eq!(v.swap_paced_steps(1_000_000_000 + 3 * p + 2_000_000, 60.0), 1);
+        assert_eq!(v.swap_paced_steps(1_000_000_000 + 3 * p + 3_000_000, 60.0), 0);
         assert_eq!(v.swap_paced_steps(1_000_000_000 + 4 * p, 60.0), 1);
         assert_eq!(v.swap_paced_steps(0, 60.0), 1);
+    }
+
+    #[test]
+    fn ra_sync_swap_paced_loop_never_shows_a_picture_twice_after_a_late_call() {
+        // A call held up 10ms is followed by one 6ms later: RetroArch runs a
+        // frame on each, so no picture is repeated and the game keeps pace.
+        let mut v = VsyncSteps::default();
+        let p = 16_666_667i64;
+        let mut t = 1_000_000_000i64;
+        let mut frames = 0;
+        for i in 0..600 {
+            t += match i % 30 { 10 => p + 10_000_000, 11 => p - 10_000_000, _ => p };
+            let n = v.swap_paced_steps(t, 60.0);
+            assert_eq!(n, 1, "call {i}");
+            frames += n;
+        }
+        assert_eq!(frames, 600);
+    }
+
+    #[test]
+    fn ra_sync_swap_paced_loop_that_never_waits_keeps_game_speed() {
+        // Swaps returning at once (no VSync) must not speed the game up.
+        let mut v = VsyncSteps::default();
+        let mut frames = 0;
+        for i in 0..2_000i64 {
+            frames += v.swap_paced_steps(1_000_000_000 + i * 1_000_000, 60.0);
+        }
+        assert!((118..=125).contains(&frames), "{frames} frames in 2s");
     }
 
     #[test]
