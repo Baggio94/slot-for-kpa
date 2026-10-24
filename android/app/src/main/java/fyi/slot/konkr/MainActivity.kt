@@ -1586,13 +1586,8 @@ class MainActivity : Activity() {
                             SystemClock.sleep(100)
                             continue
                         }
-                        // Solo play outputs 48 kHz: hold what RetroArch's OpenSL
-                        // output holds, so rate control keeps the same ~64 ms
-                        // of sound queued. Linked play keeps the validated
-                        // low-latency legacy AudioTrack buffer.
-                        val bufferBytes = if (wanted == RetroArchAudioBuffer.OUTPUT_RATE) {
-                            maxOf(RetroArchAudioBuffer.bytes(wanted), minBytes * 2)
-                        } else maxOf(16384, minBytes * 2)
+                        // Preserve the validated low-latency legacy AudioTrack buffer.
+                        val bufferBytes = maxOf(16384, minBytes * 2)
                         audioBufferBytes = bufferBytes
                         nativeSetAudioOutputDepth(0, bufferBytes / 4)
                         Log.i(TAG, "Audio diagnostic: rate=$wanted Hz, " +
