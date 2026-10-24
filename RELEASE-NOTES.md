@@ -12,12 +12,7 @@ A big update: a second core for Game Boy and Game Boy Color, new screen sizes an
 - **Sharper visuals** — Cartridges, labels, icons and menus are drawn at the KONKR's native 960x640 resolution.
 - **More responsive controls** — The D-pad is read directly, quick taps are never lost, and the buttons are read at a steady moment of each frame, as in RetroArch. Audio latency is lower too.
 - **Smoother Link Cable** — The Cable input delay now adapts to the connection between the two consoles.
-- **Clearer interface** — Shorter, consistent messages, button legends as in slot. 1.8.1, redrawn status bar icons and a Status Bar settings page.
 - **Faster game start** — Games launch quickly even after idling on the shelf, and the first scroll after ejecting a game is smooth.
-
-### New Default Settings
-
-For new installations only: Fast Forward 3x, Rewind 3x, X/Y Buttons A/B, GB Palette GBC Green, and Bezel off for Game Boy and Game Boy Color. If you already use slot., your settings are kept.
 
 ### Installation
 
