@@ -625,10 +625,6 @@ struct Engine {
     ra_service: Option<slot_achievements::Service>,
     ra_signing_out: bool,
     buttons: u16,
-    // Presses no core frame has read yet, and releases held back until one
-    // has: a quick tap between two frames must still reach the game.
-    unseen_presses: u16,
-    held_releases: u16,
     ff_held: bool,
     ff_latched: bool,
     ff_last_release: Option<Instant>,
@@ -1175,8 +1171,6 @@ impl Engine {
             ra_service: None,
             ra_signing_out: false,
             buttons: 0,
-            unseen_presses: 0,
-            held_releases: 0,
             ff_held: false,
             ff_latched: false,
             ff_last_release: None,
@@ -2708,15 +2702,7 @@ impl Engine {
                         return;
                     }
                     let mask = controls(code);
-                    if pressed {
-                        self.buttons |= mask;
-                        self.unseen_presses |= mask;
-                        self.held_releases &= !mask;
-                    } else if self.unseen_presses & mask != 0 {
-                        self.held_releases |= mask;
-                    } else {
-                        self.buttons &= !mask;
-                    }
+                    if pressed { self.buttons |= mask; } else { self.buttons &= !mask; }
                     return;
                 }
                 if self.overlay != ShelfOverlay::None {
@@ -5237,10 +5223,6 @@ impl Engine {
                         }
                         break;
                     }
-                    // This frame read every pending press: apply held releases.
-                    self.unseen_presses = 0;
-                    self.buttons &= !self.held_releases;
-                    self.held_releases = 0;
                     self.perf_emulated = self.perf_emulated.saturating_add(1);
                     frame_phases.core_steps = frame_phases.core_steps.saturating_add(1);
                     self.game_accum -= period;
