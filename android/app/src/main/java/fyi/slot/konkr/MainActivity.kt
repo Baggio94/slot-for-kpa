@@ -98,7 +98,6 @@ class MainActivity : Activity() {
     external fun nativeEglPresentationReset()
     external fun nativeEglPresentationTick(pressedNs: Long)
     external fun nativeEglPresentationReport(): String
-    external fun nativeEglWaitForLatch()
     external fun nativeKey(code: Int, pressed: Boolean)
     external fun nativeResetInput()
     external fun nativeExternalReturn()
@@ -241,10 +240,6 @@ class MainActivity : Activity() {
     // Frame Pacing NATIVE: render continuously and let the blocking buffer
     // swap pace the core, as RetroArch does.
     @Volatile private var raSwapLoopApplied = false
-    // Beta A/B switch: adb shell am start -S -n fyi.slot.konkr/.MainActivity
-    // --es slot_latch_wait off|on (persisted; off by default: RetroArch reads
-    // the buttons right after the swap, at a regular moment of each frame).
-    @Volatile private var latchWaitEnabled = false
     // Last D-pad hat position (-1, 0, 1) when the pad reports one.
     private var hatX = 0
     private var hatY = 0
@@ -839,12 +834,6 @@ class MainActivity : Activity() {
                 if (ready) nativeSurfaceChanged(width, height)
             }
             override fun onDrawFrame(gl: GL10?) {
-                // Frame Pacing NATIVE: wait until the display has taken the
-                // frame before last before reading the buttons, so finished
-                // frames never pile up in front of the screen.
-                if (ready && raSwapLoopApplied && latchWaitEnabled && nativeIsPlaying()) {
-                    nativeEglWaitForLatch()
-                }
                 val a12StartedNs = SystemClock.elapsedRealtimeNanos()
                 // Beta8 observer: age of last Choreographer timestamp
                 // when GL starts, not a measured display-present time.
@@ -934,8 +923,7 @@ class MainActivity : Activity() {
                             "ui_vsync_without_gl=${frameCorrelation.vsyncCallbacksWithoutGl} " +
                             "not_actual_present_time=true")
                         if (displaySyncApplied) {
-                            Log.i(TAG, nativeEglPresentationReport() +
-                                " latch_wait=" + if (latchWaitEnabled) "on" else "off")
+                            Log.i(TAG, nativeEglPresentationReport())
                         }
                         probeStartNs = a12StartedNs
                         callbacks = 0
@@ -959,16 +947,10 @@ class MainActivity : Activity() {
                 }
             }
         }
-        // The experimental controlled-EGL presenter measured worse than
-        // GLSurfaceView; drop the developer preference that selected it.
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("development_presenter").apply()
-        val latchPrefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        when (intent?.getStringExtra("slot_latch_wait")) {
-            "off" -> latchPrefs.edit().putBoolean("latch_wait_v3", false).apply()
-            "on" -> latchPrefs.edit().putBoolean("latch_wait_v3", true).apply()
-        }
-        latchWaitEnabled = latchPrefs.getBoolean("latch_wait_v3", false)
-        Log.i(TAG, "Latch wait: " + if (latchWaitEnabled) "on" else "off")
+        // Drop the preferences of two beta experiments (controlled-EGL
+        // presenter, latch wait), both measured worse than the plain loop.
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .remove("development_presenter").remove("latch_wait_v3").apply()
         view = SlotPresenter(this, renderer)
         val frame = FrameLayout(this)
         frame.addView(view.surfaceView, FrameLayout.LayoutParams(-1, -1))

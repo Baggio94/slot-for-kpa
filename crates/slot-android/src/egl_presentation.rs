@@ -26,7 +26,6 @@ type FrameTimestamps = unsafe extern "C" fn(
 const EGL_DRAW: i32 = 0x3059;
 const EGL_EXTENSIONS: i32 = 0x3055;
 const EGL_TIMESTAMPS_ANDROID: i32 = 0x3430;
-const EGL_COMPOSITION_LATCH_TIME_ANDROID: i32 = 0x3436;
 const EGL_DISPLAY_PRESENT_TIME_ANDROID: i32 = 0x343A;
 const EGL_TIMESTAMP_PENDING_ANDROID: i64 = -2;
 const EGL_TIMESTAMP_INVALID_ANDROID: i64 = -1;
@@ -80,52 +79,13 @@ struct Probe {
     tried: bool,
     status: &'static str,
     samples: PresentationProbe,
-    latch: LatchWait,
 }
-
-/// Keeps the queue in front of the display short. Without it the blocking
-/// swap lets several finished frames queue, each one adding a refresh
-/// between the buttons being read and the picture being shown (~110 ms
-/// measured on the KONKR). Android reports a latch ~10 ms after it happens,
-/// so waiting on the frame just swapped left too little time and halved the
-/// frame rate (beta12); waiting on the one before keeps 60 fps.
-#[derive(Default)]
-struct LatchWait {
-    supported: bool,
-    disabled: bool,
-    window_waits: u32,
-    window_timeouts: u32,
-    waits: u64,
-    wait_sum_us: u64,
-    wait_max_us: u64,
-    timeouts: u64,
-}
-
-impl LatchWait {
-    fn end_of_wait(&mut self) {
-        self.window_waits += 1;
-        if self.window_waits >= LATCH_WINDOW {
-            self.window_waits = 0;
-            self.window_timeouts = 0;
-        }
-    }
-}
-
-/// Wait for the frame swapped this many callbacks before the latest one.
-const LATCH_BACK: u64 = 1;
-/// Longer than one 60 Hz refresh: past it the compositor has skipped us.
-const LATCH_TIMEOUT_NS: i64 = 20_000_000;
-/// More than this many timeouts in a window of waits means the wait costs
-/// frames: give up for this surface and keep the plain swap-paced loop.
-const LATCH_WINDOW: u32 = 120;
-const LATCH_GIVE_UP: u32 = 4;
 
 impl Probe {
     fn new() -> Self {
         Self {
             extension: None, tried: false, status: "pending",
             samples: PresentationProbe::new(),
-            latch: LatchWait::default(),
         }
     }
     fn init(&mut self) {
@@ -180,9 +140,6 @@ impl Probe {
             self.status = "timestamps_enable_failed";
             return;
         }
-        self.latch.supported = unsafe {
-            (ext.supported)(display, surface, EGL_COMPOSITION_LATCH_TIME_ANDROID)
-        } != 0;
         self.extension = Some(ext);
         self.status = "supported";
     }
@@ -199,56 +156,8 @@ impl Probe {
         }
         self.samples.tick_with_input(&mut EglSource(ext), input_ns);
     }
-    /// Waits until the compositor has taken the frame swapped by the last
-    /// callback, so the next one reads the buttons as late as possible.
-    fn wait_for_latch(&mut self) {
-        let Some(ext) = self.extension else { return };
-        if !self.latch.supported || self.latch.disabled { return; }
-        if unsafe { eglGetCurrentDisplay() } != ext.display
-            || unsafe { eglGetCurrentSurface(EGL_DRAW) } != ext.surface { return; }
-        let Some(id) = self.samples.frame_id_back(LATCH_BACK) else { return };
-        let source = EglSource(ext);
-        let started = crate::ra_sync::monotonic_ns();
-        loop {
-            match source.query(id, EGL_COMPOSITION_LATCH_TIME_ANDROID) {
-                Ok(Timestamp::Pending) => {}
-                Ok(Timestamp::Presented(_)) => break,
-                // Dropped or unknown frame: nothing to wait for.
-                Ok(Timestamp::Invalid) | Err(()) => return,
-            }
-            if crate::ra_sync::monotonic_ns() - started >= LATCH_TIMEOUT_NS {
-                self.latch.timeouts += 1;
-                self.latch.window_timeouts += 1;
-                if self.latch.window_timeouts > LATCH_GIVE_UP {
-                    self.latch.disabled = true;
-                }
-                self.latch.end_of_wait();
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_micros(250));
-        }
-        let us = ((crate::ra_sync::monotonic_ns() - started) / 1000).max(0) as u64;
-        self.latch.end_of_wait();
-        self.latch.waits += 1;
-        self.latch.wait_sum_us += us;
-        self.latch.wait_max_us = self.latch.wait_max_us.max(us);
-    }
     fn report(&mut self) -> String {
-        let latch = &mut self.latch;
-        // What the driver offers; whether NATIVE waits is Kotlin's
-        // latch_wait, logged beside this report.
-        let state = if !latch.supported { "unsupported" }
-            else if latch.disabled { "gave_up" } else { "available" };
-        let result = format!("{} latch_support={} latch_waits={} latch_wait_mean_us={} \
-             latch_wait_max_us={} latch_timeouts={}",
-            self.samples.report(self.status), state, latch.waits,
-            if latch.waits > 0 { (latch.wait_sum_us / latch.waits) as i64 } else { -1 },
-            latch.wait_max_us, latch.timeouts);
-        latch.waits = 0;
-        latch.wait_sum_us = 0;
-        latch.wait_max_us = 0;
-        latch.timeouts = 0;
-        result
+        self.samples.report(self.status)
     }
 }
 
@@ -268,13 +177,6 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeEglPresentationTic
     _env: *mut c_void, _this: *mut c_void, input_ns: i64,
 ) {
     EGL_PROBE.with(|p| p.borrow_mut().tick(input_ns));
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeEglWaitForLatch(
-    _env: *mut c_void, _this: *mut c_void,
-) {
-    EGL_PROBE.with(|p| p.borrow_mut().wait_for_latch());
 }
 
 #[unsafe(no_mangle)]
