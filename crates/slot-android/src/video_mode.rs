@@ -1,9 +1,9 @@
 use std::path::Path;
 
-use slot_gfx::{SRC_H, SRC_W, WHOLE_TEXTURE};
+use slot_gfx::{ScreenEffect, SRC_H, SRC_W, WHOLE_TEXTURE};
 use slot_store::{ini, Platform};
 
-use crate::settings::Bezel;
+use crate::settings::{Bezel, Shader};
 
 pub const VIDEO_MODE_FILE: &str = "Config/video_mode.ini";
 
@@ -74,6 +74,19 @@ pub fn bezel_hidden_message(bezel: Bezel, mode: VideoMode) -> Option<&'static st
     })
 }
 
+/// Original Ratio is not a whole multiple of the Game Boy picture: plain
+/// pixels would come out 4 or 5 screen pixels wide, so a sprite or a scroll
+/// moving one pixel per frame would advance unevenly. With no shader picked,
+/// draw it with RetroArch's sharp-bilinear instead, which keeps every pixel
+/// the same size and the motion regular.
+pub fn screen_effect(shader: Shader, platform: Platform, mode: VideoMode) -> ScreenEffect {
+    if shader == Shader::Off && platform != Platform::Gba && mode == VideoMode::Aspect {
+        ScreenEffect::SharpBilinear
+    } else {
+        shader.effect()
+    }
+}
+
 pub fn video_mode_for(root: &Path, stem: &str) -> VideoMode {
     ini::value(root, VIDEO_MODE_FILE, stem)
         .as_deref()
@@ -136,6 +149,20 @@ mod tests {
         // Shown on the whole panel, the 160 game columns keep 10:9.
         let game_w = 160.0 / tw * 3.0;
         assert!((game_w / 2.0 - 10.0 / 9.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn original_ratio_without_shader_keeps_pixels_even() {
+        assert_eq!(screen_effect(Shader::Off, Platform::Gb, VideoMode::Aspect),
+            ScreenEffect::SharpBilinear);
+        assert_eq!(screen_effect(Shader::Off, Platform::Gbc, VideoMode::Aspect),
+            ScreenEffect::SharpBilinear);
+        assert_eq!(screen_effect(Shader::Off, Platform::Gb, VideoMode::Actual),
+            ScreenEffect::None);
+        assert_eq!(screen_effect(Shader::Grid, Platform::Gb, VideoMode::Aspect),
+            ScreenEffect::Grid);
+        assert_eq!(screen_effect(Shader::Off, Platform::Gba, VideoMode::Aspect),
+            ScreenEffect::None);
     }
 
     #[test]
