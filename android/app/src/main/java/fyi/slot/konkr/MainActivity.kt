@@ -1166,7 +1166,7 @@ class MainActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && ::view.isInitialized && DIRECT_HAT) requestUnbufferedJoystick()
+        if (hasFocus && ::view.isInitialized) requestUnbufferedJoystick()
     }
 
     // Android batches joystick motion to the next UI frame; RetroArch's
@@ -1181,16 +1181,12 @@ class MainActivity : Activity() {
         }
     }
 
-    // A/B build: false sends the hat through Android's own DPAD keys, as
-    // beta11 did.
-    private val DIRECT_HAT = false
-
     // A D-pad reporting as a hat (ABS_HAT0X/Y) reaches Android as joystick
     // motion, which the framework only turns into DPAD keys afterwards.
     // RetroArch reads the hat axes itself: so does slot., with no detour.
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         val device = event.device
-        if (!DIRECT_HAT || event.action != MotionEvent.ACTION_MOVE ||
+        if (event.action != MotionEvent.ACTION_MOVE ||
             !event.isFromSource(InputDevice.SOURCE_JOYSTICK) ||
             device?.getMotionRange(MotionEvent.AXIS_HAT_X) == null
         ) return super.onGenericMotionEvent(event)
