@@ -1395,7 +1395,7 @@ impl Engine {
                     self.change_game_screen_or_gameplay(key,code == 96);
                 } else { self.change_setting(key,code == 96); }
                 let shader = self.game_shader();
-                self.gpu.set_screen_effect(shader.effect());
+                self.gpu.set_screen_effect(self.game_effect());
                 self.hud.toast(match shader {
                     crate::settings::Shader::Off => Toast::ShaderOff,
                     crate::settings::Shader::Lcd3x => Toast::ShaderLcd3x,
@@ -3344,6 +3344,7 @@ impl Engine {
         let y2 = 1.0 - y;
         self.gpu.set_picture([x, y, x2, y2]);
         self.gpu.set_game_source_rect(video_mode::source_rect(platform, self.video_mode));
+        self.gpu.set_screen_effect(self.game_effect());
     }
 
     fn set_video_mode(&mut self, mode: VideoMode) {
@@ -3376,6 +3377,10 @@ impl Engine {
     }
     fn game_shader(&self) -> crate::settings::Shader {
         self.game_settings().shader_for(self.current_cart_platform())
+    }
+    fn game_effect(&self) -> slot_gfx::ScreenEffect {
+        video_mode::screen_effect(self.game_shader(), self.current_cart_platform(),
+            self.video_mode)
     }
 
     /// The top banner naming the new screen size.
@@ -3613,7 +3618,7 @@ impl Engine {
         if matches!(key,26|27) {self.tell_hidden_bezel();}
         let view=self.game_settings();
         if matches!(key,0|1|21) {
-            self.gpu.set_screen_effect(view.shader_for(platform).effect());
+            self.gpu.set_screen_effect(self.game_effect());
         }
         // A shader change can switch to/from a preset with its own GBA Color.
         // Recompute core colour here as well as when the correction toggle moves.
@@ -3699,7 +3704,7 @@ impl Engine {
         self.game_emulation = None;
         let globals=self.game_settings();
         let platform=self.current_cart_platform();
-        self.gpu.set_screen_effect(self.game_shader().effect());
+        self.gpu.set_screen_effect(self.game_effect());
         if let Some(session)=self.game.as_mut() {
             session.set_colour_correction(globals.shader_for(platform)
                 .core_colour(globals.colour_for(platform)));
@@ -4928,7 +4933,7 @@ impl Engine {
                     // preparation; avoid synchronous IO/rebuilding the
                     // carousel in the first game-frame callback.
                     self.game_accum = 0.0;
-                    self.gpu.set_screen_effect(self.game_shader().effect());
+                    self.gpu.set_screen_effect(self.game_effect());
                     // The exact Slot upstream geometry: GB/GBC 160x144
                     // is centred within the 240x160 libretro canvas.
                     let name = self.shelves[self.active].carts
