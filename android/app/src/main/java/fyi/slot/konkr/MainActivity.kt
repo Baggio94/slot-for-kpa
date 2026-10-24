@@ -885,7 +885,7 @@ class MainActivity : Activity() {
                 }
                 // RetroArch's GPU Hard Sync in the swap-paced loop: queue only
                 // a finished picture, so the compositor never waits on our GPU.
-                if (raSwapLoopApplied) GLES20.glFinish()
+                if (raSwapLoopApplied && GPU_HARD_SYNC) GLES20.glFinish()
                 // Beta9: record the ID of the frame swapped AFTER this
                 // callback and query earlier EGL presentation timestamps.
                 // Driver can report unsupported; no rendering changes.
@@ -1181,6 +1181,10 @@ class MainActivity : Activity() {
             target.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_JOYSTICK)
         }
     }
+
+    // A/B build: false queues the picture without waiting for the GPU, as
+    // RetroArch does with Hard Sync off (beta21's swap loop).
+    private val GPU_HARD_SYNC = false
 
     // A D-pad reporting as a hat (ABS_HAT0X/Y) reaches Android as joystick
     // motion, which the framework only turns into DPAD keys afterwards.
