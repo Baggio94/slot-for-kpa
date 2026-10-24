@@ -934,7 +934,8 @@ class MainActivity : Activity() {
                             "ui_vsync_without_gl=${frameCorrelation.vsyncCallbacksWithoutGl} " +
                             "not_actual_present_time=true")
                         if (displaySyncApplied) {
-                            Log.i(TAG, nativeEglPresentationReport())
+                            Log.i(TAG, nativeEglPresentationReport() +
+                                " latch_wait=" + if (latchWaitEnabled) "on" else "off")
                         }
                         probeStartNs = a12StartedNs
                         callbacks = 0

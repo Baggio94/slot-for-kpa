@@ -235,9 +235,11 @@ impl Probe {
     }
     fn report(&mut self) -> String {
         let latch = &mut self.latch;
+        // What the driver offers; whether NATIVE waits is Kotlin's
+        // latch_wait, logged beside this report.
         let state = if !latch.supported { "unsupported" }
-            else if latch.disabled { "gave_up" } else { "on" };
-        let result = format!("{} latch_wait={} latch_waits={} latch_wait_mean_us={} \
+            else if latch.disabled { "gave_up" } else { "available" };
+        let result = format!("{} latch_support={} latch_waits={} latch_wait_mean_us={} \
              latch_wait_max_us={} latch_timeouts={}",
             self.samples.report(self.status), state, latch.waits,
             if latch.waits > 0 { (latch.wait_sum_us / latch.waits) as i64 } else { -1 },
