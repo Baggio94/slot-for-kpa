@@ -1,28 +1,30 @@
-# slot. for KONKR Pocket Advance — v1.2.3
+# slot. for KONKR Pocket Advance — v1.3.0
 
-This update is all about smoothness: a new RetroArch-style frame pacing, better audio, and safer saves.
+A big update: a second core for Game Boy and Game Boy Color, new screen sizes and overlays, sharper visuals at the KONKR's native resolution, and controls that respond like RetroArch.
 
 ### What's New
 
-- **New Frame Pacing: Native** — The screen now drives the emulator, exactly like RetroArch, with high-quality audio that adapts to the display. In our tests on the KONKR it is as smooth as RetroArch, with slightly lower input latency. Native is the new default.
-- **Responsive mode** — Prefer the lowest possible latency? Switch Frame Pacing to Responsive in Emulation settings.
-- **Better Run-Ahead** — Run-Ahead now works like RetroArch's, with a second instance and Preemptive Frames. It stays OFF by default.
-- **Game Boy / Game Boy Color audio fix** — Sound now plays at the correct rate, with no more delay or crackling.
-- **Rewind speed** — Choose 1x, 2x, 3x or 5x rewind, globally or per game. 2x is the default, as in the original slot.
-- **Fast Forward can be turned Off** — R2 then does nothing.
-- **Safer save states** — Deleting a save state now asks for confirmation.
-- **More reliable saves** — Settings, game profiles, favorites and in-game saves are written more safely, including when ejecting a cartridge.
-- **Faster achievements** — RetroAchievements unlock as soon as they are earned.
-- **Compatibility fixes** — Upstream mGBA fixes for MBC2 and 1 Mbit flash saves and the Game Boy palette option.
+- **Gambatte for Game Boy and Game Boy Color** — Choose between mGBA and Gambatte for each GB/GBC game. Open a cartridge to see its drawn pak board and pick the core chip, just like mGBA/gpSP on GBA. Your saves follow you when you switch cores.
+- **Default core per system** — Settings → Systems now has a Game Boy Advance, Game Boy Color and Game Boy page, each starting with a Default Core option.
+- **New Game Boy screen sizes** — L1 and R1 switch GB/GBC games between Integer, Original Ratio (the real 10:9 shape, kept sharp) and Stretch.
+- **Game Boy overlays** — Game Boy and Game Boy Pocket overlays for GB games and a Game Boy Color overlay for GBC games, by [Watomsk](https://github.com/Watomsk/Overlays), adapted to the KONKR screen and included with his permission.
+- **Live GB Palette** — Pick a Game Boy palette and see it change in real time, as in slot. 1.8.1.
+- **Sharper visuals** — Cartridges, labels, icons and menus are drawn at the KONKR's native 960x640 resolution.
+- **More responsive controls** — The D-pad is read directly, quick taps are never lost, and the buttons are read at a steady moment of each frame, as in RetroArch. Audio latency is lower too.
+- **Smoother Link Cable** — The Cable input delay now adapts to the connection between the two consoles.
+- **Clearer interface** — Shorter, consistent messages, button legends as in slot. 1.8.1, redrawn status bar icons and a Status Bar settings page.
+- **Faster game start** — Games launch quickly even after idling on the shelf, and the first scroll after ejecting a game is smooth.
+
+### New Default Settings
+
+For new installations only: Fast Forward 3x, Rewind 3x, X/Y Buttons A/B, GB Palette GBC Green, and Bezel off for Game Boy and Game Boy Color. If you already use slot., your settings are kept.
 
 ### Installation
 
 Download the APK below and install it over your existing version. Your games, saves, and settings will be preserved.
 
-**Note:** Previous Frame Pacing modes (SYNC LAB, Standard and the lab modes) are replaced by Native, including per-game settings. Multiplayer (Link) keeps its own pacing.
-
 ### Credits
 
-An unofficial Android port of [slot.](https://slot-cfw.fyi/) by [Brandon Kowalski](https://github.com/BrandonKowalski/slot) and contributors.
+An unofficial Android port of [slot.](https://slot-cfw.fyi/) by [Brandon Kowalski](https://github.com/BrandonKowalski/slot) and contributors. Game Boy overlays by [Watomsk](https://github.com/Watomsk/Overlays). Gambatte by Sindre Aamås and contributors.
 
 Licensed under GPL-3.0.

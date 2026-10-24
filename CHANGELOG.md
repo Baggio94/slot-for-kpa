@@ -2,7 +2,22 @@
 
 This changelog covers the public releases of the dedicated KONKR Pocket Advance Android port. Earlier development experiments are preserved in Git history.
 
-## v1.2.3 — release pending approval
+## v1.3.0 — release pending approval
+
+- **Gambatte** as a second core for Game Boy and Game Boy Color, picked on a drawn GB pak board; battery saves carried between mGBA and Gambatte.
+- Settings → Systems: one page per system with a **Default Core** row; a cart's own core choice still wins.
+- GB/GBC screen sizes on L1/R1: Integer, Original Ratio (10:9, sharp-bilinear when no shader is picked) and Stretch.
+- Watomsk's Game Boy, Game Boy Pocket and Game Boy Color overlays (with permission), adapted to 3:2; a toast explains when a bezel cannot be shown.
+- Live GB Palette row and button-art legends, as slot. 1.8.1.
+- Visuals drawn at the KONKR's native 960x640 density; redrawn status bar icons.
+- Controls: direct, unbuffered hat D-pad; quick taps kept between two core frames; NATIVE runs one core frame per swap as RetroArch; low-latency audio output and display priority for the emulator thread.
+- Adaptive Link Cable input delay (mGBA Cable).
+- Clearer messages and menu labels; Status Bar settings page.
+- Faster launch after idling on the shelf; smooth first scroll after ejecting a game.
+- New first-install defaults: Fast Forward 3x, Rewind 3x, X/Y Buttons A/B, GB Palette GBC Green, no GB/GBC bezel. Existing settings are kept.
+- Removed: the original Linux Slot app, retired pacing modes and beta experiments (controlled EGL presenter, latch wait).
+
+## v1.2.3 — 23 October 2026
 
 - New **Native** Frame Pacing, the default: the display clocks the core as in RetroArch, with a 48 kHz windowed-sinc resampler, dynamic audio rate control and GPU hard sync. Measured on KONKR as smooth as RetroArch (2 late frames in 2 minutes) at lower latency.
 - **Responsive** Frame Pacing for the lowest latency (VSync callback loop with automatic Frame Delay).
