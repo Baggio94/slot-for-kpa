@@ -1,22 +1,22 @@
 # slot. for KONKR Pocket Advance — v1.3.0
 
-A big update: a second core for Game Boy and Game Boy Color, new screen sizes and overlays, sharper visuals at the KONKR's native resolution, and controls that respond like RetroArch.
+This is a big one! Game Boy and Game Boy Color games get a second emulator, new screen sizes and beautiful overlays. Everything looks sharper on the KONKR's screen, and the controls feel even snappier.
 
 ### What's New
 
-- **Gambatte for Game Boy and Game Boy Color** — Choose between mGBA and Gambatte for each GB/GBC game. Open a cartridge to see its drawn pak board and pick the core chip, just like mGBA/gpSP on GBA. Your saves follow you when you switch cores.
-- **Default core per system** — Settings → Systems now has a Game Boy Advance, Game Boy Color and Game Boy page, each starting with a Default Core option.
-- **New Game Boy screen sizes** — L1 and R1 switch GB/GBC games between Integer, Original Ratio (the real 10:9 shape, kept sharp) and Stretch.
-- **Game Boy overlays** — Game Boy and Game Boy Pocket overlays for GB games and a Game Boy Color overlay for GBC games, by [Watomsk](https://github.com/Watomsk/Overlays), adapted to the KONKR screen and included with permission.
-- **Live GB Palette** — Pick a Game Boy palette and see it change in real time, as in slot. 1.8.1.
-- **Sharper visuals** — Cartridges, labels, icons and menus are drawn at the KONKR's native 960x640 resolution.
-- **More responsive controls** — The D-pad is read directly, quick taps are never lost, and the buttons are read at a steady moment of each frame, as in RetroArch. Audio latency is lower too.
-- **Smoother Link Cable** — The Cable input delay now adapts to the connection between the two consoles.
-- **Faster game start** — Games launch quickly even after idling on the shelf, and the first scroll after ejecting a game is smooth.
+- **A second emulator for Game Boy and Game Boy Color** — You can now play your GB and GBC games with Gambatte as well as mGBA. Press SELECT on a cartridge to pick the emulator for that game: the cartridge opens and you choose the chip, just like on GBA. Your saves come with you when you switch.
+- **Choose your favorite emulator once** — In Settings → Systems, each console has its own page where you can set the emulator used by default. You can still change it for any game with SELECT.
+- **New screen sizes for Game Boy games** — Use L1 and R1 in game to switch between three sizes: pixel-perfect, original shape (a bit bigger, still sharp), or full screen.
+- **Game Boy overlays** — Dress up your games with Game Boy and Game Boy Pocket frames for GB games, and a Game Boy Color frame for GBC games. Made by [Watomsk](https://github.com/Watomsk/Overlays) and adapted to the KONKR screen with their kind permission.
+- **See palettes change live** — When you pick a color palette for a Game Boy game, the game updates right away so you can see what it looks like.
+- **Sharper everywhere** — Cartridges, labels, icons and menus are now drawn at the KONKR's full resolution.
+- **Snappier controls** — The D-pad reacts faster, quick button taps are never missed, and the sound is a little more responsive. slot. now feels as close as possible to RetroArch.
+- **Smoother multiplayer** — Link Cable games adjust automatically to your Wi-Fi connection for fewer slowdowns.
+- **Faster to start** — Games launch quickly even after you've been browsing for a while, and scrolling is smooth right after you eject a game.
 
 ### Installation
 
-Download the APK below and install it over your existing version. Your games, saves, and settings will be preserved.
+Download the APK below and install it over your current version. Your games, saves and settings are kept.
 
 ### Credits
 
