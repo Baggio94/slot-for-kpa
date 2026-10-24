@@ -2,10 +2,6 @@
 **/*.rs.bk
 *.pdb
 
-/CLAUDE.md
-/.ralph/
-/.superpowers/
-
 /vendor
 /sdcard
 /dist

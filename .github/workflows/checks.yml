@@ -1,21 +1,20 @@
-name: RetroArch parity development
+name: Checks
 
 on:
-  push:
-    branches: ['dev/retroarch-parity-*']
   pull_request:
     paths:
       - 'android/**'
       - 'crates/slot-android/**'
       - 'crates/slot-gfx/**'
-      - '.github/workflows/retroarch-parity-foundation.yml'
+      - '.github/workflows/checks.yml'
+      - 'tools/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: parity-development-${{ github.ref }}
+  group: checks-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

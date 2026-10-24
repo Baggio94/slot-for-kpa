@@ -103,33 +103,7 @@ the game manually before each capture**.
 `slot-emulation-summary.json` and sanitized options JSON.** Raw SF/logcat
 and original RA configuration should remain local unless explicitly examined.
 
-## Frame pacing reproduction is explicitly in scope
+## How slot. paces frames
 
-Stage 2A: see [RA CLOCK LAB experiment](RA_CLOCK_LAB.md). This opt-in
-VSync-clock experiment is **not** the requested Vulkan backend itself.
-
-
-**RetroArch-like frame pacing is a first-class goal**, alongside Run-Ahead.
-See [FRAME_PACING_PARITY.md](FRAME_PACING_PARITY.md) for the inspected
-RetroArch Android EGL/runloop/audio clock vs slot GLSurfaceView/Choreographer
-paths, target configuration keys, 59.73/60Hz drift and data-preserving A/B
-criteria. Frame-pacing and Run-Ahead modes should be independently switchable,
-since lower input latency is not a substitute for audio/video stability.
-
-## Gates for implementing parity backends
-
-- **Milestone 1 (this PR):** capture actual RA reference core/settings and
-  paired RA/slot present histograms; diagnose differences without reinstall.
-- **Milestone 2:** isolated optional parity pacing/audio adapter in slot;
-  A/B with preserved original mode, full F7/F9/F10/RA/save regression tests,
-  recoverable crash behavior, signed APK and explicit owner acceptance.
-- **Milestone 3:** actual secondary-instance Run-Ahead behind a separate
-  experimental option: distinct dynamic loader identity, safe libretro
-  callbacks and VFS, state compatibility checks, side-effect isolation and
-  headless lifecycle tests; cannot be a blind copy of `runahead.c`.
-- **Milestone 4:** optional Preemptive Frames only after the reliable
-  secondary/single-instance modes are validated on real hardware.
-
-Do not merge, tag or release anything from this research branch without
-explicit approval. Public main is v1.2.2. GPLv3 and third-party notice
-obligations apply if RetroArch source is actually incorporated later.
+See [RETROARCH_SYNC.md](RETROARCH_SYNC.md) for the NATIVE and RESPONSIVE
+Frame Pacing loops and the RetroArch behavior they reproduce.
