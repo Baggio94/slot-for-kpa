@@ -140,6 +140,9 @@ fn cycle_rewind_setting(enabled: &mut bool, speed: &mut u8, right: bool) {
     if *enabled { *speed = REWIND_SPEEDS[next-1]; }
 }
 
+/// Index of "GBC Green" in slot_store's palette list.
+const GB_PALETTE_GBC_GREEN: u8 = 13;
+
 /// Original Slot 1.8.1 (#123): 0 means Fast Forward Off.
 pub const SPEEDS: [u8; 5] = [0, 2, 3, 4, 6];
 const NAME: &str = "slot-konkr-settings.json";
@@ -269,6 +272,13 @@ impl Settings {
         settings.shader_gba=Shader::Lcd3x;
         settings.shader_gbc=Shader::Lcd3x;
         settings.shader_gb=Shader::Lcd3x;
+        settings.bezel_gbc=Bezel::None;
+        settings.bezel_gb=Bezel::None;
+        settings.gb_palettes=true;
+        settings.gb_palette=GB_PALETTE_GBC_GREEN;
+        settings.ff_speed=3;
+        settings.rewind_speed=3;
+        settings.turbo=false;
         // Frame Pacing NATIVE: RetroArch's loop, smoother than RetroArch
         // itself on the KONKR (1.2.3 beta22 captures).
         settings.responsive_loop=false;
@@ -716,12 +726,19 @@ mod tests {
             assert_eq!(s.shader_for(platform),Shader::Lcd3x);
             assert!(!s.colour_for(platform));
         }
-        assert_eq!(s.bezel_gbc,Bezel::Default);
-        assert_eq!(s.bezel_gb,Bezel::Default);
-        assert!(!s.gb_palettes);
-        // GAMEPLAY
-        assert_eq!(s.ff_speed,2);
-        assert!(s.ff_sound && s.rewind && s.turbo && s.rumble && s.eject_save);
+        assert_eq!(s.bezel_gba,Bezel::None);
+        assert_eq!(s.bezel_gbc,Bezel::None);
+        assert_eq!(s.bezel_gb,Bezel::None);
+        assert!(s.gb_palettes);
+        assert_eq!(s.palette_label(),"GBC Green");
+        // GAMEPLAY: Fast Forward 3x, Rewind 3x, X/Y Buttons A/B.
+        assert_eq!(s.ff_speed,3);
+        assert!(s.rewind);
+        assert_eq!(s.rewind_speed,3);
+        assert!(!s.turbo);
+        assert!(s.ff_sound && s.rumble && s.eject_save);
+        // TIME: 24 HR clock.
+        assert_eq!(s.time_format,TimeFormat::TwentyFourHour);
         // EMULATION: Frame Pacing NATIVE.
         assert!(!s.show_fps);
         assert!(!s.responsive_loop);
