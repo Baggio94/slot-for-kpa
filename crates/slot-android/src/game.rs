@@ -8,7 +8,7 @@ use slot_retro::{ButtonMask, LibretroCore, RetroCore, LinkChannel};
 use crate::link_kind::LinkKind;
 use crate::link_play::{Frame as LinkFrame, LinkError, LinkPlay};
 use crate::multiplayer::Role;
-use slot_store::{atomic_write, Core, Platform, StateEntry, StateRing, stamp_now, parse_stamp, format_stamp, RING_MAX};
+use slot_store::{atomic_write, Core, Platform, StateEntry, StateRing, stamp_now, format_stamp, RING_MAX};
 use crate::thumb;
 use crate::retroarch_state;
 use crate::rewind::{RewindThread, REWIND_BYTES};
@@ -190,7 +190,6 @@ pub struct GameSession {
     manual_export_prefix: PathBuf,
     state: PathBuf,
     retroarch_export: PathBuf,
-    retroarch_import: PathBuf,
     ring: StateRing,
     rewind: RewindThread,
     rewind_frames: u8,
@@ -436,7 +435,7 @@ impl GameSession {
             .map_err(|e| e.to_string())?;
         // Exact upstream Slot libretro options for colour and Game Boy palettes.
         // Read only the 336-byte header: never read the entire cached ROM.
-        let dmg_only = platform != Platform::Gba && which == Core::Mgba
+        let dmg_only = platform != Platform::Gba && which != Core::Gpsp
             && std::fs::File::open(rom).and_then(|mut file| {
                 let mut header = [0u8; 0x150];
                 file.read_exact(&mut header)?;
@@ -486,6 +485,23 @@ impl GameSession {
                 core.set_option("gpsp_color_correction",
                     if colour_correction { "enabled" } else { "disabled" });
             }
+            Core::Gambatte => {
+                // Same choices as mGBA: the GB/GBC boot ROM when the user
+                // supplied one, GBC colours for DMG carts unless a Slot
+                // palette is picked, and GBC colour correction on request.
+                core.set_option("gambatte_gb_hwmode", "Auto");
+                core.set_option("gambatte_gb_bootloader", "enabled");
+                core.set_option("gambatte_up_down_allowed", "disabled");
+                match gb_palette.and_then(crate::gb_core_switch::gambatte_palette) {
+                    Some(name) => {
+                        core.set_option("gambatte_gb_colorization", "internal");
+                        core.set_option("gambatte_gb_internal_palette", name);
+                    }
+                    None => core.set_option("gambatte_gb_colorization", "GBC"),
+                }
+                core.set_option("gambatte_gbc_color_correction",
+                    if colour_correction { "GBC only" } else { "disabled" });
+            }
         }
         // rcheevos shares ONE evaluator, protected against cross-console
         // memory reads. GB=4 / GBA=5 / GBC=6 use their own libretro maps.
@@ -509,6 +525,20 @@ impl GameSession {
         core.load(rom).map_err(|e| e.to_string())?;
         let load_ms = opening_at.elapsed().as_millis();
         let restore_started = Instant::now();
+        // A GB/GBC cart switched between mGBA and Gambatte brings its newer
+        // battery along; that core's older save state must not resume.
+        let carried_battery = linked_boot.is_none() && match
+            crate::gb_core_switch::carry_battery(&root, rom_stem, which, platform) {
+            Ok(carried) => carried,
+            Err(error) => {
+                eprintln!("slot-konkr: battery carry from the other core skipped: {error}");
+                false
+            }
+        };
+        if carried_battery {
+            log_launch_timing(&format!(
+                "{}: newer battery from the other GB core, save state not resumed", which.text()));
+        }
         let ram = std::fs::read(&save).or_else(|err| {
             if linked_boot.is_none() && err.kind() == std::io::ErrorKind::NotFound {
                 // Migrate the pre-0.0.7 hashed cache non-destructively.
@@ -606,7 +636,7 @@ impl GameSession {
                 retroarch_export = root.join(format!("{key}.retroarch-export.state.auto"));
             }
         }
-        if resume_state && linked_boot.is_none() && !cross_core_import {
+        if resume_state && linked_boot.is_none() && !cross_core_import && !carried_battery {
             // Prefer a successfully decoded RetroArch auto state, then the
             // Slot private state. A compressed/unrecognized external file is
             // kept intact and is NEVER interpreted as raw emulator memory.
@@ -683,7 +713,7 @@ impl GameSession {
         Ok(Self {
             core, link: None, link_touched: false, linked_boot, gpsp_serial,
             rom_path: rom.to_path_buf(), rom_stem: rom_stem.to_owned(),
-            save, rtc, manual_export_prefix, state, retroarch_export, retroarch_import, ring,
+            save, rtc, manual_export_prefix, state, retroarch_export, ring,
             rewind: RewindThread::spawn(REWIND_BYTES), rewind_frames: 0,
             frame_count: 0, palette_live, core_kind: which,
             runahead_video: Vec::new(), runahead_state: Vec::new(),
@@ -789,6 +819,7 @@ impl GameSession {
                     return Err("gpSP did not register GBA serial/RFU netpacket callbacks".into());
                 }
             }
+            Core::Gambatte => return Err("Gambatte has no Slot Link support".into()),
         }
         let link = LinkPlay::begin(self.core.as_mut(), role, mode, transport)?;
         self.link = Some(link);
@@ -811,10 +842,6 @@ impl GameSession {
     /// sending any artificial GBA serial packets.
     pub fn set_link_paused(&mut self, paused: bool) {
         if let Some(link) = self.link.as_mut() { link.set_local_paused(paused); }
-    }
-
-    pub fn link_peer_paused(&self) -> bool {
-        self.link.as_ref().is_some_and(|link| link.peer_paused())
     }
 
     /// An ended link must never become a local solo timeline. Eject and
@@ -1142,7 +1169,6 @@ impl GameSession {
             self.runahead_rollback_failed = true;
             log_launch_timing(&format!(
                 "Run-Ahead ROLLBACK FAILED: session quarantined, ALL saves disabled: {error}"));
-            return;
         }
 
     }
@@ -1313,7 +1339,9 @@ impl GameSession {
     }
 
     pub fn set_gb_palette(&mut self, name: &str) {
-        if self.palette_live {
+        if self.palette_live && self.core_kind == Core::Gambatte {
+            self.set_gb_palette_mode(true, name);
+        } else if self.palette_live {
             self.set_core_option("mgba_gb_colors_preset", "0");
             self.set_core_option("mgba_gb_colors", name);
         }
@@ -1327,10 +1355,20 @@ impl GameSession {
         if let Some(copy) = self.runahead_secondary.as_mut() { copy.set_option(key, value); }
     }
 
-    /// Per-game GB palette enable/disable is applied through mGBA's live core
+    /// Per-game GB palette enable/disable is applied through the core's live
     /// options, without restarting libretro or touching ROM SRAM/RTC.
     pub fn set_gb_palette_mode(&mut self, enabled: bool, name: &str) {
         if !self.palette_live { return; }
+        if self.core_kind == Core::Gambatte {
+            match crate::gb_core_switch::gambatte_palette(name).filter(|_| enabled) {
+                Some(palette) => {
+                    self.set_core_option("gambatte_gb_colorization", "internal");
+                    self.set_core_option("gambatte_gb_internal_palette", palette);
+                }
+                None => self.set_core_option("gambatte_gb_colorization", "GBC"),
+            }
+            return;
+        }
         self.set_core_option("mgba_gb_colors_preset", if enabled { "0" } else { "1" });
         if enabled { self.set_core_option("mgba_gb_colors", name); }
     }
@@ -1341,6 +1379,8 @@ impl GameSession {
                 if enabled { "Auto" } else { "OFF" }),
             Core::Gpsp => ("gpsp_color_correction",
                 if enabled { "enabled" } else { "disabled" }),
+            Core::Gambatte => ("gambatte_gbc_color_correction",
+                if enabled { "GBC only" } else { "disabled" }),
         };
         self.set_core_option(key, value);
     }

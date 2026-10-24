@@ -9,7 +9,7 @@
     <pattern id="pinsV" width="3" height="3" patternUnits="userSpaceOnUse">
       <rect y=".7" width="3" height="1.6" fill="#b3b3b8"/>
     </pattern>
-    <filter id="softer" x="-50%" y="-200%" width="200%" height="500%">
+    <filter id="softer" x="-5%" y="-8%" width="110%" height="116%">
       <feGaussianBlur stdDeviation="1.6"/>
     </filter>
     <clipPath id="cavity">

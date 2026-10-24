@@ -16,7 +16,7 @@ import java.util.Locale
  * Operates only on user-approved READ+WRITE SAF tree roots, on a worker thread.
  * No direct /storage/emulated/0 or /Android/data paths are assumed.
  *
- * Layout: <chosen saves root>/mGBA/Game Name.srm or /gpSP/Game Name.srm
+ * Layout: <chosen saves root>/mGBA/Game Name.srm, /gpSP/ or /Gambatte/
  *         <chosen states root>/mGBA/Game Name.state.auto (or gpSP).
  *
  * Never silently overwrite an external compressed state. Before replacing
@@ -27,6 +27,11 @@ internal object RetroArchStorage {
     private const val MAX_SAVE = 2 * 1024 * 1024
     class SaveConflict(message: String) : IllegalStateException(message)
     private const val MAX_STATE = 65 * 1024 * 1024
+    /** RetroArch's per-core folder names: mGBA and gpSP for GBA, mGBA and
+     *  Gambatte for GB/GBC. */
+    internal val CORES = setOf("mGBA", "gpSP", "Gambatte")
+    /** Slot's private file prefix for a core: mgba, gpsp or gambatte. */
+    internal fun coreLower(core: String) = core.lowercase(Locale.ROOT)
 
     data class Target(
         val romUri: String,
@@ -48,7 +53,7 @@ internal object RetroArchStorage {
     fun target(context: Context, rawUri: String, core: String, savesTree: Uri?, statesTree: Uri?,
                scannedFileName: String? = null,
                shareGbaSaves: Boolean = false): Target {
-        require(core == "mGBA" || core == "gpSP")
+        require(core in CORES)
         // ROM discovery (or restored shelf cache) already queried the SAF
         // display name. Reuse only that exact URI's name; older caches and
         // direct launches still query ContentResolver as a safe fallback.
@@ -66,7 +71,7 @@ internal object RetroArchStorage {
         val prefix = File(context.filesDir, "Saves").apply { mkdirs() }
         val coreFolder = File(prefix, core).apply { mkdirs() }
         val defaultStates = File(File(context.filesDir, "States"), core).apply { mkdirs() }
-        val coreLower = if (core == "mGBA") "mgba" else "gpsp"
+        val coreLower = coreLower(core)
         return Target(rawUri, stem, core,
             File(coreFolder, "$stem.srm"),
             File(coreFolder, "$stem.rtc"),
@@ -91,7 +96,7 @@ internal object RetroArchStorage {
 
     /** Only auto-states count; manual Polaroids do not implicitly resume. */
     fun hasCoreAutoState(context: Context, target: Target): Boolean {
-        val lower = if (target.core == "mGBA") "mgba" else "gpsp"
+        val lower = coreLower(target.core)
         val local = File(context.filesDir,
             "Saves/${target.romIdentity}.$lower.state")
         if ((local.isFile && local.length() > 0) ||
@@ -160,7 +165,7 @@ internal object RetroArchStorage {
         // byte. Rust will resume/write only a fresh generation and the export
         // guard will keep the original external auto-state unchanged.
         // Do not even restage an existing private import during this launch.
-        val coreLower = if (target.core == "mGBA") "mgba" else "gpsp"
+        val coreLower = coreLower(target.core)
         val guardRoot = File(context.filesDir, "Saves")
         val skipped = File(guardRoot,
             "${target.romIdentity}.$coreLower.skip-resume.once").isFile
@@ -233,7 +238,7 @@ internal object RetroArchStorage {
         // written to a separate private generation by Rust. Publishing it
         // over the original RetroArch .state.auto would silently destroy the
         // ignored state (F-Zero regression). Wait for explicit user consent.
-        val lower = if (target.core == "mGBA") "mgba" else "gpsp"
+        val lower = coreLower(target.core)
         val guarded = File(context.filesDir,
             "Saves/${target.romIdentity}.$lower.state-export-protected").isFile
         if (!guarded && target.stateExportLocal.isFile) {
@@ -449,7 +454,7 @@ internal object RetroArchStorage {
             // BOTH cores' old automatic states may point to the discarded
             // timeline. Keep every old byte; launch new SRAM generations.
             for (core in cores) {
-                val lower = if (core == "mGBA") "mgba" else "gpsp"
+                val lower = coreLower(core)
                 stage(File(context.filesDir,
                     "Saves/${target.romIdentity}.$lower.skip-resume.once"), byteArrayOf(1))
             }
@@ -564,7 +569,7 @@ internal object RetroArchStorage {
         if (source != target.core || (lastWriter != null && lastWriter != target.core)) {
             // A stale per-core .state.auto must NEVER roll back a newer SRAM
             // imported from the other emulator.
-            val lower = if (target.core == "mGBA") "mgba" else "gpsp"
+            val lower = coreLower(target.core)
             val marker = File(context.filesDir, "Saves/${target.romIdentity}.$lower.skip-resume.once")
             stage(marker, byteArrayOf(1))
         }
@@ -749,7 +754,7 @@ internal object RetroArchStorage {
      * whose document identifiers need not be hierarchical.
      */
     internal fun directDocumentId(treeId: String, core: String, name: String): String? {
-        if (core != "mGBA" && core != "gpSP") return null
+        if (core !in CORES) return null
         if (name.isEmpty() || name == "." || name == ".." ||
             name.any { it == '/' || it == '\\' || it.code < 32 }) return null
         val volume = treeId.substringBefore(':', "")

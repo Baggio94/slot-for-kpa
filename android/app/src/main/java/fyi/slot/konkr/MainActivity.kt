@@ -50,7 +50,9 @@ import android.opengl.GLSurfaceView
 import android.view.Choreographer
 import android.os.Bundle
 import android.util.Log
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -90,15 +92,11 @@ class MainActivity : Activity() {
     }
 
     external fun nativeSurfaceCreated(): Boolean
-    external fun nativeGraphicsReady(): Boolean
-    external fun nativeGraphicsContextLost()
-    external fun nativePresentationResume()
-    external fun nativeRendererShutdown(contextCurrent: Boolean)
     external fun nativeSurfaceChanged(width: Int, height: Int)
     external fun nativeDrawFrame(vsyncFrameNs: Long)
     // Beta9 optional actual display present timestamp via EGL. Read-only.
     external fun nativeEglPresentationReset()
-    external fun nativeEglPresentationTick()
+    external fun nativeEglPresentationTick(pressedNs: Long)
     external fun nativeEglPresentationReport(): String
     external fun nativeKey(code: Int, pressed: Boolean)
     external fun nativeResetInput()
@@ -214,16 +212,12 @@ class MainActivity : Activity() {
     @Volatile private var diagnosticAudioUnderruns = 0
     // Prevent an empty-read 8ms sleep from missing a freshly produced frame.
     private val audioFrameSignal = java.util.concurrent.Semaphore(0)
-    // Beta10 experimental: this callback is invoked on GLSurfaceView's GL
-    // thread after a real core frame has queued PCM but BEFORE Run-Ahead's
-    // speculative frames and GLES presentation. Read-only counters below.
+    // Invoked on GLSurfaceView's GL thread after a real core frame has
+    // queued PCM but BEFORE Run-Ahead's speculative frames and GLES
+    // presentation, so the audio worker can write during them.
     private val earlyPcmWakes = AtomicInteger(0)
-    // The latest committed-PCM wake timestamp is diagnostic only. The audio
-    // worker reads it without ever blocking or calling into the GL core.
-    private val earlyPcmReadyNs = java.util.concurrent.atomic.AtomicLong(0L)
     @Suppress("unused")
     private fun onNativePcmReady() {
-        if (audioRunning.get()) earlyPcmReadyNs.set(SystemClock.elapsedRealtimeNanos())
         if (audioRunning.get() && audioFrameSignal.availablePermits() == 0) {
             audioFrameSignal.release()
             earlyPcmWakes.incrementAndGet()
@@ -235,6 +229,9 @@ class MainActivity : Activity() {
     private val raSmartForeground = java.lang.Object()
     private var carouselDozing = false
     private var lastCarouselHeartbeat = 0L
+    // A key may still be queued for the GL thread while the shelf reports
+    // quiet: keep rendering every frame until the engine has consumed it.
+    private var carouselAwakeUntil = 0L
     private var returnFromSlotChild = false
     private lateinit var performanceHud: TextView
     private lateinit var shelfStatus: SlotStatusIndicators
@@ -243,6 +240,9 @@ class MainActivity : Activity() {
     // Frame Pacing NATIVE: render continuously and let the blocking buffer
     // swap pace the core, as RetroArch does.
     @Volatile private var raSwapLoopApplied = false
+    // Last D-pad hat position (-1, 0, 1) when the pad reports one.
+    private var hatX = 0
+    private var hatY = 0
     @Volatile private var latestVsyncFrameNs = 0L
     // Beta10 read-only Choreographer delivery telemetry (UI thread).
     // These are UI callbacks, never confirmed display-present timestamps.
@@ -259,12 +259,11 @@ class MainActivity : Activity() {
     private var raWasPlaying = false
     private var raPendingGameNotice: RaAchievementOverlay.Notice? = null
 
-    // Only attach Choreographer while DISPLAY SYNC or SYNC LAB is active.
-    // STANDARD and RESPONSIVE retain their original render policy.
+    // Only attached while Frame Pacing RESPONSIVE runs a solo game: NATIVE
+    // and the shelf render continuously.
     private val vsyncCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            if (!displaySyncApplied || raSwapLoopApplied || !resumed || isDestroyed ||
-                view.ownsScheduler) return
+            if (!displaySyncApplied || raSwapLoopApplied || !resumed || isDestroyed) return
             recordVsync(frameTimeNanos)
             view.requestRender()
             Choreographer.getInstance().postFrameCallback(this)
@@ -293,24 +292,17 @@ class MainActivity : Activity() {
     private fun updateDisplaySyncMode() {
         if (!::view.isInitialized) return
         val enabled = resumed && nativeIsPlaying() && nativeDisplaySyncEnabled()
-        val swapLoop = enabled && !view.ownsScheduler && nativeRaSwapLoop()
+        val swapLoop = enabled && nativeRaSwapLoop()
         if (enabled == displaySyncApplied && swapLoop == raSwapLoopApplied) return
         if (enabled) publishDisplayRefresh()
         // Diagnostic-only event: a switch from continuous GL rendering to
         // Choreographer during the first 100ms of gameplay could explain
         // an isolated startup hitch. Do not change frame scheduling here.
         Log.i(TAG, "Game display pacing transition: " +
-            (if (view.ownsScheduler) "EGL owner" else if (swapLoop) "Swap-paced"
-                else if (enabled) "Choreographer" else "Continuous") +
+            (if (swapLoop) "Swap-paced" else if (enabled) "Choreographer" else "Continuous") +
             ", playing=${nativeIsPlaying()}")
         displaySyncApplied = enabled
         raSwapLoopApplied = swapLoop
-        if (view.ownsScheduler) {
-            // Owner-thread Choreographer is the only producer in this path.
-            // Continuous/dirty here is controlled solely by the shelf policy.
-            Choreographer.getInstance().removeFrameCallback(vsyncCallback)
-            return
-        }
         if (enabled && !swapLoop) {
             view.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
             Choreographer.getInstance().removeFrameCallback(vsyncCallback)
@@ -327,6 +319,7 @@ class MainActivity : Activity() {
     // clocks, library scans and asynchronous UI changes.
     private fun wakeCarouselRender() {
         if (!::view.isInitialized || !resumed) return
+        carouselAwakeUntil = SystemClock.uptimeMillis() + 500L
         if (carouselDozing) {
             carouselDozing = false
             view.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
@@ -337,6 +330,7 @@ class MainActivity : Activity() {
     private fun updateCarouselPacing() {
         if (!::view.isInitialized || !resumed) return
         val canDoze = !displaySyncApplied && !nativeIsPlaying() && nativeCarouselQuiet()
+            && SystemClock.uptimeMillis() >= carouselAwakeUntil
         if (!canDoze) {
             if (carouselDozing) wakeCarouselRender()
             return
@@ -436,13 +430,13 @@ class MainActivity : Activity() {
             val dialog = SlotModalDialog(
                 this,
                 "LINK — SHARE CARTRIDGE",
-                "Share this ROM with $peer over local Wi-Fi? " +
-                    "Only allow a device you trust.",
+                "Share this cartridge with $peer over Wi-Fi? " +
+                    "Only allow a console you trust.",
                 onDismiss = { reply(0) }
             )
             dialog.addButton("CANCEL") { reply(0); dialog.dismiss() }
             dialog.addButton("ALLOW ONCE") { reply(1); dialog.dismiss() }
-            dialog.addButton("REMEMBER DEVICE") { reply(2); dialog.dismiss() }
+            dialog.addButton("ALWAYS ALLOW") { reply(2); dialog.dismiss() }
             dialog.show()
         } catch (error: Exception) {
             Log.w(TAG, "Cannot show Slot peer permission", error)
@@ -452,12 +446,12 @@ class MainActivity : Activity() {
 
     private fun requestLinkWifi() {
         if (!resumed) {
-            nativeLinkNetworkError("Return to Slot before starting Multiplayer")
+            nativeLinkNetworkError("Return to slot. before starting Multiplayer.")
             return
         }
         val address = linkWifiAddress()
         if (address == null) {
-            nativeLinkNetworkError("Connect both consoles to the same Wi-Fi network")
+            nativeLinkNetworkError("Connect both consoles to the same Wi-Fi.")
             return
         }
         try {
@@ -472,7 +466,7 @@ class MainActivity : Activity() {
         } catch (error: Exception) {
             releaseLinkMulticast()
             Log.w(TAG, "Unable to acquire LAN discovery lock", error)
-            nativeLinkNetworkError("Wi-Fi multicast unavailable on this device")
+            nativeLinkNetworkError("Couldn't search for other consoles on this Wi-Fi.")
         }
     }
     private val raConnectivityCallback = object : ConnectivityManager.NetworkCallback() {
@@ -561,7 +555,7 @@ class MainActivity : Activity() {
                         nativeExternalReturn()
                         Log.e(TAG, "Unable to open RetroAchievements", error)
                         SlotToast.makeText(this@MainActivity,
-                            "Unable to open RetroAchievements.", Toast.LENGTH_SHORT).show()
+                            "Couldn't open RetroAchievements.", Toast.LENGTH_SHORT).show()
                     }
                 }
                 4 -> openBiosFolderPicker()
@@ -584,7 +578,7 @@ class MainActivity : Activity() {
                         returnFromSlotChild = false
                         nativeExternalReturn()
                         Log.w(TAG, "Cannot open Apps", error)
-                        SlotToast.makeText(this@MainActivity, "Unable to open Apps.",
+                        SlotToast.makeText(this@MainActivity, "Couldn't open Apps.",
                             Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -728,6 +722,7 @@ class MainActivity : Activity() {
                 val uri = payload.getString("uri")
                 val core = when (payload.getString("core")) {
                     "gpsp" -> "gpSP"
+                    "gambatte" -> "Gambatte"
                     else -> "mGBA"
                 }
                 val target = activeTargets[uri]
@@ -747,8 +742,8 @@ class MainActivity : Activity() {
                                         it.startsWith("Shared GBA save sync deferred")
                                     }
                                     val notice = if (onlyMirrors)
-                                        "Game saved locally. mGBA/gpSP copy deferred."
-                                    else "Game saved locally; some external/state exports need attention."
+                                        "Game saved. The copy for the other core will be made later."
+                                    else "Game saved, but some copies to your save folders failed."
                                     SlotToast.makeText(this@MainActivity, notice, Toast.LENGTH_LONG).show()
                                 }
                             }
@@ -817,6 +812,14 @@ class MainActivity : Activity() {
                 uiVsyncCallbacks.set(0L); uiVsyncOver25ms.set(0L); uiVsyncOver40ms.set(0L)
             }
             override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+                // The GL thread runs the core: give it Android's render-thread
+                // priority so background work never delays a frame.
+                try {
+                    android.os.Process.setThreadPriority(
+                        android.os.Process.THREAD_PRIORITY_DISPLAY)
+                } catch (error: Exception) {
+                    Log.w(TAG, "GL thread display priority unavailable", error)
+                }
                 resetTiming()
                 nativeEglPresentationReset()
                 ready = nativeSurfaceCreated()
@@ -843,7 +846,9 @@ class MainActivity : Activity() {
                         vsyncAgeCount++
                     }
                 }
-                if (nativeIsPlaying()) EmulationDiagnostics.frame()
+                // Press read by this callback, timed to its display present.
+                var pressedNs = 0L
+                if (nativeIsPlaying()) pressedNs = EmulationDiagnostics.frame()
                 var a12NativeUs = 0L
                 if (ready) {
                     val beginNativeNs = SystemClock.elapsedRealtimeNanos()
@@ -874,7 +879,7 @@ class MainActivity : Activity() {
                 // callback and query earlier EGL presentation timestamps.
                 // Driver can report unsupported; no rendering changes.
                 if (ready && displaySyncApplied && nativeIsPlaying()) {
-                    nativeEglPresentationTick()
+                    nativeEglPresentationTick(pressedNs)
                 }
                 // Diagnostic-only. EGL swaps after this callback returns:
                 // callback gaps are not true presentation timestamps.
@@ -906,7 +911,7 @@ class MainActivity : Activity() {
                             "vsync_gl_age_max_us=$vsyncAgeMaxUs " +
                             "early_pcm_wakes_5s=${earlyPcmWakes.getAndSet(0)}")
                         val frameCorrelation = glPacingCorrelation.snapshotAndReset()
-                        Log.i(TAG, "GL vsync correlation: scheduler=${if (view.ownsScheduler) "egl-owner" else "ui"} " +
+                        Log.i(TAG, "GL vsync correlation: scheduler=ui " +
                             "ui_vsync_callbacks=${uiVsyncCallbacks.getAndSet(0L)} " +
                             "ui_vsync_over25=${uiVsyncOver25ms.getAndSet(0L)} " +
                             "ui_vsync_over40=${uiVsyncOver40ms.getAndSet(0L)} " +
@@ -942,20 +947,11 @@ class MainActivity : Activity() {
                 }
             }
         }
-        val presenterPrefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val requestedPresenter = intent.getStringExtra("slot_presenter")
-        if (requestedPresenter in setOf("glsurfaceview", "controlled-egl")) {
-            presenterPrefs.edit().putString("development_presenter", requestedPresenter).apply()
-        }
-        val controlledEgl = presenterPrefs.getString("development_presenter", "glsurfaceview") == "controlled-egl"
-        Log.i(TAG, "Slot presenter: " + if (controlledEgl) "controlled-egl (experimental)" else "glsurfaceview (reference)")
-        view = if (controlledEgl) ControlledEglPresenter(this, renderer,
-            beforeFrame = { timestamp -> recordVsync(timestamp) },
-            contextLost = { nativeGraphicsContextLost() },
-            resumedClock = { nativePresentationResume(); nativeEglPresentationReset(); renderer.resetTiming() },
-            shutdown = { current -> nativeRendererShutdown(current) },
-            nativeReady = { nativeGraphicsReady() })
-        else ReferenceGlPresenter(this, renderer)
+        // Drop the preferences of two beta experiments (controlled-EGL
+        // presenter, latch wait), both measured worse than the plain loop.
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .remove("development_presenter").remove("latch_wait_v3").apply()
+        view = SlotPresenter(this, renderer)
         val frame = FrameLayout(this)
         frame.addView(view.surfaceView, FrameLayout.LayoutParams(-1, -1))
         shelfStatus = SlotStatusIndicators(this, frame)
@@ -989,7 +985,7 @@ class MainActivity : Activity() {
         if (!cleanSignOut) {
             uiHandler.postDelayed({
                 SlotToast.makeText(this,
-                    "Previous RA sign out needs attention. Local awards were kept.",
+                    "The last RetroAchievements sign-out didn't finish. Your unlocks are safe.",
                     Toast.LENGTH_LONG).show()
             }, 800L)
         }
@@ -1151,6 +1147,61 @@ class MainActivity : Activity() {
         return true
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && ::view.isInitialized) requestUnbufferedJoystick()
+    }
+
+    // Android batches joystick motion to the next UI frame; RetroArch's
+    // input queue reads it as soon as it arrives. Do the same for a D-pad
+    // that reports as a hat. The request only counts once the views are in
+    // the window and follows the focused view, so it is renewed whenever
+    // the window gains focus, on both the game view and the window root.
+    private fun requestUnbufferedJoystick() {
+        for (target in listOf<View>(view.surfaceView, window.decorView)) {
+            target.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_NONE)
+            target.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_JOYSTICK)
+        }
+    }
+
+    // A D-pad reporting as a hat (ABS_HAT0X/Y) reaches Android as joystick
+    // motion, which the framework only turns into DPAD keys afterwards.
+    // RetroArch reads the hat axes itself: so does slot., with no detour.
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        val device = event.device
+        if (event.action != MotionEvent.ACTION_MOVE ||
+            !event.isFromSource(InputDevice.SOURCE_JOYSTICK) ||
+            device?.getMotionRange(MotionEvent.AXIS_HAT_X) == null
+        ) return super.onGenericMotionEvent(event)
+        fun axis(value: Float) = if (value <= -0.5f) -1 else if (value >= 0.5f) 1 else 0
+        val x = axis(event.getAxisValue(MotionEvent.AXIS_HAT_X))
+        val y = axis(event.getAxisValue(MotionEvent.AXIS_HAT_Y))
+        if (x != hatX || y != hatY) {
+            EmulationDiagnostics.hat(event, (x != 0 && x != hatX) || (y != 0 && y != hatY))
+            warmedCandidate.set(null)
+            wakeCarouselRender()
+            if (x != hatX) {
+                if (hatX < 0) nativeKey(KeyEvent.KEYCODE_DPAD_LEFT, false)
+                if (hatX > 0) nativeKey(KeyEvent.KEYCODE_DPAD_RIGHT, false)
+                if (x < 0) nativeKey(KeyEvent.KEYCODE_DPAD_LEFT, true)
+                if (x > 0) nativeKey(KeyEvent.KEYCODE_DPAD_RIGHT, true)
+                hatX = x
+            }
+            if (y != hatY) {
+                if (hatY < 0) nativeKey(KeyEvent.KEYCODE_DPAD_UP, false)
+                if (hatY > 0) nativeKey(KeyEvent.KEYCODE_DPAD_DOWN, false)
+                if (y < 0) nativeKey(KeyEvent.KEYCODE_DPAD_UP, true)
+                if (y > 0) nativeKey(KeyEvent.KEYCODE_DPAD_DOWN, true)
+                hatY = y
+            }
+        }
+        // A stick on the same device still goes through Android's own
+        // stick-to-DPAD conversion; the hat state above is idempotent.
+        val stickMoved = Math.abs(event.getAxisValue(MotionEvent.AXIS_X)) >= 0.5f ||
+            Math.abs(event.getAxisValue(MotionEvent.AXIS_Y)) >= 0.5f
+        return if (stickMoved) super.onGenericMotionEvent(event) else true
+    }
+
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         SlotBuildBehavior.emulatorButton(keyCode)?.let { button ->
             EmulationDiagnostics.input(keyCode, false, event, button)
@@ -1195,8 +1246,8 @@ class MainActivity : Activity() {
             if (isDestroyed || isFinishing) { ready.countDown(); return@runOnUiThread }
             try {
                 val dialog = SlotModalDialog(this, "SAVE CONFLICT",
-                    "mGBA and gpSP saves differ. Choose which progress to keep. " +
-                        "Both original saves are backed up.",
+                    "mGBA and gpSP have different saves for this game. Choose which one to keep. " +
+                        "Both are backed up.",
                     onDismiss = { ready.countDown() })
                 // Default to the safe action: accidental A never changes SRAM.
                 dialog.addButton("CANCEL") { dialog.dismiss() }
@@ -1231,15 +1282,15 @@ class MainActivity : Activity() {
             if (isDestroyed || isFinishing) { ready.countDown(); return@runOnUiThread }
             try {
                 val dialog = SlotModalDialog(this, "SAVE STATE",
-                    "The $core state may be older than the shared cartridge save. " +
-                        "Choose which progress to load.",
+                    "The $core save state may be older than your in-game save. " +
+                        "Choose which one to load.",
                     onDismiss = { ready.countDown() })
                 dialog.addButton("CANCEL") { dialog.dismiss() }
-                dialog.addButton("SHARED CARTRIDGE SAVE") {
+                dialog.addButton("IN-GAME SAVE") {
                     selected.set(CoreStateChoice.SHARED)
                     dialog.dismiss()
                 }
-                dialog.addButton("EXISTING $core STATE") {
+                dialog.addButton("$core SAVE STATE") {
                     selected.set(CoreStateChoice.EXISTING)
                     dialog.dismiss()
                 }
@@ -1312,7 +1363,11 @@ class MainActivity : Activity() {
                 }
                 val romReadyAt = SystemClock.elapsedRealtime()
                 val savedCore = nativeCoreForUri(rawUri)
-                val core = if (savedCore == "gpsp" && ext == "gba") "gpSP" else "mGBA"
+                val core = when {
+                    savedCore == "gpsp" && ext == "gba" -> "gpSP"
+                    savedCore == "gambatte" && ext != "gba" -> "Gambatte"
+                    else -> "mGBA"
+                }
                 val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
                 val storage = SlotBuildBehavior.storagePolicy(
                     packageName,
@@ -1369,7 +1424,7 @@ class MainActivity : Activity() {
                                 // priority than stale external auto-states.
                                 RetroArchStorage.importExplicitExistingState(
                                     this@MainActivity, shared)
-                                val lower = if (core == "mGBA") "mgba" else "gpsp"
+                                val lower = RetroArchStorage.coreLower(core)
                                 // The previous SRAM-first attempt may have
                                 // allocated a generation but never written a
                                 // state (e.g. Android killed the app before
@@ -1403,7 +1458,7 @@ class MainActivity : Activity() {
                                 resumeChoice = 1
                             }
                             CoreStateChoice.SHARED -> {
-                                val lower = if (core == "mGBA") "mgba" else "gpsp"
+                                val lower = RetroArchStorage.coreLower(core)
                                 RetroArchStorage.stage(File(filesDir,
                                     "Saves/$digest.$lower.skip-resume.once"), byteArrayOf(1))
                                 resumeChoice = 0
@@ -1479,6 +1534,9 @@ class MainActivity : Activity() {
             var emptyAudioReads = 0
             var playedShorts = 0L
             var audioBufferBytes = 0
+            // Android's fast mixer (low-latency output) cannot time-stretch,
+            // so Fast Forward runs on an ordinary track instead.
+            var playerLowLatency = false
             // Diagnostic only: how fast AudioTrack's own playback-head clock
             // advances relative to submitted PCM. No buffer or DSP changes.
             var playbackHeadAtProbe = 0L
@@ -1488,14 +1546,9 @@ class MainActivity : Activity() {
             var minimumOutputFrames = Long.MAX_VALUE
             var maximumOutputFrames = 0L
             var outputDepthSamples = 0
-            // Beta12: sync-lab committed frames and PCM generated by the
-            // GL owner are sampled on this SAME 5s audio-clock window.
+            // Native PCM FIFO loss, sampled on this SAME 5s window.
             // These observations never alter the AudioTrack write path.
             var nativeClockBaseline = LongArray(0)
-            var observedEarlyReadyNs = 0L
-            var earlyReadyToReadCount = 0L
-            var earlyReadyToReadTotalUs = 0L
-            var earlyReadyToReadMaxUs = 0L
             // Beta9: AudioTrack's hardware timestamp describes its playback
             // clock independently of the emulation and GLSurfaceView clocks.
             val hardwareTimestamp = AudioTimestamp()
@@ -1510,7 +1563,8 @@ class MainActivity : Activity() {
                         SystemClock.sleep(35)
                         continue
                     }
-                    if (player == null || rate != wanted) {
+                    val lowLatency = nativeAudioSpeedPermille() <= 1000
+                    if (player == null || rate != wanted || lowLatency != playerLowLatency) {
                         player?.release()
                         val minBytes = AudioTrack.getMinBufferSize(
                             wanted, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT
@@ -1535,7 +1589,22 @@ class MainActivity : Activity() {
                                 .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
                             .setBufferSizeInBytes(bufferBytes)
                             .setTransferMode(AudioTrack.MODE_STREAM)
+                            .apply {
+                                // Like RetroArch's audio at the panel rate: skip
+                                // the normal mixer's extra buffering.
+                                if (lowLatency) setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                            }
                             .build()
+                        playerLowLatency = lowLatency
+                        // Rate control must target the buffer Android really gave us.
+                        val capacityFrames = player.bufferCapacityInFrames
+                        if (capacityFrames > 0 && capacityFrames != bufferBytes / 4) {
+                            audioBufferBytes = capacityFrames * 4
+                            nativeSetAudioOutputDepth(0, capacityFrames)
+                        }
+                        Log.i(TAG, "Audio output: low_latency_requested=$lowLatency " +
+                            "performance_mode=${player.performanceMode} " +
+                            "capacity_frames=$capacityFrames")
                         rate = wanted
                         requestedSpeed = 0
                         observedUnderruns = 0
@@ -1550,10 +1619,6 @@ class MainActivity : Activity() {
                         maximumOutputFrames = 0L
                         outputDepthSamples = 0
                         nativeClockBaseline = nativeAudioClockCounters()
-                        observedEarlyReadyNs = earlyPcmReadyNs.get()
-                        earlyReadyToReadCount = 0L
-                        earlyReadyToReadTotalUs = 0L
-                        earlyReadyToReadMaxUs = 0L
                         priorHardwareFrame = -1L
                         priorHardwareTimeNs = -1L
                     } else if (!awaitingFirstPcm &&
@@ -1563,7 +1628,9 @@ class MainActivity : Activity() {
                         player.play()
                     }
                     val speed = nativeAudioSpeedPermille().coerceIn(1000, 6000)
-                    if (speed != requestedSpeed) {
+                    // A low-latency track always plays at 1x and may refuse
+                    // playback parameters; Fast Forward recreates the track.
+                    if (speed != requestedSpeed && !playerLowLatency) {
                         requestedSpeed = speed
                         try {
                             // Android time-stretches at the selected speed while preserving
@@ -1586,24 +1653,9 @@ class MainActivity : Activity() {
                             } catch (_: Exception) { }
                         }
                     }
-                    val beforeReadNs = SystemClock.elapsedRealtimeNanos()
                     val sampleCount = nativeReadAudioInto(samples)
                     if (sampleCount < 0 || sampleCount > samples.size) {
                         throw IllegalStateException("Invalid native PCM read count: $sampleCount")
-                    }
-                    // Most-recent early-PCM-notification -> native-read start.
-                    // Sampling only, NOT end-to-end audio or input latency.
-                    if (sampleCount > 0) {
-                        val readyNs = earlyPcmReadyNs.get()
-                        if (readyNs > observedEarlyReadyNs && readyNs <= beforeReadNs) {
-                            val delayUs = (beforeReadNs - readyNs) / 1000L
-                            if (delayUs in 0L..200_000L) {
-                                earlyReadyToReadCount++
-                                earlyReadyToReadTotalUs += delayUs
-                                earlyReadyToReadMaxUs = maxOf(earlyReadyToReadMaxUs, delayUs)
-                            }
-                            observedEarlyReadyNs = readyNs
-                        }
                     }
                     EmulationDiagnostics.audio(samples, sampleCount)
                     if (sampleCount == 0) {
@@ -1709,11 +1761,10 @@ class MainActivity : Activity() {
                         val expected = wanted.toLong() * 2L * spanMs / 1000L
                         val nativeClockNow = nativeAudioClockCounters()
                         val nativeWindow = AudioClockWindow.between(
-                            nativeClockBaseline, nativeClockNow, spanMs, wanted)
+                            nativeClockBaseline, nativeClockNow)
                         nativeClockBaseline = nativeClockNow
-                        // F9 beta9: report the exact source of FIFO sample loss,
-                        // even when SYNC LAB is disabled (zero callbacks).
-                        // This is one 5s log line, never a per-audio-read probe.
+                        // Report the exact source of FIFO sample loss. This
+                        // is one 5s log line, never a per-audio-read probe.
                         if (nativeWindow != null) {
                             Log.i(TAG, "Audio FIFO loss: " +
                                 "overflow_events=${nativeWindow.fifoOverflowEvents} " +
@@ -1759,25 +1810,6 @@ class MainActivity : Activity() {
                             "speed_permille=$requestedSpeed " +
                             "empty_reads=$emptyAudioReads queued_shorts=${nativeAudioQueuedShorts()} " +
                             "underruns=${underflows - observedUnderruns}")
-                        if (nativeWindow != null && nativeWindow.callbacks > 0L) {
-                            Log.i(TAG, "SYNC LAB causal: " +
-                                "span_ms=$spanMs callbacks=${nativeWindow.callbacks} " +
-                                "real_frames=${nativeWindow.committedFrames} " +
-                                "real_fps=${"%.3f".format(java.util.Locale.ROOT, nativeWindow.frameRate)} " +
-                                "pcm_produced_shorts=${nativeWindow.pcmProducedShorts} " +
-                                "pcm_queued_shorts=${nativeWindow.pcmQueuedShorts} " +
-                                "pcm_produced_ms=${"%.3f".format(java.util.Locale.ROOT, nativeWindow.producedPcmMs)} " +
-                                "producer_deficit_ms=${"%.3f".format(java.util.Locale.ROOT, nativeWindow.producerDeficitMs)} " +
-                                "empty_pcm_frames=${nativeWindow.emptyPcmFrames} " +
-                                "no_step_callbacks=${nativeWindow.noStepCallbacks} " +
-                                "overdue_callbacks=${nativeWindow.overdueCallbacks} " +
-                                "wake_to_read_mean_us=${if (earlyReadyToReadCount > 0) earlyReadyToReadTotalUs / earlyReadyToReadCount else -1} " +
-                                "wake_to_read_max_us=$earlyReadyToReadMaxUs " +
-                                "wake_to_read_samples=$earlyReadyToReadCount")
-                        }
-                        earlyReadyToReadCount = 0L
-                        earlyReadyToReadTotalUs = 0L
-                        earlyReadyToReadMaxUs = 0L
                         observedUnderruns = underflows
                         playedShorts = 0L
                         minimumOutputFrames = Long.MAX_VALUE
@@ -1990,7 +2022,7 @@ class MainActivity : Activity() {
      */
     private fun confirmRaSignOut(panel: RaPanelDialog, username: String) {
         if (nativeIsPlaying()) {
-            SlotToast.makeText(this, "Eject your game before switching RA accounts.",
+            SlotToast.makeText(this, "Eject your game before signing out.",
                 Toast.LENGTH_LONG).show()
             return
         }
@@ -2000,19 +2032,19 @@ class MainActivity : Activity() {
                 if (isDestroyed) return@runOnUiThread
                 val message = when {
                     pending == null ->
-                        "Pending awards couldn't be checked. They stay on this device. " +
-                            "Reconnect as $username to try syncing them."
+                        "Couldn't check for unlocks waiting to sync. They stay on this console. " +
+                            "Sign in as $username again to sync them."
                     pending > 0 ->
-                        "$pending awards await upload for $username. " +
-                            "They stay on this device. Sign in again to sync them; " +
-                            "delayed uploads may expire."
+                        "$pending unlocks are waiting to sync for $username. " +
+                            "They stay on this console. Sign in again to sync them; " +
+                            "very old unlocks may expire."
                     else ->
-                        "Sign out of $username? Local awards and cached games stay."
+                        "Sign out of $username? Your unlocks and downloaded game data stay on this console."
                 }
                 val confirm = SlotModalDialog(
                     this,
                     "SIGN OUT",
-                    "$message\n\nSlot will keep running after sign-out."
+                    "$message"
                 )
                 confirm.addButton("STAY SIGNED IN") { confirm.dismiss() }
                 confirm.addButton("SIGN OUT") {
@@ -2020,8 +2052,8 @@ class MainActivity : Activity() {
                         JSONObject(nativeRaStatus() ?: "{}").optBoolean("unsaved", false)
                     }.getOrDefault(false)
                     if (unsaved) {
-                        confirm.setError("Awards still need to be written locally. " +
-                            "Sign out is blocked to protect your progress.")
+                        confirm.setError("Unlocks are still being saved. " +
+                            "Try again in a moment.")
                     } else {
                         confirm.dismiss()
                         flushRaBeforeSignOut(panel, username, 0)
@@ -2037,7 +2069,7 @@ class MainActivity : Activity() {
         if (isDestroyed || nativeIsPlaying()) return
         if (attempt >= 25) {
             SlotToast.makeText(this,
-                "Achievement writes haven't finished. Sign out cancelled to keep your awards.",
+                "Unlocks are still being saved. Sign-out cancelled to keep them.",
                 Toast.LENGTH_LONG).show()
             return
         }
@@ -2065,7 +2097,7 @@ class MainActivity : Activity() {
         if (isDestroyed || nativeIsPlaying()) return
         if (attempt >= 150) {
             SlotToast.makeText(this,
-                "Sign out couldn't safely stop RetroAchievements. Restart Slot before retrying.",
+                "Couldn't sign out. Restart slot. and try again.",
                 Toast.LENGTH_LONG).show()
             return
         }
@@ -2086,12 +2118,12 @@ class MainActivity : Activity() {
                 if (success) {
                     panel.dismiss()
                     SlotToast.makeText(this,
-                        "RetroAchievements signed out. Local awards were kept.",
+                        "Signed out of RetroAchievements. Your unlocks were kept.",
                         Toast.LENGTH_LONG).show()
                     openRetroAchievementsAccount()
                 } else {
                     SlotToast.makeText(this,
-                        "Sign out needs attention. Your local awards were kept. Restart Slot to retry.",
+                        "Sign-out didn't finish. Your unlocks were kept. Restart slot. to try again.",
                         Toast.LENGTH_LONG).show()
                 }
             }
@@ -2138,7 +2170,7 @@ class MainActivity : Activity() {
         val login = SlotModalDialog(
             this,
             "RETROACHIEVEMENTS",
-            "Sign in securely. Achievements use Casual mode.",
+            "Sign in to earn achievements (Casual mode).",
             onDismiss = { if (!openingDashboard) nativeExternalReturn() }
         )
         val username = login.addInput("USERNAME", "RetroAchievements username")
@@ -2151,7 +2183,7 @@ class MainActivity : Activity() {
                 login.setError("Enter both your RetroAchievements username and password.")
             } else {
                 password.text.clear() // Don't leave credentials in the visible form.
-                login.setError("Connecting securely…")
+                login.setError("Signing in…")
                 login.setBusy(true)
                 raLoginWorker.execute {
                     val result = RaAccount.authenticateAndSave(filesDir, name, secret)
@@ -2165,8 +2197,8 @@ class MainActivity : Activity() {
                                 startRaSmartCache()
                                 openRetroAchievementsAccount()
                                 SlotToast.makeText(this,
-                                    "RA connected as " + result.username +
-                                        ". Preparing GB/GBC/GBA achievements in background.",
+                                    "Signed in as " + result.username +
+                                        ". Preparing achievements…",
                                     Toast.LENGTH_LONG).show()
                             }
                             is RaAccount.Result.Failed -> {
@@ -2214,34 +2246,34 @@ class MainActivity : Activity() {
      */
     private fun toggleShareGbaSaves() {
         if (nativeIsPlaying()) {
-            SlotToast.makeText(this, "Eject the cartridge before changing Save sharing.",
+            SlotToast.makeText(this, "Eject the cartridge before changing this setting.",
                 Toast.LENGTH_LONG).show()
             return
         }
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val enabled = !prefs.getBoolean(SHARE_GBA_SAVES, false)
         if (!prefs.edit().putBoolean(SHARE_GBA_SAVES, enabled).commit()) {
-            SlotToast.makeText(this, "Unable to save Share Saves preference.",
+            SlotToast.makeText(this, "Couldn't save this setting.",
                 Toast.LENGTH_LONG).show()
             return
         }
         nativeSetShareSaves(enabled)
         SlotToast.makeText(this,
-            if (enabled) "Share Saves ON: mGBA/gpSP SRAM only; conflicts are never overwritten."
-            else "Share Saves OFF: mGBA and gpSP saves kept separate.",
+            if (enabled) "mGBA and gpSP now share the same saves."
+            else "mGBA and gpSP now keep separate saves.",
             Toast.LENGTH_LONG).show()
     }
 
     private fun refreshLibrary() {
         val saved = getSharedPreferences(PREFS, MODE_PRIVATE).getString(ROM_ROOT, null)
         if (saved == null) {
-            SlotToast.makeText(this, "Choose your games folder first.", Toast.LENGTH_SHORT).show()
+            SlotToast.makeText(this, "Choose your ROM folder first.", Toast.LENGTH_SHORT).show()
             openRomFolderPicker()
             return
         }
         val uri = Uri.parse(saved)
         if (contentResolver.persistedUriPermissions.none { it.uri == uri && it.isReadPermission }) {
-            SlotToast.makeText(this, "Games folder access expired. Choose it again.", Toast.LENGTH_SHORT).show()
+            SlotToast.makeText(this, "ROM folder access expired. Choose it again.", Toast.LENGTH_SHORT).show()
             openRomFolderPicker()
             return
         }
@@ -2263,7 +2295,7 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(intent, requestCode)
         } catch (error: ActivityNotFoundException) {
-            SlotToast.makeText(this, "Android folder picker unavailable", Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, "Couldn't open the folder picker.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2278,7 +2310,7 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(intent, BIOS_REQUEST)
         } catch (error: ActivityNotFoundException) {
-            SlotToast.makeText(this, "Can't open the BIOS folder picker.", Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, "Couldn't open the folder picker.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2300,7 +2332,7 @@ class MainActivity : Activity() {
                         SlotToast.makeText(
                             this,
                             "BIOS imported: " + imported.joinToString(", ") +
-                                " (available next time you start a game)",
+                                ". Used from your next game.",
                             Toast.LENGTH_LONG
                         ).show()
                     }
@@ -2309,8 +2341,8 @@ class MainActivity : Activity() {
                 Log.e(TAG, "BIOS folder import failed", error)
                 runOnUiThread {
                     if (!isDestroyed) {
-                        SlotToast.makeText(this, "Couldn't import BIOS files: " +
-                            (error.message ?: "check folder files"), Toast.LENGTH_LONG).show()
+                        SlotToast.makeText(this, "Couldn't import BIOS files. Check the folder.",
+                            Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -2343,7 +2375,7 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(intent, kind)
         } catch (error: ActivityNotFoundException) {
-            SlotToast.makeText(this, "Can't open the file picker on this device.", Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, "Couldn't open the file picker.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2355,7 +2387,7 @@ class MainActivity : Activity() {
     private fun resetVisualFile(kind: Int) {
         val file = visualFile(kind)
         if (file.exists() && !file.delete()) {
-            SlotToast.makeText(this, "Couldn't remove the wallpaper. Please try again.", Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, "Couldn't remove the wallpaper. Try again.", Toast.LENGTH_LONG).show()
             return
         }
         nativeReloadVisualAssets()
@@ -2380,12 +2412,12 @@ class MainActivity : Activity() {
             if (kind == WALLPAPER_REQUEST) {
                 val png = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
                 require(bytes.size >= 8 && bytes.copyOfRange(0, 8).contentEquals(png)) {
-                    "Wallpaper must be a PNG"
+                    "Wallpaper must be a PNG up to 4096 × 4096."
                 }
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                 require(bounds.outWidth in 1..4096 && bounds.outHeight in 1..4096) {
-                    "Unsupported wallpaper dimensions"
+                    "Wallpaper must be a PNG up to 4096 × 4096."
                 }
             }
             val target = visualFile(kind)
@@ -2403,7 +2435,8 @@ class MainActivity : Activity() {
             SlotToast.makeText(this, "Wallpaper updated.", Toast.LENGTH_SHORT).show()
         } catch (error: Exception) {
             Log.e(TAG, "Cannot import Slot visual file", error)
-            SlotToast.makeText(this, "Couldn't import this file: " + error.message, Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, error.message?.takeIf { it.startsWith("Wallpaper must") }
+                ?: "Couldn't import this file.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2426,7 +2459,7 @@ class MainActivity : Activity() {
             returnFromSlotChild = false
             nativeExternalReturn()
             Log.w(TAG, "Cannot open Cart Studio", error)
-            SlotToast.makeText(this, "Unable to open Cart Studio.",
+            SlotToast.makeText(this, "Couldn't open Cart Studio.",
                 Toast.LENGTH_SHORT).show()
         }
     }
@@ -2436,7 +2469,7 @@ class MainActivity : Activity() {
     private fun openSelectedCartStudio() {
         val selected = nativePollCartLabelUri()
         if (selected.isNullOrBlank()) {
-            SlotToast.makeText(this, "Select a game first.", Toast.LENGTH_SHORT).show()
+            SlotToast.makeText(this, "Select a cartridge first.", Toast.LENGTH_SHORT).show()
             return
         }
         openCartStudio(selected)
@@ -2448,7 +2481,7 @@ class MainActivity : Activity() {
     private fun openCartLabelPicker() {
         val selected = nativePollCartLabelUri()
         if (selected.isNullOrBlank()) {
-            SlotToast.makeText(this, "Select a game first.", Toast.LENGTH_SHORT).show()
+            SlotToast.makeText(this, "Select a cartridge first.", Toast.LENGTH_SHORT).show()
             return
         }
         pendingCartLabelUri = selected
@@ -2459,11 +2492,11 @@ class MainActivity : Activity() {
         val selected = nativePollCartLabelUri() ?: return
         val file = cartLabelFile(selected)
         if (file.exists() && !file.delete()) {
-            SlotToast.makeText(this, "Couldn't remove the selected artwork.", Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, "Couldn't remove this label.", Toast.LENGTH_LONG).show()
             return
         }
         nativeReloadCartLabel(selected)
-        SlotToast.makeText(this, "Custom artwork removed. Original cart label restored.", Toast.LENGTH_SHORT).show()
+        SlotToast.makeText(this, "Custom label removed.", Toast.LENGTH_SHORT).show()
     }
 
     private fun importCartLabel(source: Uri, romUri: String) {
@@ -2485,12 +2518,12 @@ class MainActivity : Activity() {
             } ?: throw IllegalArgumentException("Cannot open label image")
             val signature = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
             require(bytes.size >= 8 && bytes.copyOfRange(0, 8).contentEquals(signature)) {
-                "Cartridge artwork must be a PNG"
+                "Labels must be a PNG up to 2048 × 2048."
             }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             require(bounds.outWidth in 1..2048 && bounds.outHeight in 1..2048) {
-                "Unsupported cartridge-label dimensions"
+                "Labels must be a PNG up to 2048 × 2048."
             }
             val target = cartLabelFile(romUri)
             target.parentFile?.mkdirs()
@@ -2504,10 +2537,11 @@ class MainActivity : Activity() {
                 throw error
             }
             nativeReloadCartLabel(romUri)
-            SlotToast.makeText(this, "Cart artwork updated.", Toast.LENGTH_SHORT).show()
+            SlotToast.makeText(this, "Label updated.", Toast.LENGTH_SHORT).show()
         } catch (error: Exception) {
             Log.e(TAG, "Could not import cartridge label", error)
-            SlotToast.makeText(this, "Couldn't import cart artwork: " + error.message, Toast.LENGTH_LONG).show()
+            SlotToast.makeText(this, error.message?.takeIf { it.startsWith("Labels must") }
+                ?: "Couldn't import this label.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -2530,7 +2564,7 @@ class MainActivity : Activity() {
                     if (selected != null) nativeReloadCartLabel(selected)
                 } catch (error: Exception) {
                     Log.e(TAG, "Studio changes could not refresh shelf", error)
-                    SlotToast.makeText(this, "Cart Studio changes saved. Reopen slot. to refresh artwork.",
+                    SlotToast.makeText(this, "Labels saved. Restart slot. to see them.",
                         Toast.LENGTH_LONG).show()
                 }
             }
@@ -2572,7 +2606,7 @@ class MainActivity : Activity() {
                         .putString(key, uri.toString()).apply()
                     val kind = if (requestCode == SAVE_REQUEST) "Save" else "Save State"
                     SlotToast.makeText(this,
-                        "$kind folder selected. RetroArch core subfolders will be used.",
+                        "$kind folder selected.",
                         Toast.LENGTH_LONG).show()
                 }
             }
@@ -2580,7 +2614,7 @@ class MainActivity : Activity() {
             if (requestCode == FOLDER_REQUEST) {
                 nativeSetShelfStatus(shelfPermissionError)
             } else {
-                SlotToast.makeText(this, "This folder needs storage access. Please select it again.", Toast.LENGTH_LONG).show()
+                SlotToast.makeText(this, "Couldn't access this folder. Select it again.", Toast.LENGTH_LONG).show()
             }
             Log.e(TAG, "Android folder permission error", error)
         }
@@ -2680,7 +2714,8 @@ class MainActivity : Activity() {
             }
         }
         if (!next.quiet) {
-            SlotToast.makeText(this, "Library updated: $count carts",
+            SlotToast.makeText(this,
+                if (count == 1) "1 cartridge ready." else "$count cartridges ready.",
                 Toast.LENGTH_SHORT).show()
         }
         // Brief subtle spinner only for a changed library; never for
@@ -2709,7 +2744,7 @@ class MainActivity : Activity() {
                         if (!isDestroyed && scanSerial.get() == serial && !quiet) {
                             nativeSetShelfStatus(shelfNone)
                             SlotToast.makeText(this,
-                                "ROM scan incomplete. Existing games kept.",
+                                "Couldn't read the whole ROM folder. Your cartridges were kept.",
                                 Toast.LENGTH_LONG).show()
                         }
                     }
@@ -2721,7 +2756,7 @@ class MainActivity : Activity() {
                     runOnUiThread {
                         if (!isDestroyed && scanSerial.get() == serial && !quiet) {
                             nativeSetShelfStatus(if (result.count == 0) shelfEmpty else shelfNone)
-                            SlotToast.makeText(this, "Library already up to date.",
+                            SlotToast.makeText(this, "Library is up to date.",
                                 Toast.LENGTH_SHORT).show()
                         }
                     }
@@ -2789,7 +2824,6 @@ class MainActivity : Activity() {
             displaySyncApplied = false
             raSwapLoopApplied = false
         }
-        if (view.ownsScheduler) view.onPause()
         stopAudio()
         cartSounds.pause()
         // Preserve SRAM and automatic resume state while the GL context is still current.
@@ -2800,7 +2834,7 @@ class MainActivity : Activity() {
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         }
-        if (!view.ownsScheduler) view.onPause()
+        view.onPause()
         // The final SRAM write above can enqueue a RetroArch/Sync export.
         drainPendingSaveFlush()
         nativeResetInput()

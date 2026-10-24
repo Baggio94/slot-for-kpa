@@ -304,7 +304,7 @@ class AppsActivity : Activity() {
         val maxFaceHeight = faces.values.maxOf { it.height }.coerceAtLeast(1)
         val availableHeight = (dp(35) - dp(4)).coerceAtLeast(1)
         val scale = minOf(
-            resources.displayMetrics.widthPixels.toFloat() / 720f,
+            resources.displayMetrics.widthPixels.toFloat() / 720f / SlotUi.LEGEND_DENSITY,
             availableHeight.toFloat() / maxFaceHeight.toFloat()
         )
         fun hint(asset: String): ImageView {
@@ -323,7 +323,7 @@ class AppsActivity : Activity() {
                 )
             }
         }
-        val spacing = (36f * scale).toInt().coerceAtLeast(dp(16))
+        val spacing = (36f * scale * SlotUi.LEGEND_DENSITY).toInt().coerceAtLeast(dp(16))
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER

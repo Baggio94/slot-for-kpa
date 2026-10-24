@@ -48,10 +48,9 @@ struct Ext {
     timestamps: FrameTimestamps,
 }
 struct EglSource(Ext);
-impl Source for EglSource {
-    fn timestamp(&mut self, id: u64) -> Result<Timestamp, ()> {
+impl EglSource {
+    fn query(&self, id: u64, name: i32) -> Result<Timestamp, ()> {
         let ext = self.0;
-        let name = EGL_DISPLAY_PRESENT_TIME_ANDROID;
         let mut time = EGL_TIMESTAMP_PENDING_ANDROID;
         if unsafe { (ext.timestamps)(ext.display, ext.surface, id, 1, &name, &mut time) } == 0 {
             return Err(());
@@ -61,6 +60,11 @@ impl Source for EglSource {
             EGL_TIMESTAMP_INVALID_ANDROID => Timestamp::Invalid,
             time => Timestamp::Presented(time),
         })
+    }
+}
+impl Source for EglSource {
+    fn timestamp(&mut self, id: u64) -> Result<Timestamp, ()> {
+        self.query(id, EGL_DISPLAY_PRESENT_TIME_ANDROID)
     }
     fn next_id(&mut self) -> Result<u64, ()> {
         let ext = self.0;
@@ -139,7 +143,7 @@ impl Probe {
         self.extension = Some(ext);
         self.status = "supported";
     }
-    fn tick(&mut self) {
+    fn tick(&mut self, input_ns: i64) {
         self.init();
         let Some(ext) = self.extension else { return };
         // GLSurfaceView can recreate its EGL window surface independently
@@ -150,7 +154,7 @@ impl Probe {
             self.init();
             return;
         }
-        self.samples.tick(&mut EglSource(ext));
+        self.samples.tick_with_input(&mut EglSource(ext), input_ns);
     }
     fn report(&mut self) -> String {
         self.samples.report(self.status)
@@ -170,9 +174,9 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeEglPresentationRes
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeEglPresentationTick(
-    _env: *mut c_void, _this: *mut c_void,
+    _env: *mut c_void, _this: *mut c_void, input_ns: i64,
 ) {
-    EGL_PROBE.with(|p| p.borrow_mut().tick());
+    EGL_PROBE.with(|p| p.borrow_mut().tick(input_ns));
 }
 
 #[unsafe(no_mangle)]

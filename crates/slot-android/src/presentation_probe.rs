@@ -19,7 +19,9 @@ pub(crate) trait Source {
 }
 
 pub(crate) struct PresentationProbe {
-    pending: VecDeque<(Option<u64>, u64)>, // EGL frame ID, tick at capture
+    // EGL frame ID, tick at capture, and the CLOCK_MONOTONIC time of the
+    // button press this frame was the first to read (0 = none).
+    pending: VecDeque<(Option<u64>, u64, i64)>,
     ticks: u64,     // Monotonic within this surface epoch; never reset by report().
     callbacks: u64, // Reporting window only.
     present_count: u64,
@@ -34,6 +36,10 @@ pub(crate) struct PresentationProbe {
     pending_lost: u64,
     query_errors: u64,
     query_time_us: u64,
+    // Button press to display present, for frames that read a new press.
+    input_count: u64,
+    input_sum_us: u64,
+    input_max_us: u64,
     last_report: Instant,
 }
 
@@ -54,17 +60,25 @@ impl PresentationProbe {
             pending_lost: 0,
             query_errors: 0,
             query_time_us: 0,
+            input_count: 0,
+            input_sum_us: 0,
+            input_max_us: 0,
             last_report: Instant::now(),
         }
     }
+    #[cfg(test)]
     pub(crate) fn tick(&mut self, source: &mut impl Source) {
+        self.tick_with_input(source, 0);
+    }
+    /// `input_ns` is when the button press read by this callback happened.
+    pub(crate) fn tick_with_input(&mut self, source: &mut impl Source, input_ns: i64) {
         self.ticks += 1;
         self.callbacks += 1;
         let started = Instant::now();
         // Read at most 2 pending timestamps per callback. A frame must have
         // passed through >=2 swaps before we query it, avoiding GPU waits.
         for _ in 0..2 {
-            let Some(&(id, tick)) = self.pending.front() else {
+            let Some(&(id, tick, pressed_ns)) = self.pending.front() else {
                 break;
             };
             if self.ticks.saturating_sub(tick) < 3 {
@@ -103,6 +117,12 @@ impl PresentationProbe {
             };
             self.pending.pop_front();
             self.present_count += 1;
+            if pressed_ns > 0 && time > pressed_ns && time - pressed_ns <= MAX_VALID_GAP_NS {
+                let us = ((time - pressed_ns) / 1000) as u64;
+                self.input_count += 1;
+                self.input_sum_us += us;
+                self.input_max_us = self.input_max_us.max(us);
+            }
             if self.last_present_ns > 0 {
                 let delta = time - self.last_present_ns;
                 if delta > 0 && delta <= MAX_VALID_GAP_NS {
@@ -128,12 +148,12 @@ impl PresentationProbe {
             self.last_present_ns = 0;
         }
         match source.next_id() {
-            Ok(id) => self.pending.push_back((Some(id), self.ticks)),
+            Ok(id) => self.pending.push_back((Some(id), self.ticks, input_ns)),
             Err(()) => {
                 self.query_errors += 1;
                 // Preserve the discontinuity in queue order: an ID missed
                 // now must break the gap *after* older pending IDs drain.
-                self.pending.push_back((None, self.ticks));
+                self.pending.push_back((None, self.ticks, input_ns));
             }
         }
         self.query_time_us += started.elapsed().as_micros() as u64;
@@ -185,7 +205,8 @@ impl PresentationProbe {
              present_fps_valid={} report_span_s={:.3} \
              present_gap_mean_us={} present_gap_p95_us={} present_gap_max_us={} \
              present_over25={} present_over35={} lost={} errors={} \
-             probe_us_per_callback={:.2}",
+             probe_us_per_callback={:.2} input_to_present_count={} \
+             input_to_present_mean_us={} input_to_present_max_us={}",
             status,
             self.callbacks,
             self.present_count,
@@ -204,6 +225,9 @@ impl PresentationProbe {
             } else {
                 0.0
             },
+            self.input_count,
+            if self.input_count > 0 { (self.input_sum_us / self.input_count) as i64 } else { -1 },
+            if self.input_count > 0 { self.input_max_us as i64 } else { -1 },
         );
         self.callbacks = 0;
         self.present_count = 0;
@@ -216,6 +240,9 @@ impl PresentationProbe {
         self.pending_lost = 0;
         self.query_errors = 0;
         self.query_time_us = 0;
+        self.input_count = 0;
+        self.input_sum_us = 0;
+        self.input_max_us = 0;
         self.last_report = Instant::now();
         result
     }
@@ -269,6 +296,24 @@ mod tests {
             assert_eq!(driver.queries.last(), Some(&(window * 300 + 296)));
         }
         assert_eq!(driver.queries, (0..897).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn button_press_is_timed_to_the_present_of_the_frame_that_read_it() {
+        let mut probe = PresentationProbe::new();
+        let mut driver = Driver::default();
+        for _ in 0..5 {
+            probe.tick(&mut driver);
+        }
+        // Frame 5 presents at 6 * 16.67 ms; the press happened 40 ms earlier.
+        probe.tick_with_input(&mut driver, 6 * 16_666_667 - 40_000_000);
+        for _ in 0..5 {
+            probe.tick(&mut driver);
+        }
+        let report = probe.report("supported");
+        assert!(report.contains("input_to_present_count=1 "), "{report}");
+        assert!(report.contains("input_to_present_mean_us=40000 "), "{report}");
+        assert!(probe.report("supported").contains("input_to_present_mean_us=-1 "));
     }
 
     #[test]

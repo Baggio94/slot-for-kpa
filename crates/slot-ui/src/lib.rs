@@ -9,6 +9,7 @@ mod battery;
 mod board;
 mod cart;
 mod clock;
+pub mod density;
 mod draw;
 mod footer;
 mod hud;
@@ -26,14 +27,15 @@ mod silhouette;
 mod slot_chrome;
 mod sticker;
 pub mod text;
+mod button_art;
 mod toast;
 
 pub use backdrop::{bezel_face, blur_background, blur_background_native, default_background, default_background_native, draw_backdrop, draw_ground_tinted, wallpaper_face, wallpaper_face_native};
 pub use barcode::{code39, CODE39_NARROW, CODE39_WIDE};
 pub use battery::{draw_gauge, BOLT_PX, GAUGE_H, GAUGE_W, WALL};
 pub use board::{
-    board_at, board_face, board_from, board_zoom, chip_face, chip_shadow_face, grown, lid_at,
-    lid_from, lift_of, on_board, padded, rom_marking, rom_marking_face, shelf_cart, shelf_cart_at,
+    board_at, board_face, pak_chip_face, board_layout, board_toward, BoardLayout, board_from, board_zoom, chip_face, chip_shadow_face, grown, lid_at,
+    lid_from, lid_rest, lid_toward, lift_of, on_board, padded, pak_marking_face, rom_marking, rom_marking_face, shelf_cart, shelf_cart_at, shelf_cart_for,
     slide_of, socket_face, Placed, BOARD_H, BOARD_W, BOARD_X, BOARD_Y, CHIP_H, CHIP_TIP, CHIP_U,
     CHIP_V, CHIP_W, HOP_LIFT, LID_TURN, ROM_H, ROM_W, ROM_X, ROM_Y, SHADOW_H, SHADOW_W,
     SLIDE_SHARE, SLIDE_UP, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
@@ -45,6 +47,7 @@ pub use cart::{
     LABEL_H, LABEL_W, LABEL_X, LABEL_Y,
 };
 pub use clock::{clock_label, date_time_text, hhmm, set_clock_hint_face, ClockPicker, Field};
+pub use density::Face;
 pub use draw::{Draw, TexId, OUT_H, OUT_W};
 pub use footer::{draw_footer, draw_footer_with_ink, footer_ink, Printed};
 pub use hud::{

@@ -4,6 +4,7 @@ use slot_store::GbPalette;
 use crate::hud::{HUD_INK, PLATE_H};
 use crate::icon::{haloed, HALO_PX};
 use crate::text;
+use crate::density::{self, Canvas};
 use crate::CartFace;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -30,11 +31,14 @@ pub enum Toast {
     ShaderAgb001,
     ShaderAgs001,
     ShaderSharpBilinear,
+    ScreenInteger,
+    ScreenRatio,
+    ScreenStretch,
     Palette(GbPalette),
 }
 
 impl Toast {
-    const FIXED: [Toast; 22] = [
+    const FIXED: [Toast; 25] = [
         Toast::StateSaved,
         Toast::StateLoaded,
         Toast::NeedsGpsp,
@@ -57,6 +61,9 @@ impl Toast {
         Toast::ShaderAgb001,
         Toast::ShaderAgs001,
         Toast::ShaderSharpBilinear,
+        Toast::ScreenInteger,
+        Toast::ScreenRatio,
+        Toast::ScreenStretch,
     ];
 
     pub fn all() -> Vec<Toast> {
@@ -77,26 +84,29 @@ impl Toast {
         match self {
             Toast::StateSaved => "State Saved",
             Toast::StateLoaded => "State Loaded",
-            Toast::NeedsGpsp => "Please switch to gpSP",
-            Toast::NoLink => "No link support",
+            Toast::NeedsGpsp => "Use gpSP to link",
+            Toast::NoLink => "Can't link this game",
             Toast::LinkEnded => "Link ended",
-            Toast::PeerEnded => "Link was ended",
-            Toast::BiosMismatch => "BIOS does not match",
-            Toast::ColourOn => "Correction On",
-            Toast::ColourOff => "Correction Off",
+            Toast::PeerEnded => "The other player left",
+            Toast::BiosMismatch => "BIOS doesn't match",
+            Toast::ColourOn => "Color Correction On",
+            Toast::ColourOff => "Color Correction Off",
             Toast::ShaderOff => "Shader: Off",
             Toast::ShaderLcd3x => "Shader: LCD3x",
             Toast::ShaderGrid => "Shader: Grid",
             Toast::ShaderDot => "Shader: Dot",
             Toast::ShaderSimpletex => "Shader: Simpletex",
             Toast::ShaderLcdGridV2 => "Shader: LCD Grid V2",
-            Toast::ShaderLcdGridV2Gba => "Shader: LCD Grid V2 + GBA Color",
+            Toast::ShaderLcdGridV2Gba => "Shader: Grid V2 + GBA",
             Toast::ShaderZfastLcd => "Shader: zfast LCD",
             Toast::ShaderLcd1x => "Shader: LCD1x",
-            Toast::ShaderSimpletexGba => "Shader: Simpletex + GBA Color",
+            Toast::ShaderSimpletexGba => "Shader: Simpletex + GBA",
             Toast::ShaderAgb001 => "Shader: AGB-001",
             Toast::ShaderAgs001 => "Shader: AGS-001",
             Toast::ShaderSharpBilinear => "Shader: Sharp Bilinear",
+            Toast::ScreenInteger => "Screen: Integer",
+            Toast::ScreenRatio => "Screen: Original Ratio",
+            Toast::ScreenStretch => "Screen: Stretch",
             Toast::Palette(p) => p.label(),
         }
     }
@@ -133,8 +143,18 @@ pub fn toast_face(toast: Toast) -> CartFace {
         TOAST_PX,
         TOAST_MIN_PX,
     );
-    let cov = text::coverage(TOAST_W, TOAST_H, &layout);
-    haloed(&cov, TOAST_W, TOAST_H, HUD_INK)
+    if !density::is_dense() {
+        let cov = text::coverage(TOAST_W, TOAST_H, &layout);
+        return haloed(&cov, TOAST_W, TOAST_H, HUD_INK);
+    }
+    let (tw, th) = (density::px(TOAST_W), density::px(TOAST_H));
+    let halo = haloed(&text::coverage(tw, th, &density::scaled(&layout)), tw, th, HUD_INK);
+    let (w, h) = toast_box();
+    let mut face = Canvas::new(w, h);
+    let x = (face.tw as i32 - halo.w as i32) / 2;
+    let y = (face.th as i32 - halo.h as i32) / 2;
+    face.blit_texels(&halo.rgba, halo.w, halo.h, x, y);
+    face.into_cart()
 }
 
 #[cfg(test)]

@@ -49,6 +49,7 @@ pub fn validate_solo_snapshot(bytes: &[u8]) -> Result<(), String> {
 /// Atomic create_dir is our inter-session lock. Each call allocates an
 /// independent namespace, including if a previous connection failed or
 /// exited without saving. No rename/delete of historical session data.
+#[cfg(test)]
 pub fn fresh_session(root: &Path, game_id: &str, role: &str) -> io::Result<PathBuf> {
     fresh_session_for_core(root, "mGBA", game_id, role)
 }

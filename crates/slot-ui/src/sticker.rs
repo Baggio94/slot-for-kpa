@@ -2,6 +2,7 @@ use slot_gfx::{Draw, TexId};
 
 use crate::art::render_svg;
 use crate::barcode::{code39, CODE39_NARROW, CODE39_WIDE};
+use crate::density;
 use crate::plate::UndoFace;
 use crate::text;
 
@@ -50,8 +51,8 @@ pub const CREDITS: [&str; 10] = [
     "THE PANEL MASK IS DERIVED",
     "FROM GIGAHERZ'S LCD3X. THE",
     "CART SOUNDS ARE MY CHILDHOOD",
-    "GAMEBOY. I WASTED WATER",
-    "BUILDING THIS WITH CLAUDE.",
+    "GAMEBOY. MADE WITH CARE",
+    "FOR RETRO HANDHELD FANS.",
 ];
 
 pub const ORIGIN: [&str; 2] = ["S/LOT-USA", "MADE IN ITHACA"];
@@ -81,16 +82,25 @@ pub fn sticker_lines(f: &StickerFields) -> Vec<String> {
     out
 }
 
+/// The sticker is laid out in Slot's logical pixels and printed at panel
+/// density: `w`/`h` are texels, `s` maps one onto the other.
 struct Canvas {
     px: Vec<u8>,
     w: u32,
     h: u32,
+    s: f32,
 }
 
 impl Canvas {
     fn shape(source: &str, w: u32, h: u32) -> Canvas {
+        let (w, h) = (density::px(w), density::px(h));
         let px = render_svg(source, w, h).unwrap_or_else(|| vec![0; (w * h * 4) as usize]);
-        Canvas { px, w, h }
+        Canvas { px, w, h, s: density::scale() }
+    }
+
+    /// A logical edge on the texel grid; exact at 1x.
+    fn at(&self, v: f32) -> u32 {
+        (v * self.s).floor().max(0.0) as u32
     }
 
     fn set(&mut self, x: u32, y: u32, c: [u8; 3], a: u8) {
@@ -103,8 +113,10 @@ impl Canvas {
     }
 
     fn rect(&mut self, x: u32, y: u32, w: u32, h: u32, c: [u8; 3]) {
-        for yy in y..(y + h).min(self.h) {
-            for xx in x..(x + w).min(self.w) {
+        let (x0, y0) = (self.at(x as f32), self.at(y as f32));
+        let (x1, y1) = (self.at((x + w) as f32), self.at((y + h) as f32));
+        for yy in y0..y1.min(self.h) {
+            for xx in x0..x1.min(self.w) {
                 self.set(xx, yy, c, 255);
             }
         }
@@ -142,7 +154,9 @@ impl Canvas {
         bar_w
     }
 
+    /// `src` is `sw` x `sh` texels, placed at logical `x`, `y`.
     fn blit(&mut self, x: u32, y: u32, src: &[u8], sw: u32, sh: u32) {
+        let (x, y) = (self.at(x as f32), self.at(y as f32));
         for row in 0..sh {
             for col in 0..sw {
                 let s = ((row * sw + col) * 4) as usize;
@@ -182,15 +196,18 @@ impl Canvas {
             .first()
             .map(|l| text::line_width(font, l, px, layout.tracking))
             .unwrap_or(0.0);
+        let s = self.s;
         let (bw, bh) = ((measured.ceil() as u32).max(1), (px * 1.6).ceil() as u32);
-        let cov = text::coverage(bw, bh, &layout);
+        let (bw, bh) = (((bw as f32 * s).ceil() as u32), ((bh as f32 * s).ceil() as u32));
+        let cov = text::coverage(bw, bh, &density::scaled(&layout));
+        let (ox, oy) = (self.at((x as u32) as f32), self.at((y as u32) as f32));
         for row in 0..bh {
             for col in 0..bw {
                 let a = cov[(row * bw + col) as usize];
                 if a == 0 {
                     continue;
                 }
-                let (dx, dy) = (x as u32 + col, y as u32 + row);
+                let (dx, dy) = (ox + col, oy + row);
                 if dx < self.w && dy < self.h {
                     let at = ((dy * self.w + dx) * 4) as usize;
                     let inv = 255 - a as u32;
@@ -323,14 +340,14 @@ fn sticker_face_custom(f: &StickerFields, credits: &[&str; 10],
         // vector-based, and give the very wide POCKET ADVANCE wordmark more
         // horizontal pixels so its thin strokes remain clean.
         ry = panel_y as f32 + panel_h as f32 + 3.0;
-        if let Some((logo, (w, h))) = vector_mark(KONKR_SVG, 155) {
+        if let Some((logo, (w, h), (tw, th))) = vector_mark(KONKR_SVG, 155) {
             c.blit((right_edge - w as f32 - 14.0) as u32,
-                   ry as u32, &logo, w, h);
+                   ry as u32, &logo, tw, th);
             ry += h as f32 + 2.0;
         }
-        if let Some((edition, (w, h))) = vector_mark(POCKET_ADVANCE_SVG, 305) {
+        if let Some((edition, (w, h), (tw, th))) = vector_mark(POCKET_ADVANCE_SVG, 305) {
             c.blit((right_edge - w as f32 - 14.0) as u32,
-                   ry as u32, &edition, w, h);
+                   ry as u32, &edition, tw, th);
             ry += h as f32 + 2.0;
         }
         for line in [copyright, home] {
@@ -346,8 +363,8 @@ fn sticker_face_custom(f: &StickerFields, credits: &[&str; 10],
                 (right_edge - mw as f32 - 10.0) as u32,
                 ry as u32,
                 &mark.0,
-                mw,
-                mh,
+                mark.2 .0,
+                mark.2 .1,
             );
             ry += mh as f32 + 4.0;
         }
@@ -364,15 +381,19 @@ fn sticker_face_custom(f: &StickerFields, credits: &[&str; 10],
     }
 }
 
-fn wordmark(w: u32) -> Option<(Vec<u8>, (u32, u32))> {
+type Mark = (Vec<u8>, (u32, u32), (u32, u32));
+
+fn wordmark(w: u32) -> Option<Mark> {
     vector_mark(WORDMARK_SVG, w)
 }
 
-fn vector_mark(source: &str, w: u32) -> Option<(Vec<u8>, (u32, u32))> {
+/// Pixels at panel density, logical size, texel size.
+fn vector_mark(source: &str, w: u32) -> Option<Mark> {
     let tree = usvg::Tree::from_str(source, &usvg::Options::default()).ok()?;
     let size = tree.size();
     let h = (w as f32 * size.height() / size.width()).round() as u32;
-    Some((render_svg(source, w, h)?, (w, h)))
+    let (tw, th) = (density::px(w), density::px(h));
+    Some((render_svg(source, tw, th)?, (w, h), (tw, th)))
 }
 
 pub fn draw_sticker(face: Option<TexId>, out: &mut Vec<Draw>) {

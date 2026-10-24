@@ -105,37 +105,11 @@ internal object SlotToast {
                 "RAOfflineProxy is stopped. Open it to check achievements."
             msg.equals("RAOfflineProxy address invalid", true) ->
                 "RAOfflineProxy is running, but its connection settings need checking."
-            msg.contains("ROM folder permission expired", true) ->
-                "Games folder access expired. Select it again."
-            msg.contains("Choose a ROM folder first", true) ->
-                "Choose the folder containing your games first."
-            msg.contains("Choose a cartridge first", true) ->
-                "Select a game in the carousel first."
-            msg.contains("Reopen Slot to show studio changes", true) ->
-                "Changes saved. Reopen slot. to refresh your cart labels."
-            msg.startsWith("Original Slot. label restored") ->
-                "Custom artwork removed. The default label is back."
-            msg.startsWith("Slot loaded ") ->
-                msg.replaceFirst("Slot loaded ", "Games ready: ")
-                    .replace(" carts", " cartridges")
-                    .replace(" (limited to 5000)", " (showing the first 5,000)")
-            msg.startsWith("Cannot load state:", true) ->
-                "Couldn't load the save state. Check your save files."
-            msg.startsWith("Cannot export state:", true) ->
-                "Save state created, but exporting it failed. Check your save folder."
-            msg.startsWith("Cannot open game:", true) ->
-                "Can't open this game. Check its ROM and selected core."
-            msg.startsWith("Cannot save core selection:", true) ->
-                "Couldn't save the selected emulator core."
-            msg.startsWith("Cannot save game emulation settings:", true) ->
-                "Couldn't save this game's emulation settings."
-            msg.startsWith("Multiplayer paused:", true) ->
-                "Multiplayer paused. Check the connection before trying again."
             msg.startsWith("Multiplayer:", true) && msg.length > 90 ->
-                "Multiplayer connection failed. Check both consoles and retry."
+                "Multiplayer connection failed. Check both consoles and try again."
             msg.contains("java.lang.", true) || msg.contains("Exception:", true) ||
                 msg.contains("content://", true) ->
-                "That didn't work. Check your files and try again."
+                "Something went wrong. Check your files and try again."
             else -> msg
         }
     }

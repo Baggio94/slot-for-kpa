@@ -47,31 +47,13 @@ fn report_link_rom_phase(stage: &str, details: &str) {
 }
 const POLL_MS: u64 = 50;
 
-pub const HOST_BOUND: Duration = Duration::from_secs(30);
-
 /// How long either end gives the other to say or answer the greeting. Short: it is one small
 /// packet on a network measured in milliseconds, and a host that cannot manage it in this time
 /// is not the one this joiner wants.
 const GREET_WAIT: Duration = Duration::from_millis(1500);
 
-/// A greeting is `SLOT`, the greeting's own version, then the game's four-byte header code.
-const GREETING_LEN: usize = 9;
-const GREETING_VERSION: u8 = 1;
 /// What a host answers a greeting it accepts with.
 const GREETING_ACK: u8 = 0x06;
-
-/// What opens a connection on a shared network. The game rides along so that two handhelds that
-/// found each other but are not running the same cart never become a session; on the private
-/// network nothing else could have connected, so nothing needed asking.
-fn greeting(game: &str) -> [u8; GREETING_LEN] {
-    let mut g = [b' '; GREETING_LEN];
-    g[..4].copy_from_slice(b"SLOT");
-    g[4] = GREETING_VERSION;
-    for (slot, byte) in g[5..].iter_mut().zip(game.bytes()) {
-        *slot = byte;
-    }
-    g
-}
 
 /// Read a stranger's greeting and answer it, or say it was not the right one. Never waits
 /// longer than `GREET_WAIT`, so one connection that says nothing cannot hold the host up.
@@ -192,36 +174,6 @@ pub struct TcpLink {
 }
 
 impl TcpLink {
-    /// WiFi a link session actually runs over. On the private network that is the whole
-    /// defence, since only the other handheld is there to connect; on the home network
-    /// `host_greeted_until` is the one to use, which also turns away anything that does not
-    /// open with the right greeting. See the module doc for why this transport does not
-    /// hardcode which address that is.
-    pub fn host_until(
-        addr: &str,
-        port: u16,
-        bound: Duration,
-        cancel: &Cancel,
-    ) -> std::io::Result<TcpLink> {
-        TcpLink::host_inner(addr, port, bound, cancel, None, None, || {})
-    }
-
-    /// `host_until` for a shared network, where anything on it can reach the listener. Only a
-    /// peer that opens with this game's greeting is accepted; anything else is dropped without
-    /// a word and the wait goes on, still bounded. `listening` runs once the port is bound and
-    /// before the first wait, which is when a host on a shared network announces itself: a
-    /// joiner that found it any sooner would be refused.
-    pub fn host_greeted_until(
-        addr: &str,
-        port: u16,
-        bound: Duration,
-        cancel: &Cancel,
-        game: &str,
-        listening: impl FnOnce(),
-    ) -> std::io::Result<TcpLink> {
-        TcpLink::host_inner(addr, port, bound, cancel, Some(greeting(game).to_vec()), None, listening)
-    }
-
     /// Lab-only strict negotiation: backend, Cable/Wireless mode, exact ROM,
     /// compiled libretro core and active GBA BIOS must all match BEFORE Ready.
     pub fn host_lab_greeted_until(
@@ -282,49 +234,6 @@ impl TcpLink {
         }
     }
 
-    pub fn host(addr: &str, port: u16) -> std::io::Result<TcpLink> {
-        TcpLink::host_until(addr, port, HOST_BOUND, &Cancel::new())
-    }
-
-    pub fn join_until(
-        addr: &str,
-        port: u16,
-        bound: Duration,
-        cancel: &Cancel,
-    ) -> std::io::Result<TcpLink> {
-        let deadline = Instant::now() + bound;
-        loop {
-            if cancel.is_cancelled() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "cancelled while reaching for the host",
-                ));
-            }
-            if let Ok(stream) = TcpStream::connect((addr, port)) {
-                return TcpLink::wrap(stream);
-            }
-            if Instant::now() >= deadline {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "never reached the host",
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(POLL_MS));
-        }
-    }
-
-    pub fn join(addr: &str, port: u16) -> std::io::Result<TcpLink> {
-        TcpLink::wrap(TcpStream::connect((addr, port))?)
-    }
-
-    /// One attempt to reach a host on a shared network: connect, open with this game's
-    /// greeting, and wait for the host to accept it. Both waits are short and neither retries,
-    /// because the caller is walking a list of hosts that answered and the next one is the
-    /// retry. A host that turns it away closes the socket, which reads here as an error.
-    pub fn join_greeted(addr: std::net::SocketAddr, game: &str) -> std::io::Result<TcpLink> {
-        TcpLink::join_with_greeting(addr, &greeting(game))
-    }
-
     pub fn join_lab_greeted(addr: std::net::SocketAddr,
                             identity: &LabGreeting) -> std::io::Result<TcpLink> {
         {
@@ -345,21 +254,8 @@ impl TcpLink {
         }
     }
 
-    fn join_with_greeting(addr: std::net::SocketAddr, bytes: &[u8]) -> std::io::Result<TcpLink> {
-        let mut stream = TcpStream::connect_timeout(&addr, GREET_WAIT)?;
-        stream.set_write_timeout(Some(GREET_WAIT))?;
-        stream.write_all(bytes)?;
-        stream.set_read_timeout(Some(GREET_WAIT))?;
-        let mut ack = [0u8; 1];
-        stream.read_exact(&mut ack)?;
-        if ack[0] != GREETING_ACK {
-            return Err(std::io::Error::other("host did not accept the greeting"));
-        }
-        stream.set_read_timeout(None)?;
-        stream.set_write_timeout(None)?;
-        TcpLink::wrap(stream)
-    }
 
+    #[cfg(test)]
     fn wrap(stream: TcpStream) -> std::io::Result<TcpLink> {
         Self::wrap_identified(stream, None)
     }
@@ -553,9 +449,8 @@ impl TcpLink {
         report_link_rom_phase("consent", "awaiting_remote");
         self.send(slot_retro::NETPACKET_RELIABLE, b"R4OK");
         let approval = take_frame(self, Duration::from_secs(60), cancel)
-            .map_err(|error| {
+            .inspect_err(|error| {
                 report_link_transport_fault("rom_consent", &error.to_string());
-                error
             })?;
         if approval.as_slice() != b"R4OK" {
             return Err(invalid("Mixed-ROM peer did not authorize cartridge exchange"));
@@ -570,9 +465,8 @@ impl TcpLink {
         manifest.extend_from_slice(&local.rom_sha256);
         report_link_rom_phase("manifest", "awaiting_remote");
         let remote_meta = exchange_frame(self, &manifest, until, cancel)
-            .map_err(|error| {
+            .inspect_err(|error| {
                 report_link_transport_fault("rom_manifest", &error.to_string());
-                error
             })?;
         if remote_meta.len() != 44 || &remote_meta[..4] != b"R4M0" ||
             remote_meta[8..12] != peer.game ||
@@ -689,6 +583,7 @@ impl TcpLink {
         let _ = wrote.recv_timeout(Duration::from_millis(BYE_MS));
     }
 
+    #[cfg(test)]
     pub fn nodelay(&self) -> std::io::Result<bool> {
         self.stream.nodelay()
     }
@@ -827,7 +722,6 @@ mod lab_negotiation_tests {
 
     #[test]
     fn lab_greeting_is_not_legacy_slot_one() {
-        assert_ne!(&identity().bytes()[..9], &greeting("BPRE"));
         assert_eq!(&identity().bytes()[..4], b"KMLB");
     }
     #[test]

@@ -70,6 +70,9 @@ internal object SlotUi {
      * geometry scale and .68 alpha, on a 720×480 canvas. Keep the real
      * Rust rasterization and transparent side padding, not Android text.
      */
+    /** apps_controls PNGs are drawn at 960/720 of Slot's logical pixels. */
+    const val LEGEND_DENSITY = 4f / 3f
+
     fun menuPixel(context: Context, px: Int): Int =
         (px * context.resources.displayMetrics.widthPixels / 720f + .5f).toInt()
 
@@ -101,8 +104,8 @@ internal object SlotUi {
                 scaleType = ImageView.ScaleType.FIT_XY
                 alpha = .68f
             }, android.widget.FrameLayout.LayoutParams(
-                menuPixel(context, (image.width * .79f).toInt()),
-                menuPixel(context, (image.height * .79f).toInt()),
+                menuPixel(context, (image.width * .79f / LEGEND_DENSITY).toInt()),
+                menuPixel(context, (image.height * .79f / LEGEND_DENSITY).toInt()),
                 Gravity.START or Gravity.TOP))
         }
     }
@@ -156,7 +159,7 @@ internal object SlotUi {
             context.assets.open("apps_controls/$assetName").use { BitmapFactory.decodeStream(it) }
         }.getOrNull() ?: return hint(context, key, action)
         val scale = (context.resources.displayMetrics.widthPixels / 720f)
-            .coerceIn(1f, 2f)
+            .coerceIn(1f, 2f) / LEGEND_DENSITY
         // A centered container allows weighted RA footer cells and larger
         // Cart Studio bars without stretching upstream's exact 24px raster.
         return android.widget.FrameLayout(context).apply {

@@ -25,7 +25,7 @@ impl DiskCache {
     pub fn key(&self, cart: &Cart) -> String {
         // Rust Cart debug covers URI, platform, name, code, label and shell.
         // The revision invalidates old faces when rendering algorithms change.
-        let mut input = format!("KONKR-cart-r102-v2:{cart:?}").into_bytes();
+        let mut input = format!("KONKR-cart-r102-v5-dense:{cart:?}").into_bytes();
         input.extend_from_slice(&self.theme);
         for path in [Some(cart.rom.as_path()), cart.label.as_deref()].into_iter().flatten() {
             if let Ok(metadata)=fs::metadata(path) {
@@ -52,7 +52,7 @@ impl DiskCache {
         let w=u32::from_le_bytes(data[8..12].try_into().ok()?);
         let h=u32::from_le_bytes(data[12..16].try_into().ok()?);
         let expected=w.checked_mul(h)?.checked_mul(4)? as usize;
-        if w==0 || h==0 || expected>MAX_FACE_BYTES || expected<4 {return None;}
+        if w==0 || h==0 || !(4..=MAX_FACE_BYTES).contains(&expected) {return None;}
         let size=u32::from_le_bytes(data[16..20].try_into().ok()?) as usize;
         if size!=expected {return None;}
         let rgba=lz4_flex::decompress_size_prepended(&data[16..]).ok()?;

@@ -33,10 +33,11 @@ pub struct PhotoFace {
 }
 
 pub fn photo_face(entry: &StateEntry) -> PhotoFace {
-    let rgba = art::cover(&entry.thumb, PHOTO_W, PHOTO_H).unwrap_or_else(|| {
+    let (tw, th) = (crate::density::px(PHOTO_W), crate::density::px(PHOTO_H));
+    let rgba = art::cover(&entry.thumb, tw, th).unwrap_or_else(|| {
         std::iter::repeat_n(
             [BLANK[0], BLANK[1], BLANK[2], 255],
-            (PHOTO_W * PHOTO_H) as usize,
+            (tw * th) as usize,
         )
         .flatten()
         .collect()

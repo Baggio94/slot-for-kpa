@@ -200,5 +200,59 @@ fn a_line_naming_a_core_the_platform_cannot_run_is_dropped() {
 
 #[test]
 fn the_picker_board_has_exactly_two_sockets() {
-    assert_eq!(Core::ALL.len(), 2);
+    for platform in [Platform::Gba, Platform::Gb, Platform::Gbc] {
+        let pair = [Core::default_for(platform), Core::alternate_for(platform)];
+        assert_eq!(pair.map(Core::socket), [0, 1]);
+        assert!(pair.iter().all(|core| core.runs(platform)));
+    }
+}
+
+#[test]
+fn gambatte_runs_only_game_boy_carts() {
+    let d = tempfile::tempdir().unwrap();
+    write_selected_core(d.path(), "Tetris", Core::Gambatte).unwrap();
+    assert_eq!(core_for_platform(d.path(), "Tetris", Platform::Gb), Core::Gambatte);
+    assert_eq!(core_for_platform(d.path(), "Tetris", Platform::Gbc), Core::Gambatte);
+    assert_eq!(core_for_platform(d.path(), "Tetris", Platform::Gba), Core::Mgba);
+}
+
+#[test]
+fn a_system_default_applies_to_every_cart_without_a_pick() {
+    let d = root_with(None);
+    slot_store::write_default_core(d.path(), Platform::Gb, Core::Gambatte).unwrap();
+    assert_eq!(core_for_platform(d.path(), "Tetris", Platform::Gb), Core::Gambatte);
+    assert_eq!(core_for_platform(d.path(), "Tetris DX", Platform::Gbc), Core::Mgba);
+    assert_eq!(core_for_platform(d.path(), "Emerald", Platform::Gba), Core::Mgba);
+}
+
+#[test]
+fn a_default_the_system_cannot_run_is_ignored() {
+    let d = root_with(None);
+    std::fs::write(d.path().join("Config/default_core.ini"), "gba = gambatte\n").unwrap();
+    assert_eq!(slot_store::default_core(d.path(), Platform::Gba), Core::Mgba);
+}
+
+#[test]
+fn a_pick_other_than_the_default_survives_a_new_default() {
+    let d = root_with(None);
+    slot_store::choose_core(d.path(), "Zelda", Platform::Gb, Core::Gambatte).unwrap();
+    slot_store::choose_core(d.path(), "Tetris", Platform::Gb, Core::Mgba).unwrap();
+    let text = std::fs::read_to_string(d.path().join("Config/selected_core.ini")).unwrap();
+    assert_eq!(text, "Zelda = gambatte\n", "picking the default writes nothing");
+
+    slot_store::write_default_core(d.path(), Platform::Gb, Core::Gambatte).unwrap();
+    slot_store::choose_core(d.path(), "Pokemon", Platform::Gb, Core::Mgba).unwrap();
+    slot_store::write_default_core(d.path(), Platform::Gb, Core::Mgba).unwrap();
+    assert_eq!(core_for_platform(d.path(), "Zelda", Platform::Gb), Core::Gambatte);
+    assert_eq!(core_for_platform(d.path(), "Pokemon", Platform::Gb), Core::Mgba);
+    assert_eq!(core_for_platform(d.path(), "Tetris", Platform::Gb), Core::Mgba);
+}
+
+#[test]
+fn the_first_default_frees_carts_that_only_recorded_mgba() {
+    let d = root_with(Some("Tetris = mgba\nZelda = gambatte\nEmerald = gpsp\n"));
+    slot_store::write_default_core(d.path(), Platform::Gb, Core::Gambatte).unwrap();
+    assert_eq!(core_for_platform(d.path(), "Tetris", Platform::Gb), Core::Gambatte);
+    assert_eq!(core_for_platform(d.path(), "Zelda", Platform::Gb), Core::Gambatte);
+    assert_eq!(core_for_platform(d.path(), "Emerald", Platform::Gba), Core::Gpsp);
 }

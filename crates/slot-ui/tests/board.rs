@@ -1,7 +1,7 @@
 use slot_store::{Cart, Core, Platform};
 use slot_ui::{
     board_at, board_face, chip_face, chip_shadow_face, gba_shell_for, lid_at, lift_of, on_board,
-    padded, rom_marking, rom_marking_face, shelf_cart, slide_of, socket_face, CartFace, Placed,
+    padded, pak_marking_face, rom_marking, rom_marking_face, shelf_cart, slide_of, socket_face, CartFace, Placed,
     BOARD_H, BOARD_W, CART_H, CHIP_H, CHIP_W, DEFAULT_SHELL, LID_TURN, ROM_H, ROM_W, SHADOW_H,
     SHADOW_W, SLIDE_SHARE, SLIDE_UP, SOCKET_H, SOCKET_W, TURN_PAD,
 };
@@ -74,6 +74,44 @@ fn the_marking_is_drawn_and_stays_on_the_chip() {
                 "{stem} ran off the right of the chip"
             );
         }
+    }
+}
+
+fn pak(stem: &str) -> Cart {
+    Cart {
+        platform: Platform::Gbc,
+        rom: format!("Games/GBC/{stem}.gbc").into(),
+        ..cart(stem, "")
+    }
+}
+
+#[test]
+fn a_pak_board_prints_its_title_on_the_small_square_chip() {
+    let face = pak_marking_face("Pokemon - Crystal Version (USA, Europe)");
+    assert_eq!((face.w, face.h), (42, 42));
+    assert!(face.rgba.chunks_exact(4).any(|p| p[3] > 128), "no marking");
+    let crystal = board_face(&pak("Pokemon - Crystal Version (USA, Europe)"));
+    let zelda = board_face(&pak("Legend of Zelda, The - Link's Awakening DX"));
+    for y in 0..crystal.h {
+        for x in 0..crystal.w {
+            let on_chip = (74..116).contains(&x) && (108..150).contains(&y);
+            if !on_chip {
+                assert_eq!(rgb(&crystal, x, y), rgb(&zelda, x, y), "the title leaked to {x},{y}");
+            }
+        }
+    }
+    assert_ne!(crystal.rgba, zelda.rgba, "the title is not on the board");
+}
+
+#[test]
+fn an_empty_pak_footprint_names_its_core() {
+    let face = board_face(&pak("Tetris DX"));
+    for (u, core) in [(99, "mGBA"), (219, "Gambatte")] {
+        let ink = (208..219)
+            .flat_map(|y| (u - 20..u + 20).map(move |x| (x, y)))
+            .filter(|&(x, y)| rgb(&face, x, y)[0] > 80)
+            .count();
+        assert!(ink > 10, "the {core} footprint has {ink} inked pixels");
     }
 }
 

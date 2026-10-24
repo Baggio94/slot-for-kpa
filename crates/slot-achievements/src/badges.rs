@@ -29,7 +29,7 @@ pub(crate) fn path(dir: &Path, name: &str) -> Option<PathBuf> {
 // with an earned achievement badge or permitting image-path traversal.
 fn game_icon_name(image_icon: &str) -> Option<String> {
     let number = image_icon.strip_prefix("/Images/")?.strip_suffix(".png")?;
-    (number.len() >= 1 && number.len() <= 12 && number.bytes().all(|b| b.is_ascii_digit()))
+    (!number.is_empty() && number.len() <= 12 && number.bytes().all(|b| b.is_ascii_digit()))
         .then(|| format!("slotgame_{number}"))
 }
 

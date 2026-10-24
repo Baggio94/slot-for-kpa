@@ -47,6 +47,14 @@ pub fn native_rgba(src:&[u8],w:u32,h:u32)->(Vec<u8>,u32,u32) {
     if tw>NATIVE_W||th>NATIVE_H||(tw==w&&th==h) {
         return (src.to_vec(),w,h);
     }
+    (resample(src,w,h,tw,th),tw,th)
+}
+
+/// Mitchell-filter `src` (`w` x `h`) to `tw` x `th`, alpha-correctly.
+pub(crate) fn resample(src:&[u8],w:u32,h:u32,tw:u32,th:u32)->Vec<u8> {
+    if (tw,th)==(w,h) || src.len()!=(w*h*4) as usize {
+        return src.to_vec();
+    }
     let (xs,ys)=(taps(w,tw),taps(h,th));
     let mut dst=vec![0u8;(tw*th*4) as usize];
     for (y,y_taps) in ys.iter().enumerate() {
@@ -73,5 +81,5 @@ pub fn native_rgba(src:&[u8],w:u32,h:u32)->(Vec<u8>,u32,u32) {
             }
         }
     }
-    (dst,tw,th)
+    dst
 }

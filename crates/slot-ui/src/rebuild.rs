@@ -1,5 +1,6 @@
 use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
 
+use crate::density::{self, Canvas};
 use crate::hud::{FILL, HUD_INK, TRACK};
 use crate::plate::UndoFace;
 use crate::shelf::panel_middle_y;
@@ -30,11 +31,14 @@ fn line_face(label: &str, px: f32, h: u32) -> UndoFace {
             h: 0,
         };
     };
-    let w = OUT_W;
-    let mut rgba = vec![0u8; (w * h * 4) as usize];
-    let layout = text::fit(font, label, w as f32, 1, px, px);
-    text::draw_centred(&mut rgba, w, h, &layout, HUD_INK);
-    trim(&rgba, w, h)
+    let mut face = Canvas::new(OUT_W, h);
+    let layout = text::fit(font, label, OUT_W as f32, 1, px, px);
+    face.text(&layout, HUD_INK);
+    let trimmed = trim(&face.rgba, face.tw, face.th);
+    if !density::is_dense() || trimmed.w == 0 {
+        return trimmed;
+    }
+    Canvas::from_texels(&trimmed.rgba, trimmed.w, trimmed.h).into_undo()
 }
 
 fn trim(rgba: &[u8], w: u32, h: u32) -> UndoFace {

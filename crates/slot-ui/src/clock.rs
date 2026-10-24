@@ -3,7 +3,8 @@ use slot_store::{
     civil_from_days, days_from_civil, days_in_month, parse_stamp, UTC_OFFSET_MAX, UTC_OFFSET_MIN,
 };
 
-use crate::plate::{blit, centred_hints, hint_width, UndoFace, HINT_H, LEGEND_GAP};
+use crate::density::Canvas;
+use crate::plate::{centred_hints, hint_width, UndoFace, HINT_H, LEGEND_GAP};
 use crate::text;
 
 const DAY: i64 = 86_400;
@@ -189,25 +190,18 @@ impl ClockPicker {
     }
 
     pub fn face(&self) -> UndoFace {
-        let w = picker_w();
-        let mut rgba = vec![0u8; (w * PICKER_H * 4) as usize];
+        let mut face = Canvas::new(picker_w(), PICKER_H);
         for (i, cell) in CELLS.iter().enumerate() {
             let text = self.cell_text(i);
             if text.is_empty() {
                 continue;
             }
-            let mut buf = vec![0u8; (cell * PICKER_H * 4) as usize];
             if let Some(font) = text::label_font() {
                 let layout = text::fit(font, &text, *cell as f32, 1, PICKER_PX, PICKER_MIN_PX);
-                text::draw_centred(&mut buf, *cell, PICKER_H, &layout, INK);
+                face.text_in(cell_x(i), 0, *cell, PICKER_H, &layout, INK);
             }
-            blit(&mut rgba, w, &buf, *cell, PICKER_H, cell_x(i), 0);
         }
-        UndoFace {
-            rgba,
-            w,
-            h: PICKER_H,
-        }
+        face.into_undo()
     }
 
     fn cell_text(&self, cell: usize) -> String {

@@ -1,28 +1,25 @@
-# slot. for KONKR Pocket Advance — v1.2.3
+# slot. for KONKR Pocket Advance — v1.3.0
 
-This update is all about smoothness: a new RetroArch-style frame pacing, better audio, and safer saves.
+A big update: a second core for Game Boy and Game Boy Color, new screen sizes and overlays, sharper visuals at the KONKR's native resolution, and controls that respond like RetroArch.
 
 ### What's New
 
-- **New Frame Pacing: Native** — The screen now drives the emulator, exactly like RetroArch, with high-quality audio that adapts to the display. In our tests on the KONKR it is as smooth as RetroArch, with slightly lower input latency. Native is the new default.
-- **Responsive mode** — Prefer the lowest possible latency? Switch Frame Pacing to Responsive in Emulation settings.
-- **Better Run-Ahead** — Run-Ahead now works like RetroArch's, with a second instance and Preemptive Frames. It stays OFF by default.
-- **Game Boy / Game Boy Color audio fix** — Sound now plays at the correct rate, with no more delay or crackling.
-- **Rewind speed** — Choose 1x, 2x, 3x or 5x rewind, globally or per game. 2x is the default, as in the original slot.
-- **Fast Forward can be turned Off** — R2 then does nothing.
-- **Safer save states** — Deleting a save state now asks for confirmation.
-- **More reliable saves** — Settings, game profiles, favorites and in-game saves are written more safely, including when ejecting a cartridge.
-- **Faster achievements** — RetroAchievements unlock as soon as they are earned.
-- **Compatibility fixes** — Upstream mGBA fixes for MBC2 and 1 Mbit flash saves and the Game Boy palette option.
+- **Gambatte core for Game Boy and Game Boy Color** — GB and GBC games can now run on Gambatte as well as mGBA. Press SELECT on a cartridge to choose the core for that game: the cartridge opens on its pak board and you pick the chip, just like mGBA/gpSP on GBA. Your saves follow you when you switch cores.
+- **Default core per system** — Settings → Systems now has a page for each system (GBA, GBC, GB) with a Default Core option. You can still override it for any game with SELECT.
+- **New GB/GBC screen sizes** — L1 and R1 switch between Integer, Original Ratio (the real 10:9 shape, kept sharp) and Stretch.
+- **Game Boy overlays** — Game Boy and Game Boy Pocket overlays for GB games, and a Game Boy Color overlay for GBC games. Made by [Watomsk](https://github.com/Watomsk/Overlays), adapted to the KONKR's 3:2 screen and included with permission.
+- **Live GB Palette** — The palette changes in real time while you browse them, as in slot. 1.8.1.
+- **Sharper visuals** — Cartridges, labels, icons and menus are now rendered at the KONKR's native 960x640 resolution.
+- **More responsive controls** — The D-pad (hat) is read directly with no buffering, quick taps between two frames are no longer lost, and inputs are polled at a steady point in each frame, as in RetroArch. Audio output latency is lower too.
+- **Adaptive Link Cable delay** — The mGBA Link Cable input delay now adjusts automatically to the connection quality between the two consoles.
+- **Faster game launch** — Games start quickly even after idling on the shelf, and the first scroll after ejecting a game is smooth.
 
 ### Installation
 
-Download the APK below and install it over your existing version. Your games, saves, and settings will be preserved.
-
-**Note:** Previous Frame Pacing modes (SYNC LAB, Standard and the lab modes) are replaced by Native, including per-game settings. Multiplayer (Link) keeps its own pacing.
+Download the APK below and install it over your existing version. Your games, saves and settings are preserved.
 
 ### Credits
 
-An unofficial Android port of [slot.](https://slot-cfw.fyi/) by [Brandon Kowalski](https://github.com/BrandonKowalski/slot) and contributors.
+An unofficial Android port of [slot.](https://slot-cfw.fyi/) by [Brandon Kowalski](https://github.com/BrandonKowalski/slot) and contributors. Game Boy overlays by [Watomsk](https://github.com/Watomsk/Overlays). Gambatte by Sindre Aamås and contributors.
 
 Licensed under GPL-3.0.

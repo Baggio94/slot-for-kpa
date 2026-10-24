@@ -1,12 +1,17 @@
 //! Build-time-only export of EXACT Slot core-picker keycap faces for the
 //! Android Apps drawer. Reuse the upstream drawing/font code, not an Android
 //! imitation with different fonts or Unicode arrow glyphs.
+//!
+//! Faces are drawn at the KONKR's 960/720 panel density, so each PNG is 4/3
+//! of Slot's logical size; Android divides by `SlotUi.LEGEND_DENSITY`.
+use slot_ui::density::{self, Face};
 use slot_ui::{arrows_hint_face, hint_face, quick_value_face, UndoFace};
 use std::{fs::{self, File}, io::BufWriter, path::PathBuf};
 
 fn write_png(out: &PathBuf, face: &UndoFace) -> Result<(), Box<dyn std::error::Error>> {
     let file = BufWriter::new(File::create(out)?);
-    let mut encoder = png::Encoder::new(file, face.w, face.h);
+    let (w, h) = face.texels();
+    let mut encoder = png::Encoder::new(file, w, h);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header()?;
@@ -19,6 +24,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("Usage: cargo run -p slot-ui --example export_apps_legend -- <output-dir>")?;
     let destination = PathBuf::from(destination);
     fs::create_dir_all(&destination)?;
+    density::with_scale(960.0 / 720.0, || export(&destination))
+}
+
+fn export(destination: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     for (filename, face) in [
         ("move.png", arrows_hint_face("Move")),
         ("open.png", hint_face("A", "Open")),
@@ -39,9 +48,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let expected_height = if filename.starts_with("heading-") { 40 } else { 24 };
         assert!(face.w > 20 && face.h == expected_height,
             "Slot legend / native heading generation failed");
-        assert_eq!(face.rgba.len(), (face.w * face.h * 4) as usize);
+        let (w, h) = face.texels();
+        assert_eq!((w, h), (density::px(face.w), density::px(face.h)));
         write_png(&destination.join(filename), &face)?;
-        println!("{}: {}×{} (upstream Slot pixels)", filename, face.w, face.h);
+        println!("{}: {}×{} texels for {}×{} Slot pixels", filename, w, h, face.w, face.h);
     }
     Ok(())
 }

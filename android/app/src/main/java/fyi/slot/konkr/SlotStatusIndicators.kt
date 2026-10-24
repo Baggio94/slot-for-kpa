@@ -12,13 +12,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.RectF
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiInfo
@@ -29,8 +25,8 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
+import androidx.core.graphics.PathParser
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
@@ -41,8 +37,8 @@ import kotlin.math.roundToInt
  * Upper status indicators that follow the exact native Slot footer lifecycle.
  *
  * No package polling, Wi-Fi queries or network IO occurs on the GL thread.
- * Asset bitmaps are the user's approved 24px v6 sprites, decoded only once.
- * The Wi-Fi sprite is generated locally because v6 explicitly omits Wi-Fi.
+ * Every glyph is a vector line icon drawn with the weight of the footer
+ * battery and clock; a stopped integration is dimmed instead of badged.
  *
  * - No radios disabled indicators.
  * - No uninstalled app indicator.
@@ -58,7 +54,7 @@ internal class SlotStatusIndicators(
 ) {
     private val scale = (host.resources.displayMetrics.widthPixels / 720f).coerceIn(1f, 2f)
     private val iconSize = (24f * scale).roundToInt()
-    private val spacing = (7f * scale).roundToInt()
+    private val spacing = (5f * scale).roundToInt()
     private val margin = (24f * scale).roundToInt()
     // Move only the shelf status row up; preserve its horizontal padding.
     private val statusTop = (12f * scale).roundToInt()
@@ -76,21 +72,12 @@ internal class SlotStatusIndicators(
         isClickable = false
         isFocusable = false
     }
-    private val sleep = sprite()
-    private val basicsync = sprite()
-    private val syncthing = sprite()
-    private val ra = sprite()
-    private val wifi = WifiSignal(host)
-    private val bluetooth = BluetoothSignal(host)
-    private val sprites = HashMap<String, android.graphics.Bitmap>()
-    private var statusAtlas: android.graphics.Bitmap? = null
-    private val spriteSize = 64
-    private val spriteNames = listOf(
-        "sleepmanager_running", "sleepmanager_stopped",
-        "basicsync_running", "basicsync_stopped",
-        "syncthing_running", "syncthing_stopped",
-        "raonline", "raoffline", "bluetooth_on"
-    )
+    private val sleep = StatusGlyph(host, StatusGlyph.MOON)
+    private val basicsync = StatusGlyph(host, StatusGlyph.SYNC)
+    private val syncthing = StatusGlyph(host, StatusGlyph.SYNCTHING)
+    private val ra = StatusGlyph(host, StatusGlyph.TROPHY)
+    private val wifi = StatusGlyph(host, StatusGlyph.WIFI)
+    private val bluetooth = StatusGlyph(host, StatusGlyph.BLUETOOTH)
     private val worker = Executors.newSingleThreadExecutor { task ->
         Thread(task, "slot-status-health").apply {
             priority = Thread.MIN_PRIORITY
@@ -123,11 +110,6 @@ internal class SlotStatusIndicators(
     private var bluetoothPermissionAsked = false
     private var subscribed = false
 
-    private fun sprite(): ImageView = ImageView(host).apply {
-        scaleType = ImageView.ScaleType.FIT_CENTER
-        isClickable = false
-        isFocusable = false
-    }
     private fun add(layout: LinearLayout, child: View) {
         layout.addView(child, LinearLayout.LayoutParams(iconSize, iconSize).apply {
             rightMargin = spacing
@@ -135,18 +117,8 @@ internal class SlotStatusIndicators(
     }
 
     init {
-        // All shelf icons remain white in both themes. Rasterize the
-        // original unbadged trophy and add the same tiny outline as the
-        // approved integration sprites for visibility on the Light theme.
-        val trophy = host.getDrawable(R.drawable.ic_slot_ra_trophy)
-        if (trophy != null) {
-            val raw = Bitmap.createBitmap(spriteSize, spriteSize,
-                Bitmap.Config.ARGB_8888)
-            trophy.setBounds(0, 0, spriteSize, spriteSize)
-            trophy.draw(Canvas(raw))
-            ra.setImageBitmap(whiteStatusSprite(raw))
-            raw.recycle()
-        } else ra.setImageResource(R.drawable.ic_slot_ra_trophy)
+        // All shelf icons remain white in both themes: they sit on the
+        // wallpaper, not on the themed footer band.
         add(left, sleep)
         add(left, basicsync)
         add(left, syncthing)
@@ -337,74 +309,15 @@ internal class SlotStatusIndicators(
         } catch (_: RuntimeException) { false }
     }
 
-    /**
-     * Normalize the approved colored status artwork to WHITE without altering
-     * its silhouette (running / stopped badges remain distinguishable).
-     * A soft, subpixel black perimeter keeps it legible on a pale wallpaper
-     * without adding an opaque plate or changing the white glyphs.
-     * Only nine 64x64 sprites are processed, each once when first needed.
-     */
-    private fun whiteStatusSprite(raw: Bitmap): Bitmap {
-        val width = raw.width
-        val height = raw.height
-        val src = IntArray(width * height)
-        raw.getPixels(src, 0, width, 0, 0, width, height)
-        val dst = IntArray(src.size)
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val i = y * width + x
-                val alpha = Color.alpha(src[i])
-                if (alpha != 0) {
-                    dst[i] = Color.argb(alpha, 255, 255, 255)
-                } else {
-                    var maxNeighborAlpha = 0
-                    for (dy in -2..2) {
-                        val ny = y + dy
-                        if (ny !in 0 until height) continue
-                        for (dx in -2..2) {
-                            val nx = x + dx
-                            if (nx !in 0 until width) continue
-                            val opacity = Color.alpha(src[ny * width + nx])
-                            if (opacity > maxNeighborAlpha) maxNeighborAlpha = opacity
-                        }
-                    }
-                    if (maxNeighborAlpha > 0) {
-                        dst[i] = Color.argb(maxNeighborAlpha * 90 / 255, 0, 0, 0)
-                    }
-                }
-            }
-        }
-        return Bitmap.createBitmap(dst, width, height, Bitmap.Config.ARGB_8888)
-    }
-
-    private fun sprite(name: String, view: ImageView) {
-        val bitmap = sprites.getOrPut(name) {
-            // Approved v6 artwork at native 64x64 instead of upscaled 24px
-            // sprites; new RA online/offline badges replace Play/Stop.
-            val atlas = statusAtlas ?: host.assets.open("status/status_sprites_hd.png")
-                .use { requireNotNull(BitmapFactory.decodeStream(it)) }
-                .also { statusAtlas = it }
-            val index = spriteNames.indexOf(name)
-            require(index >= 0) { "Unknown status sprite: $name" }
-            val original = Bitmap.createBitmap(atlas,
-                index * spriteSize, 0, spriteSize, spriteSize)
-            whiteStatusSprite(original).also { original.recycle() }
-        }
-        view.setImageBitmap(bitmap)
-    }
-
-    private fun show(view: ImageView, name: String, visible: Boolean) {
+    private fun show(view: StatusGlyph, visible: Boolean, running: Boolean = true) {
         val next = if (visible) View.VISIBLE else View.GONE
         if (view.visibility != next) view.visibility = next
-        if (visible && view.tag != name) {
-            sprite(name, view)
-            view.tag = name
-        }
+        view.alpha = if (running) 1f else STOPPED_ALPHA
     }
 
     /**
      * Called only on the main thread from the existing 100ms Slot pulse.
-     * Bitmap generation, filesystem package scans and health probing are
+     * Filesystem package scans and health probing are
      * throttled; a hidden indicator never triggers extra health traffic.
      */
     fun refresh(flags: Int) {
@@ -429,11 +342,9 @@ internal class SlotStatusIndicators(
         }
 
         if (integrations) {
-            show(sleep, if (observedSleepRunning) "sleepmanager_running"
-                else "sleepmanager_stopped", installedSleep)
-            show(basicsync, if (basicRunning && basicStateKnown &&
-                    now - lastBasicResponse < 45000L) "basicsync_running"
-                else "basicsync_stopped", installedBasic)
+            show(sleep, installedSleep, observedSleepRunning)
+            show(basicsync, installedBasic, basicRunning && basicStateKnown &&
+                now - lastBasicResponse < 45000L)
             // BasicSync and Syncthing-Fork may expose a local Syncthing
             // daemon on the same default port. A healthy port owned by
             // BasicSync is NOT proof the Fork itself is running.
@@ -443,11 +354,11 @@ internal class SlotStatusIndicators(
             val forkHealthAttributable = !installedBasic ||
                 (basicStateKnown && !basicRunning &&
                     now - lastBasicResponse < 45000L)
-            show(syncthing, if (syncthingRunning && forkHealthAttributable)
-                "syncthing_running" else "syncthing_stopped", installedSyncthing)
+            show(syncthing, installedSyncthing,
+                syncthingRunning && forkHealthAttributable)
             // Only the account's configured/unconfigured state matters here.
-            // Display the SAME unbadged trophy online and offline.
-            ra.visibility = if (raAccountConfigured) View.VISIBLE else View.GONE
+            // Display the SAME trophy online and offline.
+            show(ra, raAccountConfigured)
         } else {
             for (v in listOf(sleep, basicsync, syncthing, ra)) v.visibility = View.GONE
         }
@@ -490,96 +401,125 @@ internal class SlotStatusIndicators(
             bluetooth.visibility == View.VISIBLE) View.VISIBLE else View.GONE
     }
 
-    /**
-     * Native Slot-style Wi-Fi and Bluetooth are drawn in the same 24px grid,
-     * with a 2.05px white stroke and faint black silhouette underpainting.
-     * Neither glyph changes color when the shelf switches Dark/Light.
-     */
-    private class WifiSignal(context: Context) : View(context) {
-        var level = 0
-            set(value) {
-                if (field != value) { field = value; invalidate() }
-            }
-        private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            style = Paint.Style.STROKE
-            strokeWidth = 2.05f
-            strokeCap = Paint.Cap.ROUND
+    private companion object {
+        const val STOPPED_ALPHA = 0.4f
+    }
+}
+
+/**
+ * Line icons on a 24px grid, stroked with the weight of the footer clock and
+ * battery. A faint offset shadow keeps the white glyph legible on a pale
+ * wallpaper. Neither colour changes when the shelf switches Dark/Light.
+ * Only the Wi-Fi glyph has a level: inactive arcs are drawn at 30%.
+ */
+internal class StatusGlyph(context: Context, private val glyph: Glyph) : View(context) {
+    /** Stroked paths, filled paths, and the minimum level each one needs. */
+    class Glyph(val strokes: List<Pair<String, Int>>, val fills: List<Pair<String, Int>>) {
+        internal val strokePaths = strokes.map { (d, l) -> PathParser.createPathFromPathData(d) to l }
+        internal val fillPaths = fills.map { (d, l) -> PathParser.createPathFromPathData(d) to l }
+    }
+
+    var level = MAX_LEVEL
+        set(value) {
+            if (field != value) { field = value; invalidate() }
         }
-        private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.BLACK
-            style = Paint.Style.STROKE
-            strokeWidth = 3.65f
-            strokeCap = Paint.Cap.ROUND
+    private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+
+    init {
+        isClickable = false
+        isFocusable = false
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        canvas.save()
+        canvas.scale(width / 24f, height / 24f)
+        canvas.save()
+        canvas.translate(0f, SHADOW_DY)
+        layer(canvas, Color.BLACK, SHADOW_ALPHA, STROKE + SHADOW_SPREAD)
+        canvas.restore()
+        layer(canvas, Color.WHITE, 1f, STROKE)
+        canvas.restore()
+    }
+
+    private fun layer(canvas: Canvas, color: Int, opacity: Float, stroke: Float) {
+        ink.color = color
+        ink.strokeWidth = stroke
+        fun alpha(minLevel: Int) =
+            (255 * opacity * if (level >= minLevel) 1f else INACTIVE).roundToInt()
+        ink.style = Paint.Style.STROKE
+        for ((path, minLevel) in glyph.strokePaths) {
+            ink.alpha = alpha(minLevel)
+            canvas.drawPath(path, ink)
         }
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            canvas.save()
-            canvas.scale(width / 24f, height / 24f)
-            val cx = 12f
-            val cy = 19f
-            for (i in 3 downTo 1) {
-                val active = i <= level
-                outline.alpha = if (active) 105 else 30
-                ink.alpha = if (active) 255 else 68
-                // Match the visual glyph height of the 24px Bluetooth rune,
-                // without increasing stroke or changing the white-on-light look.
-                val radius = when (i) {
-                    3 -> 15.7f
-                    2 -> 10.6f
-                    else -> 5.6f
-                }
-                val arc = RectF(cx - radius, cy - radius,
-                    cx + radius, cy + radius)
-                canvas.drawArc(arc, 229f, 82f, false, outline)
-                canvas.drawArc(arc, 229f, 82f, false, ink)
-            }
-            outline.style = Paint.Style.FILL
-            outline.alpha = if (level > 0) 105 else 30
-            ink.style = Paint.Style.FILL
-            ink.alpha = if (level > 0) 255 else 68
-            canvas.drawCircle(cx, cy, 2.8f, outline)
-            canvas.drawCircle(cx, cy, 2.0f, ink)
-            outline.style = Paint.Style.STROKE
-            ink.style = Paint.Style.STROKE
-            canvas.restore()
+        // The shadow of a filled dot is spread like a stroke.
+        ink.style = if (color == Color.BLACK) Paint.Style.FILL_AND_STROKE else Paint.Style.FILL
+        ink.strokeWidth = stroke - STROKE
+        for ((path, minLevel) in glyph.fillPaths) {
+            ink.alpha = alpha(minLevel)
+            canvas.drawPath(path, ink)
         }
     }
 
-    private class BluetoothSignal(context: Context) : View(context) {
-        private val glyph = Path().apply {
-            // Classical Bluetooth rune; no Android material fill or badge.
-            moveTo(12f, 2.8f)
-            lineTo(12f, 21.2f)
-            moveTo(12f, 2.8f)
-            lineTo(18.1f, 7.6f)
-            lineTo(6.0f, 17.2f)
-            moveTo(12f, 21.2f)
-            lineTo(18.1f, 16.4f)
-            lineTo(6.0f, 6.8f)
-        }
-        private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            style = Paint.Style.STROKE
-            strokeWidth = 2.05f
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-        }
-        private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(105, 0, 0, 0)
-            style = Paint.Style.STROKE
-            strokeWidth = 3.65f
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-        }
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            canvas.save()
-            canvas.scale(width / 24f, height / 24f)
-            canvas.drawPath(glyph, outline)
-            canvas.drawPath(glyph, ink)
-            canvas.restore()
-        }
-    }
+    companion object {
+        const val MAX_LEVEL = 4
+        private const val STROKE = 1.9f
+        private const val SHADOW_DY = 0.9f
+        private const val SHADOW_SPREAD = 0.9f
+        private const val SHADOW_ALPHA = 0.38f
+        private const val INACTIVE = 0.3f
 
+        private fun dot(x: Float, y: Float, r: Float) =
+            "M$x ${y - r}a$r $r 0 1 1 0 ${2 * r}a$r $r 0 1 1 0 ${-2 * r}Z"
+
+        val WIFI = Glyph(
+            strokes = listOf(
+                "M2.99 8.95A13.2 13.2 0 0 1 21.01 8.95" to 3,
+                "M5.93 12.09A8.9 8.9 0 0 1 18.07 12.09" to 2,
+                "M8.86 15.24A4.6 4.6 0 0 1 15.14 15.24" to 1
+            ),
+            fills = listOf(dot(12f, 18.6f, 1.7f) to 1)
+        )
+        val BLUETOOTH = Glyph(
+            // Sits on the Wi-Fi dot's baseline rather than the grid centre.
+            strokes = listOf("M7.2 9.4L16.6 16.4L12 20V5.6L16.6 9.2L7.2 16.2" to 0),
+            fills = emptyList()
+        )
+        val MOON = Glyph(
+            strokes = listOf("M17.9 14.6A7.1 7.1 0 1 1 10.2 5.1A5.6 5.6 0 0 0 17.9 14.6Z" to 0),
+            fills = emptyList()
+        )
+        val SYNC = Glyph(
+            strokes = listOf(
+                "M5.6 11A6.6 6.6 0 0 1 16.9 7.1L18.4 8.6" to 0,
+                "M18.4 4.9V8.6H14.7" to 0,
+                "M18.4 13A6.6 6.6 0 0 1 7.1 16.9L5.6 15.4" to 0,
+                "M5.6 19.1V15.4H9.3" to 0
+            ),
+            fills = emptyList()
+        )
+        val SYNCTHING = Glyph(
+            strokes = listOf(
+                "M5.4 12a6.6 6.6 0 1 0 13.2 0a6.6 6.6 0 1 0 -13.2 0" to 0,
+                "M12 12L12 5.4M12 12L17.7 15.3M12 12L6.3 15.3" to 0
+            ),
+            fills = listOf(
+                dot(12f, 5.4f, 2.1f) to 0, dot(17.7f, 15.3f, 2.1f) to 0,
+                dot(6.3f, 15.3f, 2.1f) to 0, dot(12f, 12f, 1.5f) to 0
+            )
+        )
+        val TROPHY = Glyph(
+            strokes = listOf(
+                "M8 4.8H16V10A4 4 0 0 1 8 10Z" to 0,
+                "M8 6.6H5.4V7.6A3 3 0 0 0 8.4 10.6" to 0,
+                "M16 6.6H18.6V7.6A3 3 0 0 1 15.6 10.6" to 0,
+                "M12 14V17" to 0,
+                "M8.6 19.2H15.4" to 0
+            ),
+            fills = emptyList()
+        )
+    }
 }

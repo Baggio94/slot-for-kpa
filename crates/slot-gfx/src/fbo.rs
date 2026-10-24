@@ -186,6 +186,7 @@ impl Compositor {
     }
 
     pub fn draw_list(&mut self, items: &[Draw]) {
+        self.sprites.set_grid(self.size);
         let mut from = 0;
         for (i, item) in items.iter().enumerate() {
             match *item {
@@ -450,7 +451,7 @@ impl Compositor {
         }
         self.quad.draw();
         unsafe { gl::Disable(gl::BLEND) };
-        if let (Some(started), Some(p)) = (bezel_started, profile.as_deref_mut()) {
+        if let (Some(started), Some(p)) = (bezel_started, profile) {
             p.bezel_us = started.elapsed().as_micros() as u64;
         }
     }

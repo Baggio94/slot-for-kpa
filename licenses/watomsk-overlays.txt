@@ -1,0 +1,13 @@
+assets/overlay_watomsk_gb.png
+assets/overlay_watomsk_pocket.png
+assets/overlay_watomsk_color.png
+
+"Game Boy", "Game Boy Pocket" and "Game Boy Color" overlays by Watomsk
+https://github.com/Watomsk/Overlays
+
+Included in slot. with the author's permission (2026-10-23).
+The overlays are not covered by slot.'s GPL-3.0 license; all rights remain with their author.
+
+Changes: cut from 1920x1080 (16:9) to the KONKR's 3:2 screen (960x640): the
+side panels are narrowed and their LED and logo re-centred, the 10:9 screen
+window is unchanged. See tools/watomsk-overlays/make.py.

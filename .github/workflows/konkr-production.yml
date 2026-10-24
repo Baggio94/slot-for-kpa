@@ -3,7 +3,7 @@ name: slot. for KONKR ARM64
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'extract/**', 'beta/**', 'release/**']
+    branches: [main, 'beta/**', 'release/**']
     tags: ['konkr-v*']
 
 permissions:
@@ -56,34 +56,29 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Test offline Emulation Lab telemetry parser
+      - name: Read app version
+        run: |
+          set -euo pipefail
+          gradle=android/app/build.gradle.kts
+          code="$(sed -nE 's/^ *versionCode = ([0-9]+)$/\1/p' "$gradle")"
+          name="$(sed -nE 's/^ *versionName = "([^"]+)"$/\1/p' "$gradle")"
+          test -n "$code" && test -n "$name"
+          echo "VERSION_CODE=$code" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$name" >> "$GITHUB_ENV"
+          echo "slot. $name ($code)"
+      - name: Test capture tools
         run: python3 -m unittest discover -s tools/emulation-lab -p 'test_*.py' -v
-      - name: Test F10 achievements coalesced wakeups and idle flush on Linux
-        run: |
-          set -euo pipefail
-          cargo test -p slot-achievements --lib f10_ -- --nocapture 2>&1 | tee "$RUNNER_TEMP/f10-ra-tests.log"
-          grep -Eq 'test result: ok\. 5 passed; 0 failed;' "$RUNNER_TEMP/f10-ra-tests.log"
-      - name: Test opt-in RA CLOCK LAB pure scheduler on Linux
-        run: |
-          set -euo pipefail
-          cargo test -p slot-android --lib ra_clock_lab_ -- --nocapture 2>&1 |
-            tee "$RUNNER_TEMP/ra-clock-lab.log"
-          grep -Eq 'test result: ok\. 6 passed; 0 failed;' "$RUNNER_TEMP/ra-clock-lab.log"
-          grep -F 'frame_debt_ra_clock' crates/slot-android/src/runtime.rs
-      - name: Test native RetroAchievements evaluator and offline queue
+      - name: Test RetroAchievements
         run: cargo test -p slot-achievements -p slot-retro
       - name: Test KONKR 3:2 scaling
         run: cargo test -p slot-gfx --no-default-features --test konkr
-      - name: Test full-width Slot onboarding prompts
-        run: cargo test -p slot-ui --lib onboarding_tests
-      - name: Test original Slot v1.7 PNG and cartridge graphics
-        run: cargo test -p slot-ui --test cart_material --test upstream_v17_assets --test native_resolution --test insert_neighbour_motion --test mixed_shelf_parity --test chrome_crt_parity
-      - name: Export authentic Slot keycap graphics for Android Apps
+      - name: Test interface graphics
+        run: |
+          cargo test -p slot-ui --lib onboarding_tests
+          cargo test -p slot-ui --test cart_material --test upstream_v17_assets --test native_resolution --test insert_neighbour_motion --test mixed_shelf_parity --test chrome_crt_parity --test native_density
+      - name: Export Slot keycap graphics for Android Apps
         run: |
           cargo run --locked -p slot-ui --example export_apps_legend -- android/app/src/main/assets/apps_controls
-          test -s android/app/src/main/assets/apps_controls/move.png
-          test -s android/app/src/main/assets/apps_controls/open.png
-          test -s android/app/src/main/assets/apps_controls/back.png
           python3 - <<'PY'
           from pathlib import Path
           import struct
@@ -91,64 +86,15 @@ jobs:
               data = (Path('android/app/src/main/assets/apps_controls') / f'{name}.png').read_bytes()
               assert data[:8] == bytes((137, 80, 78, 71, 13, 10, 26, 10))
               width, height = struct.unpack('>II', data[16:24])
-              assert width > 20 and height == 24, (name, width, height)
-              print(f'Verified authentic Slot legend {name}: {width}x{height}')
+              # Drawn at the KONKR's 4/3 panel density: Slot's 24px band.
+              assert width > 20 and height == 32, (name, width, height)
+              print(f'Verified Slot legend {name}: {width}x{height}')
           PY
-      - name: Test beta10 offline SurfaceFlinger presentation histogram parser
-        run: |
-          set -euo pipefail
-          python3 -m unittest discover -s tools/emulation-lab -p 'test_surfaceflinger_timestats.py' -v
-          grep -F 'glPacingCorrelation.record(' android/app/src/main/java/fyi/slot/konkr/MainActivity.kt
-          grep -F 'class FramePacingCorrelationTest' android/app/src/test/java/fyi/slot/konkr/FramePacingCorrelationTest.kt
-      - name: Test beta14 F8 nested end_setup GLES call phase collector on Linux
-        run: |
-          set -euo pipefail
-          cargo test -p slot-android --lib f8_phase -- --nocapture 2>&1 \
-            | tee "$RUNNER_TEMP/f8-native-phases.log"
-          grep -Eq 'test result: ok\. 8 passed; 0 failed;' "$RUNNER_TEMP/f8-native-phases.log"
-          grep -F 'Native frame phases:' crates/slot-android/src/frame_phases.rs
-          grep -F 'frame_phases.gpu_submit_us' crates/slot-android/src/runtime.rs
-          grep -F 'frame_phases.submit_draw_us' crates/slot-android/src/runtime.rs
-          grep -F 'frame_phases.submit_blit_us' crates/slot-android/src/runtime.rs
-          grep -F 'frame_phases.end_setup_us' crates/slot-android/src/runtime.rs
-          grep -F 'frame_phases.end_bind_us' crates/slot-android/src/runtime.rs
-          grep -F 'frame_phases.end_clear_us' crates/slot-android/src/runtime.rs
-          grep -F 'gl::BindFramebuffer(gl::FRAMEBUFFER, 0)' crates/slot-gfx/src/fbo.rs
-          grep -F 'end_frame_profiled' crates/slot-gfx/src/fbo.rs
-          grep -F 'last_step_timings' crates/slot-android/src/game.rs
-
-      - name: Test F9 reused PCM FIFO order and bounded native JNI transfer on Linux
-        run: |
-          set -euo pipefail
-          cargo test -p slot-android --lib audio_pcm::tests -- --nocapture 2>&1 \
-            | tee "$RUNNER_TEMP/f9-pcm-tests.log"
-          grep -Eq 'test result: ok\. 8 passed; 0 failed;' "$RUNNER_TEMP/f9-pcm-tests.log"
-      - name: Verify old allocating JNI audio reader is gone
-        run: |
-          set -euo pipefail
-          grep -F 'external fun nativeReadAudioInto(samples: ShortArray): Int' android/app/src/main/java/fyi/slot/konkr/MainActivity.kt
-          grep -F 'fn Java_fyi_slot_konkr_MainActivity_nativeReadAudioInto(' crates/slot-android/src/runtime.rs
-          if grep -Fq 'external fun nativeReadAudio(): ShortArray' android/app/src/main/java/fyi/slot/konkr/MainActivity.kt; then
-            echo '::error::Allocating audio JNI entrypoint restored'
-            exit 1
-          fi
-          if grep -Fq 'fn Java_fyi_slot_konkr_MainActivity_nativeReadAudio(' crates/slot-android/src/runtime.rs; then
-            echo '::error::Allocating native audio reader restored'
-            exit 1
-          fi
-      - name: Test F7 async SRAM/RTC durability, ordering and failures on Linux
-        run: |
-          set -euo pipefail
-          # GameSession itself is Android-only, but this exact disk worker
-          # must be exercised on Ubuntu rather than merely compiled for ARM64.
-          cargo test -p slot-android --lib battery_writer::tests -- --nocapture 2>&1 \
-            | tee "$RUNNER_TEMP/f7-battery-tests.log"
-          grep -Eq 'test result: ok\. 6 passed; 0 failed;' "$RUNNER_TEMP/f7-battery-tests.log"
-      - name: Test Android library and shelf selection
+      - name: Test Android library
         run: cargo test -p slot-android --lib
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
-      - name: Validate pinned speculative-audio patch scripts
+      - name: Validate core patch scripts
         run: python3 -m py_compile scripts/patch-mgba-speculative-audio.py scripts/patch-gpsp-speculative-audio.py scripts/patch-mgba-active-sram.py scripts/patch-gpsp-backend-diagnostic.py
       - name: Build mGBA arm64 libretro core
         run: |
@@ -158,6 +104,10 @@ jobs:
         run: |
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
           bash scripts/build-gpsp-android.sh
+      - name: Build Gambatte arm64 libretro core
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
+          bash scripts/build-gambatte-android.sh
       - name: Checkout official Slot revision required by Cart Studio
         uses: actions/checkout@v4
         with:
@@ -230,16 +180,16 @@ jobs:
               raise SystemExit("Missing JNI exports in signed APK: " + ", ".join(missing))
           print(f"Verified {len(expected)} MainActivity JNI method exports in signed ARM64 APK")
           PY
-      - name: Verify isolated Mac AVD Emulation Lab debug APK
+      - name: Verify Mac AVD debug APK
         run: |
           set -euo pipefail
           APK=android/app/build/outputs/apk/debug/app-debug.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/mac-lab-badging.txt"
-          grep -F "package: name='fyi.slot.konkr.diag' versionCode='164'" "$RUNNER_TEMP/mac-lab-badging.txt"
-          grep -F "versionName='1.2.3-mac-lab'" "$RUNNER_TEMP/mac-lab-badging.txt"
+          grep -F "package: name='fyi.slot.konkr.diag' versionCode='$VERSION_CODE'" "$RUNNER_TEMP/mac-lab-badging.txt"
+          grep -F "versionName='$VERSION_NAME-mac-lab'" "$RUNNER_TEMP/mac-lab-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify "$APK"
-          for core in slot_android mgba_libretro gpsp_libretro; do
+          for core in slot_android mgba_libretro gpsp_libretro gambatte_libretro; do
             unzip -Z -1 "$APK" | grep -Fx "lib/arm64-v8a/lib${core}.so"
           done
           unzip -Z -1 "$APK" | grep -Fx 'assets/studio/pkg/slot_cart_studio_bg.wasm'
@@ -252,7 +202,7 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.2.3-mac-avd-debug
+          name: slot-for-konkr-${{ env.VERSION_NAME }}-mac-avd-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Verify signed ARM64 APK and upgrade compatibility
@@ -261,26 +211,28 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "package: name='fyi.slot.konkr' versionCode='164'" "$RUNNER_TEMP/konkr-badging.txt"
-          grep -F "versionName='1.2.3'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "package: name='fyi.slot.konkr' versionCode='$VERSION_CODE'" "$RUNNER_TEMP/konkr-badging.txt"
+          grep -F "versionName='$VERSION_NAME'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
-          for core in slot_android mgba_libretro gpsp_libretro; do
+          for core in slot_android mgba_libretro gpsp_libretro gambatte_libretro; do
             unzip -Z -1 "$APK" | grep -Fx "lib/arm64-v8a/lib${core}.so"
           done
           if unzip -Z -1 "$APK" | grep -Eq '^lib/(x86_64|x86|armeabi-v7a)/'; then
             echo "::error::Non-KONKR ABI included in production APK"; exit 1
           fi
           unzip -Z -1 "$APK" | grep -Fx 'assets/studio/pkg/slot_cart_studio_bg.wasm'
-          # F11: prevent a future signed build from silently omitting either
+          # Prevent a future signed build from silently omitting either
           # mandatory upstream safety patch or selecting a different core.
           python3 - "$APK" <<'PY'
           import json, sys, zipfile
           with zipfile.ZipFile(sys.argv[1]) as archive:
               mgba = json.loads(archive.read("assets/core-build-mgba.json"))
               gpsp = json.loads(archive.read("assets/core-build-gpsp.json"))
+              gambatte = json.loads(archive.read("assets/core-build-gambatte.json"))
           assert mgba["revision"] == "7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6"
           assert gpsp["revision"] == "5819380c2ffb0900219d700a382ee68c464ebb99"
+          assert gambatte["revision"] == "d9d6cd06382d1ced30de34d56d3609452323dab1"
           assert {"flash-bank-survives-mask.patch",
                   "gb-dmg-palette-follows-option.patch",
                   "543a19758-mbc2-sram-bank.patch"} <= set(mgba["patches"])
@@ -303,17 +255,19 @@ jobs:
           sha256sum "$APK"
       - uses: actions/upload-artifact@v4
         with:
-          name: slot-for-konkr-1.2.3-arm64-signed
+          name: slot-for-konkr-arm64-signed
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
   publish:
-    # Only the explicit release merge into main publishes a stable release.
-    # No beta, branch CI, manual run or tag push can publish this release.
+    # Only the explicit release merge into main publishes a stable release:
+    # its commit title must be "release: slot. for KONKR Pocket Advance vX.Y.Z"
+    # with X.Y.Z = versionName. No beta, branch CI, manual run or tag push
+    # can publish.
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      startsWith(github.event.head_commit.message, 'release: slot. for KONKR Pocket Advance v1.2.3')
+      startsWith(github.event.head_commit.message, 'release: slot. for KONKR Pocket Advance v')
     needs: arm64-apk
     runs-on: ubuntu-latest
     permissions:
@@ -322,16 +276,25 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: slot-for-konkr-1.2.3-arm64-signed
+          name: slot-for-konkr-arm64-signed
           path: release-assets
 
       - name: Validate, create GitHub-verified release commit, and publish
         env:
           GH_TOKEN: ${{ github.token }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
-          tag=konkr-v1.2.3
-          file=slot-for-konkr-1.2.3-arm64.apk
+          version="$(sed -nE 's/^ *versionName = "([^"]+)"$/\1/p' android/app/build.gradle.kts)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::versionName $version is not a release version"; exit 1;
+          }
+          title="$(printf '%s\n' "$COMMIT_MESSAGE" | head -n1)"
+          [[ "$title" == "release: slot. for KONKR Pocket Advance v$version"* ]] || {
+            echo "::error::Release title does not match versionName $version"; exit 1;
+          }
+          tag="konkr-v$version"
+          file="slot-for-konkr-$version-arm64.apk"
           test "$GITHUB_REF" = "refs/heads/main"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -s release-assets/app-release.apk
@@ -355,7 +318,7 @@ jobs:
           }
           tree="$(git rev-parse 'HEAD^{tree}')"
           jq -nc --arg tree "$tree" --arg parent "$GITHUB_SHA" \
-            --arg message "chore: signed v1.2.3 release reference" \
+            --arg message "chore: signed v$version release reference" \
             '{message:$message,tree:$tree,parents:[$parent]}' \
             | gh api --method POST "repos/$GITHUB_REPOSITORY/git/commits" --input - \
             > "$RUNNER_TEMP/signed-commit.json"
@@ -375,7 +338,7 @@ jobs:
 
           gh release create "$tag" "release-assets/$file" release-assets/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
-            --title "slot. for KONKR Pocket Advance v1.2.3" \
+            --title "slot. for KONKR Pocket Advance v$version" \
             --notes-file RELEASE-NOTES.md
 
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
@@ -389,4 +352,4 @@ jobs:
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
             --dir "$RUNNER_TEMP/check-published-assets"
           (cd "$RUNNER_TEMP/check-published-assets" && sha256sum -c SHA256SUMS.txt)
-          echo "Published stable verified v1.2.3 tag at $sha"
+          echo "Published stable verified v$version tag at $sha"

@@ -14,7 +14,7 @@ fn game_cart() -> Cart {
     }
 }
 
-fn frame<'a>(cart: &'a Cart, over: bool, screen: f32, game: bool) -> Vec<Draw> {
+fn frame(cart: &Cart, over: bool, screen: f32, game: bool) -> Vec<Draw> {
     let mut out = Vec::new();
     SlotChrome {
         cart,

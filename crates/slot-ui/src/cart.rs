@@ -3,10 +3,11 @@ use slot_store::{Cart, Outline, Platform};
 
 use crate::art;
 use crate::bitmaps::{self, Mould, BOARD_H, BOARD_W};
+use crate::density::{self, px};
 // The KONKR core-picker still uses its own BOARD_W/H, which differ from the
 // official v1.7 visual bitmap 360x212. Cart layers use the bitmap dimensions.
 use crate::shell::{shell_for, Finish, Shell};
-use crate::silhouette::{cart_mask, gb_cart_mask, GbShell};
+use crate::silhouette::{cart_mask, dense_mask, gb_cart_mask, GbShell};
 use crate::text;
 
 pub const CART_W: u32 = 360;
@@ -26,8 +27,6 @@ pub const fn label_panel(w: u32, h: u32) -> (u32, u32, u32, u32) {
         (h * 877 + 500) / 1000,
     )
 }
-
-pub const LABEL_WELL: [u8; 3] = [0x8d, 0x8d, 0x90];
 
 pub const LABEL_X: u32 = label_panel(CART_W, CART_H).0;
 pub const LABEL_Y: u32 = label_panel(CART_W, CART_H).1;
@@ -72,9 +71,10 @@ struct Spec {
     label: (u32, u32, u32, u32),
     mask: &'static [u8],
     mould: Mould,
-    paint: &'static [u8],
+    shell: Option<GbShell>,
 }
 
+#[derive(Copy, Clone)]
 enum Shape {
     Gba,
     Gb(GbShell),
@@ -94,20 +94,6 @@ pub fn gb_shell_of(cart: &Cart) -> Option<GbShell> {
     }
 }
 
-pub fn label_rect(shell: Option<GbShell>) -> (f32, f32, f32, f32) {
-    let s = spec(match shell {
-        None => Shape::Gba,
-        Some(shell) => Shape::Gb(shell),
-    });
-    let (x, y, w, h) = s.label;
-    (
-        x as f32 / s.w as f32,
-        y as f32 / s.h as f32,
-        w as f32 / s.w as f32,
-        h as f32 / s.h as f32,
-    )
-}
-
 fn shape_of(cart: &Cart) -> Shape {
     match gb_shell_of(cart) {
         None => Shape::Gba,
@@ -123,7 +109,7 @@ fn spec(shape: Shape) -> Spec {
             label: (LABEL_X, LABEL_Y, LABEL_W, LABEL_H),
             mask: cart_mask(),
             mould: Mould::Gba,
-            paint: bitmaps::gba_cart(),
+            shell: None,
         },
         Shape::Gb(shell) => Spec {
             w: GB_CART_W,
@@ -137,10 +123,7 @@ fn spec(shape: Shape) -> Spec {
                 GbShell::Notched => Mould::Notched,
                 GbShell::Rounded => Mould::Rounded,
             },
-            paint: match shell {
-                GbShell::Notched => bitmaps::gb_cart(),
-                GbShell::Rounded => bitmaps::gbc_cart(),
-            },
+            shell: Some(shell),
         },
     }
 }
@@ -165,57 +148,60 @@ pub fn cart_box(platform: Platform) -> (u32, u32) {
 }
 
 pub fn cart_shadow() -> CartFace {
-    shadow(CART_W, CART_H, cart_mask())
+    shadow(spec(Shape::Gba))
 }
 
 pub fn gb_cart_shadow(shell: GbShell) -> CartFace {
-    shadow(GB_CART_W, GB_CART_H, gb_cart_mask(shell))
+    shadow(spec(Shape::Gb(shell)))
 }
 
-fn shadow(w: u32, h: u32, mask: &[u8]) -> CartFace {
-    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-    for cover in mask {
+fn shadow(s: Spec) -> CartFace {
+    let mut rgba = Vec::with_capacity((px(s.w) * px(s.h) * 4) as usize);
+    for cover in mask_of(&s).iter() {
         rgba.extend_from_slice(&[0, 0, 0, *cover]);
     }
-    CartFace { rgba, w, h }
+    CartFace { rgba, w: s.w, h: s.h }
+}
+
+/// The outline at the current density.
+fn mask_of(s: &Spec) -> std::borrow::Cow<'static, [u8]> {
+    if density::is_dense() {
+        std::borrow::Cow::Owned(dense_mask(s.shell).to_vec())
+    } else {
+        std::borrow::Cow::Borrowed(s.mask)
+    }
 }
 
 pub fn cart_face(cart: &Cart) -> CartFace {
     let (lw, lh) = label_size(cart);
-    let art = cart.label.as_deref().and_then(|p| art::cover(p, lw, lh));
+    let art = cart.label.as_deref().and_then(|p| art::cover(p, px(lw), px(lh)));
     cart_face_with(cart, art)
+}
+
+/// A 1x bitmap layer at panel density. The upstream PNGs have no larger
+/// source, so they are filtered up once; text, art and edges are not.
+fn dense_layer(face: CartFace) -> CartFace {
+    if !density::is_dense() {
+        return face;
+    }
+    let rgba = crate::native_assets::resample(&face.rgba, face.w, face.h, px(face.w), px(face.h));
+    CartFace { rgba, w: face.w, h: face.h }
 }
 
 pub fn is_clear(cart: &Cart) -> bool {
     shell_for(cart).finish != Finish::Solid
 }
 
-/// Whether the shelf draws this cart's coloured interior under its plastic: any clear cart.
-pub fn shows_interior(cart: &Cart) -> bool {
-    is_clear(cart)
-}
-
-/// The back plastic, with the game's colour blended onto it by the same overlay as the shells, at
-/// 80% opacity. A GBA cart uses `gba_interior.png`, a Game Boy pak `gb_interior.png`, and a Game
-/// Boy Color pak `gbc_interior.png`. Same size as that cart's board and face.
+/// The back plastic at 80% opacity. A GBA cart uses `gba_interior.png` with
+/// the game's colour blended onto it by the same overlay as the shells; a pak
+/// gets its drawn back shell, the same one the core picker opens onto.
 pub fn cart_interior(cart: &Cart) -> CartFace {
+    if gb_shell_of(cart).is_some() {
+        return crate::board::pak_shell_face(cart, CLEAR_ALPHA);
+    }
     let colour = shell_for(cart).colour;
-    let (src, w, h, mask) = match gb_shell_of(cart) {
-        None => (bitmaps::gba_interior(), BOARD_W, BOARD_H, None),
-        Some(shell) => {
-            let s = spec(Shape::Gb(shell));
-            let src = match shell {
-                GbShell::Notched => bitmaps::gb_interior(),
-                GbShell::Rounded => bitmaps::gbc_interior(),
-            };
-            (src, s.w, s.h, Some(s.mask))
-        }
-    };
-    let mut rgba = src.to_vec();
-    for (i, px) in rgba.chunks_exact_mut(4).enumerate() {
-        if let Some(mask) = mask {
-            px[3] = ((px[3] as u32 * mask[i] as u32 + 127) / 255) as u8;
-        }
+    let mut rgba = bitmaps::gba_interior().to_vec();
+    for px in rgba.chunks_exact_mut(4) {
         if px[3] == 0 {
             continue;
         }
@@ -224,31 +210,28 @@ pub fn cart_interior(cart: &Cart) -> CartFace {
         }
         px[3] = ((u32::from(px[3]) * u32::from(CLEAR_ALPHA) + 127) / 255) as u8;
     }
-    CartFace { rgba, w, h }
+    dense_layer(CartFace { rgba, w: BOARD_W, h: BOARD_H })
 }
 
-/// The board a clear cart's plastic is drawn over, between the back and front shells. A GBA cart
-/// gets `board.png`. A pak gets `gb_board.png`, cut to the notched or rounded outline.
-pub fn cart_backing(shell: Option<GbShell>) -> CartFace {
-    let Some(shell) = shell else {
-        return CartFace {
-            rgba: bitmaps::board().to_vec(),
-            w: BOARD_W,
-            h: BOARD_H,
-        };
-    };
+/// The board a clear cart's plastic is drawn over, between the back and front
+/// shells: the same drawn board the core picker opens onto, so a clear cart
+/// shows on the shelf what it shows when it opens.
+pub fn cart_backing(cart: &Cart) -> CartFace {
+    match gb_shell_of(cart) {
+        Some(_) => crate::board::pak_shelf_board(cart),
+        None => crate::board::gba_shelf_board(cart),
+    }
+}
+
+/// Cut a face drawn at a pak's size to that pak's outline.
+pub(crate) fn cut_to_shell(face: &mut CartFace, shell: GbShell) {
     let s = spec(Shape::Gb(shell));
-    let mut rgba = bitmaps::gb_board().to_vec();
-    for (px, cover) in rgba.chunks_exact_mut(4).zip(s.mask) {
+    for (px, cover) in face.rgba.chunks_exact_mut(4).zip(mask_of(&s).iter()) {
         px[3] = ((px[3] as u32 * *cover as u32 + 127) / 255) as u8;
     }
-    CartFace {
-        rgba,
-        w: s.w,
-        h: s.h,
-    }
 }
 
+/// Logical label size; artwork for `cart_face_with` is `px()` of it.
 pub fn label_size(cart: &Cart) -> (u32, u32) {
     let (_, _, lw, lh) = spec(shape_of(cart)).label;
     (lw, lh)
@@ -263,13 +246,13 @@ pub fn label_size(cart: &Cart) -> (u32, u32) {
 pub fn cart_face_with_material(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
     let artwork = art.or_else(|| {
         let (w, h) = label_size(cart);
-        cart.label.as_deref().and_then(|path| crate::art::cover(path, w, h))
+        cart.label.as_deref().and_then(|path| crate::art::cover(path, px(w), px(h)))
     });
     let plastic = cart_face_with(cart, artwork);
     if !is_clear(cart) {
         return plastic;
     }
-    let backing = cart_backing(gb_shell_of(cart));
+    let backing = cart_backing(cart);
     let interior = cart_interior(cart);
     assert_eq!((plastic.w, plastic.h), (backing.w, backing.h));
     assert_eq!((plastic.w, plastic.h), (interior.w, interior.h));
@@ -301,7 +284,7 @@ fn blend_over(dst: &mut [u8], src: &[u8]) {
 
 pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
     let s = spec(shape_of(cart));
-    let mut face = shell_face(&s, &shell_for(cart));
+    let mut face = dense_layer(shell_face(&s, &shell_for(cart)));
     let label = match art {
         Some(rgba) => rgba,
         None => generated_label(&s, &label_text(cart)),
@@ -312,7 +295,7 @@ pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
 }
 
 fn clip_to_silhouette(s: &Spec, face: &mut CartFace) {
-    for (px, cover) in face.rgba.chunks_exact_mut(4).zip(s.mask) {
+    for (px, cover) in face.rgba.chunks_exact_mut(4).zip(mask_of(s).iter()) {
         px[3] = ((px[3] as u32 * *cover as u32 + 127) / 255) as u8;
     }
 }
@@ -387,162 +370,6 @@ pub fn label_tags(stem: &str) -> Vec<String> {
     }
     out
 }
-
-fn luma(px: &[u8]) -> u32 {
-    (px[0] as u32 * 77 + px[1] as u32 * 150 + px[2] as u32 * 29) >> 8
-}
-
-fn shade_of(paint: &[u8], w: u32, h: u32, label: (u32, u32, u32, u32)) -> Vec<u32> {
-    let (lx, ly, lw, lh) = label;
-    let mut sum = 0u64;
-    let mut n = 0u64;
-    for y in 0..h {
-        for x in 0..w {
-            let i = ((y * w + x) * 4) as usize;
-            if paint[i + 3] < 128 {
-                continue;
-            }
-            let on_label = (lx..lx + lw).contains(&x) && (ly..ly + lh).contains(&y);
-            if on_label {
-                continue;
-            }
-            sum += u64::from(luma(&paint[i..]));
-            n += 1;
-        }
-    }
-    let mean = (sum / n.max(1)).max(1) as u32;
-    paint
-        .chunks_exact(4)
-        .map(|px| (luma(px) * 256 / mean).clamp(176, 256))
-        .collect()
-}
-
-/// The neutral shell asset for a mould: 50% grey plastic with the console name embossed on the
-/// shoulder and the grey label box. `clear` makes the see-through variant, which is its own
-/// asset with a rim and a sheen. The game's colour is blended on by `overlay`.
-pub fn neutral_shell(mould: Mould, clear: bool) -> Vec<u8> {
-    let shape = match mould {
-        Mould::Gba => Shape::Gba,
-        Mould::Notched => Shape::Gb(GbShell::Notched),
-        Mould::Rounded => Shape::Gb(GbShell::Rounded),
-    };
-    let s = spec(shape);
-    assert_eq!(
-        s.paint.len(),
-        (s.w * s.h * 4) as usize,
-        "cartridge template is not {}x{}",
-        s.w,
-        s.h
-    );
-    let shade = shade_of(s.paint, s.w, s.h, s.label);
-    let mut rgba = vec![0u8; (s.w * s.h * 4) as usize];
-    let inside = |x: i64, y: i64| {
-        (0..i64::from(s.w)).contains(&x)
-            && (0..i64::from(s.h)).contains(&y)
-            && s.mask[(y * i64::from(s.w) + x) as usize] >= 128
-    };
-    for (i, (dst, shade)) in rgba.chunks_exact_mut(4).zip(shade).enumerate() {
-        let (x, y) = ((i as u32 % s.w) as i64, (i as u32 / s.w) as i64);
-        let grey = if clear {
-            // Glassy plastic: flat 50% grey body, a darker rim where the walls are thick, and a
-            // faint lighter diagonal sheen across the face.
-            let rim = (1..=CLEAR_RIM as i64).find(|d| {
-                ![(x - d, y), (x + d, y), (x, y - d), (x, y + d)]
-                    .iter()
-                    .all(|&(px, py)| inside(px, py))
-            });
-            let sheen = (x + y - i64::from(s.w) / 3).abs() < i64::from(s.w) / 14;
-            match (rim, sheen) {
-                (Some(_), _) => NEUTRAL - 28,
-                (None, true) => NEUTRAL + 24,
-                (None, false) => NEUTRAL,
-            }
-        } else {
-            // The mould's shading (256 is unshaded) falls below 50% grey.
-            NEUTRAL - ((256 - shade.min(256)) / 2) as u8
-        };
-        dst.copy_from_slice(&[grey, grey, grey, 255]);
-    }
-    let mut face = CartFace {
-        rgba,
-        w: s.w,
-        h: s.h,
-    };
-    clip_to_silhouette(&s, &mut face);
-    dress(&s, &mut face.rgba);
-    face.rgba
-}
-
-fn dress(s: &Spec, rgba: &mut [u8]) {
-    let (x0, y0, lw, lh) = s.label;
-    for y in y0..y0 + lh {
-        for x in x0..x0 + lw {
-            let i = ((y * s.w + x) * 4) as usize;
-            if rgba[i + 3] == 0 {
-                continue;
-            }
-            rgba[i..i + 3].copy_from_slice(&LABEL_WELL);
-        }
-    }
-    let title = match s.mould {
-        Mould::Gba => "GAME BOY ADVANCE",
-        Mould::Notched => "GAME BOY",
-        Mould::Rounded => "GAME BOY COLOR",
-    };
-    stamp_console(rgba, s.w, s.h, title, y0);
-}
-
-fn stamp_console(rgba: &mut [u8], w: u32, h: u32, title: &str, label_top: u32) {
-    let Some(font) = text::label_font() else {
-        return;
-    };
-    let band = label_top.max(1);
-    let layout = text::fit_box(font, title, w as f32 * 0.72, band as f32, 2, 26.0, 9.0);
-    let cov = text::coverage(w, band, &layout);
-    let mut ink_top = band;
-    let mut ink_bottom = 0u32;
-    for y in 0..band {
-        let row = &cov[(y * w) as usize..(y * w + w) as usize];
-        if row.iter().any(|a| *a > 0) {
-            ink_top = ink_top.min(y);
-            ink_bottom = y;
-        }
-    }
-    if ink_bottom < ink_top {
-        return;
-    }
-    let text_h = ink_bottom - ink_top + 1;
-    let dest_top = label_top.saturating_sub(3 + text_h);
-    for y in ink_top..=ink_bottom {
-        let dy = dest_top + (y - ink_top);
-        if dy >= h {
-            continue;
-        }
-        for x in 0..w {
-            let a = cov[(y * w + x) as usize] as u32;
-            if a == 0 {
-                continue;
-            }
-            let i = ((dy * w + x) * 4) as usize;
-            if rgba[i + 3] == 0 {
-                continue;
-            }
-            let base = [rgba[i], rgba[i + 1], rgba[i + 2]];
-            let ink = relief(base);
-            for c in 0..3 {
-                rgba[i + c] = ((ink[c] as u32 * a + base[c] as u32 * (255 - a)) / 255) as u8;
-            }
-        }
-    }
-}
-
-/// The embossed name is a darker grey than the plastic around it; the overlay then darkens
-/// whatever colour the game sets by the same proportion.
-fn relief(px: [u8; 3]) -> [u8; 3] {
-    px.map(|c| (c as u32 * 3 / 5) as u8)
-}
-
-const CLEAR_RIM: u32 = 5;
 
 /// How much of a clear shell is opaque: 80%.
 const CLEAR_ALPHA: u8 = 204;
@@ -643,8 +470,9 @@ fn lerp(a: [u8; 3], b: [u8; 3], num: u32, den: u32) -> [u8; 3] {
 fn generated_label(s: &Spec, title: &str) -> Vec<u8> {
     let (_, _, lw, lh) = s.label;
     let bg = label_colour(title);
-    let mut rgba = Vec::with_capacity((lw * lh * 4) as usize);
-    for _ in 0..lw * lh {
+    let (tw, th) = (px(lw), px(lh));
+    let mut rgba = Vec::with_capacity((tw * th * 4) as usize);
+    for _ in 0..tw * th {
         rgba.extend_from_slice(&[bg[0], bg[1], bg[2], 255]);
     }
 
@@ -665,7 +493,7 @@ fn generated_label(s: &Spec, title: &str) -> Vec<u8> {
             max_px,
             MIN_PX,
         );
-        text::draw_centred(&mut rgba, lw, lh, &layout, ink(bg));
+        text::draw_centred(&mut rgba, tw, th, &density::scaled(&layout), ink(bg));
     }
     rgba
 }
@@ -681,14 +509,19 @@ fn ink(bg: [u8; 3]) -> [u8; 3] {
 
 fn paste_label(s: &Spec, face: &mut CartFace, label: &[u8]) {
     let (lx, ly, lw, lh) = s.label;
-    for y in 0..lh {
-        for x in 0..lw {
+    let (lx, ly, lw, lh) = (px(lx), px(ly), px(lw), px(lh));
+    let (fw, fh) = (px(s.w), px(s.h));
+    if label.len() < (lw * lh * 4) as usize {
+        return;
+    }
+    for y in 0..lh.min(fh.saturating_sub(ly)) {
+        for x in 0..lw.min(fw.saturating_sub(lx)) {
             let src = ((y * lw + x) * 4) as usize;
             let a = label[src + 3] as u32;
             if a == 0 {
                 continue;
             }
-            let d = (((y + ly) * s.w + x + lx) * 4) as usize;
+            let d = (((y + ly) * fw + x + lx) * 4) as usize;
             for c in 0..3 {
                 face.rgba[d + c] =
                     ((label[src + c] as u32 * a + face.rgba[d + c] as u32 * (255 - a) + 127) / 255)

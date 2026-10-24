@@ -9,7 +9,19 @@ use std::thread;
 
 use slot_store::Cart;
 use slot_ui::{cart_face_with_material, cart_face, cart_interior, cart_backing,
-    gb_shell_of, is_clear, CartFace};
+    is_clear, CartFace};
+
+/// A cart face in panel texels, the size the GL thread uploads. Dense faces
+/// were drawn for the panel already; 1x faces are filtered up as before.
+fn panel_face(face: CartFace) -> CartFace {
+    use slot_ui::Face;
+    let (w, h) = face.texels();
+    if (w, h) != (face.w, face.h) {
+        return CartFace { rgba: face.rgba, w, h };
+    }
+    let (rgba, w, h) = slot_ui::native_rgba(&face.rgba, face.w, face.h);
+    CartFace { rgba, w, h }
+}
 
 type Key = (usize, usize);
 type WorkKey = (Key, u64);
@@ -53,7 +65,7 @@ impl CartRender {
                     while let Ok((key,face))=rx.recv() {
                         if cache.write(&key,&face).is_ok() {
                             written+=1;
-                            if written%16==0 {cache.trim();}
+                            if written.is_multiple_of(16) {cache.trim();}
                         }
                     }
                 }).ok().map(|_|tx)
@@ -88,22 +100,15 @@ impl CartRender {
                             _ => None,
                         };
                         let needs_write=cached.is_none();
-                        let pixels=cached.unwrap_or_else(|| {
-                            let original=cart_face_with_material(&cart,None);
-                            let (rgba,w,h)=slot_ui::native_rgba(
-                                &original.rgba,original.w,original.h);
-                            CartFace {rgba,w,h}
-                        });
+                        let pixels=cached.unwrap_or_else(||
+                            panel_face(cart_face_with_material(&cart,None)));
                         let layers = if include_material && is_clear(&cart) {
                             let original = [
                                 cart_interior(&cart),
-                                cart_backing(gb_shell_of(&cart)),
+                                cart_backing(&cart),
                                 cart_face(&cart),
                             ];
-                            Some(original.map(|face| {
-                                let (rgba,w,h)=slot_ui::native_rgba(&face.rgba,face.w,face.h);
-                                CartFace{rgba,w,h}
-                            }))
+                            Some(original.map(panel_face))
                         } else {None};
                         // Clone only on cache miss. Hand the face to the GL
                         // uploader before best-effort persistence is queued.
@@ -131,6 +136,7 @@ impl CartRender {
     /// was consumed on the GL thread. Workers never depend on a running GL loop.
     pub(crate) fn is_idle(&self) -> bool { self.pending.is_empty() }
 
+    #[cfg(test)]
     pub(crate) fn queued(&self, key: Key) -> bool {
         self.epochs.get(key.0).is_some_and(|epoch| self.pending.contains(&(key, *epoch)))
     }
@@ -232,14 +238,14 @@ mod tests {
         };
         renderer.request((4, 0), &favorite, false);
         assert!(renderer.queued((4, 0)));
-        let (((key, epoch), _, _)) = work.0.lock().unwrap().jobs.pop_front().expect("FAVORITES job");
+        let ((key, epoch), _, _) = work.0.lock().unwrap().jobs.pop_front().expect("FAVORITES job");
         assert_eq!(key, (4, 0));
         assert_eq!(epoch, 0);
         renderer.invalidate_shelf(4);
         assert!(!renderer.queued((4, 0)));
         renderer.request((4, 0), &favorite, false);
         assert!(renderer.queued((4, 0)));
-        let (((new_key, new_epoch), _, _)) = work.0.lock().unwrap().jobs.pop_front().expect("new FAVORITES job");
+        let ((new_key, new_epoch), _, _) = work.0.lock().unwrap().jobs.pop_front().expect("new FAVORITES job");
         assert_eq!((new_key,new_epoch), ((4,0),1));
         let face = || CartFace { rgba: vec![255; 4], w: 1, h: 1 };
         completed.send((((4,0),0),face(),None)).unwrap();

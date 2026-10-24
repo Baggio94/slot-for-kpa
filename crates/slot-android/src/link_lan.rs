@@ -147,13 +147,6 @@ pub struct HostInfo {
 }
 
 impl Advertiser {
-    pub fn start(local: Ipv4Addr, info: HostInfo) -> io::Result<Advertiser> {
-        Ok(Advertiser::start_with(
-            Box::new(Multicast::open(local)?),
-            info,
-        ))
-    }
-
     pub fn start_with(mut wire: Box<dyn Wire + Send>, info: HostInfo) -> Advertiser {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();

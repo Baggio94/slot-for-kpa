@@ -9,14 +9,14 @@ fn saving_and_loading_say_which_one_happened() {
 
 #[test]
 fn the_link_shortcut_on_the_wrong_core_says_to_switch() {
-    assert_eq!(Toast::NeedsGpsp.text(), "Please switch to gpSP");
+    assert_eq!(Toast::NeedsGpsp.text(), "Use gpSP to link");
     let f = toast_face(Toast::NeedsGpsp);
     assert!(f.rgba.chunks(4).any(|p| p[3] > 0), "the banner is blank");
 }
 
 #[test]
 fn a_cart_gpsp_cannot_link_says_there_is_no_link() {
-    assert_eq!(Toast::NoLink.text(), "No link support");
+    assert_eq!(Toast::NoLink.text(), "Can't link this game");
     let f = toast_face(Toast::NoLink);
     assert!(f.rgba.chunks(4).any(|p| p[3] > 0), "the banner is blank");
 }
@@ -44,8 +44,9 @@ fn the_banner_says_what_happened_and_never_what_is_on_screen() {
         ],
         "a banner was added or dropped: every face is uploaded by its place in this list"
     );
+    let palettes = all.len() - GbPalette::all().count();
     assert_eq!(
-        all[14..],
+        all[palettes..],
         GbPalette::all().map(Toast::Palette).collect::<Vec<_>>()[..],
         "the palette banners do not follow the fixed ones in palette order"
     );

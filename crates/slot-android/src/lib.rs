@@ -36,24 +36,22 @@ mod presentation_probe;
 #[path = "../../../third_party/slot-cart-studio/src/dat.rs"]
 mod studio_dat;
 // Reuse the exact upstream Slot wallpaper ordering and filtering.
-#[path = "../../slot/src/wallpaper.rs"]
 mod wallpaper;
 // Use Slot's original per-game Actual/Stretch geometry and video_mode.ini.
-#[path = "../../slot/src/video_mode.rs"]
 mod video_mode;
-#[path = "../../slot/src/thumb.rs"]
 mod thumb;
 mod retroarch_state;
 // Reuse the upstream 20 MiB XOR/LZ4 rewind ring without forking its algorithm.
-#[path = "../../slot/src/rewind.rs"]
 mod rewind;
 mod core_selection;
+// GB/GBC chip swap between mGBA and Gambatte: palettes and battery carry.
+#[cfg(any(test, target_os = "android"))]
+mod gb_core_switch;
 mod core_legend;
 // The original Slot TCP framing and cartridge-specific link selection are
 // shared directly; only the Linux Wi-Fi radio driver is replaced on Android.
 mod link_net;
 mod trusted_link;
-#[path = "../../slot/src/link_kind.rs"]
 mod link_kind;
 // Fork's LAN/mDNS wire format remains interoperable across devices.
 mod link_mdns;
@@ -69,7 +67,6 @@ mod link_play;
 // Compile Slot's exact mechanical plug and wireless adapter renderer from
 // upstream instead of recreating SVGs, timings, easing or positions.
 mod app;
-#[path = "../../slot/src/link_screen.rs"]
 mod link_screen;
 
 #[cfg(test)]
@@ -108,10 +105,9 @@ mod original_link_animation_tests {
 }
 
 // Original Slot 3-frame cable input lockstep and paired savestate framing.
-// Import by path so Android and original never diverge on these wire formats.
-#[path = "../../slot/src/cable.rs"]
+// Keep these wire formats byte-compatible with the original Slot.
+#[allow(dead_code)]
 mod cable;
-#[path = "../../slot/src/link_state.rs"]
 mod link_state;
 #[cfg(any(target_os = "android", all(test, feature = "runtime-tests")))]
 mod game;
@@ -124,7 +120,7 @@ mod egl_presentation;
 
 // Reuse upstream Slot's unmodified mechanical core picker: 420ms open,
 // 180ms chip hop, 320ms close and refusal shake.
-#[path = "../../slot/src/core_picker.rs"]
+#[allow(dead_code)]
 mod core_picker;
 
 #[cfg(test)]
@@ -158,6 +154,21 @@ mod original_picker_integration_tests {
         assert!(chip.lift > 0.9);
         assert!(chip.seated.is_none());
         assert_eq!(picker.chip(500 + HOP_MS).seated, Some(Core::Gpsp));
+    }
+
+    #[test]
+    fn game_boy_board_swaps_mgba_for_gambatte() {
+        let mut picker = CorePicker::open_with(Core::Mgba, Core::Gambatte, 0);
+        picker.start(0);
+        assert_eq!(picker.press(Press::Right, 500), Outcome::Nothing);
+        assert_eq!(picker.seat(), Core::Gambatte);
+        let seated = picker.chip(500 + HOP_MS);
+        assert_eq!(seated.seated, Some(Core::Gambatte));
+        assert_eq!(seated.across, 1.0);
+        assert_eq!(picker.press(Press::Right, 1000), Outcome::Refused);
+        assert_eq!(picker.press(Press::Left, 1500), Outcome::Nothing);
+        assert_eq!(picker.chip(1500 + HOP_MS).across, 0.0);
+        assert_eq!(picker.press(Press::Keep, 2000), Outcome::Write(Core::Mgba));
     }
 }
 

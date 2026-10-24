@@ -16,6 +16,9 @@ fn cover_rgba(src: &[u8], sw: u32, sh: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     }
 
     let scale = (w as f32 / sw as f32).max(h as f32 / sh as f32);
+    if scale > 1.0 {
+        return Some(enlarge(src, sw, sh, w, h, scale));
+    }
     let ox = (sw as f32 - w as f32 / scale) / 2.0;
     let oy = (sh as f32 - h as f32 / scale) / 2.0;
 
@@ -31,6 +34,20 @@ fn cover_rgba(src: &[u8], sw: u32, sh: u32, w: u32, h: u32) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// Cover by enlarging: a box average would blend neighbouring source pixels
+/// unweighted and soften the art, so crop the centre and Mitchell-filter it.
+fn enlarge(src: &[u8], sw: u32, sh: u32, w: u32, h: u32, scale: f32) -> Vec<u8> {
+    let cw = ((w as f32 / scale).round() as u32).clamp(1, sw);
+    let ch = ((h as f32 / scale).round() as u32).clamp(1, sh);
+    let (cx, cy) = ((sw - cw) / 2, (sh - ch) / 2);
+    let mut crop = Vec::with_capacity((cw * ch * 4) as usize);
+    for y in cy..cy + ch {
+        let row = ((y * sw + cx) * 4) as usize;
+        crop.extend_from_slice(&src[row..row + (cw * 4) as usize]);
+    }
+    crate::native_assets::resample(&crop, cw, ch, w, h)
 }
 
 fn box_average(src: &[u8], sw: u32, sh: u32, x0: f32, y0: f32, x1: f32, y1: f32) -> [u8; 4] {
@@ -187,5 +204,26 @@ fn unpremultiply(rgba: &mut [u8]) {
         for c in &mut px[..3] {
             *c = ((*c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enlarged_labels_are_filtered_like_the_panel_upscale() {
+        // A 264x136 GBA label at the KONKR's 4/3: what beta7 got by
+        // Mitchell-filtering the whole 1x cart, not a softer box blend.
+        let (sw, sh) = (264, 136);
+        let src: Vec<u8> = (0..sw * sh)
+            .flat_map(|i| {
+                let (x, y) = (i % sw, i / sw);
+                let v = if (x / 3 + y / 5) % 2 == 0 { 20 } else { 230 };
+                [v, 255 - v, (x * 7) as u8, 255]
+            })
+            .collect();
+        let covered = cover_rgba(&src, sw, sh, 352, 181).unwrap();
+        assert_eq!(covered, crate::native_assets::resample(&src, sw, sh, 352, 181));
     }
 }
