@@ -11,7 +11,7 @@ fn block(out: &mut Vec<u8>, tag: &[u8; 4], payload: &[u8]) {
     out.extend_from_slice(tag);
     out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     out.extend_from_slice(payload);
-    while out.len() % 8 != 0 { out.push(0); }
+    while !out.len().is_multiple_of(8) { out.push(0); }
 }
 
 pub fn encode(raw: &[u8]) -> Result<Vec<u8>, String> {

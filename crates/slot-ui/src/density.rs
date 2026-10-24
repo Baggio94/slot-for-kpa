@@ -63,7 +63,7 @@ pub fn texels(w: u32, h: u32, rgba_len: usize) -> (u32, u32) {
     // Each side was rounded on its own: search the few widths near the
     // estimate for the pair that one density gives.
     (guess - 3..=guess + 3)
-        .filter(|&tw| tw > 0 && texels % tw as u64 == 0)
+        .filter(|&tw| tw > 0 && texels.is_multiple_of(tw as u64))
         .map(|tw| (tw as u32, (texels / tw as u64) as u32))
         .find(|&(tw, th)| {
             // Some one density must round `w` to `tw` and `h` to `th`.

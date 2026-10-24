@@ -371,7 +371,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRaAccountConfigure
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRaPrefetchHash(
     mut env: JNIEnv<'_>, _this: JObject<'_>, hash: JString<'_>, console: jint,
 ) {
-    if !matches!(console, 4 | 5 | 6) { return; }
+    if !matches!(console, 4..=6) { return; }
     let Ok(hash) = env.get_string(&hash) else { return };
     let hash = hash.to_string_lossy().into_owned();
     if hash.len() != 32 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {

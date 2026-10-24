@@ -449,9 +449,8 @@ impl TcpLink {
         report_link_rom_phase("consent", "awaiting_remote");
         self.send(slot_retro::NETPACKET_RELIABLE, b"R4OK");
         let approval = take_frame(self, Duration::from_secs(60), cancel)
-            .map_err(|error| {
+            .inspect_err(|error| {
                 report_link_transport_fault("rom_consent", &error.to_string());
-                error
             })?;
         if approval.as_slice() != b"R4OK" {
             return Err(invalid("Mixed-ROM peer did not authorize cartridge exchange"));
@@ -466,9 +465,8 @@ impl TcpLink {
         manifest.extend_from_slice(&local.rom_sha256);
         report_link_rom_phase("manifest", "awaiting_remote");
         let remote_meta = exchange_frame(self, &manifest, until, cancel)
-            .map_err(|error| {
+            .inspect_err(|error| {
                 report_link_transport_fault("rom_manifest", &error.to_string());
-                error
             })?;
         if remote_meta.len() != 44 || &remote_meta[..4] != b"R4M0" ||
             remote_meta[8..12] != peer.game ||

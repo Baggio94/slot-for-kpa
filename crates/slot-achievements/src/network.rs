@@ -446,7 +446,7 @@ pub(crate) fn run(
         // Android SAF fingerprints arrive independently of opening a game.
         // Keep the HTTP queue small and deduplicated, with no ROM bytes retained.
         for (hash, console) in smart_hashes.try_iter().take(32) {
-            if !matches!(console, 4 | 5 | 6) || hash.len() != 32 ||
+            if !matches!(console, 4..=6) || hash.len() != 32 ||
                 !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
                 continue;
             }

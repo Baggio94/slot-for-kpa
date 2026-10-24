@@ -271,6 +271,19 @@ pub fn on_grid(rect: [f32; 4], texels: (u32, u32), grid: [f32; 2]) -> (f32, f32,
     )
 }
 
+impl Drop for Sprites {
+    fn drop(&mut self) {
+        if self.context_lost {
+            return;
+        }
+        unsafe {
+            gl::DeleteTextures(self.textures.len() as i32, self.textures.as_ptr());
+            gl::DeleteTextures(1, &self.white);
+            gl::DeleteProgram(self.prog);
+        }
+    }
+}
+
 #[cfg(test)]
 mod grid_tests {
     use super::on_grid;
@@ -287,18 +300,5 @@ mod grid_tests {
         assert_eq!(on_grid([10.5, 7.0, 60.0, 24.0], (60, 24), k), (10.5, 7.0, 60.0, 24.0));
         // Upstream's own 720x480 canvas is drawn exactly as before.
         assert_eq!(on_grid([10.4, 7.6, 60.0, 24.0], (60, 24), [1.0; 2]), (10.4, 7.6, 60.0, 24.0));
-    }
-}
-
-impl Drop for Sprites {
-    fn drop(&mut self) {
-        if self.context_lost {
-            return;
-        }
-        unsafe {
-            gl::DeleteTextures(self.textures.len() as i32, self.textures.as_ptr());
-            gl::DeleteTextures(1, &self.white);
-            gl::DeleteProgram(self.prog);
-        }
     }
 }

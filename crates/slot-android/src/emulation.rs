@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{core_selection, settings::{self, Settings, Shader, Bezel}};
 use slot_store::{Core, Platform};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmulationProfile {
     pub show_fps: bool,
@@ -27,19 +27,6 @@ pub struct EmulationProfile {
     pub turbo_override: Option<bool>, // original KONKR "X/Y Buttons"
     pub rumble_override: Option<bool>,
     pub eject_save_override: Option<bool>,
-}
-impl Default for EmulationProfile {
-    fn default() -> Self {
-        Self { show_fps: false, show_fps_override: None,
-            responsive_loop: false, run_ahead_frames: 0,
-            screen_shader: None, screen_bezel: None,
-            colour_correction_override: None,
-            gb_palettes_override: None, ff_speed_override: None,
-            ff_sound_override: None, rewind_override: None,
-            rewind_speed_override: None,
-            turbo_override: None, rumble_override: None,
-            eject_save_override: None }
-    }
 }
 impl EmulationProfile {
     pub fn from_settings(settings: &Settings) -> Self {
@@ -95,7 +82,7 @@ impl EmulationProfile {
             (Platform::Gba,2)=>22,
             (Platform::Gbc,2)=>23,
             (Platform::Gb,2)=>24,
-            (_,25|26|27)=>match platform {
+            (_,25..=27)=>match platform {
                 Platform::Gba=>25,Platform::Gbc=>26,Platform::Gb=>27
             },
             _=>key,
@@ -107,7 +94,7 @@ impl EmulationProfile {
             1 if platform!=Platform::Gba =>
                 self.screen_shader=Some(view.shader_for(platform)),
             2 => self.colour_correction_override=Some(view.colour_for(platform)),
-            25 | 26 | 27 => self.screen_bezel=Some(view.bezel_for(platform)),
+            25..=27 => self.screen_bezel=Some(view.bezel_for(platform)),
             3 if platform==Platform::Gb =>
                 self.gb_palettes_override=Some(view.gb_palettes),
             4 => self.ff_speed_override=Some(view.ff_speed),

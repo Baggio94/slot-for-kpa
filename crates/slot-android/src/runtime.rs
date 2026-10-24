@@ -1458,11 +1458,9 @@ impl Engine {
                     }
                 }
             }
-            104 | 105 => {
-                // Also valid for GB-compatible .gbc ROMs (CGB flag bit 7 unset).
-                if self.game_settings().gb_palettes
-                    && self.game.as_ref().is_some_and(|g| g.can_change_gb_palette())
-                {
+            // Also valid for GB-compatible .gbc ROMs (CGB flag bit 7 unset).
+            104 | 105 if self.game_settings().gb_palettes
+                && self.game.as_ref().is_some_and(|g| g.can_change_gb_palette()) => {
                     let index = if code == 105 {
                         (self.settings.gb_palette + 1) % 48
                     } else { (self.settings.gb_palette + 47) % 48 };
@@ -1475,7 +1473,6 @@ impl Engine {
                     self.hud.toast(Toast::Palette(palette), time);
                     self.persist_settings();
                 }
-            }
             _ => {}
         }
         true
@@ -2773,23 +2770,20 @@ impl Engine {
                                     UI_ACTION.lock().unwrap_or_else(|e| e.into_inner())
                                         .push_back(17);
                                 }
-                                96 => match row {
-                                    0..=5 => {
-                                        // ROM, BIOS, SRAM root, State root,
-                                        // Share Saves OFF/ON, Refresh.
-                                        let action = match row {
-                                            0 => 1,
-                                            1 => 4,
-                                            2 => 5,
-                                            3 => 6,
-                                            4 => 17,
-                                            _ => 2,
-                                        };
-                                        UI_ACTION.lock().unwrap_or_else(|e| e.into_inner())
-                                            .push_back(action);
-                                        self.overlay = ShelfOverlay::None;
-                                    }
-                                    _ => {}
+                                96 => if let 0..=5 = row {
+                                    // ROM, BIOS, SRAM root, State root,
+                                    // Share Saves OFF/ON, Refresh.
+                                    let action = match row {
+                                        0 => 1,
+                                        1 => 4,
+                                        2 => 5,
+                                        3 => 6,
+                                        4 => 17,
+                                        _ => 2,
+                                    };
+                                    UI_ACTION.lock().unwrap_or_else(|e| e.into_inner())
+                                        .push_back(action);
+                                    self.overlay = ShelfOverlay::None;
                                 },
                                 97 => self.overlay = ShelfOverlay::Menu { row: 0 },
                                 108 => self.overlay = ShelfOverlay::None,
@@ -3058,7 +3052,7 @@ impl Engine {
                     return;
                 }
                 let ms = self.born.elapsed().as_millis() as u64;
-                if !self.inserted && pressed && matches!(code,19|20|21|22) {
+                if !self.inserted && pressed && matches!(code,19..=22) {
                     self.last_cart_navigation=Instant::now();
                 }
                 let shelf = &mut self.shelves[self.active];
@@ -3083,7 +3077,7 @@ impl Engine {
 
     fn upload_clear_material(&mut self, key:(usize,usize), layers:[slot_ui::CartFace;3]) {
         let textures=if let Some(existing)=self.clear_material {
-            for (tex,face) in existing.tex.iter().copied().zip(layers.into_iter()) {
+            for (tex,face) in existing.tex.iter().copied().zip(layers) {
                 self.gpu.update_face(tex, &face);
             }
             existing.tex

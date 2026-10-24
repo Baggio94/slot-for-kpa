@@ -10,6 +10,12 @@ pub struct TestEgl {
     surface: Ptr,
     context: Ptr,
 }
+impl Default for TestEgl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestEgl {
     pub fn new() -> Self {
         unsafe {

@@ -65,7 +65,7 @@ impl CartRender {
                     while let Ok((key,face))=rx.recv() {
                         if cache.write(&key,&face).is_ok() {
                             written+=1;
-                            if written%16==0 {cache.trim();}
+                            if written.is_multiple_of(16) {cache.trim();}
                         }
                     }
                 }).ok().map(|_|tx)

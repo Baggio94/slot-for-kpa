@@ -353,7 +353,7 @@ pub fn monotonic_ns() -> i64 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: valid out-pointer; CLOCK_MONOTONIC is always available.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    ts.tv_sec as i64 * 1_000_000_000 + ts.tv_nsec as i64
+    ts.tv_sec * 1_000_000_000 + ts.tv_nsec
 }
 
 /// Output frames per input frame for a core whose audio is produced at

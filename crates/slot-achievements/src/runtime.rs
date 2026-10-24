@@ -123,7 +123,7 @@ impl Runtime {
     pub fn frame(&mut self, ram: &[u8], valid: &[usize; 3], console: u32) -> &[u32] {
         const GBA_SIZE: usize = 0x58000;
         assert!(ram.len() >= GBA_SIZE + 0x17000);
-        assert!(matches!(console, 4 | 5 | 6));
+        assert!(matches!(console, 4..=6));
         if console == 5 {
             assert!(valid[0] <= 0x8000 && valid[1] <= 0x40000 && valid[2] <= 0x10000);
         }

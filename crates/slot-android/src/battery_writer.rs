@@ -155,7 +155,7 @@ mod tests {
         // This is the exact ordering used by Save & Eject / Suspend / Link.
         writer.flush().unwrap();
         atomic_write(&root.join("game.srm"), &vec![0xAA; 8192]).unwrap();
-        atomic_write(&root.join("game.rtc"), &vec![0xBB; 32]).unwrap();
+        atomic_write(&root.join("game.rtc"), &[0xBB; 32]).unwrap();
         drop(writer);
         assert_eq!(fs::read(root.join("game.srm")).unwrap(), vec![0xAA; 8192]);
         assert_eq!(fs::read(root.join("game.rtc")).unwrap(), vec![0xBB; 32]);

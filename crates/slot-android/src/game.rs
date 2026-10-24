@@ -1169,7 +1169,6 @@ impl GameSession {
             self.runahead_rollback_failed = true;
             log_launch_timing(&format!(
                 "Run-Ahead ROLLBACK FAILED: session quarantined, ALL saves disabled: {error}"));
-            return;
         }
 
     }

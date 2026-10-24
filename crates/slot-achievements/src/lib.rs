@@ -241,7 +241,7 @@ impl Service {
     }
 
     pub fn prefetch_rom_hash_for_console(&self, hash: &str, console: u32) -> bool {
-        if !matches!(console, 4 | 5 | 6)
+        if !matches!(console, 4..=6)
             || hash.len() != 32 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
             return false;
         }
@@ -286,7 +286,7 @@ impl Service {
 
     /// GB=4, GBA=5, GBC=6; original rcheevos worker shared without forks.
     pub fn wrap_for_console(&self, core: Box<dyn RetroCore>, console: u32) -> Box<dyn RetroCore> {
-        assert!(matches!(console, 4 | 5 | 6));
+        assert!(matches!(console, 4..=6));
         Box::new(core::Tracked::new(core, self, console))
     }
 
@@ -443,7 +443,7 @@ fn run(
                                     &dir.join(format!("{hash}.json")),
                                 )
                             {
-                                if matches!(game.console, 4 | 5 | 6) {
+                                if matches!(game.console, 4..=6) {
                                     let _ = cached_prepared.send(network::Prepared {
                                         generation,
                                         hash,
@@ -689,7 +689,7 @@ pub fn artwork_title(root: &std::path::Path, rom: &std::path::Path) -> Option<St
     let hash = library::content_hash(rom).ok()?;
     let (game, _): (storage::Game, std::collections::BTreeSet<u32>) =
         storage::read(&dir.join(format!("{hash}.json"))).ok()?;
-    (matches!(game.console, 4 | 5 | 6)
+    (matches!(game.console, 4..=6)
         && game.id != 0
         && !game.title.trim().is_empty()
         && !game.title.starts_with("Unsupported Game Version"))

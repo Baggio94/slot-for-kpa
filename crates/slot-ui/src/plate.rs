@@ -148,27 +148,6 @@ pub fn onboarding_instruction_face(before: &str, key: &str, after: &str) -> Undo
 pub fn onboarding_note_face(text: &str) -> UndoFace {
     onboarding_band(text,13.0)
 }
-#[cfg(test)]
-mod onboarding_tests {
-    use super::*;
-    #[test]
-    fn first_run_prompts_render_without_losing_words_or_exceeding_screen() {
-        for (before,key,after) in [
-            ("PRESS","START",", THEN SELECT LIBRARY TO ADD GAMES"),
-            ("PRESS","START","TO SELECT YOUR ROM FOLDER"),
-        ] {
-            let face=onboarding_instruction_face(before,key,after);
-            assert!(face.w<=ONBOARDING_MAX_W,"hint clips: {after}");
-            assert_eq!(face.h,HINT_H);
-            assert!(face.rgba.chunks_exact(4).any(|p|p[3]!=0));
-            assert!(onboarding_text_width(after,LABEL_PX)<ONBOARDING_MAX_W);
-        }
-        let note=onboarding_note_face("(ZIP ROMS SUPPORTED)");
-        assert!(note.w<=ONBOARDING_MAX_W);
-        assert!(note.rgba.chunks_exact(4).any(|p|p[3]!=0));
-        assert!(hint_width("START","Open Library")<=ONBOARDING_MAX_W);
-    }
-}
 
 pub fn word_width(text: &str) -> u32 {
     band_width(text)
@@ -360,4 +339,25 @@ fn glyph_cap(glyph: char) -> Canvas {
         }
     }
     cap
+}
+#[cfg(test)]
+mod onboarding_tests {
+    use super::*;
+    #[test]
+    fn first_run_prompts_render_without_losing_words_or_exceeding_screen() {
+        for (before,key,after) in [
+            ("PRESS","START",", THEN SELECT LIBRARY TO ADD GAMES"),
+            ("PRESS","START","TO SELECT YOUR ROM FOLDER"),
+        ] {
+            let face=onboarding_instruction_face(before,key,after);
+            assert!(face.w<=ONBOARDING_MAX_W,"hint clips: {after}");
+            assert_eq!(face.h,HINT_H);
+            assert!(face.rgba.chunks_exact(4).any(|p|p[3]!=0));
+            assert!(onboarding_text_width(after,LABEL_PX)<ONBOARDING_MAX_W);
+        }
+        let note=onboarding_note_face("(ZIP ROMS SUPPORTED)");
+        assert!(note.w<=ONBOARDING_MAX_W);
+        assert!(note.rgba.chunks_exact(4).any(|p|p[3]!=0));
+        assert!(hint_width("START","Open Library")<=ONBOARDING_MAX_W);
+    }
 }

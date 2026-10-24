@@ -5,17 +5,15 @@ use slot_store::GbPalette;
 
 /// Matches Slot v1.7.0's canonical WallpaperPick semantics, while storing
 /// the user's choice in the existing Android JSON settings file.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WallpaperPick {
     None,
     Random,
+    #[default]
     Default,
     Blur,
     File(String),
-}
-impl Default for WallpaperPick {
-    fn default() -> Self { Self::Default }
 }
 impl WallpaperPick {
     pub fn choices(root: &Path) -> Vec<Self> {
@@ -97,15 +95,16 @@ impl TimeFormat {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="snake_case")]
 pub enum Bezel {
-    None, Default,
+    None,
+    #[default]
+    Default,
     // Watomsk's Game Boy, Game Boy Pocket and Game Boy Color overlays
     // (github.com/Watomsk/Overlays, used with permission), cut for 3:2.
     Gb, Pocket, Color,
 }
-impl Default for Bezel {fn default()->Self {Self::Default}}
 impl Bezel {
     /// GBA keeps ON/OFF; GB adds Watomsk's Game Boy and Pocket, GBC his Color.
     pub const GB: [Bezel; 4] = [Bezel::None, Bezel::Default, Bezel::Gb, Bezel::Pocket];
@@ -267,23 +266,24 @@ impl Settings {
     /// is intentionally the legacy baseline for existing, sometimes partial,
     /// settings JSON. Changing it would silently reset old users' choices.
     pub fn first_install_defaults() -> Self {
-        let mut settings=Self::default();
-        settings.wallpaper=WallpaperPick::None;
-        settings.shader_gba=Shader::Lcd3x;
-        settings.shader_gbc=Shader::Lcd3x;
-        settings.shader_gb=Shader::Lcd3x;
-        settings.bezel_gbc=Bezel::None;
-        settings.bezel_gb=Bezel::None;
-        settings.gb_palettes=true;
-        settings.gb_palette=GB_PALETTE_GBC_GREEN;
-        settings.ff_speed=3;
-        settings.rewind_speed=3;
-        settings.turbo=false;
-        // Frame Pacing NATIVE: RetroArch's loop, smoother than RetroArch
-        // itself on the KONKR (1.2.3 beta22 captures).
-        settings.responsive_loop=false;
-        settings.run_ahead_frames=0;
-        settings
+        Self {
+            wallpaper: WallpaperPick::None,
+            shader_gba: Shader::Lcd3x,
+            shader_gbc: Shader::Lcd3x,
+            shader_gb: Shader::Lcd3x,
+            bezel_gbc: Bezel::None,
+            bezel_gb: Bezel::None,
+            gb_palettes: true,
+            gb_palette: GB_PALETTE_GBC_GREEN,
+            ff_speed: 3,
+            rewind_speed: 3,
+            turbo: false,
+            // Frame Pacing NATIVE: RetroArch's loop, smoother than RetroArch
+            // itself on the KONKR (1.2.3 beta22 captures).
+            responsive_loop: false,
+            run_ahead_frames: 0,
+            ..Self::default()
+        }
     }
     pub fn load(dir: &Path) -> Self {
         fs::read(dir.join(NAME)).ok()
