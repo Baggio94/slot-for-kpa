@@ -31,7 +31,7 @@ Everything you love about the original slot., now on the KONKR Pocket Advance �
 - **A cartridge-first experience** — Browse your games as beautifully rendered physical cartridges, complete with satisfying insertion and ejection animations and sounds.
 - **Made for Game Boy Advance** — GBA takes center stage, with dedicated shelves for Game Boy and Game Boy Color games.
 - **Pick a cartridge and play** — No complicated menus or unnecessary distractions. Insert a cartridge and jump straight into your game.
-- **Two emulation cores** — Choose between mGBA and gpSP, with individual game settings.
+- **Two emulation cores per system** — mGBA or gpSP for GBA, mGBA or Gambatte for GB and GBC, with a default core per system and individual game settings.
 - **Cart Studio** — Customize your cartridges with authentic artwork, labels and shell colors.
 - **All the essentials** — Save states, automatic saving, rewind, fast-forward, turbo buttons and rumble.
 - **Make it yours** — Light and dark themes, wallpapers, favorites, recently played games, shaders, color correction and screen bezels.
@@ -49,7 +49,8 @@ Built specifically for the KONKR Pocket Advance
 - **RetroAchievements, online and offline** — Earn achievements on supported GBA, GB and GBC games. Prepare your library while connected, then play offline and synchronize your unlocks when you're back online.
 - **Multiplayer on Android** — Play compatible games over local Wi-Fi using mGBA Link Cable or gpSP Link Cable / Wireless RFU.
 - **More GBA shaders** — Ten selectable GBA shader presets plus Off, including LCD3x, LCD Grid, Dot and display styles inspired by the original GBA and GBA SP.
-- **Independent screen settings** — Configure GBA, GB and GBC shaders, color correction and bezels separately.
+- **Independent system settings** — Configure the default core, shader, color correction and bezel of GBA, GB and GBC separately in **START → Settings → Systems**.
+- **Game Boy screen sizes and overlays** — Integer, Original Ratio or Stretch for GB and GBC games, with Game Boy, Game Boy Pocket and Game Boy Color overlays.
 - **Optimized cartridge browsing** — Background artwork loading, persistent caching and GPU texture management designed to keep large libraries responsive.
 - **Android app launcher** — Launch your other Android apps directly from Slot, with the option to make Slot your HOME launcher.
 - **Clock format** — Choose 12-hour time with AM/PM or 24-hour time in **START → Settings → Status Bar → Clock** (contributed by [Its-TroyM](https://github.com/Its-TroyM) in [PR #2](https://github.com/Baggio94/slot-for-kpa/pull/2)). Use Left/Right or A; your choice is saved. The default remains 24-hour time.
@@ -111,7 +112,7 @@ The KONKR's round top button is called **slot. cap** in this port. Since it cont
 | Hold <img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="24" align="middle" /> / <kbd>A</kbd> | Start a game fresh |
 | <kbd>Y</kbd> | Add or remove a favorite |
 | <kbd>X</kbd> | Open the selected cartridge in Cart Studio |
-| <kbd>SELECT</kbd> | Choose between mGBA and gpSP (GBA only) |
+| <kbd>SELECT</kbd> | Choose the emulator core (mGBA or gpSP for GBA, mGBA or Gambatte for GB/GBC) |
 | <kbd>START</kbd> | Open the main menu |
 
 ### In Game
@@ -131,7 +132,7 @@ The KONKR's round top button is called **slot. cap** in this port. Since it cont
 | <kbd>SELECT</kbd> + <kbd>B</kbd> / <kbd>A</kbd> | Previous / next shader |
 | <kbd>SELECT</kbd> + <kbd>Y</kbd> | Toggle color correction |
 | <kbd>SELECT</kbd> + <kbd>L2</kbd> / <kbd>R2</kbd> | Change GB palette (when enabled) |
-| <kbd>L1</kbd> / <kbd>R1</kbd> | Stretch / original screen size (GB/GBC only) |
+| <kbd>L1</kbd> / <kbd>R1</kbd> | Bigger / smaller screen: Integer, Original Ratio, Stretch (GB/GBC only) |
 
 ### Save State Switcher
 
@@ -226,7 +227,7 @@ Special thanks to:
 - **[Markus](https://github.com/MarkusMaribu)** — The beautiful skeuomorphic artwork that gives slot. its unique identity.
 - **[pvaibhav](https://github.com/pvaibhav/slot)** — Contributions and improvements inherited from the Slot fork.
 - **[Watomsk](https://github.com/Watomsk/Overlays)** — The Game Boy, Game Boy Pocket and Game Boy Color overlays, used with permission.
-- **[mGBA](https://mgba.io/), [gpSP](https://github.com/libretro/gpsp), [libretro](https://www.libretro.com/) and [RetroAchievements](https://retroachievements.org/)** — The projects and contributors powering emulation and achievements.
+- **[mGBA](https://mgba.io/), [gpSP](https://github.com/libretro/gpsp), [Gambatte](https://github.com/libretro/gambatte-libretro), [libretro](https://www.libretro.com/) and [RetroAchievements](https://retroachievements.org/)** — The projects and contributors powering emulation and achievements.
 
 This is an **unofficial community port**, not affiliated with or endorsed by the original Slot developers or the KONKR Pocket Advance manufacturer.
 
