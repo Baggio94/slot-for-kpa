@@ -130,7 +130,6 @@ fn f10_online_and_cached_game_preparation_wakes_immediately_without_frames() {
         hash: "0123456789abcdef0123456789abcdef".into(),
         game: game(),
         unlocked: Default::default(),
-        cached: false,
     };
     network::signal_prepared(&prepared_tx, &wake_tx, prepared);
     assert_eq!(wake_rx.try_recv(), Ok(()), "online game metadata must wake immediately");
@@ -142,11 +141,10 @@ fn f10_online_and_cached_game_preparation_wakes_immediately_without_frames() {
         hash: "fedcba9876543210fedcba9876543210".into(),
         game: game(),
         unlocked: Default::default(),
-        cached: true,
     };
     network::signal_prepared(&prepared_tx, &wake_tx, cached);
     assert_eq!(wake_rx.try_recv(), Ok(()), "cached HTTP metadata must wake immediately");
-    assert!(prepared_rx.try_recv().unwrap().cached);
+    assert_eq!(prepared_rx.try_recv().unwrap().generation, 43);
 }
 
 #[test]

@@ -22,7 +22,7 @@ use crate::app::{GameMenu as LinkMenu, LinkRow, LinkFail, LinkStep};
 use crate::link_screen::{self, LinkSprites, Sprite};
 
 use slot_gfx::{Compositor, GfxError, Surface, OUT_H, OUT_W};
-use slot_store::{Cart, Platform, Core, stamp_now};
+use slot_store::{Platform, Core, stamp_now};
 use slot_power::{Battery, Charge};
 use crate::library::{carts_by_platform, RomEntry, LIBRARY};
 use slot_ui::{
@@ -5188,8 +5188,7 @@ impl Engine {
                 }
                 // RA CLOCK commits strictly one frame per callback: two-frame
                 // catch-up measured worse motion and controls on the KONKR.
-                let frame_limit = if ra_display_clocked { 2 }
-                    else if mgba_cable_pacing { 2 }
+                let frame_limit = if ra_display_clocked || mgba_cable_pacing { 2 }
                     else if fast { usize::from(live.ff_speed) * 4 }
                     else if ra_clock { 1 } else { 4 };
                 // A13.1: revert the experimental second-frame budget.
@@ -5808,6 +5807,7 @@ fn pause_row_text(row: PauseRow, requires_relaunch: bool) -> usize {
 }
 
 /// Ejection and resume are never inferred from their displayed row numbers.
+#[cfg(test)]
 fn game_menu_ejects(row: usize, linked: bool, requires_relaunch: bool) -> bool {
     matches!(pause_rows(linked, requires_relaunch).get(row), Some(PauseRow::SaveEject))
 }

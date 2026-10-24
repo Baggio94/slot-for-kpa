@@ -1,4 +1,5 @@
 use super::*;
+use slot_store::Cart;
 
 #[test]
 fn updater_about_has_two_actions_in_all_statuses() {

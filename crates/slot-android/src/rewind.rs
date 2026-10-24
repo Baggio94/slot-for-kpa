@@ -67,10 +67,12 @@ impl Rewind {
         Some(cur)
     }
 
+    #[cfg(test)]
     pub fn bytes_used(&self) -> usize {
         self.bytes
     }
 
+    #[cfg(test)]
     pub fn depth(&self) -> usize {
         self.deltas.len() + usize::from(self.cur.is_some())
     }

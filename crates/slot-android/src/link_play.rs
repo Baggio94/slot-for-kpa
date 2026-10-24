@@ -183,6 +183,7 @@ impl LinkPlay {
         })
     }
 
+    #[cfg(test)]
     pub fn mode(&self) -> LinkKind { self.mode }
 
     /// The overlay does not advance libretro frames, so the UI must be able

@@ -52,24 +52,8 @@ const POLL_MS: u64 = 50;
 /// is not the one this joiner wants.
 const GREET_WAIT: Duration = Duration::from_millis(1500);
 
-/// A greeting is `SLOT`, the greeting's own version, then the game's four-byte header code.
-const GREETING_LEN: usize = 9;
-const GREETING_VERSION: u8 = 1;
 /// What a host answers a greeting it accepts with.
 const GREETING_ACK: u8 = 0x06;
-
-/// What opens a connection on a shared network. The game rides along so that two handhelds that
-/// found each other but are not running the same cart never become a session; on the private
-/// network nothing else could have connected, so nothing needed asking.
-fn greeting(game: &str) -> [u8; GREETING_LEN] {
-    let mut g = [b' '; GREETING_LEN];
-    g[..4].copy_from_slice(b"SLOT");
-    g[4] = GREETING_VERSION;
-    for (slot, byte) in g[5..].iter_mut().zip(game.bytes()) {
-        *slot = byte;
-    }
-    g
-}
 
 /// Read a stranger's greeting and answer it, or say it was not the right one. Never waits
 /// longer than `GREET_WAIT`, so one connection that says nothing cannot hold the host up.
@@ -271,6 +255,7 @@ impl TcpLink {
     }
 
 
+    #[cfg(test)]
     fn wrap(stream: TcpStream) -> std::io::Result<TcpLink> {
         Self::wrap_identified(stream, None)
     }
@@ -600,6 +585,7 @@ impl TcpLink {
         let _ = wrote.recv_timeout(Duration::from_millis(BYE_MS));
     }
 
+    #[cfg(test)]
     pub fn nodelay(&self) -> std::io::Result<bool> {
         self.stream.nodelay()
     }
@@ -738,7 +724,6 @@ mod lab_negotiation_tests {
 
     #[test]
     fn lab_greeting_is_not_legacy_slot_one() {
-        assert_ne!(&identity().bytes()[..9], &greeting("BPRE"));
         assert_eq!(&identity().bytes()[..4], b"KMLB");
     }
     #[test]

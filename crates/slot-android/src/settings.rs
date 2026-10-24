@@ -433,6 +433,7 @@ impl Settings {
         }
         *self != before
     }
+    #[cfg(test)]
     pub fn palette_label(&self) -> &'static str {
         GbPalette::all().nth(self.gb_palette as usize)
             .unwrap_or(GbPalette::DEFAULT).label()

@@ -7,7 +7,7 @@ use std::io::{self, Read};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use ring::digest::{Context, SHA256};
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::Ipv4Addr;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
@@ -373,49 +373,6 @@ impl LinkStarter {
         Ok(Self { events, consent, cancel, done: false })
     }
 
-    /// The Emulator NAT does not support IGMP. Direct-IP Join uses the
-    /// same strict Lab v2 fingerprint as mDNS and cannot downgrade to SLOT/1.
-    pub fn spawn_direct_join(local: Ipv4Addr, host: Ipv4Addr,
-                             config: LinkConfig) -> io::Result<Self> {
-        if game_code(&config.game).is_none() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid GBA Link code"));
-        }
-        if local.is_unspecified() || local.is_loopback() || local.is_multicast() ||
-            local.is_link_local() || host.is_unspecified() || host.is_loopback() ||
-            host.is_link_local() || host.is_multicast() || host.is_broadcast() ||
-            !host.is_private() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                "Direct Join requires a private LAN IPv4 address"));
-        }
-        let (tx, events) = mpsc::channel();
-        let (consent, approval) = mpsc::channel();
-        let cancel = Cancel::new();
-        let worker_cancel = cancel.clone();
-        thread::spawn(move || {
-            let _ = tx.send(Progress::Looking);
-            let result = if worker_cancel.is_cancelled() {
-                Err(io::Error::new(io::ErrorKind::Interrupted, "Join cancelled"))
-            } else {
-                config.fingerprint().and_then(|fingerprint| {
-                    let mut link = TcpLink::join_lab_greeted(
-                        SocketAddrV4::new(host, PORT).into(), &fingerprint)?;
-                    let peer = stage_mgba_peer(&mut link, &fingerprint, &config,
-                        false, &worker_cancel, &tx, &approval)?;
-                    Ok((link, peer))
-                })
-            };
-            if let Err(ref error) = result { report_setup_error(error); }
-            let report = match result {
-                Ok((link, remote)) if !worker_cancel.is_cancelled() =>
-                    Progress::Ready(link, remote),
-                Ok(_) => Progress::Failed(Failure::Cancelled),
-                Err(error) => Progress::Failed(classify(&error)),
-            };
-            let _ = tx.send(report);
-        });
-        Ok(Self { events, consent, cancel, done: false })
-    }
-
     pub fn poll(&mut self) -> Option<Progress> {
         if self.done { return None; }
         match self.events.try_recv() {
@@ -487,15 +444,6 @@ mod tests {
             core_file: PathBuf::from("unused.so"),
             bios_file: PathBuf::from("unused.bin"), backend: Backend::MgbaSlotCable,
             mode: LinkKind::Cable, trusted_dir: PathBuf::from("unused-trust") }
-    }
-    #[test]
-    fn direct_join_rejects_public_and_loopback_addresses() {
-        for invalid in [Ipv4Addr::LOCALHOST, Ipv4Addr::BROADCAST,
-            Ipv4Addr::new(8, 8, 8, 8), Ipv4Addr::new(224, 0, 0, 251)] {
-            assert!(LinkStarter::spawn_direct_join(Ipv4Addr::new(10,0,2,16), invalid, test_config("BPRE")).is_err());
-        }
-        assert!(LinkStarter::spawn_direct_join(Ipv4Addr::new(10,0,2,16),
-            Ipv4Addr::new(192,168,68,84), test_config("bad")).is_err());
     }
 
     #[test]

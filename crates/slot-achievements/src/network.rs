@@ -23,7 +23,6 @@ pub(crate) struct Prepared {
     pub hash: String,
     pub game: Game,
     pub unlocked: BTreeSet<u32>,
-    pub cached: bool,
 }
 
 /// F10 responsiveness: cached and online game definitions must activate as
@@ -489,7 +488,6 @@ pub(crate) fn run(
                                     hash: game.hash.clone(),
                                     game: data,
                                     unlocked: ids,
-                                    cached: true,
                                 });
                                 game.ready = true;
                             }
@@ -634,7 +632,6 @@ pub(crate) fn run(
                             hash: game.hash.clone(),
                             game: data,
                             unlocked: ids,
-                            cached: false,
                         });
                         game.ready = true;
                         game.online = true;

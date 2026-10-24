@@ -449,7 +449,6 @@ fn run(
                                         hash,
                                         game,
                                         unlocked,
-                                        cached: true,
                                     });
                                 }
                             }
