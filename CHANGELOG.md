@@ -2,7 +2,11 @@
 
 This changelog covers the public releases of the dedicated KONKR Pocket Advance Android port. Earlier development experiments are preserved in Git history.
 
-## v1.3.0 — release pending approval
+## v1.3.1 — 25 October 2026
+
+- Fixed "Couldn't save" on Save and Eject for Pokémon Gen III games on mGBA that had not been saved in-game yet. The Flash guard now only refuses an image that would replace a complete save on disk.
+
+## v1.3.0 — 24 October 2026
 
 - **Gambatte** as a second core for Game Boy and Game Boy Color, picked on a drawn GB pak board; battery saves carried between mGBA and Gambatte.
 - Settings → Systems: one page per system with a **Default Core** row; a cart's own core choice still wins.

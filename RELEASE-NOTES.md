@@ -1,4 +1,4 @@
-# slot. for KONKR Pocket Advance — v1.3.0
+# slot. for KONKR Pocket Advance — v1.3.1
 
 A big update: a second core for Game Boy and Game Boy Color, new screen sizes and overlays, sharper visuals at the KONKR's native resolution, and controls that respond like RetroArch.
 
@@ -13,6 +13,10 @@ A big update: a second core for Game Boy and Game Boy Color, new screen sizes an
 - **More responsive controls** — The D-pad (hat) is read directly with no buffering, quick taps between two frames are no longer lost, and inputs are polled at a steady point in each frame, as in RetroArch. Audio output latency is lower too.
 - **Adaptive Link Cable delay** — The mGBA Link Cable input delay now adjusts automatically to the connection quality between the two consoles.
 - **Faster game launch** — Games start quickly even after idling on the shelf, and the first scroll after ejecting a game is smooth.
+
+### Fixed in 1.3.1
+
+- **Pokémon save error on exit** — On mGBA, Pokémon FireRed, LeafGreen, Ruby, Sapphire and Emerald showed "Couldn't save" when ejecting a game that had not been saved in-game yet. Save and Eject now works, and an existing in-game save is still protected.
 
 ### Installation
 

@@ -466,3 +466,23 @@ fn preemptive_frames_respect_the_runahead_guards() {
         assert!(calls.lock().unwrap().predicted.is_empty());
     }
 }
+
+#[test]
+fn pokemon_flash_guard_saves_a_new_game_but_protects_a_complete_save() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut game, _) = session(root.path(), Failure::None);
+    game.mgba_flash_runahead_guard = true;
+    // Never saved in-game: nothing on disk to protect, Save & Eject works.
+    assert_eq!(game.save_for_eject(false), Ok(true));
+    let mut complete = vec![0u8; 128 * 1024];
+    for i in 0..14usize {
+        let s = &mut complete[i * 4096..(i + 1) * 4096];
+        s[0xFF4..0xFF6].copy_from_slice(&(i as u16).to_le_bytes());
+        s[0xFF8..0xFFC].copy_from_slice(&0x0801_2025u32.to_le_bytes());
+        s[0xFFC..0x1000].copy_from_slice(&7u32.to_le_bytes());
+    }
+    std::fs::write(&game.save, &complete).unwrap();
+    // An incomplete image must never replace a complete in-game save.
+    assert!(game.save_for_eject(false).is_err());
+    assert_eq!(std::fs::read(&game.save).unwrap(), complete);
+}
