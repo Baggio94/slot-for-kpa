@@ -1417,8 +1417,7 @@ impl GameSession {
         }
         let ram = self.core.save_ram_verified()
             .map_err(|error| format!("Active battery snapshot: {error}"))?;
-        if self.mgba_flash_runahead_guard && ram.as_ref().is_some_and(|bytes|
-            pokemon_flash_complete_bank_count(bytes) == 0) {
+        if ram.as_ref().is_some_and(|bytes| self.pokemon_flash_would_regress(bytes)) {
             return Err("Pokémon Flash save incomplete; prior checkpoint protected".into());
         }
         Ok(BatterySnapshot {
@@ -1503,6 +1502,16 @@ impl GameSession {
         }
     }
 
+    /// A Pokémon Gen III image with no complete bank only threatens a save
+    /// when the file on disk holds a complete one. A new game that was never
+    /// saved in-game (erased 0xFF Flash) has nothing to protect: refusing it
+    /// made every Save & Eject fail with "Couldn't save".
+    fn pokemon_flash_would_regress(&self, bytes: &[u8]) -> bool {
+        self.mgba_flash_runahead_guard && pokemon_flash_complete_bank_count(bytes) == 0
+            && std::fs::read(&self.save)
+                .is_ok_and(|disk| pokemon_flash_complete_bank_count(&disk) > 0)
+    }
+
     /// The battery and RTC are independent persistent files. The legacy
     /// boolean used OR, so a successful RTC could hide a failed battery write.
     /// Return every attempted file write's error to callers that must retain
@@ -1518,8 +1527,7 @@ impl GameSession {
         let mut error: Option<String> = None;
         match self.core.save_ram_verified()
             .map_err(|e| format!("Active battery snapshot: {e}"))? {
-            Some(bytes) if self.mgba_flash_runahead_guard &&
-                pokemon_flash_complete_bank_count(&bytes) == 0 => {
+            Some(bytes) if self.pokemon_flash_would_regress(&bytes) => {
                 error = Some("Pokémon Flash save is incomplete; previous save protected".into());
             }
             Some(bytes) => match atomic_write(&self.save, &bytes) {
