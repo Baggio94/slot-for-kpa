@@ -2,23 +2,24 @@
 //! Kept separate from OpenGL so the non-overlap guarantee is host-testable.
 
 pub fn positions(widths: [u32; 3]) -> [(f32, f32); 3] {
-    // Slot's core board occupies X=174..546 in its native 720x480 canvas.
-    const LEFT: f32 = 174.0;
-    const RIGHT: f32 = 546.0;
+    // Slot's core board occupies X=174..546 in its native 720x480 canvas,
+    // centred on wider or narrower ones.
+    let dx = (slot_gfx::out_w() as f32 - slot_gfx::BASE_W as f32) / 2.0;
+    let (left, right) = (174.0 + dx, 546.0 + dx);
     const GAP: f32 = 12.0;
     let original = widths.map(|w| w as f32);
     let sum: f32 = original.iter().sum();
     let scale = if sum > 0.0 {
-        ((RIGHT - LEFT - 2.0 * GAP) / sum).min(1.0)
+        ((right - left - 2.0 * GAP) / sum).min(1.0)
     } else {
         1.0
     };
     let [a, b, c] = original.map(|w| w * scale);
-    let first = LEFT;
-    let last = RIGHT - c;
+    let first = left;
+    let last = right - c;
     // Keep the original middle hint centred when space permits; otherwise
     // use the nearest non-overlapping position.
-    let centre = (720.0 - b) / 2.0;
+    let centre = (slot_gfx::out_w() as f32 - b) / 2.0;
     let middle = centre.max(first + a + GAP).min(last - b - GAP);
     [(first, scale), (middle, scale), (last, scale)]
 }

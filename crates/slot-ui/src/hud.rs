@@ -1,4 +1,4 @@
-use slot_gfx::{Draw, TexId, OUT_W};
+use slot_gfx::{Draw, TexId, out_w};
 use slot_store::{BLUE_LIGHT_MAX, BRIGHTNESS_MAX, VOLUME_MAX};
 
 use crate::icon::icon_box;
@@ -20,7 +20,7 @@ const ICON_GAP: f32 = 10.0;
 const BADGE_MARGIN: f32 = 12.0;
 
 pub fn badge_at(w: f32, h: f32) -> (f32, f32) {
-    (OUT_W as f32 - BADGE_MARGIN - w, (PLATE_H - h) / 2.0)
+    (out_w() as f32 - BADGE_MARGIN - w, (PLATE_H - h) / 2.0)
 }
 
 const BAR_W: f32 = 320.0;
@@ -222,7 +222,7 @@ impl Hud {
             out.push(Draw::Rect {
                 x: 0.0,
                 y: 0.0,
-                w: OUT_W as f32,
+                w: out_w() as f32,
                 h: PLATE_H,
                 colour: faded(PLATE, alpha.max(toast)),
             });
@@ -243,7 +243,7 @@ impl Hud {
     }
 
     fn draw_bar(&self, alpha: f32, out: &mut Vec<Draw>) {
-        let x = (OUT_W as f32 - BAR_W) / 2.0;
+        let x = (out_w() as f32 - BAR_W) / 2.0;
         if let Some(tex) = self.icon() {
             let (w, h) = icon_box(HUD_ICON_PX);
             out.push(Draw::Tex {

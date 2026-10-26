@@ -1,4 +1,4 @@
-use slot_gfx::OUT_W;
+use slot_gfx::out_w;
 use slot_store::{Cart, Core, Platform};
 
 use crate::art;
@@ -251,7 +251,10 @@ fn shade(c: [u8; 3], f: f32) -> [u8; 3] {
 const SOCKET_SVG: &str = include_str!("../assets/socket.svg");
 const CHIP_SVG: &str = include_str!("../assets/chip.svg");
 
-pub const BOARD_X: f32 = 174.0;
+/// Board centred on the canvas (174 on Slot's 720).
+pub fn board_x() -> f32 {
+    (out_w() - BOARD_W) as f32 / 2.0
+}
 pub const BOARD_Y: f32 = 150.0;
 
 pub const TURN_PAD: u32 = 2;
@@ -289,12 +292,10 @@ const NAME_MIN_PX: f32 = 8.0;
 const SOCKET_INK: [u8; 3] = [0xee, 0xf5, 0xe6];
 const CHIP_INK: [u8; 3] = [0xf2, 0xf2, 0xf2];
 
-const LID_REST: Placed = Placed {
-    x: 288.0,
-    y: 30.0,
-    w: 144.0,
-    h: 81.0,
-};
+/// The GBA lid, centred above the board (x 288 on Slot's 720).
+fn lid_rest_gba() -> Placed {
+    Placed { x: (out_w() as f32 - 144.0) / 2.0, y: 30.0, w: 144.0, h: 81.0 }
+}
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct Placed {
@@ -305,7 +306,7 @@ pub struct Placed {
 }
 
 pub fn shelf_cart() -> Placed {
-    shelf_cart_at((OUT_W - CART_W) as f32 / 2.0, 1.0)
+    shelf_cart_at((out_w() - CART_W) as f32 / 2.0, 1.0)
 }
 
 pub fn shelf_cart_at(x: f32, scale: f32) -> Placed {
@@ -329,13 +330,13 @@ pub fn shelf_cart_for(platform: Platform, x: f32, scale: f32) -> Placed {
 /// Where the lid is held above the board. A GB/GBC lid keeps its aspect and
 /// stays clear of the board, centred where the GBA lid rests.
 pub fn lid_rest(platform: Platform) -> Placed {
-    if platform == Platform::Gba { return LID_REST; }
+    if platform == Platform::Gba { return lid_rest_gba(); }
     // A pak opens like a book: its front rests beside the board.
     let (cw, ch) = cart_box(platform);
     let w = PAK_LID_W;
     let h = w * ch as f32 / cw as f32;
     let board_w = PAK_REST_H * cw as f32 / ch as f32;
-    let x = (OUT_W as f32 - w - PAK_GAP - board_w) / 2.0;
+    let x = (out_w() as f32 - w - PAK_GAP - board_w) / 2.0;
     Placed { x, y: (480.0 - 120.0 - h) / 2.0 + 40.0, w, h }
 }
 
@@ -354,7 +355,7 @@ pub fn board_at(progress: f32) -> Placed {
 
 pub fn board_from(shelf: Placed, progress: f32) -> Placed {
     let rest = Placed {
-        x: BOARD_X,
+        x: board_x(),
         y: BOARD_Y,
         w: BOARD_W as f32,
         h: BOARD_H as f32,
@@ -367,7 +368,7 @@ pub fn lid_at(progress: f32) -> (Placed, f32) {
 }
 
 pub fn lid_from(shelf: Placed, progress: f32) -> (Placed, f32) {
-    lid_toward(shelf, LID_REST, progress)
+    lid_toward(shelf, lid_rest_gba(), progress)
 }
 
 const UNITS_W: f32 = 240.0;
@@ -422,7 +423,7 @@ const PAK_LID_W: f32 = 168.0;
 pub fn board_layout(platform: Platform) -> BoardLayout {
     if platform == Platform::Gba {
         return BoardLayout {
-            rest: Placed { x: BOARD_X, y: BOARD_Y, w: BOARD_W as f32, h: BOARD_H as f32 },
+            rest: Placed { x: board_x(), y: BOARD_Y, w: BOARD_W as f32, h: BOARD_H as f32 },
             native: (BOARD_W as f32, BOARD_H as f32),
             sockets: true,
             socket_u: SOCKET_U,

@@ -1,4 +1,4 @@
-use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
+use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_store::{Cart, Platform};
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -383,7 +383,7 @@ impl Shelf {
     fn centre(&self, slot: i32) -> f32 {
         let u = self.scroll - self.scroll_target();
         let a = u.floor() as i32;
-        let mut centre = OUT_W as f32 / 2.0 - (u - a as f32) * self.pitch(a, u);
+        let mut centre = out_w() as f32 / 2.0 - (u - a as f32) * self.pitch(a, u);
         if slot >= a {
             for s in a..slot { centre += self.pitch(s, u); }
         } else {
@@ -441,7 +441,7 @@ impl Shelf {
             let (w, h) = (cw as f32 * scale, ch as f32 * scale);
             let away = offset.signum() * (1.0 + offset.abs());
             let x = self.centre(slot) - w / 2.0 + away * PART * recede;
-            if x + w <= 0.0 || x >= OUT_W as f32 || alpha <= 0.0 {
+            if x + w <= 0.0 || x >= out_w() as f32 || alpha <= 0.0 {
                 continue;
             }
             let x = x + shake;

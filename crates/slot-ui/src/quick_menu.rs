@@ -1,5 +1,5 @@
 use crate::density::{self, Canvas};
-use crate::draw::{Draw, TexId, OUT_H, OUT_W};
+use crate::draw::{Draw, TexId, OUT_H, out_w};
 use crate::plate::{arrows_hint_face, centred_hints, hint_face, UndoFace, HINT_H, LEGEND_GAP};
 use crate::power_menu::{MENU_H, MENU_INK, MENU_PAD, MENU_PX};
 use crate::slot_chrome::{edge, opening};
@@ -234,7 +234,7 @@ fn quick_text_face(label: &str, colour: [u8; 3]) -> UndoFace {
             h: 0,
         };
     };
-    let layout = text::fit(font, label, OUT_W as f32, 1, MENU_PX, MENU_PX);
+    let layout = text::fit(font, label, out_w() as f32, 1, MENU_PX, MENU_PX);
     let set = layout
         .lines
         .iter()
@@ -314,21 +314,21 @@ impl QuickMenu<'_> {
         out.push(Draw::Rect {
             x: 0.0,
             y: 0.0,
-            w: OUT_W as f32,
+            w: out_w() as f32,
             h: OUT_H as f32,
             colour: opening(),
         });
         out.push(Draw::Rect {
             x: 0.0,
             y: row_top(self.row) + BAR_INSET,
-            w: OUT_W as f32,
+            w: out_w() as f32,
             h: QUICK_PITCH - 2.0 * BAR_INSET,
             colour: edge(),
         });
         let Some(faces) = self.faces else {
             return;
         };
-        let (right, pad) = (OUT_W as f32 - QUICK_EDGE, MENU_PAD as f32);
+        let (right, pad) = (out_w() as f32 - QUICK_EDGE, MENU_PAD as f32);
         for &row in self.row.page() {
             let y = row_top(row) + TYPE_DROP;
             let lit = row == self.row;

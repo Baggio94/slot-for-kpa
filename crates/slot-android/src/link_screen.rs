@@ -1,6 +1,6 @@
 use slot_ui::{
     ease, Draw, Millis, TexId, ADAPTER_BASE_X, ADAPTER_BASE_Y, ARCS, ARROW_LEFT_X, ARROW_RIGHT_X,
-    ARROW_Y, CLICKS_X, CLICKS_Y, OUT_W, PLUG_H, PLUG_TIP_X, PORT_Y,
+    ARROW_Y, CLICKS_X, CLICKS_Y, out_w, PLUG_H, PLUG_TIP_X, PORT_Y,
 };
 
 use crate::app::{GameMenu, LinkRow};
@@ -184,7 +184,9 @@ pub fn draw_link_art(
 ) {
     let host = role_of(menu) == LinkRow::Host;
     let alpha = art_alpha(menu, now);
-    let centre = OUT_W as f32 / 2.0;
+    let centre = out_w() as f32 / 2.0;
+    // The art is laid out on Slot's 720 canvas: keep it centred on wider ones.
+    let dx = (out_w() as f32 - slot_gfx::BASE_W as f32) / 2.0;
     match kind {
         LinkKind::Cable => {
             let tip = plug_tip(menu, now);
@@ -207,7 +209,7 @@ pub fn draw_link_art(
             tex(out, s.port, 0.0, PORT_Y, 1.0);
             let clicks = clicks_alpha(menu, now);
             if clicks > 0.0 {
-                tex(out, s.clicks, CLICKS_X, CLICKS_Y, clicks);
+                tex(out, s.clicks, CLICKS_X + dx, CLICKS_Y, clicks);
             }
         }
         LinkKind::Wireless => {
@@ -226,13 +228,13 @@ pub fn draw_link_art(
                     continue;
                 }
                 let (x, y, w, _) = ARCS[i];
-                tex(out, s.arcs_right[i], x, y + dy, a);
-                tex(out, s.arcs_left[i], OUT_W as f32 - x - w as f32, y + dy, a);
+                tex(out, s.arcs_right[i], x + dx, y + dy, a);
+                tex(out, s.arcs_left[i], out_w() as f32 - x - dx - w as f32, y + dy, a);
             }
         }
     }
     if matches!(menu, GameMenu::Pick(_)) {
-        tex(out, s.arrow_left, ARROW_LEFT_X, ARROW_Y, ARROW_ALPHA);
-        tex(out, s.arrow_right, ARROW_RIGHT_X, ARROW_Y, ARROW_ALPHA);
+        tex(out, s.arrow_left, ARROW_LEFT_X + dx, ARROW_Y, ARROW_ALPHA);
+        tex(out, s.arrow_right, ARROW_RIGHT_X + dx, ARROW_Y, ARROW_ALPHA);
     }
 }

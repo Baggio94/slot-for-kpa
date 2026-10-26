@@ -1,6 +1,7 @@
 package fyi.slot.konkr
 
 import android.app.Activity
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -63,6 +64,12 @@ import javax.microedition.khronos.opengles.GL10
 
 /** Android owns EGL, lifecycle and physical input; Rust owns Slot rendering. */
 class MainActivity : Activity() {
+    // dp/sp follow the screen height so Android screens keep the KONKR's look.
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(newBase)
+        SlotUi.panelDensityOverride(newBase)?.let(::applyOverrideConfiguration)
+    }
+
     companion object {
         init { System.loadLibrary("slot_android") }
         private const val TAG = "SlotKonkr"
@@ -103,6 +110,7 @@ class MainActivity : Activity() {
 
     external fun nativeSurfaceCreated(): Boolean
     external fun nativeSurfaceChanged(width: Int, height: Int)
+    external fun nativeSetPanelSize(width: Int, height: Int)
     external fun nativeDrawFrame(vsyncFrameNs: Long)
     // Beta9 optional actual display present timestamp via EGL. Read-only.
     external fun nativeEglPresentationReset()
@@ -810,6 +818,12 @@ class MainActivity : Activity() {
         // A staged sign-out must finish before any native HTTP worker is started.
         val cleanSignOut = RaAccount.finishPendingSignOut(filesDir)
         nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir)
+        // The slot. canvas takes the display's shape (3:2 on the KONKR, 16:9,
+        // 4:3...) before the renderer builds its first face.
+        windowManager.maximumWindowMetrics.bounds.let { panel ->
+            Log.i(TAG, "Panel ${panel.width()}x${panel.height()}")
+            nativeSetPanelSize(panel.width(), panel.height())
+        }
         // App-private A12 A/B marker; no save or ROM folders are touched.
         val a12Recovery = !File(filesDir, "a12-mgba-legacy-pacing.flag").exists()
         nativeSetMgbaLinkRecoveryEnabled(a12Recovery)

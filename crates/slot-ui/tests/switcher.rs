@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use slot_gfx::{Draw, OUT_H, OUT_W};
+use slot_gfx::{Draw, OUT_H, out_w};
 use slot_store::{StateEntry, RING_MAX};
 use slot_ui::{
     hint_face, hint_width, Polaroids, Printed, DOT, HINT_H, LEGEND, PHOTO_H, PHOTO_W, PLATE_H,
@@ -56,7 +56,7 @@ fn quads(out: &[Draw]) -> Vec<Quad> {
             Draw::Game | Draw::Shot { .. } => Quad {
                 x: 0.0,
                 y: 0.0,
-                w: OUT_W as f32,
+                w: out_w() as f32,
                 h: OUT_H as f32,
                 alpha: 1.0,
             },
@@ -94,9 +94,9 @@ fn the_screenshot_fills_the_screen_at_exactly_3x() {
     let p = switcher_with(3);
     let out = draw(&p);
     let photo = *quads(&out).first().expect("no screenshot drawn");
-    assert_eq!((photo.w, photo.h), (OUT_W as f32, OUT_H as f32));
+    assert_eq!((photo.w, photo.h), (out_w() as f32, OUT_H as f32));
     assert_eq!((photo.x, photo.y), (0.0, 0.0));
-    assert_eq!(OUT_W / PHOTO_W, 3);
+    assert_eq!(out_w() / PHOTO_W, 3);
     assert_eq!(OUT_H / PHOTO_H, 3);
 }
 
@@ -191,7 +191,7 @@ fn a_full_ring_of_dots_stays_clear_of_the_legend() {
     assert_eq!(dots.len(), RING_MAX);
     for d in dots {
         assert!(
-            d.x >= 0.0 && d.x + d.w <= OUT_W as f32,
+            d.x >= 0.0 && d.x + d.w <= out_w() as f32,
             "a dot at {} is off the plate",
             d.x
         );
@@ -224,7 +224,7 @@ fn the_switcher_puts_the_ways_out_on_the_left() {
     let mut p = switcher_with(3);
     p.set_undo(Some("Undo save"));
     let out = draw(&p);
-    let mid = OUT_W as f32 / 2.0;
+    let mid = out_w() as f32 / 2.0;
     for key in ["B", "Y"] {
         let r = hint_rect(&out, key).unwrap_or_else(|| panic!("no {key} hint"));
         assert!(r.x + r.w < mid, "{key} is not on the left");
@@ -255,7 +255,7 @@ fn the_full_legend_fits_across_the_bar() {
     p.set_undo(Some("Undo save"));
     let total: u32 = p.hints().iter().map(|h| hint_face(h.key, &h.label).w).sum();
     assert!(
-        total < OUT_W,
+        total < out_w(),
         "the legend is {total}px wide, wider than the screen"
     );
 }

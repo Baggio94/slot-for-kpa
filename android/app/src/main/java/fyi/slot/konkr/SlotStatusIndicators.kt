@@ -52,7 +52,7 @@ internal class SlotStatusIndicators(
     private val host: Activity,
     frame: FrameLayout
 ) {
-    private val scale = (host.resources.displayMetrics.widthPixels / 720f).coerceIn(1f, 2f)
+    private val scale = SlotUi.canvasScale(host).coerceIn(1f, 4f)
     private val iconSize = (24f * scale).roundToInt()
     private val spacing = (5f * scale).roundToInt()
     private val margin = (24f * scale).roundToInt()

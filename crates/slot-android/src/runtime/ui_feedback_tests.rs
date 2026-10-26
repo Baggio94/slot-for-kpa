@@ -59,7 +59,7 @@ fn legacy_multiplayer_heading_helper_mode_and_footer_text_cannot_come_back() {
 
 #[test]
 fn original_slot_link_title_and_bottom_keycaps_use_exact_canvas_geometry() {
-    assert_eq!(OUT_W, 720);
+    assert_eq!(out_w(), 720);
     assert_eq!(OUT_H, 480);
     assert_eq!(LINK_TEXT_Y, 44.0);
     assert_eq!(LINK_LEGEND_Y, 422.0);
@@ -236,7 +236,7 @@ fn connected_link_keycaps_fit_konkr_screen() {
         + slot_ui::hint_width("A", "End Link");
     let failed_width = slot_ui::hint_width("A", "OK");
     for width in [linked_width, failed_width] {
-        assert!((width as f32) + 15.0 < OUT_W as f32 - 60.0);
+        assert!((width as f32) + 15.0 < out_w() as f32 - 60.0);
     }
 }
 
@@ -324,7 +324,7 @@ fn in_game_shortcut_keycaps_fit_720x480_without_clipping() {
     let visible = widths.iter()
         .map(|w| w.saturating_sub(HINT_EDGE) as f32)
         .sum::<f32>() + 2.0 * 15.0;
-    assert!(visible < OUT_W as f32 - 2.0 * 30.0,
+    assert!(visible < out_w() as f32 - 2.0 * 30.0,
         "original keycap hints must stay visible on the KONKR 3:2 screen");
 }
 

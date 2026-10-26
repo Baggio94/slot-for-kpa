@@ -1,9 +1,9 @@
-use slot_gfx::{Draw, OUT_H, OUT_W};
+use slot_gfx::{Draw, OUT_H, out_w};
 use slot_store::{Cart, Platform};
 use slot_ui::Shelf;
 
 const SHRINK: usize = 3;
-const CELL_W: usize = OUT_W as usize / SHRINK;
+const CELL_W: usize = slot_gfx::BASE_W as usize / SHRINK;
 const CELL_H: usize = OUT_H as usize / SHRINK;
 const COLS: usize = 8;
 const DT: f32 = 1.0 / 60.0;
@@ -140,11 +140,11 @@ fn double_tap(n: usize, start: usize, way: i32, gap: usize, frames: usize) -> Ru
 fn widest_gap(s: &Shelf) -> (f32, f32) {
     let mut list = Vec::new();
     s.draw_row(None, 0.0, 0.0, 1.0, &mut list);
-    let (mut left, mut right) = (OUT_W as f32, OUT_W as f32);
+    let (mut left, mut right) = (out_w() as f32, out_w() as f32);
     for d in &list {
         if let Draw::Rect { x, w, .. } = *d {
             left = left.min(x.max(0.0));
-            right = right.min((OUT_W as f32 - (x + w)).max(0.0));
+            right = right.min((out_w() as f32 - (x + w)).max(0.0));
         }
     }
     (left, right)

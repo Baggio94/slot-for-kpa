@@ -1,7 +1,7 @@
 mod art;
 pub mod bitmaps;
 mod native_assets;
-pub use native_assets::{native_rgba, NATIVE_W, NATIVE_H};
+pub use native_assets::{native_rgba, native_w, native_h, refit_band, NATIVE_W, NATIVE_H};
 pub use art::cover;
 mod backdrop;
 mod barcode;
@@ -36,7 +36,7 @@ pub use battery::{draw_gauge, BOLT_PX, GAUGE_H, GAUGE_W, WALL};
 pub use board::{
     board_at, board_face, pak_chip_face, board_layout, board_toward, BoardLayout, board_from, board_zoom, chip_face, chip_shadow_face, grown, lid_at,
     lid_from, lid_rest, lid_toward, lift_of, on_board, padded, pak_marking_face, rom_marking, rom_marking_face, shelf_cart, shelf_cart_at, shelf_cart_for,
-    slide_of, socket_face, Placed, BOARD_H, BOARD_W, BOARD_X, BOARD_Y, CHIP_H, CHIP_TIP, CHIP_U,
+    slide_of, socket_face, Placed, BOARD_H, BOARD_W, board_x, BOARD_Y, CHIP_H, CHIP_TIP, CHIP_U,
     CHIP_V, CHIP_W, HOP_LIFT, LID_TURN, ROM_H, ROM_W, ROM_X, ROM_Y, SHADOW_H, SHADOW_W,
     SLIDE_SHARE, SLIDE_UP, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
 };
@@ -48,7 +48,7 @@ pub use cart::{
 };
 pub use clock::{clock_label, date_time_text, hhmm, set_clock_hint_face, ClockPicker, Field};
 pub use density::Face;
-pub use draw::{Draw, TexId, OUT_H, OUT_W};
+pub use draw::{Draw, TexId, OUT_H, out_w};
 pub use footer::{draw_footer, draw_footer_with_ink, footer_ink, Printed};
 pub use hud::{
     badge_at, ff_badge, FfState, Hud, HudKind, LinkBadge, Millis, HUD_ICON_PX, HUD_INK, HUD_MS,
@@ -63,7 +63,7 @@ pub use link_art::{
 pub use plate::{
     arrows_hint_face, arrows_hint_width, cap_width, centred_hints, hint_face, hint_quad, hint_row,
     hint_width, title_face, title_line_face, word_face, word_ink, word_width, platform_name_face, PLATFORM_NAME_SCALE,
-    onboarding_instruction_face, onboarding_note_face, ONBOARDING_MAX_W,
+    onboarding_instruction_face, onboarding_note_face, onboarding_max_w,
     Hint, UndoFace, ARROW_GAP, CAP, CAP_GAP,
     HINT_EDGE, HINT_GAP, HINT_H, LEGEND_GAP, TITLE_H, TITLE_W,
 };

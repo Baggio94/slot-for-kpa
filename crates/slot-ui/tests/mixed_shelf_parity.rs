@@ -1,4 +1,4 @@
-use slot_gfx::{Draw, OUT_W};
+use slot_gfx::{Draw, out_w};
 use slot_store::{Cart, Platform};
 use slot_ui::Shelf;
 
@@ -68,7 +68,7 @@ fn mixed_neighbours_have_positive_non_overlapping_pitch() {
         }
         let selected = s.selected_at();
         assert!(selected.0.is_finite());
-        assert!(selected.0 < OUT_W as f32);
+        assert!(selected.0 < out_w() as f32);
         s.right();
     }
 }
