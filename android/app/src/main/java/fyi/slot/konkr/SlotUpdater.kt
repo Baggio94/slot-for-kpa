@@ -311,7 +311,10 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.updates", file)
         context.startActivity(Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            // The installer must not live in slot.'s own task: replacing the
+            // package kills that task, leaving "App installed" with an OPEN
+            // that does nothing, or a dead dialog when slot. is the home app.
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         })
     }
 }
