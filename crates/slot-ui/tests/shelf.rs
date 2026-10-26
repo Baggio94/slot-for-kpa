@@ -2,7 +2,7 @@ use slot_power::{Battery, Charge};
 use slot_store::{Cart, Platform};
 use slot_ui::{
     draw_footer, label_colour, rest_y, Draw, GbShell, Printed, Shelf, TexId, CART_W, GB_CART_H,
-    GB_CART_W, OUT_W,
+    GB_CART_W, out_w,
 };
 
 fn shelf_with(n: usize) -> Shelf {
@@ -29,7 +29,7 @@ fn placed(s: &Shelf) -> Vec<(f32, f32)> {
             Draw::Rect { x, w, .. } => (x, w),
             Draw::Tex { x, w, .. } => (x, w),
             Draw::Turned { x, w, .. } => (x, w),
-            Draw::Game | Draw::Shot { .. } => (0.0, OUT_W as f32),
+            Draw::Game | Draw::Shot { .. } => (0.0, out_w() as f32),
         })
         .collect()
 }
@@ -37,7 +37,7 @@ fn placed(s: &Shelf) -> Vec<(f32, f32)> {
 fn xw(d: &Draw) -> (f32, f32) {
     match *d {
         Draw::Rect { x, w, .. } | Draw::Tex { x, w, .. } | Draw::Turned { x, w, .. } => (x, w),
-        Draw::Game | Draw::Shot { .. } => (0.0, OUT_W as f32),
+        Draw::Game | Draw::Shot { .. } => (0.0, out_w() as f32),
     }
 }
 
@@ -519,7 +519,7 @@ fn the_band_prints_the_charge_at_one_margin_and_the_clock_at_the_other() {
     );
     assert_eq!(
         last.1,
-        OUT_W as f32 - 24.0,
+        out_w() as f32 - 24.0,
         "the clock does not end at the case margin"
     );
     assert_eq!(
@@ -584,7 +584,7 @@ fn the_clock_stays_at_the_right_margin() {
             _ => 0.0,
         })
         .fold(0.0, f32::max);
-    assert_eq!(rightmost, OUT_W as f32 - 24.0);
+    assert_eq!(rightmost, out_w() as f32 - 24.0);
 }
 
 #[test]
@@ -647,7 +647,7 @@ fn the_neighbours_peek_in_from_both_edges() {
     assert_eq!(spans.len(), 3, "expected three carts, got {}", spans.len());
     let (left, mid, right) = (spans[0], spans[1], spans[2]);
     assert!(
-        mid.0 >= 0.0 && mid.1 <= OUT_W as f32,
+        mid.0 >= 0.0 && mid.1 <= out_w() as f32,
         "the selected cart runs off screen at {mid:?}"
     );
     assert!(
@@ -655,7 +655,7 @@ fn the_neighbours_peek_in_from_both_edges() {
         "the left neighbour is not peeking in: {left:?}"
     );
     assert!(
-        right.1 > OUT_W as f32 && right.0 < OUT_W as f32 - 20.0,
+        right.1 > out_w() as f32 && right.0 < out_w() as f32 - 20.0,
         "the right neighbour is not peeking in: {right:?}"
     );
 }
@@ -668,7 +668,7 @@ fn cart_spans(out: &[Draw]) -> Vec<(f32, f32)> {
             | Draw::Turned { x, w, h, .. } => (h > 60.0).then_some((x, x + w)),
             Draw::Game | Draw::Shot { .. } => None,
         })
-        .filter(|(x0, x1)| *x1 > 0.0 && *x0 < OUT_W as f32)
+        .filter(|(x0, x1)| *x1 > 0.0 && *x0 < out_w() as f32)
         .collect()
 }
 
@@ -684,7 +684,7 @@ fn the_row_parts_for_the_cart_going_in() {
     let part = at(0.5);
     assert_eq!(start.len(), part.len(), "a cart left the row early");
 
-    let centre = OUT_W as f32 / 2.0;
+    let centre = out_w() as f32 / 2.0;
     for (a, b) in start.iter().zip(&part) {
         let (ax, aw) = xw(a);
         let (bx, _) = xw(b);

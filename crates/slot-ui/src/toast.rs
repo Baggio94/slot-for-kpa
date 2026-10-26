@@ -1,4 +1,4 @@
-use slot_gfx::OUT_W;
+use slot_gfx::out_w;
 use slot_store::GbPalette;
 
 use crate::hud::{HUD_INK, PLATE_H};
@@ -120,7 +120,7 @@ const TOAST_MIN_PX: f32 = 12.0;
 pub fn toast_rect() -> (f32, f32, f32, f32) {
     let (w, h) = toast_box();
     let (w, h) = (w as f32, h as f32);
-    ((OUT_W as f32 - w) / 2.0, (PLATE_H - h) / 2.0, w, h)
+    ((out_w() as f32 - w) / 2.0, (PLATE_H - h) / 2.0, w, h)
 }
 
 pub fn toast_box() -> (u32, u32) {

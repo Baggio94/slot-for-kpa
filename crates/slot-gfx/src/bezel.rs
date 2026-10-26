@@ -1,12 +1,14 @@
-use crate::surface::{OUT_H, OUT_W};
+use crate::surface::{OUT_H, out_w};
 
+/// Upstream Slot's 4:3 handhelds show the 3:2 canvas under a bezel. A
+/// canvas already fitted to the panel's shape is never framed.
 pub fn framed(panel: (u32, u32)) -> bool {
-    panel.0 > 0 && panel.0 * 3 == panel.1 * 4
+    panel.0 > 0 && panel.0 * 3 == panel.1 * 4 && out_w() == crate::surface::BASE_W
 }
 
 pub fn screen_rect(panel: (u32, u32)) -> (i32, i32, i32, i32) {
     let w = panel.0;
-    let h = (w * OUT_H + OUT_W / 2) / OUT_W;
+    let h = (w * OUT_H + out_w() / 2) / out_w();
     ((panel.0 - w) as i32 / 2, 0, w as i32, h as i32)
 }
 

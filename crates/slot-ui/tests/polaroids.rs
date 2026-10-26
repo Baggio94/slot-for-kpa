@@ -3,7 +3,7 @@ use std::path::Path;
 use slot_power::{Battery, Charge};
 use slot_store::StateEntry;
 use slot_ui::{
-    photo_face, Draw, PhotoFace, Polaroids, Printed, TexId, OUT_W, PHOTO_H, PHOTO_W, PLATE_H,
+    photo_face, Draw, PhotoFace, Polaroids, Printed, TexId, out_w, PHOTO_H, PHOTO_W, PLATE_H,
 };
 
 fn entry(dir: &Path, stamp: &str) -> StateEntry {
@@ -130,7 +130,7 @@ fn the_gauge_stays_clear_of_the_title_on_the_left() {
         .iter()
         .filter_map(|d| match *d {
             Draw::Rect { x, y, w, .. } | Draw::Tex { x, y, w, .. }
-                if y < PLATE_H && w < OUT_W as f32 =>
+                if y < PLATE_H && w < out_w() as f32 =>
             {
                 Some((x, w))
             }
@@ -174,7 +174,7 @@ fn the_clock_stays_clear_of_the_title_on_the_right() {
         "the clock reached into the title's texture"
     );
     let rightmost = clock.iter().map(|(x, w)| x + w).fold(0.0, f32::max);
-    assert_eq!(rightmost, OUT_W as f32 - 16.0, "the plate margin is 16");
+    assert_eq!(rightmost, out_w() as f32 - 16.0, "the plate margin is 16");
 }
 
 #[test]

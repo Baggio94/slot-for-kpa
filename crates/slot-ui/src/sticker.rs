@@ -401,7 +401,7 @@ pub fn draw_sticker(face: Option<TexId>, out: &mut Vec<Draw>) {
         return;
     };
     out.push(Draw::Tex {
-        x: (slot_gfx::OUT_W as f32 - STICKER_W as f32) / 2.0,
+        x: (slot_gfx::out_w() as f32 - STICKER_W as f32) / 2.0,
         y: (slot_gfx::OUT_H as f32 - STICKER_H as f32) / 2.0,
         w: STICKER_W as f32,
         h: STICKER_H as f32,

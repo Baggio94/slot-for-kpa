@@ -1,11 +1,11 @@
 use crate::lcd3x::ScreenEffect;
-use crate::power::{screen_brightness, screen_rect};
+use crate::power::{screen_brightness, screen_rect_in};
 use crate::quad::Quad;
 use crate::shaders::{GAME_FRAG, RECT_VERT};
-use crate::surface::{GfxError, OUT_H, OUT_W};
+use crate::surface::{GfxError, OUT_H, out_w};
 
 pub const SCALE: u32 = 3;
-pub const SRC_W: u32 = OUT_W / SCALE;
+pub const SRC_W: u32 = crate::surface::BASE_W / SCALE;
 pub const SRC_H: u32 = OUT_H / SCALE;
 
 pub const WHOLE_TEXTURE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
@@ -35,6 +35,8 @@ pub struct GamePass {
     effect: ScreenEffect,
     power: f32,
     src: [f32; 4],
+    /// Canvas rect the whole 240x160 game texture maps to.
+    area: [f32; 4],
 }
 
 impl GamePass {
@@ -53,6 +55,7 @@ impl GamePass {
         target.effect = self.effect;
         target.power = self.power;
         target.src = self.src;
+        target.area = self.area;
         if let Some((size, rgba)) = &self.paper_pixels {
             target.set_paper(*size, rgba);
         }
@@ -78,7 +81,7 @@ impl GamePass {
             );
             gl::Uniform2f(
                 crate::gl::uniform_location(prog, "u_target"),
-                OUT_W as f32,
+                out_w() as f32,
                 OUT_H as f32,
             );
             u_rect = crate::gl::uniform_location(prog, "u_rect");
@@ -114,6 +117,7 @@ impl GamePass {
             effect: ScreenEffect::Lcd3x,
             power: 1.0,
             src: WHOLE_TEXTURE,
+            area: default_area(),
         })
     }
 
@@ -147,6 +151,10 @@ impl GamePass {
 
     pub fn set_source_rect(&mut self, rect: [f32; 4]) {
         self.src = rect;
+    }
+
+    pub fn set_area(&mut self, area: [f32; 4]) {
+        self.area = area;
     }
 
     pub fn upload(&mut self, xrgb8888: &[u8]) {
@@ -192,7 +200,7 @@ impl GamePass {
 
     pub fn draw(&self, quad: &Quad) {
         let src = match self.effect {
-            ScreenEffect::Grid => whole_scale_source(self.src, self.fbo_scale),
+            ScreenEffect::Grid => whole_scale_source(self.src, self.area, self.fbo_scale),
             _ => self.src,
         };
         self.draw_source(self.game, quad, src);
@@ -203,7 +211,7 @@ impl GamePass {
     }
 
     fn draw_source(&self, tex: gl::types::GLuint, quad: &Quad, src: [f32; 4]) {
-        let (x, y, w, h) = screen_rect(self.power);
+        let (x, y, w, h) = screen_rect_in(self.area, self.power);
         unsafe {
             gl::UseProgram(self.prog);
             gl::Uniform4f(self.u_rect, x, y, w, h);
@@ -232,9 +240,18 @@ impl GamePass {
     }
 }
 
-fn whole_scale_source(src: [f32; 4], fbo: [f32; 2]) -> [f32; 4] {
-    let (x, w) = whole_scale(src[0], src[2], SRC_W as f32, OUT_W as f32 * fbo[0]);
-    let (y, h) = whole_scale(src[1], src[3], SRC_H as f32, OUT_H as f32 * fbo[1]);
+/// The largest 3:2 rect centred on the canvas: the whole canvas on a 3:2
+/// panel, full height on a wider one, full width on a narrower one.
+pub fn default_area() -> [f32; 4] {
+    let (cw, ch) = (out_w() as f32, OUT_H as f32);
+    let s = (cw / SRC_W as f32).min(ch / SRC_H as f32);
+    let (w, h) = (SRC_W as f32 * s, SRC_H as f32 * s);
+    [(cw - w) / 2.0, (ch - h) / 2.0, w, h]
+}
+
+fn whole_scale_source(src: [f32; 4], area: [f32; 4], fbo: [f32; 2]) -> [f32; 4] {
+    let (x, w) = whole_scale(src[0], src[2], SRC_W as f32, area[2] * fbo[0]);
+    let (y, h) = whole_scale(src[1], src[3], SRC_H as f32, area[3] * fbo[1]);
     [x, y, w, h]
 }
 

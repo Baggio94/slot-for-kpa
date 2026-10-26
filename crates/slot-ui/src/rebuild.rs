@@ -1,4 +1,4 @@
-use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
+use slot_gfx::{Draw, TexId, OUT_H, out_w};
 
 use crate::density::{self, Canvas};
 use crate::hud::{FILL, HUD_INK, TRACK};
@@ -31,8 +31,8 @@ fn line_face(label: &str, px: f32, h: u32) -> UndoFace {
             h: 0,
         };
     };
-    let mut face = Canvas::new(OUT_W, h);
-    let layout = text::fit(font, label, OUT_W as f32, 1, px, px);
+    let mut face = Canvas::new(out_w(), h);
+    let layout = text::fit(font, label, out_w() as f32, 1, px, px);
     face.text(&layout, HUD_INK);
     let trimmed = trim(&face.rgba, face.tw, face.th);
     if !density::is_dense() || trimmed.w == 0 {
@@ -78,7 +78,7 @@ impl RebuildScreen {
         out.push(Draw::Rect {
             x: 0.0,
             y: 0.0,
-            w: OUT_W as f32,
+            w: out_w() as f32,
             h: OUT_H as f32,
             colour: [0.0, 0.0, 0.0, 1.0],
         });
@@ -86,10 +86,10 @@ impl RebuildScreen {
             line.map_or(0.0, |(_, _, h)| h as f32 + gap)
         };
         let stack = height(self.title, TITLE_GAP) + BAR_H + height(self.count, COUNT_GAP);
-        let x = (OUT_W as f32 - BAR_W) / 2.0;
+        let x = (out_w() as f32 - BAR_W) / 2.0;
         let y = panel_middle_y() - stack / 2.0 + height(self.title, TITLE_GAP);
         let centred = |(tex, w, h): (TexId, u32, u32), top: f32| Draw::Tex {
-            x: (OUT_W as f32 - w as f32) / 2.0,
+            x: (out_w() as f32 - w as f32) / 2.0,
             y: top,
             w: w as f32,
             h: h as f32,

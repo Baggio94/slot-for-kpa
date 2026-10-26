@@ -1,4 +1,4 @@
-use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
+use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_ui::{draw_backdrop, draw_sticker, sticker_face, wallpaper_face, StickerFields};
 
 #[test]
@@ -19,7 +19,7 @@ fn render_about() {
     draw_backdrop(paper.as_ref().map(|_| TexId::from_raw(0)), &mut list);
     draw_sticker(Some(TexId::from_raw(1)), &mut list);
 
-    let (w, h) = (OUT_W as usize, OUT_H as usize);
+    let (w, h) = (out_w() as usize, OUT_H as usize);
     let mut px = vec![0u8; w * h * 4];
     for p in px.chunks_mut(4) {
         p.copy_from_slice(&[0, 0, 0, 255]);
@@ -59,7 +59,7 @@ fn render_about() {
                 alpha,
             } => {
                 let (src, sw, sh) = match tex == TexId::from_raw(0) {
-                    true => (paper.as_deref().unwrap_or(&[]), OUT_W, OUT_H),
+                    true => (paper.as_deref().unwrap_or(&[]), out_w(), OUT_H),
                     false => (label.rgba.as_slice(), label.w, label.h),
                 };
                 if src.is_empty() {

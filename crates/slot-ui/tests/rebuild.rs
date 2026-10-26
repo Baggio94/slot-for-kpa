@@ -1,4 +1,4 @@
-use slot_gfx::{Draw, OUT_H, OUT_W};
+use slot_gfx::{Draw, OUT_H, out_w};
 use slot_ui::{set_shelf_slack, RebuildScreen, TexId};
 
 fn stack_middle(out: &[Draw]) -> (f32, f32) {
@@ -24,11 +24,11 @@ fn the_message_sits_in_the_middle_of_the_panel_whatever_its_shape() {
         fraction: 0.25,
     };
     for (panel, middle) in [((720u32, 480u32), 240.0), ((640, 480), 270.0)] {
-        set_shelf_slack((OUT_W * panel.1 / panel.0).saturating_sub(OUT_H) as f32);
+        set_shelf_slack((out_w() * panel.1 / panel.0).saturating_sub(OUT_H) as f32);
         let mut out = Vec::new();
         screen.draw(&mut out);
         let (x, y) = stack_middle(&out);
-        assert_eq!(x, OUT_W as f32 / 2.0, "off centre across a {panel:?} panel");
+        assert_eq!(x, out_w() as f32 / 2.0, "off centre across a {panel:?} panel");
         assert_eq!(y, middle, "off centre down a {panel:?} panel");
     }
 }

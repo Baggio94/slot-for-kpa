@@ -1,6 +1,7 @@
 package fyi.slot.konkr
 
 import android.app.Activity
+import android.content.Context
 import android.app.role.RoleManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -35,6 +36,12 @@ import java.util.concurrent.Executors
  * Touch taps and Android's standard B/Back behavior still work.
  */
 class AppsActivity : Activity() {
+    // dp/sp follow the screen height so Android screens keep the KONKR's look.
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(newBase)
+        SlotUi.panelDensityOverride(newBase)?.let(::applyOverrideConfiguration)
+    }
+
     companion object {
         private const val TAG = "SlotApps"
         private const val COLUMNS = 5
@@ -304,7 +311,7 @@ class AppsActivity : Activity() {
         val maxFaceHeight = faces.values.maxOf { it.height }.coerceAtLeast(1)
         val availableHeight = (dp(35) - dp(4)).coerceAtLeast(1)
         val scale = minOf(
-            resources.displayMetrics.widthPixels.toFloat() / 720f / SlotUi.LEGEND_DENSITY,
+            SlotUi.canvasScale(this) / SlotUi.LEGEND_DENSITY,
             availableHeight.toFloat() / maxFaceHeight.toFloat()
         )
         fun hint(asset: String): ImageView {

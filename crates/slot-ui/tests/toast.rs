@@ -1,5 +1,5 @@
 use slot_store::GbPalette;
-use slot_ui::{toast_face, toast_rect, Draw, Hud, HudKind, Toast, OUT_W, PLATE_H};
+use slot_ui::{toast_face, toast_rect, Draw, Hud, HudKind, Toast, out_w, PLATE_H};
 
 #[test]
 fn saving_and_loading_say_which_one_happened() {
@@ -109,7 +109,7 @@ fn a_second_banner_replaces_the_first() {
 #[test]
 fn a_toast_is_centred() {
     let (x, _, w, _) = toast_rect();
-    assert_eq!(x + w / 2.0, OUT_W as f32 / 2.0);
+    assert_eq!(x + w / 2.0, out_w() as f32 / 2.0);
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn a_toast_sits_in_the_plate_band_and_is_backed_by_it() {
 
     let plate = out
         .iter()
-        .find(|d| matches!(d, Draw::Rect { w, .. } if *w == OUT_W as f32))
+        .find(|d| matches!(d, Draw::Rect { w, .. } if *w == out_w() as f32))
         .expect("the toast has nothing to be read against");
     let Draw::Rect { colour, h: ph, .. } = plate else {
         unreachable!()
