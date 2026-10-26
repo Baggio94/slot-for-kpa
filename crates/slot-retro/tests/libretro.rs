@@ -101,6 +101,20 @@ fn mgba_reports_gba_geometry_and_round_trips_state() {
 }
 
 #[test]
+fn achievement_ram_survives_a_state_taken_before_the_first_frame() {
+    // Run-Ahead serializes before the first real frame. mGBA publishes its
+    // memory map from that call, which RetroAchievements needs (SMA4).
+    let _g = lock();
+    let Some(mut c) = test_core() else { return };
+    c.load(&test_rom()).unwrap();
+    c.serialize().unwrap();
+    c.run_frame(ButtonMask::default());
+    let mut ram = vec![0; 0x58000];
+    let valid = c.achievement_memory(&mut ram);
+    assert_eq!(&valid[..2], &[0x8000, 0x40000]);
+}
+
+#[test]
 fn audio_arrives_at_roughly_the_reported_sample_rate() {
     let _g = lock();
     let Some(mut c) = test_core() else { return };

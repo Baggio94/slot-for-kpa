@@ -21,7 +21,11 @@ use storage::{Config, Store, Unlock};
 
 const RAM_SIZE: usize = 0x58000;
 const GB_COVERAGE_SIZE: usize = 0x17000;
-const QUEUE_SIZE: usize = 8;
+// RetroArch evaluates every real frame. Here a frame the worker cannot take
+// is lost and resets all progress ("Achievement tracking interrupted"), so
+// the queue must absorb an unlock's fsync or a Fast Forward burst: about
+// half a second at 1x. Snapshots are allocated only while the worker lags.
+const QUEUE_SIZE: usize = 32;
 // F10: if nothing arrives, poll HTTP preparation / award retries at most
 // four times per second. Frames and controls signal the evaluator instantly.
 const EVALUATOR_IDLE_WATCHDOG: Duration = Duration::from_millis(250);
@@ -601,6 +605,10 @@ fn evaluate(
         if let Some((sequence, timeline)) = game.previous {
             if timeline != frame.timeline || sequence + 1 != frame.sequence {
                 game.runtime.reset();
+                if timeline == frame.timeline {
+                    eprintln!("slot: achievements skipped {} frames",
+                        frame.sequence.saturating_sub(sequence + 1));
+                }
                 if timeline == frame.timeline && !game.warned_gap {
                     let _ = notices.send(Notice::status(
                         game.generation,
