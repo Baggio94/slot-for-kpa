@@ -522,6 +522,9 @@ impl GameSession {
                 core.set_option("gambatte_gb_hwmode", "Auto");
                 core.set_option("gambatte_gb_bootloader", "enabled");
                 core.set_option("gambatte_up_down_allowed", "disabled");
+                // RetroArch's default. Without a value Gambatte reads 0
+                // and rumble carts (Pokémon Pinball) never vibrate.
+                core.set_option("gambatte_rumble_level", "10");
                 match gb_palette.and_then(crate::gb_core_switch::gambatte_palette) {
                     Some(name) => {
                         core.set_option("gambatte_gb_colorization", "internal");
