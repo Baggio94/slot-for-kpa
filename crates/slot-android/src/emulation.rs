@@ -27,7 +27,22 @@ pub struct EmulationProfile {
     pub turbo_override: Option<bool>, // original KONKR "X/Y Buttons"
     pub rumble_override: Option<bool>,
     pub eject_save_override: Option<bool>,
+    // Boktai's sun: mGBA's level 0..=10, or SUN_SENSOR for the light
+    // sensor. None follows the handheld (sensor if it has one).
+    pub sun: Option<u8>,
 }
+
+pub const SUN_SENSOR: u8 = 11;
+/// RetroArch starts at 0 (night); slot. starts playable mid-day, or on
+/// the real light when the handheld can measure it.
+pub fn default_sun(light_sensor: bool) -> u8 {
+    if light_sensor { SUN_SENSOR } else { 5 }
+}
+/// The mgba_solar_sensor_level value for a sun setting.
+pub fn sun_option(sun: u8) -> String {
+    if sun == SUN_SENSOR { "sensor".into() } else { sun.min(10).to_string() }
+}
+
 impl EmulationProfile {
     pub fn from_settings(settings: &Settings) -> Self {
         Self { show_fps: settings.show_fps,
@@ -40,7 +55,7 @@ impl EmulationProfile {
             ff_sound_override: None, rewind_override: None,
             rewind_speed_override: None,
             turbo_override: None, rumble_override: None,
-            eject_save_override: None }
+            eject_save_override: None, sun: None }
     }
     /// Materialise the *current* game's per-ROM settings without mutating
     /// Settings.json or any other game's configured defaults.
@@ -120,6 +135,7 @@ impl EmulationProfile {
         if !settings::SPEEDS.contains(&self.ff_speed_override.unwrap_or(2)) {
             self.ff_speed_override=None;
         }
+        if self.sun.is_some_and(|sun| sun > SUN_SENSOR) { self.sun = None; }
         self
     }
     pub fn change(&mut self, key: usize, right: bool) -> bool {
@@ -135,6 +151,18 @@ impl EmulationProfile {
             _ => return false,
         }
         *self != before
+    }
+    pub fn sun(&self, light_sensor: bool) -> u8 {
+        match self.sun {
+            Some(SUN_SENSOR) if !light_sensor => default_sun(false),
+            Some(sun) => sun,
+            None => default_sun(light_sensor),
+        }
+    }
+    /// 0, 1 … 10, then SENSOR when the handheld has a light sensor.
+    pub fn change_sun(&mut self, light_sensor: bool, right: bool) {
+        let max = if light_sensor { SUN_SENSOR } else { 10 };
+        self.sun = Some(settings::cycle_u8(self.sun(light_sensor), max, right));
     }
     fn legacy_path(root: &Path, uri: &str) -> PathBuf {
         root.join("GameEmulation").join(format!("{}.json", core_selection::key(uri)))
@@ -195,6 +223,21 @@ impl EmulationProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sun_follows_the_handheld_until_chosen() {
+        let mut profile=EmulationProfile::default();
+        assert_eq!(profile.sun(true), SUN_SENSOR);
+        assert_eq!(profile.sun(false), 5);
+        profile.change_sun(true, true);
+        assert_eq!(profile.sun(true), 0, "after SENSOR comes 0");
+        profile.change_sun(false, false);
+        assert_eq!(profile.sun(false), 10);
+        profile.sun=Some(SUN_SENSOR);
+        assert_eq!(profile.sun(false), 5, "no light sensor on this handheld");
+        assert_eq!(sun_option(SUN_SENSOR), "sensor");
+        assert_eq!(sun_option(7), "7");
+        assert_eq!(EmulationProfile { sun: Some(40), ..profile }.sanitize().sun, None);
+    }
     #[test]
     fn old_per_game_gba_grid_becomes_grid_v2_without_changing_gb() {
         let profile=EmulationProfile {

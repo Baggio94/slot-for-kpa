@@ -13,6 +13,7 @@ pub const GET_VARIABLE: c_uint = 15;
 pub const SET_VARIABLES: c_uint = 16;
 pub const GET_VARIABLE_UPDATE: c_uint = 17;
 pub const GET_RUMBLE_INTERFACE: c_uint = 23;
+pub const GET_SENSOR_INTERFACE: c_uint = 25 | 0x10000;
 pub const GET_LOG_INTERFACE: c_uint = 27;
 pub const GET_SAVE_DIRECTORY: c_uint = 31;
 // Libretro memory descriptors are borrowed pointers owned by the native core.
@@ -42,6 +43,12 @@ pub struct MemoryMap {
 }
 pub const SET_AUDIO_BUFFER_STATUS_CALLBACK: c_uint = 62;
 pub const SET_NETPACKET_INTERFACE: c_uint = 78;
+
+#[repr(C)]
+pub struct SensorInterface {
+    pub set_sensor_state: unsafe extern "C" fn(c_uint, c_uint, c_uint) -> bool,
+    pub get_sensor_input: unsafe extern "C" fn(c_uint, c_uint) -> f32,
+}
 
 pub const RUMBLE_STRONG: c_uint = 0;
 pub const RUMBLE_WEAK: c_uint = 1;

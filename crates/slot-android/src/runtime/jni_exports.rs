@@ -563,6 +563,36 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePollRumbleStrength
     RUMBLE_STRENGTH.load(Ordering::Acquire)
 }
 
+/// Device sensors as a mask: 1 accelerometer, 2 gyroscope, 4 light.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSensorsAvailable(
+    _env: *mut c_void, _this: *mut c_void, mask: jint,
+) {
+    slot_retro::sensors::set_available(mask as u8);
+}
+
+/// Sensors the running game switched on, in the same mask.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSensorsWanted(
+    _env: *mut c_void, _this: *mut c_void,
+) -> jint {
+    jint::from(slot_retro::sensors::wanted())
+}
+
+/// One Android SensorEvent, raw: m/s², rad/s or lux in `x`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSensorEvent(
+    _env: *mut c_void, _this: *mut c_void, sensor: jint, x: f32, y: f32, z: f32,
+) {
+    use slot_retro::sensors;
+    match sensor as u8 {
+        sensors::ACCELEROMETER => sensors::push_accelerometer(x, y, z),
+        sensors::GYROSCOPE => sensors::push_gyroscope(x, y, z),
+        sensors::ILLUMINANCE => sensors::push_illuminance(x),
+        _ => {}
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePollCartSfx(
     _env: *mut c_void, _this: *mut c_void,

@@ -99,6 +99,17 @@ pub(crate) fn core_sample_rate(reported: i32) -> i32 {
     reported.clamp(8_000, 192_000)
 }
 
+/// Boktai 1, 2 and 3: cartridges with a solar sensor, which only mGBA
+/// emulates.
+fn solar_cart(rom: &Path, which: Core, platform: Platform) -> bool {
+    if which != Core::Mgba || platform != Platform::Gba { return false; }
+    let Ok(mut file) = std::fs::File::open(rom) else { return false; };
+    if file.seek(SeekFrom::Start(0xAC)).is_err() { return false; }
+    let mut code = [0u8; 4];
+    file.read_exact(&mut code).is_ok()
+        && [b"U3I", b"U32", b"U33"].iter().any(|game| code.starts_with(*game))
+}
+
 fn sma4_runahead_guard(rom: &Path, platform: Platform) -> bool {
     if platform != Platform::Gba { return false; }
     let Ok(mut file) = std::fs::File::open(rom) else { return false; };
@@ -217,6 +228,7 @@ pub struct GameSession {
     // Keep mGBA speculative frames away from Pokémon Gen III FLASH1M.
     mgba_flash_runahead_guard: bool,
     sma4_runahead_guard: bool,
+    solar: bool,
     palette_live: bool,
     core_kind: Core,
     pending_undo: Option<(Instant, PendingUndo)>,
@@ -481,6 +493,9 @@ impl GameSession {
                 }
                 core.set_option("mgba_color_correction",
                     if colour_correction { "Auto" } else { "OFF" });
+                let light = slot_retro::sensors::available() & slot_retro::sensors::ILLUMINANCE != 0;
+                core.set_option("mgba_solar_sensor_level",
+                    &crate::emulation::sun_option(crate::emulation::default_sun(light)));
             }
             Core::Gpsp => {
                 // Replicate official Slot/fork's core.rs: this option must
@@ -733,6 +748,7 @@ impl GameSession {
             last_step_timings: FrameStepTimings::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
+            solar: solar_cart(rom, which, platform),
             pending_undo: None, last_sram: Instant::now(), battery_writer,
             sample_rate: core_sample_rate(sample_rate),
             fps,
@@ -1416,6 +1432,16 @@ impl GameSession {
                 if enabled { "GBC only" } else { "disabled" }),
         };
         self.set_core_option(key, value);
+    }
+
+    pub fn solar(&self) -> bool { self.solar }
+
+    /// Boktai's sun, live: mGBA reads it the next time the game samples
+    /// its solar sensor.
+    pub fn set_sun(&mut self, sun: u8) {
+        if self.solar {
+            self.set_core_option("mgba_solar_sensor_level", &crate::emulation::sun_option(sun));
+        }
     }
 
     pub fn rumble_strength(&self) -> u16 {

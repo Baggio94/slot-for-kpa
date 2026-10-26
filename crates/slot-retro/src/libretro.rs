@@ -11,6 +11,7 @@ use crate::core::{AvInfo, ButtonMask, CoreError, RetroCore, GBA_H, GBA_W};
 use crate::ffi::*;
 use crate::link::Link;
 use crate::rumble::Rumble;
+use crate::sensors;
 
 const VIDEO_BYTES: usize = (GBA_W * GBA_H * 4) as usize;
 
@@ -37,6 +38,7 @@ struct Host {
     rumble: Rumble,
     asked_for_rumble: bool,
     suppress_speculative_rumble: bool,
+    sensors: sensors::Enabled,
     netpacket: Option<NetpacketCallback>,
     net: Link,
     net_peer: Option<u16>,
@@ -82,6 +84,15 @@ unsafe extern "C" fn set_rumble_state(port: c_uint, effect: c_uint, strength: u1
         if h.suppress_speculative_rumble { true }
         else { h.rumble.set(port, effect, strength) }
     }).unwrap_or(false)
+}
+
+unsafe extern "C" fn set_sensor_state(port: c_uint, action: c_uint, _rate: c_uint) -> bool {
+    port == 0 && with_host(|h| h.sensors.action(action)).unwrap_or(false)
+}
+
+unsafe extern "C" fn get_sensor_input(port: c_uint, id: c_uint) -> f32 {
+    if port != 0 { return 0.0; }
+    with_host(|h| h.sensors.input(id)).unwrap_or(0.0)
 }
 
 unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
@@ -208,6 +219,13 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
                 (*(data as *mut RumbleInterface)).set_rumble_state = set_rumble_state;
             })
             .is_some()
+        }
+        GET_SENSOR_INTERFACE => {
+            if data.is_null() {
+                return false;
+            }
+            *(data as *mut SensorInterface) = SensorInterface { set_sensor_state, get_sensor_input };
+            true
         }
         GET_LOG_INTERFACE => {
             if data.is_null() {
@@ -644,6 +662,7 @@ impl LibretroCore {
             rumble: Rumble::default(),
             asked_for_rumble: false,
             suppress_speculative_rumble: false,
+            sensors: sensors::Enabled::default(),
             netpacket: None,
             net: Link::default(),
             net_peer: None,
@@ -699,6 +718,7 @@ impl LibretroCore {
         // be reused when another ROM allocates a different audio queue.
         self.mgba_audio = None;
         self.mgba_runahead_size_age = 0;
+        self.host.sensors.release();
         // Release the borrowed descriptor pointers only after libretro
         // returns and Active drops its exclusive Host borrow.
         self.host.memory.clear();
@@ -1184,6 +1204,7 @@ mod tests {
             rumble: Rumble::default(),
             asked_for_rumble: false,
             suppress_speculative_rumble: false,
+            sensors: sensors::Enabled::default(),
             netpacket: None,
             net: Link::default(),
             net_peer: None,

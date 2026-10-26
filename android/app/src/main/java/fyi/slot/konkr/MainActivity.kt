@@ -12,6 +12,10 @@ import android.os.SystemClock
 import android.os.BatteryManager
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.content.IntentFilter
 import android.util.AtomicFile
 import java.security.MessageDigest
@@ -62,6 +66,10 @@ class MainActivity : Activity() {
     companion object {
         init { System.loadLibrary("slot_android") }
         private const val TAG = "SlotKonkr"
+        // Same bits as slot_retro::sensors.
+        private const val SENSOR_ACCELEROMETER = 1
+        private const val SENSOR_GYROSCOPE = 2
+        private const val SENSOR_LIGHT = 4
         private const val FOLDER_REQUEST = 4701
         private const val BIOS_REQUEST = 4702
         private const val SAVE_REQUEST = 4703
@@ -145,6 +153,9 @@ class MainActivity : Activity() {
     external fun nativeReloadCartLabel(uri: String)
     external fun nativePollCartSfx(): Int
     external fun nativePollRumbleStrength(): Int
+    external fun nativeSensorsAvailable(mask: Int)
+    external fun nativeSensorsWanted(): Int
+    external fun nativeSensorEvent(sensor: Int, x: Float, y: Float, z: Float)
     external fun nativeCoreForUri(uri: String): String
     external fun nativePollSaveFlush(): String?
     external fun nativeSetShareSaves(enabled: Boolean)
@@ -225,6 +236,23 @@ class MainActivity : Activity() {
     }
     private val vibrator by lazy { getSystemService(VIBRATOR_SERVICE) as? Vibrator }
     private var lastRumbleAt = 0L
+    // Tilt, gyro and solar cartridges: the core switches sensors on and
+    // Android listens only while it wants them, like RetroArch.
+    private val sensorManager by lazy { getSystemService(SENSOR_SERVICE) as? SensorManager }
+    private val sensorTypes = listOf(
+        SENSOR_ACCELEROMETER to Sensor.TYPE_ACCELEROMETER,
+        SENSOR_GYROSCOPE to Sensor.TYPE_GYROSCOPE,
+        SENSOR_LIGHT to Sensor.TYPE_LIGHT,
+    )
+    private var sensorsListening = 0
+    private val sensorListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            val sensor = sensorTypes.firstOrNull { it.second == event.sensor.type }?.first ?: return
+            val v = event.values
+            nativeSensorEvent(sensor, v[0], v.getOrElse(1) { 0f }, v.getOrElse(2) { 0f })
+        }
+        override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
+    }
     @Volatile private var resumed = false
     private val raSmartForeground = java.lang.Object()
     private var carouselDozing = false
@@ -511,6 +539,7 @@ class MainActivity : Activity() {
                 // GL carousel, not overlaid by an Android TextView.
             }
             pollRumble()
+            updateSensors()
             updateDisplaySyncMode()
             updateCarouselPacing()
             publishAutoLabelsWhenIdle()
@@ -1488,6 +1517,34 @@ class MainActivity : Activity() {
                 nativeGameError(rawUri, error.message ?: "Cannot open ROM")
             }
         }
+    }
+
+    private fun publishSensors() {
+        val manager = sensorManager
+        val mask = sensorTypes.sumOf { (bit, type) ->
+            if (manager?.getDefaultSensor(type) != null) bit else 0
+        }
+        nativeSensorsAvailable(mask)
+    }
+
+    private fun updateSensors() {
+        val wanted = if (resumed && nativeIsPlaying()) nativeSensorsWanted() else 0
+        if (wanted == sensorsListening) return
+        val manager = sensorManager ?: return
+        manager.unregisterListener(sensorListener)
+        for ((bit, type) in sensorTypes) {
+            if (wanted and bit == 0) continue
+            val sensor = manager.getDefaultSensor(type) ?: continue
+            manager.registerListener(sensorListener, sensor, SensorManager.SENSOR_DELAY_GAME)
+        }
+        sensorsListening = wanted
+        Log.i(TAG, "Sensors listening: $wanted")
+    }
+
+    private fun stopSensors() {
+        if (sensorsListening == 0) return
+        sensorManager?.unregisterListener(sensorListener)
+        sensorsListening = 0
     }
 
     private fun pollRumble() {
@@ -2825,6 +2882,7 @@ class MainActivity : Activity() {
         resumed = false
         warmedCandidate.set(null)
         uiHandler.removeCallbacks(pulse)
+        stopSensors()
         carouselDozing = false
         // Rust nativeSuspend aborts discovery/linked play; never keep a
         // multicast lock across Android background sleep.
@@ -2864,6 +2922,7 @@ class MainActivity : Activity() {
             nativeExternalReturn()
         }
         resumed = true
+        publishSensors()
         publishDisplayRefresh()
         synchronized(raSmartForeground) { raSmartForeground.notifyAll() }
         carouselDozing = false
