@@ -3777,12 +3777,14 @@ impl Engine {
         let mut profile = self.game_emulation
             .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
         let sun = profile.sun(light_sensor());
+        let time = self.born.elapsed().as_millis() as u64;
         if sun == crate::emulation::SUN_SENSOR {
-            set_message("Sun: SENSOR".into());
+            self.hud.toast(Toast::SunSensor, time);
             return;
         }
         let next = if brighter { (sun + 1).min(10) } else { sun.saturating_sub(1) };
-        set_message(format!("Sun {next}"));
+        // The same banner as State Saved or a shader change.
+        self.hud.toast(Toast::Sun(next), time);
         if next == sun { return; }
         profile.sun = Some(next);
         self.save_game_sun(profile, &uri, core);

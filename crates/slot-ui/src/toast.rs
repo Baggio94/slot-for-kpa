@@ -35,10 +35,18 @@ pub enum Toast {
     ScreenRatio,
     ScreenStretch,
     Palette(GbPalette),
+    /// Boktai's sun from L3 / R3, 0..=10.
+    Sun(u8),
+    SunSensor,
 }
 
+const SUN_TEXT: [&str; 11] = [
+    "Sun: 0", "Sun: 1", "Sun: 2", "Sun: 3", "Sun: 4", "Sun: 5",
+    "Sun: 6", "Sun: 7", "Sun: 8", "Sun: 9", "Sun: 10",
+];
+
 impl Toast {
-    const FIXED: [Toast; 25] = [
+    const FIXED: [Toast; 26] = [
         Toast::StateSaved,
         Toast::StateLoaded,
         Toast::NeedsGpsp,
@@ -64,18 +72,22 @@ impl Toast {
         Toast::ScreenInteger,
         Toast::ScreenRatio,
         Toast::ScreenStretch,
+        Toast::SunSensor,
     ];
 
     pub fn all() -> Vec<Toast> {
         Self::FIXED
             .into_iter()
             .chain(GbPalette::all().map(Toast::Palette))
+            .chain((0..SUN_TEXT.len() as u8).map(Toast::Sun))
             .collect()
     }
 
     pub fn index(self) -> usize {
         match self {
             Toast::Palette(p) => Self::FIXED.len() + p.index(),
+            Toast::Sun(level) => Self::FIXED.len() + GbPalette::COUNT
+                + usize::from(level.min(10)),
             fixed => Self::FIXED.iter().position(|t| *t == fixed).unwrap_or(0),
         }
     }
@@ -108,6 +120,8 @@ impl Toast {
             Toast::ScreenRatio => "Screen: Original Ratio",
             Toast::ScreenStretch => "Screen: Stretch",
             Toast::Palette(p) => p.label(),
+            Toast::Sun(level) => SUN_TEXT[usize::from(level.min(10))],
+            Toast::SunSensor => "Sun: Sensor",
         }
     }
 }
