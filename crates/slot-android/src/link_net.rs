@@ -85,6 +85,8 @@ impl LabGreeting {
         let mut bytes = [0u8; LAB_GREETING_LEN];
         bytes[..4].copy_from_slice(b"KMLB");
         bytes[4] = if self.backend == 1 { 5 } else { 3 };
+        // Gambatte Game Link (backend 3) exchanges nothing but the greeting:
+        // each console runs only its own cartridge.
         // KMLB/5: signed device identity precedes mGBA mixed-ROM KMLB/4 transfer.
         // Refuse legacy v4 peers instead of mixing framed setup traffic.
         // gpSP KMLB/3 remains unchanged; both formats reject old peers.
@@ -98,7 +100,7 @@ impl LabGreeting {
     }
     fn decode(bytes:&[u8])->Option<Self>{
         if bytes.len()!=LAB_GREETING_LEN || &bytes[0..4]!=b"KMLB" ||
-            !matches!((bytes[4], bytes[9]), (5, 1) | (3, 2)) {return None;}
+            !matches!((bytes[4], bytes[9]), (5, 1) | (3, 2) | (3, 3)) {return None;}
         let mut game=[0;4]; game.copy_from_slice(&bytes[5..9]);
         let mut rom_sha256=[0;32];rom_sha256.copy_from_slice(&bytes[11..43]);
         let mut core_sha256=[0;32];core_sha256.copy_from_slice(&bytes[43..75]);
@@ -124,7 +126,7 @@ impl LabGreeting {
         }
         if self.game==other.game{return self.rom_sha256==other.rom_sha256;}
         match self.backend {
-            1 => mode == crate::link_kind::LinkKind::Cable
+            1 | 3 => mode == crate::link_kind::LinkKind::Cable
                 && crate::link_compat::compatible_cross_title(self.game, other.game, mode),
             2 => crate::link_compat::runnable_gpsp_cross_title(self.game, other.game, mode),
             _ => false,
@@ -360,6 +362,14 @@ impl TcpLink {
     /// remote ROM transfer matches the negotiated SHA-256 and game code.
     pub fn peer_identity(&self) -> Option<&LabGreeting> {
         self.peer_identity.as_ref()
+    }
+
+    /// The other console's address on this network.
+    pub fn peer_ipv4(&self) -> Option<std::net::Ipv4Addr> {
+        match self.stream.peer_addr().ok()?.ip() {
+            std::net::IpAddr::V4(ip) => Some(ip),
+            std::net::IpAddr::V6(ip) => ip.to_ipv4_mapped(),
+        }
     }
 
     /// KMLB/4 only. Transfer the other player's cartridge into a PRIVATE

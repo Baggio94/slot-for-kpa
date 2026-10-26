@@ -1,0 +1,163 @@
+diff --git a/libgambatte/libretro/net_serial.cpp b/libgambatte/libretro/net_serial.cpp
+index 713cc44..11cffc9 100644
+--- a/libgambatte/libretro/net_serial.cpp
++++ b/libgambatte/libretro/net_serial.cpp
+@@ -13,7 +13,49 @@
+ #include <sys/socket.h>
+ #include <sys/ioctl.h>
+ #include <netinet/in.h>
++#include <netinet/tcp.h>
+ #include <netdb.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <time.h>
++#endif
++
++#ifndef _WIN32
++/* Every byte is a request and its answer, so Nagle must not hold it back, and
++ * the emulation thread must never wait forever on a console that left the
++ * network: a transfer that gets no answer reads as an unplugged cable (0xFF). */
++static void tuneSocket(int fd)
++{
++	int one = 1;
++	struct timeval wait = { 2, 0 };
++	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
++	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof(wait));
++	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &wait, sizeof(wait));
++}
++
++/* connect() with a bound, on the emulation thread. */
++static int connectWithin(int fd, const struct sockaddr* addr, socklen_t len, int ms)
++{
++	int flags = fcntl(fd, F_GETFL, 0);
++	fcntl(fd, F_SETFL, flags | O_NONBLOCK);
++	int rc = connect(fd, addr, len);
++	if (rc < 0 && errno == EINPROGRESS) {
++		struct pollfd pfd = { fd, POLLOUT, 0 };
++		int error = 0;
++		socklen_t size = sizeof(error);
++		rc = -1;
++		if (poll(&pfd, 1, ms) == 1 &&
++			getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) == 0 && error == 0) {
++			rc = 0;
++		} else if (error) {
++			errno = error;
++		} else {
++			errno = ETIMEDOUT;
++		}
++	}
++	fcntl(fd, F_SETFL, flags);
++	return rc;
++}
+ #endif
+ 
+ NetSerial::NetSerial()
+@@ -66,6 +108,7 @@ bool NetSerial::checkAndRestoreConnection(bool throttle)
+ 	if (is_stopped_) {
+ 		return false;
+ 	}
++#ifdef _WIN32
+ 	if (sockfd_ < 0 && throttle) {
+ 		clock_t now = clock();
+ 		// Only attempt to establish the connection every 5 seconds
+@@ -74,6 +117,18 @@ bool NetSerial::checkAndRestoreConnection(bool throttle)
+ 		}
+ 	}
+ 	lastConnectAttempt_ = clock();
++#else
++	/* clock() is processor time, which a console waiting at 60 fps barely
++	 * spends: a server that missed its client at start never looked again.
++	 * Retry once a second of wall time. */
++	struct timespec ts;
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	clock_t now = (clock_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
++	if (sockfd_ < 0 && throttle && now - lastConnectAttempt_ < 1000) {
++		return false;
++	}
++	lastConnectAttempt_ = now;
++#endif
+ 	if (is_server_) {
+ 		if (!startServerSocket()) {
+ 			return false;
+@@ -104,6 +159,10 @@ bool NetSerial::startServerSocket()
+ 			return false;
+ 		}
+ 
++#ifndef _WIN32
++		int reuse = 1;
++		setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
++#endif
+ 		if (bind(fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+ 			gambatte_log(RETRO_LOG_ERROR, "Error on binding: %s\n", strerror(errno));
+ 			close(fd);
+@@ -148,6 +207,9 @@ bool NetSerial::acceptClient()
+ 			gambatte_log(RETRO_LOG_ERROR, "Error on accept: %s\n", strerror(errno));
+ 			return false;
+ 		}
++#ifndef _WIN32
++		tuneSocket(sockfd_);
++#endif
+ 		gambatte_log(RETRO_LOG_INFO, "GameLink network server connected to client!\n");
+ 	}
+ 	return true;
+@@ -175,12 +237,19 @@ bool NetSerial::startClientSocket()
+ 		}
+ 
+ 		memmove((char*)&server_addr.sin_addr.s_addr, (char*)server_hostname->h_addr, server_hostname->h_length);
++#ifdef _WIN32
+ 		if (connect(fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
++#else
++		if (connectWithin(fd, (struct sockaddr*)&server_addr, sizeof(server_addr), 500) < 0) {
++#endif
+ 			gambatte_log(RETRO_LOG_ERROR, "Error connecting to server: %s\n", strerror(errno));
+ 			close(fd);
+ 			return false;
+ 		}
+ 		sockfd_ = fd;
++#ifndef _WIN32
++		tuneSocket(sockfd_);
++#endif
+ 		gambatte_log(RETRO_LOG_INFO, "GameLink network client connected to server!\n");
+ 	}
+ 	return true;
+diff --git a/libgambatte/src/gambatte-memory.cpp b/libgambatte/src/gambatte-memory.cpp
+index c8790fc..12f352f 100644
+--- a/libgambatte/src/gambatte-memory.cpp
++++ b/libgambatte/src/gambatte-memory.cpp
+@@ -150,6 +150,14 @@ void Memory::setEndtime(unsigned long cc, unsigned long inc) {
+ }
+ 
+ #ifdef HAVE_NETWORK
++/* Shift the next `count` bits of the received byte into SB, after the `done`
++ * bits already shifted in. Taking the top bits again on every partial update
++ * left SB wrong whenever a game read SB or SC during a transfer. */
++static unsigned char serialShiftIn(unsigned sb, unsigned received, int done, int count) {
++	unsigned next = ((received << done) & 0xFF) >> (8 - count);
++	return ((sb << count) | next) & 0xFF;
++}
++
+ void Memory::startSerialTransfer(unsigned long cc, unsigned char data, bool fastCgb)
+ {
+ 	// If serial interrupt is enabled
+@@ -181,8 +189,8 @@ void Memory::updateSerial(unsigned long const cc) {
+ 		if (intreq_.eventTime(intevent_serial) <= cc) {
+ #ifdef HAVE_NETWORK
+ 			bool fire = ((ioamhram_[0x102] & 0x80) == 0x80);
+-			ioamhram_[0x101] = ((ioamhram_[0x101] << serialCnt_) |
+-					    (serialize_value_ >> (8 - serialCnt_))) & 0xFF;
++			ioamhram_[0x101] = serialShiftIn(ioamhram_[0x101], serialize_value_,
++					    8 - serialCnt_, serialCnt_);
+ #else
+          ioamhram_[0x101] = (((ioamhram_[0x101] + 1) << serialCnt_) - 1) & 0xFF;
+ #endif
+@@ -199,8 +207,8 @@ void Memory::updateSerial(unsigned long const cc) {
+ 			int const targetCnt = serialCntFrom(intreq_.eventTime(intevent_serial) - cc,
+ #ifdef HAVE_NETWORK
+ 			                                    serialize_is_fastcgb_);
+-			ioamhram_[0x101] = ((ioamhram_[0x101] << (serialCnt_ - targetCnt)) |
+-					    (serialize_value_ >> (8 - (serialCnt_ - targetCnt)))) & 0xFF;
++			ioamhram_[0x101] = serialShiftIn(ioamhram_[0x101], serialize_value_,
++					    8 - serialCnt_, serialCnt_ - targetCnt);
+ #else
+                                              ioamhram_[0x102] & isCgb() * 2);
+          ioamhram_[0x101] = (((ioamhram_[0x101] + 1) << (serialCnt_ - targetCnt)) - 1) & 0xFF;

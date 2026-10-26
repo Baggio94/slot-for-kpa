@@ -1499,14 +1499,11 @@ impl Engine {
         }
         let game = self.game.as_ref().expect("checked above");
         let identity = self.link_identity.as_ref().expect("checked above");
-        if game.core_kind() == Core::Mgba {
-            // Slot original lockstep uses Cable only. The core is reopened
-            // in dual-GBA (or dual-Game Boy) mode after the network
-            // connection succeeds.
+        if game.core_kind() != Core::Gpsp {
+            // Slot original lockstep uses Cable only. mGBA is reopened in
+            // dual-GBA (or dual-Game Boy) mode after the network connection
+            // succeeds; Gambatte plugs its own Game Link cable in place.
             self.link_mode = LinkKind::Cable;
-        } else if game.core_kind() == Core::Gambatte {
-            set_message("Gambatte can't link yet. Try mGBA.".into());
-            return;
         } else {
             if !game.wireless_capable() {
                 set_message("Multiplayer isn't available with gpSP here. Try mGBA.".into());
@@ -1641,7 +1638,7 @@ impl Engine {
         let backend = match kind {
             Core::Mgba => crate::multiplayer::Backend::MgbaSlotCable,
             Core::Gpsp => crate::multiplayer::Backend::GpspNetpacket,
-            Core::Gambatte => return Err("Link needs mGBA or gpSP".into()),
+            Core::Gambatte => crate::multiplayer::Backend::GambatteGameLink,
         };
         Ok(crate::multiplayer::LinkConfig {
             game: identity.code.clone(),
@@ -1673,6 +1670,18 @@ impl Engine {
                           wire: crate::link_net::TcpLink,
                           peer_rom: Option<PathBuf>) -> Result<(), String> {
         let game = self.game.as_ref().ok_or("No game active")?;
+        if game.core_kind() == Core::Gambatte {
+            // Join dials the Host's Game Link server; the Host listens.
+            let host = match role {
+                LinkRole::Host => Ipv4Addr::UNSPECIFIED,
+                LinkRole::Join => wire.peer_ipv4()
+                    .ok_or("Couldn't read the other console's address")?,
+            };
+            self.game.as_mut().ok_or("No game active")?
+                .begin_game_link(role, host, Box::new(wire))?;
+            self.reset_time_controls();
+            return Ok(());
+        }
         if game.core_kind() == Core::Gpsp {
             if game.linked() || game.is_link_sandbox() {
                 return Err("gpSP Link requires a fresh private session".into());
@@ -1766,7 +1775,13 @@ impl Engine {
     fn return_link_to_solo(&mut self) -> Result<(), String> {
         let linked = self.game.as_mut().ok_or("No Link game to unplug")?;
         let which = linked.core_kind();
-        if which == Core::Gambatte { return Err("Gambatte never links".into()); }
+        if which == Core::Gambatte {
+            // Game Link never left the solo game: just pull the cable.
+            linked.end_multiplayer();
+            self.game_accum = 0.0;
+            self.buttons = 0;
+            return Ok(());
+        }
         let serial = linked.loaded_serial();
         let rom = linked.rom_path().to_path_buf();
         let stem = linked.rom_stem().to_owned();

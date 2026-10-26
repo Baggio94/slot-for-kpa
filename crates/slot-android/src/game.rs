@@ -172,6 +172,8 @@ pub struct GameSession {
     core: Box<dyn RetroCore>,
     // Optional: only used after the real network handshake, never in solo play.
     link: Option<LinkPlay>,
+    // Gambatte's Game Link: the core's own serial socket, no private session.
+    game_link: Option<crate::gb_netlink::GameLink>,
     // A linked mGBA state may contain TWO cores, incompatible with solo
     // RetroArch .state files. Never overwrite solo timeline after link use.
     link_touched: bool,
@@ -715,7 +717,7 @@ impl GameSession {
             }
         } else { None };
         Ok(Self {
-            core, link: None, link_touched: false, linked_boot, gpsp_serial,
+            core, link: None, game_link: None, link_touched: false, linked_boot, gpsp_serial,
             rom_path: rom.to_path_buf(), rom_stem: rom_stem.to_owned(),
             save, rtc, manual_export_prefix, state, retroarch_export, ring,
             rewind: RewindThread::spawn(REWIND_BYTES), rewind_frames: 0,
@@ -748,6 +750,7 @@ impl GameSession {
         if !emulation_may_advance(self.link_touched, self.link.is_some()) {
             return false;
         }
+        if self.game_link.as_ref().is_some_and(|link| !link.may_run()) { return false; }
         self.runahead_video.clear();
         if self.link.is_none() && !self.preempt_before_frame(buttons, turbo) { return false; }
         let pressed = ButtonMask(buttons);
@@ -762,7 +765,7 @@ impl GameSession {
         self.last_step_timings.core_us = core_started.elapsed().as_micros() as u64;
         if !advanced { return false; }
         self.frame_count = self.frame_count.wrapping_add(1);
-        if record_rewind && !self.link_touched {
+        if record_rewind && !self.in_multiplayer() {
             self.rewind_frames += 1;
             if self.rewind_frames >= REWIND_CAPTURE_FRAMES {
                 self.rewind_frames = 0;
@@ -835,17 +838,40 @@ impl GameSession {
         Ok(())
     }
 
-    pub fn link_fault(&self) -> Option<LinkError> {
-        self.link.as_ref().and_then(|link| link.fault())
+    /// Gambatte keeps playing its own solo game; Game Link only plugs the
+    /// core's serial port into the other console. Run-Ahead, rewind and
+    /// states stay off meanwhile: a replayed frame would resend its bytes.
+    pub fn begin_game_link(&mut self, role: Role, host: std::net::Ipv4Addr,
+                           transport: Box<dyn LinkChannel>) -> Result<(), String> {
+        if self.core_kind != Core::Gambatte { return Err("Game Link needs Gambatte".into()); }
+        if self.in_multiplayer() || self.link.is_some() { return Err("Already linked".into()); }
+        if self.runahead_rollback_failed { return Err("Unsafe Run-Ahead state; Link blocked".into()); }
+        self.game_link = Some(crate::gb_netlink::GameLink::begin(
+            self.core.as_mut(), role, host, transport));
+        self.runahead_video.clear();
+        self.preempt.clear();
+        self.rewind_frames = 0;
+        self.pending_undo = None;
+        Ok(())
     }
 
-    pub fn linked(&self) -> bool { self.link.is_some() }
+    fn in_multiplayer(&self) -> bool {
+        self.link_touched || self.linked_boot.is_some() || self.game_link.is_some()
+    }
+
+    pub fn link_fault(&self) -> Option<LinkError> {
+        self.link.as_ref().and_then(|link| link.fault())
+            .or_else(|| self.game_link.as_ref().and_then(|link| link.fault()))
+    }
+
+    pub fn linked(&self) -> bool { self.link.is_some() || self.game_link.is_some() }
 
     /// Keep the connected gameplay session alive while a native overlay
     /// is open. The peer stops at its next emulation callback without
     /// sending any artificial GBA serial packets.
     pub fn set_link_paused(&mut self, paused: bool) {
         if let Some(link) = self.link.as_mut() { link.set_local_paused(paused); }
+        if let Some(link) = self.game_link.as_mut() { link.set_local_paused(paused); }
     }
 
     /// An ended link must never become a local solo timeline. Eject and
@@ -1077,6 +1103,9 @@ impl GameSession {
         if let Some(mut link) = self.link.take() {
             link.end(self.core.as_mut());
         }
+        if let Some(mut link) = self.game_link.take() {
+            link.end(self.core.as_mut());
+        }
         self.runahead_video.clear();
         self.preempt.clear();
         self.rewind_frames = 0;
@@ -1099,7 +1128,7 @@ impl GameSession {
 
     pub fn runahead_supported(&self) -> bool {
         !self.mgba_flash_runahead_guard && !self.sma4_runahead_guard
-            && self.linked_boot.is_none() && !self.link_touched
+            && !self.in_multiplayer()
             && self.link.is_none() && !self.runahead_unavailable
             && self.core.speculative_audio_supported()
     }
@@ -1116,7 +1145,7 @@ impl GameSession {
         self.runahead_video.clear();
         if frames == 0 || frames > 2 || self.runahead_rollback_failed || self.mgba_flash_runahead_guard ||
             self.sma4_runahead_guard ||
-            self.runahead_unavailable || self.link_touched || self.linked_boot.is_some() { return; }
+            self.runahead_unavailable || self.in_multiplayer() { return; }
         if self.prepare_runahead_second_instance(buttons, turbo, frames) { return; }
         if !self.core.speculative_audio_supported() {
             self.runahead_probe.failures += 1;
@@ -1252,7 +1281,7 @@ impl GameSession {
     pub fn set_preemptive_frames(&mut self, frames: u8) {
         let allowed = !self.runahead_rollback_failed && !self.runahead_unavailable
             && !self.mgba_flash_runahead_guard && !self.sma4_runahead_guard
-            && !self.link_touched && self.linked_boot.is_none()
+            && !self.in_multiplayer()
             && self.core.speculative_audio_supported();
         self.preempt.set_frames(if allowed { usize::from(frames) } else { 0 });
     }
@@ -1262,7 +1291,7 @@ impl GameSession {
     /// only when a rollback failed and the session was quarantined.
     fn preempt_before_frame(&mut self, buttons: u16, turbo: bool) -> bool {
         let n = self.preempt.frames();
-        if n == 0 || self.link_touched || self.linked_boot.is_some() { return true; }
+        if n == 0 || self.in_multiplayer() { return true; }
         let input = (buttons, turbo);
         if self.preempt.needs_rollback(input) {
             let started = Instant::now();
@@ -1315,7 +1344,7 @@ impl GameSession {
     }
 
     pub fn rewind_step(&mut self) -> bool {
-        if self.runahead_rollback_failed || self.link_touched || self.linked_boot.is_some() { return false; }
+        if self.runahead_rollback_failed || self.in_multiplayer() { return false; }
         self.runahead_video.clear();
         self.preempt.clear();
         // Rewind is a real state restoration: finish any older disk snapshot
@@ -1565,7 +1594,7 @@ impl GameSession {
             return Err("Run-Ahead rollback failed; exit without saving instead".into());
         }
         let battery = self.save_sram_checked()?;
-        if !with_state || self.link_touched || self.linked_boot.is_some() {
+        if !with_state || self.in_multiplayer() {
             return Ok(battery);
         }
         let data = self.core.serialize()
@@ -1596,7 +1625,7 @@ impl GameSession {
     /// a 240×160 PNG thumbnail. Independent from RetroArch's manual slots.
     pub fn save_manual(&mut self) -> Result<String, String> {
         if self.runahead_rollback_failed { return Err("Unsafe Run-Ahead state; manual save blocked".into()); }
-        if self.link_touched || self.linked_boot.is_some() { return Err("Save States unavailable for Multiplayer sessions".into()); }
+        if self.in_multiplayer() { return Err("Save States unavailable for Multiplayer sessions".into()); }
         let state = self.core.serialize().map_err(|e|e.to_string())?;
         let preview = thumb::png(self.core.video_xrgb8888()).unwrap_or_default();
         let entries = self.ring.list().map_err(|e|e.to_string())?;
@@ -1632,7 +1661,7 @@ impl GameSession {
 
     pub fn load_manual(&mut self, stamp:&str) -> Result<(), String> {
         if self.runahead_rollback_failed { return Err("Run-Ahead state unsafe; restart from disk".into()); }
-        if self.link_touched || self.linked_boot.is_some() { return Err("Load State unavailable during Multiplayer".into()); }
+        if self.in_multiplayer() { return Err("Load State unavailable during Multiplayer".into()); }
         let (bytes, _) = self.ring.read(stamp).map_err(|e|e.to_string())?;
         let prior = self.core.serialize().map_err(|e|e.to_string())?;
         // Ensure a queued newer-generation battery write cannot race with
@@ -1651,13 +1680,13 @@ impl GameSession {
     }
 
     pub fn delete_manual(&mut self, stamp:&str)->Result<(),String> {
-        if self.link_touched || self.linked_boot.is_some() { return Err("Save States unavailable during Multiplayer".into()); }
+        if self.in_multiplayer() { return Err("Save States unavailable during Multiplayer".into()); }
         self.ring.remove(stamp).map_err(|e|e.to_string())
     }
 
     pub fn undo_manual(&mut self)->Result<(),String> {
         if self.runahead_rollback_failed { return Err("Run-Ahead state unsafe; restart from disk".into()); }
-        if self.link_touched || self.linked_boot.is_some() { return Err("Undo unavailable during Multiplayer".into()); }
+        if self.in_multiplayer() { return Err("Undo unavailable during Multiplayer".into()); }
         let Some((since,_))=&self.pending_undo else { return Err("Nothing to undo".into())};
         if since.elapsed()>UNDO_WINDOW {
             self.pending_undo=None;
@@ -1681,7 +1710,7 @@ impl GameSession {
     }
 
     pub fn undo_available(&self)->bool {
-        self.linked_boot.is_none() && !self.link_touched && self.pending_undo.as_ref().is_some_and(|(at,_)|at.elapsed()<=UNDO_WINDOW)
+        !self.in_multiplayer() && self.pending_undo.as_ref().is_some_and(|(at,_)|at.elapsed()<=UNDO_WINDOW)
     }
 
 }
