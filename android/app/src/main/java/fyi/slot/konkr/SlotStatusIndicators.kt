@@ -84,6 +84,20 @@ internal class SlotStatusIndicators(
             isDaemon = true
         }
     }
+    // Wi-Fi/Bluetooth state are binder calls into system_server. Right after
+    // a wake, Wi-Fi restarting can hold them for seconds: never on the UI
+    // thread, or every key press queues up behind them.
+    private val radioWorker = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "slot-status-radios").apply {
+            priority = Thread.MIN_PRIORITY
+            isDaemon = true
+        }
+    }
+    private val radioBusy = AtomicBoolean(false)
+    private var lastRadioPoll = 0L
+    @Volatile private var radioWifiEnabled = false
+    @Volatile private var radioWifiLevel = 0
+    @Volatile private var radioBluetoothOn = false
     private val healthBusy = AtomicBoolean(false)
     private val sleepStatusBusy = AtomicBoolean(false)
     private val wifiManager = host.applicationContext.getSystemService(Context.WIFI_SERVICE)
@@ -232,6 +246,7 @@ internal class SlotStatusIndicators(
     fun close() {
         onPause()
         worker.shutdownNow()
+        radioWorker.shutdownNow()
     }
 
     private fun installed(pkg: String): Boolean = try {
@@ -309,6 +324,46 @@ internal class SlotStatusIndicators(
         } catch (_: RuntimeException) { false }
     }
 
+    /** Reads radio state off the UI thread; refresh() shows the last result. */
+    private fun pollRadios(now: Long, wantWifi: Boolean, wantBt: Boolean) {
+        if (now - lastRadioPoll < 1000L || !radioBusy.compareAndSet(false, true)) return
+        lastRadioPoll = now
+        try {
+            radioWorker.execute {
+                try {
+                    val wifiEnabled = wantWifi && wifiManager.isWifiEnabled
+                    var level = 0
+                    if (wifiEnabled) {
+                        val network = connections.activeNetwork
+                        val caps = network?.let(connections::getNetworkCapabilities)
+                        val info = caps?.transportInfo as? WifiInfo
+                        val rssi = info?.rssi ?: -127
+                        level = if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true
+                            || rssi == -127) 0
+                            else when {
+                                rssi >= -60 -> 4
+                                rssi >= -70 -> 3
+                                rssi >= -80 -> 2
+                                else -> 1
+                            }
+                    }
+                    val btOn = wantBt && try {
+                        bluetoothManager.adapter?.isEnabled == true
+                    } catch (_: SecurityException) { false }
+                    radioWifiLevel = level
+                    radioWifiEnabled = wifiEnabled
+                    radioBluetoothOn = btOn
+                } catch (error: RuntimeException) {
+                    Log.w("SlotStatus", "Radio status check failed", error)
+                } finally {
+                    radioBusy.set(false)
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            radioBusy.set(false)
+        }
+    }
+
     private fun show(view: StatusGlyph, visible: Boolean, running: Boolean = true) {
         val next = if (visible) View.VISIBLE else View.GONE
         if (view.visibility != next) view.visibility = next
@@ -364,22 +419,7 @@ internal class SlotStatusIndicators(
         }
 
         if (radios) {
-            val wifiEnabled = flags and 2 != 0 && wifiManager.isWifiEnabled
-            wifi.visibility = if (wifiEnabled) View.VISIBLE else View.GONE
-            if (wifiEnabled) {
-                val network = connections.activeNetwork
-                val caps = network?.let(connections::getNetworkCapabilities)
-                val info = caps?.transportInfo as? WifiInfo
-                val rssi = info?.rssi ?: -127
-                wifi.level = if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true
-                    || rssi == -127) 0
-                    else when {
-                        rssi >= -60 -> 4
-                        rssi >= -70 -> 3
-                        rssi >= -80 -> 2
-                        else -> 1
-                    }
-            }
+            val wantWifi = flags and 2 != 0
             val wantBt = flags and 4 != 0
             val btGranted = host.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
                 PackageManager.PERMISSION_GRANTED
@@ -387,9 +427,11 @@ internal class SlotStatusIndicators(
                 bluetoothPermissionAsked = true
                 host.requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 4710)
             }
-            val btOn = wantBt && btGranted && try {
-                bluetoothManager.adapter?.isEnabled == true
-            } catch (_: SecurityException) { false }
+            pollRadios(now, wantWifi, wantBt && btGranted)
+            val wifiEnabled = wantWifi && radioWifiEnabled
+            wifi.visibility = if (wifiEnabled) View.VISIBLE else View.GONE
+            if (wifiEnabled) wifi.level = radioWifiLevel
+            val btOn = wantBt && btGranted && radioBluetoothOn
             bluetooth.visibility = if (btOn) View.VISIBLE else View.GONE
         } else {
             wifi.visibility = View.GONE
