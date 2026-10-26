@@ -2,6 +2,11 @@
 
 This changelog covers the public releases of the dedicated KONKR Pocket Advance Android port. Earlier development experiments are preserved in Git history.
 
+## v1.3.3 — 26 October 2026
+
+- GB/GBC multiplayer over Wi-Fi (SELECT + HOME, Host/Join). mGBA: GB lockstep link, cartridge identity for GB/GBC, peer ROM .gb/.gbc, Pokémon Gold/Silver/Crystal clock kept during the link. Gambatte: Game Link (netlink) driven by HOST/JOIN, with reconnect, timeouts and a serial shift fix.
+- In-app update: the Android installer starts in its own task, so "App installed" no longer gets stuck when the old slot. task is killed.
+
 ## v1.3.2 — 26 October 2026
 
 - RetroAchievements on GBA: achievement RAM is exposed when Run-Ahead saves a state before the first frame (Super Mario Advance "Core does not expose achievement RAM").
