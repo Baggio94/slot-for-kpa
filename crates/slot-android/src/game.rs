@@ -99,6 +99,15 @@ pub(crate) fn core_sample_rate(reported: i32) -> i32 {
     reported.clamp(8_000, 192_000)
 }
 
+/// Gambatte refuses MBC7 cartridges (Kirby Tilt 'n' Tumble, Command
+/// Master): their tilt sensor only runs on mGBA.
+pub fn gambatte_cannot_run(rom: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(rom) else { return false; };
+    if file.seek(SeekFrom::Start(0x147)).is_err() { return false; }
+    let mut cart = [0u8; 1];
+    file.read_exact(&mut cart).is_ok() && cart[0] == 0x22
+}
+
 /// Boktai 1, 2 and 3: cartridges with a solar sensor, which only mGBA
 /// emulates.
 fn solar_cart(rom: &Path, which: Core, platform: Platform) -> bool {

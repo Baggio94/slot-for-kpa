@@ -3290,7 +3290,11 @@ impl Engine {
             let platform = self.shelves[self.active].carts
                 .get(self.shelves[self.active].index)
                 .map_or(Platform::Gba, |cart|cart.platform);
-            let core = core_selection::selected_for(&storage, uri, platform);
+            let mut core = core_selection::selected_for(&storage, uri, platform);
+            if core == Core::Gambatte && crate::game::gambatte_cannot_run(Path::new(local)) {
+                crate::game::log_launch_timing("MBC7 tilt cartridge: mGBA instead of Gambatte");
+                core = Core::Mgba;
+            }
             let core_file = library.join(format!("lib{}_libretro.so", core.as_str()));
             // First game still wakes RA if the asynchronous SAF scan has not run.
             // Perform this mutable operation BEFORE borrowing rom_stem.
@@ -3607,6 +3611,8 @@ impl Engine {
     fn selected_emulation_core(&self) -> Core {
         // GB/GBC never invoke gpSP, nor GBA Gambatte, even if a stale core
         // preference exists.
+        // A running game names its own core (MBC7 carts run on mGBA).
+        if let Some(game) = self.game.as_ref() { return game.core_kind(); }
         let platform = self.current_cart_platform();
         let Some(uri) = self.selected_rom_uri() else { return Core::Mgba; };
         PATHS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
