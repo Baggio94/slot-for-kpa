@@ -533,6 +533,7 @@ fn run(
                 game.achievements = updated;
                 continue;
             }
+            let activating = Instant::now();
             let Some(mut runtime) = runtime::Runtime::new() else {
                 continue;
             };
@@ -565,7 +566,8 @@ fn run(
                 }
             }
             drop(store);
-            log(&format!("tracking {} achievements ({unsupported} unsupported)", achievements.len()));
+            log(&format!("tracking {} achievements ({unsupported} unsupported) after {} ms",
+                achievements.len(), activating.elapsed().as_millis()));
             let title = if prepared.game.id == 0 {
                 "No achievements for this ROM".into()
             } else {
@@ -594,6 +596,14 @@ fn run(
                 previous: None,
                 warned_gap: false,
             });
+            // Activating a large set takes over a second on the device
+            // (Pokémon Emerald: 197 achievements). Frames queued meanwhile
+            // predate tracking, and the queue overflowed behind them: start
+            // from the next live frame, as RetroArch does once its set is
+            // loaded, instead of reporting that gap as an interruption.
+            for frame in frames.try_iter() {
+                let _ = frame.recycle.try_send(frame.ram);
+            }
         }
         // F10: frames and controls now wake this worker immediately with
         // a bounded, nonblocking notification. On silence (paused, ejected,
