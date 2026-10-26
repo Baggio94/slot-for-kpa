@@ -4,7 +4,7 @@ A big update: a second core for Game Boy and Game Boy Color, new screen sizes an
 
 ### What's New
 
-- **Game Boy and Game Boy Color multiplayer** — Two KONKRs can now link GB and GBC games over Wi-Fi, with mGBA or Gambatte. In a game, press SELECT + HOME, then choose Host on one console and Join on the other. Any game links with the same ROM on both sides, and Pokémon games of the same region can trade and battle with each other. mGBA keeps both consoles in perfect sync, which suits fast two-player games best.
+- **Game Boy and Game Boy Color multiplayer** — Multiplayer now works in GB and GBC games, as on GBA, with both mGBA and Gambatte.
 - **Gambatte core for Game Boy and Game Boy Color** — GB and GBC games can now run on Gambatte as well as mGBA. Press SELECT on a cartridge to choose the core for that game. Your saves follow you when you switch cores.
 - **Default core per system** — Settings → Systems now has a page for each system (GBA, GBC, GB) with a Default Core option. You can still override it for any game with SELECT.
 - **New GB/GBC screen sizes** — L1 and R1 switch between Integer, Original Ratio and Stretch.
