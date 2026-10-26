@@ -47,6 +47,7 @@ mod core_selection;
 // GB/GBC chip swap between mGBA and Gambatte: palettes and battery carry.
 #[cfg(any(test, target_os = "android"))]
 mod gb_core_switch;
+mod gb_netlink;
 mod core_legend;
 // The original Slot TCP framing and cartridge-specific link selection are
 // shared directly; only the Linux Wi-Fi radio driver is replaced on Android.

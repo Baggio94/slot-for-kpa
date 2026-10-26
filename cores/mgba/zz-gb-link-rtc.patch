@@ -1,0 +1,26 @@
+diff --git a/src/platform/libretro/libretro.c b/src/platform/libretro/libretro.c
+index 5e77c31..d70bff5 100644
+--- a/src/platform/libretro/libretro.c
++++ b/src/platform/libretro/libretro.c
+@@ -1767,6 +1767,21 @@ static void _linkPlugInGB(void) {
+ 	gbLockstep.d.useCycles = _gbUseCycles;
+ 	gbLockstep.d.unusedCycles = _gbUnusedCycles;
+ 	gbLockstep.d.unload = _gbUnload;
++	/* Each device runs both Game Boys, so a cartridge clock (MBC3, HuC3, TAMA5) must read the
++	 * same time on both. The GBA's fixed LINK_RTC_EPOCH_MS would wind such a clock back by
++	 * decades, and Pokemon Gold/Silver/Crystal then ask for the time to be reset. Start each
++	 * console's emulated clock from its own last latch instead: that comes from the savestate both
++	 * devices loaded, so the two agree, and it is close to the real time the player saved at. */
++	for (i = 0; i < 2; ++i) {
++		struct mCore* gbCore = linkGb[i].core;
++		struct GB* gb = gbCore->board;
++		int64_t ranMs = (int64_t) gbCore->frameCounter(gbCore) * gbCore->frameCycles(gbCore) * 1000LL
++			/ gbCore->frequency(gbCore);
++		gbCore->rtc.override = RTC_FAKE_EPOCH;
++		gbCore->rtc.value = gb->memory.rtcLastLatch
++			? (int64_t) gb->memory.rtcLastLatch * 1000LL - ranMs
++			: LINK_RTC_EPOCH_MS;
++	}
+ 	for (i = 0; i < 2; ++i) {
+ 		struct LinkGB* player = &linkGb[i];
+ 		player->asleep = false;

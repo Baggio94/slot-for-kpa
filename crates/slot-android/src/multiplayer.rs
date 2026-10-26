@@ -100,7 +100,7 @@ pub struct LinkConfig {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Backend { MgbaSlotCable, GpspNetpacket }
+pub enum Backend { MgbaSlotCable, GpspNetpacket, GambatteGameLink }
 
 fn sha256_file(path: &Path, max_size: u64) -> io::Result<[u8; 32]> {
     let mut file = File::open(path)?;
@@ -148,11 +148,16 @@ fn portable_core_recipe(backend: Backend) -> [u8; 32] {
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/mgba/zz-gb-link-mode.patch")),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/mgba/zz-link-peer-frameskip.patch")),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/mgba/zz-link-peer-silence.patch")),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/mgba/zz-gb-link-rtc.patch")),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/patch-mgba-speculative-audio.py")),
         ],
         Backend::GpspNetpacket => &[
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/build-gpsp-android.sh")),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/patch-gpsp-speculative-audio.py")),
+        ],
+        Backend::GambatteGameLink => &[
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/build-gambatte-android.sh")),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/gambatte/netlink-fixes.patch")),
         ],
     };
     for bytes in files {
@@ -189,6 +194,7 @@ impl LinkConfig {
             game,
             backend: match self.backend {
                 Backend::MgbaSlotCable => 1, Backend::GpspNetpacket => 2,
+                Backend::GambatteGameLink => 3,
             },
             mode: match self.mode {
                 LinkKind::Cable => 1, LinkKind::Wireless => 2,
@@ -285,7 +291,7 @@ fn stage_mgba_peer(link: &mut TcpLink, local: &LabGreeting,
     }
     match config.backend {
         Backend::MgbaSlotCable => link.exchange_mgba_peer_rom(local, &config.rom, cancel),
-        Backend::GpspNetpacket => Ok(None),
+        Backend::GpspNetpacket | Backend::GambatteGameLink => Ok(None),
     }
 }
 

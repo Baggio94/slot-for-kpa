@@ -85,6 +85,8 @@ impl LabGreeting {
         let mut bytes = [0u8; LAB_GREETING_LEN];
         bytes[..4].copy_from_slice(b"KMLB");
         bytes[4] = if self.backend == 1 { 5 } else { 3 };
+        // Gambatte Game Link (backend 3) exchanges nothing but the greeting:
+        // each console runs only its own cartridge.
         // KMLB/5: signed device identity precedes mGBA mixed-ROM KMLB/4 transfer.
         // Refuse legacy v4 peers instead of mixing framed setup traffic.
         // gpSP KMLB/3 remains unchanged; both formats reject old peers.
@@ -98,7 +100,7 @@ impl LabGreeting {
     }
     fn decode(bytes:&[u8])->Option<Self>{
         if bytes.len()!=LAB_GREETING_LEN || &bytes[0..4]!=b"KMLB" ||
-            !matches!((bytes[4], bytes[9]), (5, 1) | (3, 2)) {return None;}
+            !matches!((bytes[4], bytes[9]), (5, 1) | (3, 2) | (3, 3)) {return None;}
         let mut game=[0;4]; game.copy_from_slice(&bytes[5..9]);
         let mut rom_sha256=[0;32];rom_sha256.copy_from_slice(&bytes[11..43]);
         let mut core_sha256=[0;32];core_sha256.copy_from_slice(&bytes[43..75]);
@@ -124,7 +126,7 @@ impl LabGreeting {
         }
         if self.game==other.game{return self.rom_sha256==other.rom_sha256;}
         match self.backend {
-            1 => mode == crate::link_kind::LinkKind::Cable
+            1 | 3 => mode == crate::link_kind::LinkKind::Cable
                 && crate::link_compat::compatible_cross_title(self.game, other.game, mode),
             2 => crate::link_compat::runnable_gpsp_cross_title(self.game, other.game, mode),
             _ => false,
@@ -362,6 +364,14 @@ impl TcpLink {
         self.peer_identity.as_ref()
     }
 
+    /// The other console's address on this network.
+    pub fn peer_ipv4(&self) -> Option<std::net::Ipv4Addr> {
+        match self.stream.peer_addr().ok()?.ip() {
+            std::net::IpAddr::V4(ip) => Some(ip),
+            std::net::IpAddr::V6(ip) => ip.to_ipv4_mapped(),
+        }
+    }
+
     /// KMLB/4 only. Transfer the other player's cartridge into a PRIVATE
     /// cache on the background LinkStarter worker. The game never sees
     /// LINKED until the full file/header/SHA has passed. No ROM is written to
@@ -389,14 +399,15 @@ impl TcpLink {
         // before any libretro core is replaced.
         if local.game == peer.game {
             if local.rom_sha256 == peer.rom_sha256 { return Ok(None); }
-            return Err(invalid("Identical GBA game code with different ROM revisions"));
+            return Err(invalid("Identical game code with different ROM revisions"));
         }
         let began = Instant::now();
         let own = fs::read(own_rom)?;
         report_link_rom_phase("start", &format!("own_bytes={} peer_game_code={}",
             own.len(), String::from_utf8_lossy(&peer.game)));
         if !(0xC0..=MAX_ROM).contains(&own.len()) ||
-            own.get(0xAC..0xB0) != Some(local.game.as_slice()) ||
+            crate::link_rom::rom_code(&own, crate::link_rom::is_gb_code(&local.game))
+                != Some(local.game) ||
             digest(&SHA256, &own).as_ref() != local.rom_sha256 {
             return Err(invalid("Own cartridge changed since KMLB/4 negotiation"));
         }
@@ -525,14 +536,17 @@ impl TcpLink {
             "received_bytes={} expected_bytes={} elapsed_ms={}",
             received.len(), remote_len, began.elapsed().as_millis()));
         if received.len() != remote_len ||
-            received.get(0xAC..0xB0) != Some(peer.game.as_slice()) ||
+            crate::link_rom::rom_code(&received, crate::link_rom::is_gb_code(&peer.game))
+                != Some(peer.game) ||
             digest(&SHA256, &received).as_ref() != peer.rom_sha256 {
             report_link_transport_fault("rom_verification",
                 "remote size/header/SHA256 mismatch");
             return Err(invalid("Remote ROM data failed header or SHA256 authentication"));
         }
         let hex: String = peer.rom_sha256.iter().map(|b| format!("{b:02x}")).collect();
-        let dest = cache.join(format!("{hex}.gba"));
+        // The core tells GB from GBA by content; game.rs checks the extension.
+        let ext = if crate::link_rom::is_gb_code(&peer.game) { "gb" } else { "gba" };
+        let dest = cache.join(format!("{hex}.{ext}"));
         if dest.is_file() {
             let old = fs::read(&dest)?;
             if old == received {
@@ -716,6 +730,50 @@ mod lab_negotiation_tests {
         // The private peer caches are not added to the user's library.
         assert_eq!(host_peer.parent().unwrap().file_name().unwrap(), "link-peer-cache");
         assert_eq!(guest_peer.parent().unwrap().file_name().unwrap(), "link-peer-cache");
+        drop(guest);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn kmlb4_transfers_two_distinct_game_boy_pokemon_roms() {
+        use std::net::{SocketAddr, TcpListener};
+        let home = std::env::temp_dir().join(format!(
+            "slot-kmlb4-gb-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        fs::create_dir_all(&home).unwrap();
+        let red = crate::link_rom::test_gb_rom("POKEMON RED", false, 1024 * 1024, 0x11);
+        let gold = crate::link_rom::test_gb_rom("POKEMON_GLDAAUE", false, 2 * 1024 * 1024, 0x22);
+        let (red_file, gold_file) = (home.join("red.gb"), home.join("gold.gbc"));
+        fs::write(&red_file, &red).unwrap();
+        fs::write(&gold_file, &gold).unwrap();
+        let greeting = |rom: &[u8]| {
+            let mut g = identity();
+            g.game = crate::link_rom::rom_code(rom, true).unwrap();
+            g.rom_sha256.copy_from_slice(digest(&SHA256, rom).as_ref());
+            g
+        };
+        let (h, g) = (greeting(&red), greeting(&gold));
+        assert_ne!(h.game, g.game);
+        assert!(h.accepts(&g), "Red and Gold trade through the Time Capsule");
+        let reserve = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr: SocketAddr = reserve.local_addr().unwrap();
+        drop(reserve);
+        let (ready, listening) = channel();
+        let h_copy = h.clone();
+        let host = thread::spawn(move || {
+            let mut wire = TcpLink::host_lab_greeted_until(
+                "127.0.0.1", addr.port(), Duration::from_secs(5),
+                &Cancel::new(), &h_copy, || { ready.send(()).unwrap(); }).unwrap();
+            wire.exchange_mgba_peer_rom(&h_copy, &red_file, &Cancel::new()).unwrap().unwrap()
+        });
+        listening.recv_timeout(Duration::from_secs(3)).unwrap();
+        let mut guest = TcpLink::join_lab_greeted(addr, &g).unwrap();
+        let guest_peer = guest.exchange_mgba_peer_rom(&g, &gold_file, &Cancel::new()).unwrap().unwrap();
+        let host_peer = host.join().unwrap();
+        assert_eq!(fs::read(&guest_peer).unwrap(), red);
+        assert_eq!(fs::read(&host_peer).unwrap(), gold);
+        assert_eq!(host_peer.extension().unwrap(), "gb");
         drop(guest);
         fs::remove_dir_all(home).unwrap();
     }

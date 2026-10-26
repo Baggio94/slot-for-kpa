@@ -115,6 +115,7 @@ fn session(root: &Path, failure: Failure) -> (GameSession, Arc<Mutex<Calls>>) {
     let session = GameSession {
         core,
         link: None,
+        game_link: None,
         link_touched: false,
         linked_boot: None,
         gpsp_serial: "auto",

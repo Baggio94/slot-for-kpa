@@ -77,6 +77,10 @@ fn bios(state: &[u8]) -> Option<u32> {
     } else {
         state.to_vec()
     };
+    // A Game Boy state (mGBA magic 0x004000xx) holds the ROM's CRC32 here,
+    // not a BIOS checksum: Red linking with Blue must not read as a mismatch.
+    let magic = u32::from_le_bytes(gba.get(..4)?.try_into().ok()?);
+    if magic & 0xFFFF_FF00 == 0x0040_0000 { return None; }
     (gba.len() >= 0x400).then(|| u32::from_le_bytes(gba[4..8].try_into().unwrap()))
 }
 
@@ -171,6 +175,16 @@ mod tests {
     #[test]
     fn states_on_different_bioses_do_not() {
         assert!(!same_bios(&pair(&gba(0xBAAE187F)), &pair(&gba(0xA6473709))));
+    }
+
+    #[test]
+    fn game_boy_states_carry_no_bios_checksum() {
+        let mut red = vec![0u8; 0x400];
+        red[..4].copy_from_slice(&0x0040_0003u32.to_le_bytes());
+        red[4..8].copy_from_slice(&0x1111_1111u32.to_le_bytes());
+        let mut blue = red.clone();
+        blue[4..8].copy_from_slice(&0x2222_2222u32.to_le_bytes());
+        assert!(same_bios(&pair(&red), &blue));
     }
 
     #[test]
