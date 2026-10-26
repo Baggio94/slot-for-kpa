@@ -143,7 +143,7 @@ fn session(root: &Path, failure: Failure) -> (GameSession, Arc<Mutex<Calls>>) {
         last_step_timings: FrameStepTimings::default(),
         mgba_flash_runahead_guard: false,
         sma4_runahead_guard: false,
-        solar: false,
+        solar: None,
         palette_live: false,
         core_kind: Core::Mgba,
         pending_undo: None,

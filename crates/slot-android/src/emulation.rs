@@ -38,9 +38,16 @@ pub const SUN_SENSOR: u8 = 11;
 pub fn default_sun(light_sensor: bool) -> u8 {
     if light_sensor { SUN_SENSOR } else { 5 }
 }
-/// The mgba_solar_sensor_level value for a sun setting.
-pub fn sun_option(sun: u8) -> String {
-    if sun == SUN_SENSOR { "sensor".into() } else { sun.min(10).to_string() }
+/// The light a solar cartridge reads for a manual sun, None for SENSOR.
+/// Boktai 1 keeps mGBA's own steps (0x16 + GBA_LUX_LEVELS). Boktai 2
+/// and 3 read the same light lower: on those steps 5 was an empty gauge
+/// and 10 one bar short, so 0..=10 spans 84..=255 for them.
+pub fn sun_luminance(sun: u8, boktai1: bool) -> Option<u8> {
+    const MGBA: [u8; 10] = [5, 11, 18, 27, 42, 62, 84, 109, 139, 183];
+    if sun == SUN_SENSOR { return None; }
+    let sun = sun.min(10);
+    Some(if !boktai1 { (84 + u32::from(sun) * 171 / 10) as u8 }
+        else if sun == 0 { 0x16 } else { 0x16 + MGBA[sun as usize - 1] })
 }
 
 impl EmulationProfile {
@@ -234,8 +241,11 @@ mod tests {
         assert_eq!(profile.sun(false), 10);
         profile.sun=Some(SUN_SENSOR);
         assert_eq!(profile.sun(false), 5, "no light sensor on this handheld");
-        assert_eq!(sun_option(SUN_SENSOR), "sensor");
-        assert_eq!(sun_option(7), "7");
+        assert_eq!(sun_luminance(SUN_SENSOR, true), None);
+        assert_eq!(sun_luminance(0, true), Some(0x16));
+        assert_eq!(sun_luminance(10, true), Some(0x16 + 183));
+        assert_eq!(sun_luminance(0, false), Some(84));
+        assert_eq!(sun_luminance(10, false), Some(255));
         assert_eq!(EmulationProfile { sun: Some(40), ..profile }.sanitize().sun, None);
     }
     #[test]

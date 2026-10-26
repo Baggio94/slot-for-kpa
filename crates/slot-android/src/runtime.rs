@@ -2681,6 +2681,13 @@ impl Engine {
                     // local time travel or accelerated single-player frames.
                     if self.game.as_ref().is_some_and(GameSession::linked)
                         && (code == 104 || code == 105) { return; }
+                    // Stick clicks (L3 / R3) set Boktai's sun, as in mGBA.
+                    if code == 106 || code == 107 {
+                        if pressed && self.game.as_ref().is_some_and(GameSession::solar) {
+                            self.nudge_sun(code == 107);
+                        }
+                        return;
+                    }
                     if code == 104 {
                         if !self.live_game_options().rewind { return; }
                         if pressed {
@@ -3757,8 +3764,32 @@ impl Engine {
         let mut profile = self.game_emulation
             .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
         profile.change_sun(light_sensor(), right);
+        self.save_game_sun(profile, &uri, core);
+    }
+    /// L3 / R3 in a solar game, as mGBA's own R3 brighten / L3 darken:
+    /// one step within 0..=10, nothing while the light sensor decides.
+    fn nudge_sun(&mut self, brighter: bool) {
+        if self.game.as_ref().is_some_and(|game|game.linked() || game.requires_relaunch()) {
+            return;
+        }
+        let Some(uri) = self.selected_rom_uri() else { return; };
+        let core = self.selected_emulation_core();
+        let mut profile = self.game_emulation
+            .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
+        let sun = profile.sun(light_sensor());
+        if sun == crate::emulation::SUN_SENSOR {
+            set_message("Sun: SENSOR".into());
+            return;
+        }
+        let next = if brighter { (sun + 1).min(10) } else { sun.saturating_sub(1) };
+        set_message(format!("Sun {next}"));
+        if next == sun { return; }
+        profile.sun = Some(next);
+        self.save_game_sun(profile, &uri, core);
+    }
+    fn save_game_sun(&mut self, profile: EmulationProfile, uri: &str, core: Core) {
         if let Some((root, _)) = PATHS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            if let Err(error) = profile.save(root, &uri, core) {
+            if let Err(error) = profile.save(root, uri, core) {
                 set_error_message("Couldn't save this game's settings.", &error);
                 return;
             }

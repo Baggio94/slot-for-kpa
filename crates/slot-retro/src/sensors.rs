@@ -35,6 +35,11 @@ static VALUES: [AtomicU32; 7] = [const { AtomicU32::new(0) }; 7];
 // Screen rotation as RetroArch detects it (0..3, clockwise quarters).
 static ROTATION: AtomicU8 = AtomicU8::new(0);
 static GRAVITY_SAMPLES: Mutex<Calibration> = Mutex::new(Calibration::new());
+// A chosen sun for solar cartridges: 0 none, else the luminance + 1.
+static SUN: AtomicU32 = AtomicU32::new(0);
+// mGBA's MBC7 (Kirby Tilt 'n' Tumble) negates both tilt axes that its
+// GBA tilt cartridges take as they are.
+static TILT_INVERTED: AtomicU8 = AtomicU8::new(0);
 
 struct Calibration {
     done: bool,
@@ -107,6 +112,23 @@ pub fn wanted() -> u8 {
         .fold(0, |mask, s| mask | s)
 }
 
+/// Light for a solar cartridge, as the 0..=255 level mGBA turns lux
+/// into (cbrt(lux) * 8). None hands over the light sensor's reading.
+pub fn set_sun(luminance: Option<u8>) {
+    SUN.store(luminance.map_or(0, |l| u32::from(l) + 1), Ordering::Release);
+}
+
+fn sun() -> Option<u8> {
+    match SUN.load(Ordering::Acquire) {
+        0 => None,
+        l => Some((l - 1) as u8),
+    }
+}
+
+pub fn set_tilt_inverted(inverted: bool) {
+    TILT_INVERTED.store(inverted as u8, Ordering::Release);
+}
+
 pub fn push_accelerometer(x: f32, y: f32, z: f32) {
     store(0, x);
     store(1, y);
@@ -133,7 +155,8 @@ pub(crate) struct Enabled(u8);
 
 impl Enabled {
     fn set(&mut self, sensor: u8, on: bool) -> bool {
-        if on && available() & sensor == 0 {
+        let light = sensor == ILLUMINANCE && sun().is_some();
+        if on && available() & sensor == 0 && !light {
             return false;
         }
         if on == (self.0 & sensor != 0) {
@@ -210,7 +233,8 @@ fn read(id: c_uint, rotation: u8) -> f32 {
     let (base, scale) = match id {
         ACCELEROMETER_X..=ACCELEROMETER_Z => (0, 1.0 / GRAVITY),
         GYROSCOPE_X..=GYROSCOPE_Z => (3, 1.0),
-        _ => return load(6),
+        // Half a step up so mGBA's cube root never truncates one under.
+        _ => return sun().map_or_else(|| load(6), |l| ((f32::from(l) + 0.5) / 8.0).powi(3)),
     };
     let axis = (id - if base == 0 { ACCELEROMETER_X } else { GYROSCOPE_X }) as usize;
     let (axis, sign) = match (axis, rotation) {
@@ -221,7 +245,8 @@ fn read(id: c_uint, rotation: u8) -> f32 {
         (0, _) => (1, -1.0),
         _ => (0, 1.0),
     };
-    load(base + axis) * scale * sign
+    let inverted = base == 0 && axis < 2 && TILT_INVERTED.load(Ordering::Relaxed) != 0;
+    load(base + axis) * scale * if inverted { -sign } else { sign }
 }
 
 #[cfg(test)]
@@ -256,6 +281,15 @@ mod tests {
         assert_eq!(gyro(1), [2.0, -1.0, 3.0]);
         assert_eq!(gyro(2), [-1.0, -2.0, 3.0]);
         assert_eq!(gyro(3), [-2.0, 1.0, 3.0]);
+    }
+
+    #[test]
+    fn a_chosen_sun_reaches_mgba_exactly() {
+        for level in [0, 84, 205, 255] {
+            set_sun(Some(level));
+            assert_eq!((read(ILLUMINANCE_ID, 0).cbrt() * 8.0) as u8, level);
+        }
+        set_sun(None);
     }
 
     #[test]
