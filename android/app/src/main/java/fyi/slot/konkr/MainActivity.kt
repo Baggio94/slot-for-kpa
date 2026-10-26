@@ -243,6 +243,7 @@ class MainActivity : Activity() {
     // Last D-pad hat position (-1, 0, 1) when the pad reports one.
     private var hatX = 0
     private var hatY = 0
+    private var stickForwarded = false
     @Volatile private var latestVsyncFrameNs = 0L
     // Beta10 read-only Choreographer delivery telemetry (UI thread).
     // These are UI callbacks, never confirmed display-present timestamps.
@@ -1197,9 +1198,14 @@ class MainActivity : Activity() {
         }
         // A stick on the same device still goes through Android's own
         // stick-to-DPAD conversion; the hat state above is idempotent.
+        // That conversion only releases a direction once it sees the stick
+        // back under the threshold, so the first event after a move is
+        // forwarded too, or the direction stays held.
         val stickMoved = Math.abs(event.getAxisValue(MotionEvent.AXIS_X)) >= 0.5f ||
             Math.abs(event.getAxisValue(MotionEvent.AXIS_Y)) >= 0.5f
-        return if (stickMoved) super.onGenericMotionEvent(event) else true
+        val forward = stickMoved || stickForwarded
+        stickForwarded = stickMoved
+        return if (forward) super.onGenericMotionEvent(event) else true
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
