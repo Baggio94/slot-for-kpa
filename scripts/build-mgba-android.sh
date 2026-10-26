@@ -34,7 +34,8 @@ if [ "$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)" != "$PIN" ]; then
   git -C "$SRC" checkout --detach -q FETCH_HEAD
 fi
 # Apply the seven exact original Slot mGBA patches proven to coexist
-# with the pinned libretro revision on the KONKR macOS NDK audit.
+# with the pinned libretro revision on the KONKR macOS NDK audit, then the
+# Game Boy link clock fix (both devices must read one cartridge time).
 # Re-running the build must not delete or silently reset local sources.
 for patch in \
   685023e05-fifo-dma-source-offset.patch \
@@ -43,7 +44,8 @@ for patch in \
   link-mode.patch \
   zz-gb-link-mode.patch \
   zz-link-peer-frameskip.patch \
-  zz-link-peer-silence.patch
+  zz-link-peer-silence.patch \
+  zz-gb-link-rtc.patch
 do
   patch_file="$ROOT/cores/mgba/$patch"
   if git -C "$SRC" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
@@ -132,6 +134,6 @@ fi
 # F11: machine-readable provenance shipped INSIDE the APK. These fields
 # record the exact pinned source and safety patches used in this binary.
 cat > "$ROOT/android/app/src/main/assets/core-build-mgba.json" <<EOF
-{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py"]}
+{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py"]}
 EOF
 echo "mGBA arm64 libretro: $DEST/libmgba_libretro.so"

@@ -30,8 +30,17 @@ fn rfu(code:&str)->bool {
     (family(code)==Some(Family::Pokemon3) && ["BPR","BPG","BPE"].iter().any(|p|code.starts_with(p)))
         || matches!(family(code),Some(Family::Bn5|Family::Bn6))
 }
+/// Game Boy Pokémon of one region (see link_rom::gb_code): "0P" overseas, "0Q" Japan.
+fn gb_pokemon_region(code:&str)->Option<&str> {
+    (code.len()==4 && (code.starts_with("0P") || code.starts_with("0Q"))).then(||&code[..2])
+}
 /// Four-character DNS-SD grouping key; unknown titles retain exact game code.
 pub fn discovery_key(code:&str)->&str {
+    match gb_pokemon_region(code) {
+        Some("0P")=>return "0PKM",
+        Some(_)=>return "0QKM",
+        None=>(),
+    }
     if code == "BZ3E" { return "BN4A"; } // Mega Man Zero 3 bonus transfer with BN4
     match family(code){
         Some(Family::Pokemon3)=>"PK3A",Some(Family::Bn1To2)=>"BN12",
@@ -48,6 +57,10 @@ pub fn discovery_key(code:&str)->&str {
 pub fn compatible_cross_title(a:[u8;4], b:[u8;4], mode:LinkKind)->bool {
     if a==b{return false;}
     let (Ok(a),Ok(b))=(std::str::from_utf8(&a),std::str::from_utf8(&b)) else{return false;};
+    // Game Boy Pokémon: Red/Blue/Yellow and Gold/Silver/Crystal, same region.
+    if let (Some(x),Some(y))=(gb_pokemon_region(a),gb_pokemon_region(b)) {
+        return mode==LinkKind::Cable && x==y;
+    }
     // Bonus transfer: Mega Man Zero 3 <-> Battle Network 4 (both versions).
     // Mode is strictly GBA Cable, never Wireless.
     if mode==LinkKind::Cable && ((a=="BZ3E" && family(b)==Some(Family::Bn4))
@@ -118,6 +131,17 @@ pub fn runnable_gpsp_cross_title(a:[u8;4], b:[u8;4], mode:LinkKind)->bool {
             assert!(runnable_gpsp_cross_title(id(a), id(b), LinkKind::Wireless));
         }
         assert!(!runnable_gpsp_cross_title(id("AXVE"),id("BPGE"),LinkKind::Wireless));
+    }
+    #[test] fn game_boy_pokemon_links_within_its_region_only(){
+        assert!(compatible_cross_title(id("0PAB"),id("0PCD"),LinkKind::Cable));
+        assert!(compatible_cross_title(id("0QAB"),id("0QCD"),LinkKind::Cable));
+        assert!(!compatible_cross_title(id("0PAB"),id("0QCD"),LinkKind::Cable));
+        assert!(!compatible_cross_title(id("0PAB"),id("0PCD"),LinkKind::Wireless));
+        assert!(!compatible_cross_title(id("1ABC"),id("1ABD"),LinkKind::Cable));
+        assert!(!compatible_cross_title(id("0PAB"),id("BPRE"),LinkKind::Cable));
+        assert_eq!(discovery_key("0PAB"),discovery_key("0PCD"));
+        assert_ne!(discovery_key("0PAB"),discovery_key("0QAB"));
+        assert_eq!(discovery_key("1ABC"),"1ABC");
     }
     #[test] fn unknown_and_unsafe_cross_families_stay_closed(){
         for(a,b)in[("BRBE","BR5E"),("A8BE","AK8E"),("AGSE","BPRE"),

@@ -1494,15 +1494,19 @@ impl Engine {
             return;
         }
         if self.link_identity.is_none() {
-            set_message("Multiplayer needs a valid GBA ROM.".into());
+            set_message("Multiplayer needs a valid cartridge.".into());
             return;
         }
         let game = self.game.as_ref().expect("checked above");
         let identity = self.link_identity.as_ref().expect("checked above");
         if game.core_kind() == Core::Mgba {
             // Slot original lockstep uses Cable only. The core is reopened
-            // in dual-GBA mode after the network connection succeeds.
+            // in dual-GBA (or dual-Game Boy) mode after the network
+            // connection succeeds.
             self.link_mode = LinkKind::Cable;
+        } else if game.core_kind() == Core::Gambatte {
+            set_message("Gambatte can't link yet. Try mGBA.".into());
+            return;
         } else {
             if !game.wireless_capable() {
                 set_message("Multiplayer isn't available with gpSP here. Try mGBA.".into());
@@ -1630,7 +1634,7 @@ impl Engine {
     /// The worker hashes all files; the GL/render thread only passes paths.
     fn link_config(&self) -> Result<crate::multiplayer::LinkConfig, String> {
         let session = self.game.as_ref().ok_or("No running game")?;
-        let identity = self.link_identity.as_ref().ok_or("No GBA Link identity")?;
+        let identity = self.link_identity.as_ref().ok_or("No Link identity")?;
         let (storage, library) = PATHS.lock().unwrap_or_else(|e| e.into_inner())
             .clone().ok_or("Slot storage not mounted")?;
         let kind = session.core_kind();
@@ -1643,7 +1647,11 @@ impl Engine {
             game: identity.code.clone(),
             rom: session.rom_path().to_path_buf(),
             core_file: library.join(format!("lib{}_libretro.so", kind.as_str())),
-            bios_file: storage.join("BIOS/gba_bios.bin"),
+            // A Game Boy link starts from the two consoles' exchanged states,
+            // so the boot ROM never runs and cannot tell the two sides apart.
+            bios_file: if self.current_cart_platform() == Platform::Gba {
+                storage.join("BIOS/gba_bios.bin")
+            } else { PathBuf::new() },
             backend,
             mode: self.link_mode,
             trusted_dir: storage.join("TrustedLinkDevices"),
@@ -1714,6 +1722,8 @@ impl Engine {
         let rom = game.rom_path().to_path_buf();
         let stem = game.rom_stem().to_owned();
         let core_file = library.join("libmgba_libretro.so");
+        let platform = self.current_cart_platform();
+        let (palette, colour) = self.solo_core_look(platform);
         // Save the current solo state/ram/RTC atomically BEFORE replacing
         // the core. Failure stops link without losing the solo instance.
         let solo_snapshot = self.game.as_mut()
@@ -1724,7 +1734,7 @@ impl Engine {
         // The existing solo core remains alive until its checkpoint is durable.
         drop(self.game.take());
         let mut linked = match GameSession::open_mgba_linked(&rom, &core_file,
-            &storage, &stem, self.settings.colour_correction, role,
+            &storage, platform, &stem, palette.as_deref(), colour, role,
             &solo_snapshot, peer_rom.as_deref()) {
             Ok(session) => session,
             Err(error) => {
@@ -1769,10 +1779,12 @@ impl Engine {
         linked.end_multiplayer();
         drop(self.game.take());
         let dylib = library.join(format!("lib{}_libretro.so", which.as_str()));
+        let platform = self.current_cart_platform();
+        let (palette, colour) = self.solo_core_look(platform);
         let mut solo = match which {
             Core::Mgba => GameSession::open(&rom, &dylib, &storage,
-                which, Platform::Gba, false, &stem, None,
-                self.settings.colour_correction, self.ra_service.as_ref()),
+                which, platform, false, &stem, palette.as_deref(),
+                colour, self.ra_service.as_ref()),
             Core::Gpsp => GameSession::open_gpsp_solo_unresumed(
                 &rom, &dylib, &storage, &stem,
                 self.settings.colour_correction, self.ra_service.as_ref(), serial),
@@ -1802,6 +1814,17 @@ impl Engine {
         Ok(())
     }
 
+    /// Game Boy palette and core colour correction for an mGBA core opened
+    /// around Link, as the cartridge was launched. GBA keeps its own rule.
+    fn solo_core_look(&self, platform: Platform) -> (Option<String>, bool) {
+        if platform == Platform::Gba {
+            return (None, self.settings.colour_correction);
+        }
+        let settings = self.game_settings();
+        (settings.gb_palettes.then(|| settings.palette_name().to_owned()),
+         settings.shader_for(platform).core_colour(settings.colour_for(platform)))
+    }
+
     fn restore_gpsp_solo_after_link_failure(&mut self, rom: &Path,
                                              core_file: &Path, storage: &Path,
                                              stem: &str, serial: &'static str,
@@ -1827,10 +1850,12 @@ impl Engine {
     fn restore_solo_after_link_failure(&mut self, rom: &Path,
                                        core_file: &Path, storage: &Path,
                                        stem: &str, snapshot: &[u8]) -> Result<(), String> {
+        let platform = self.current_cart_platform();
+        let (palette, colour) = self.solo_core_look(platform);
         let result = (|| {
             let mut game = GameSession::open(rom, core_file, storage,
-                Core::Mgba, Platform::Gba, true, stem, None,
-                self.settings.colour_correction, self.ra_service.as_ref())?;
+                Core::Mgba, platform, true, stem, palette.as_deref(),
+                colour, self.ra_service.as_ref())?;
             game.restore_checkpoint_after_link_failure(snapshot)?;
             SAMPLE_RATE.store(game.sample_rate, Ordering::Release);
             self.game = Some(game);
@@ -3265,7 +3290,9 @@ impl Engine {
                 Ok(session) => {
                     self.link_identity = if platform == Platform::Gba {
                         crate::link_rom::identify(Path::new(local)).ok()
-                    } else { None };
+                    } else {
+                        crate::link_rom::identify_gb(Path::new(local)).ok()
+                    };
                     self.link_mode_override = None;
                     // Create libretro on the same GL thread, but defer audio
                     // and CRT presentation until Slot's seated hold completes.

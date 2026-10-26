@@ -286,18 +286,20 @@ impl GameSession {
             false, rom_stem, None, colour_correction, achievements, None, serial, None, None)
     }
 
-    /// Reopen a *fresh* two-GBA mGBA instance. The libretro link options
-    /// must be set BEFORE retro_load_game; an existing solo core cannot switch.
+    /// Reopen a *fresh* two-console mGBA instance (two GBAs, or two Game
+    /// Boys). The libretro link options must be set BEFORE retro_load_game;
+    /// an existing solo core cannot switch.
     /// Never pass RetroAchievements to this experimental dual-instance session.
     pub fn open_mgba_linked(rom: &Path, core_file: &Path, storage: &Path,
-                            rom_stem: &str, colour_correction: bool,
+                            platform: Platform, rom_stem: &str,
+                            gb_palette: Option<&str>, colour_correction: bool,
                             role: Role, solo_state: &[u8],
                             peer_rom: Option<&Path>) -> Result<Self, String> {
         // Fail BEFORE any filesystem writes or a dropped solo core if the
-        // source state cannot fit as a valid single-GBA Link seed.
+        // source state cannot fit as a valid single-console Link seed.
         crate::linked_storage::validate_solo_snapshot(solo_state)?;
-        Self::open_internal(rom, core_file, storage, Core::Mgba, Platform::Gba,
-            false, rom_stem, None, colour_correction, None, Some(role), "auto",
+        Self::open_internal(rom, core_file, storage, Core::Mgba, platform,
+            false, rom_stem, gb_palette, colour_correction, None, Some(role), "auto",
             Some(solo_state), peer_rom)
     }
 
@@ -328,16 +330,18 @@ impl GameSession {
                      linked_resume: Option<&[u8]>,
                      peer_rom: Option<&Path>) -> Result<Self, String> {
         let opening_at = Instant::now();
-        if linked_boot.is_some() && (platform != Platform::Gba ||
+        // gpSP is GBA-only; mGBA also links two Game Boys.
+        if linked_boot.is_some() && ((platform != Platform::Gba && which != Core::Mgba) ||
             resume_state || achievements.is_some()) ||
             (linked_boot.is_some() != linked_resume.is_some()) {
             return Err("Invalid isolated Multiplayer boot configuration".into());
         }
         if peer_rom.is_some() && (linked_boot.is_none() || which != Core::Mgba) {
-            return Err("A remote GBA cartridge is only valid inside mGBA Cable Link".into());
+            return Err("A remote cartridge is only valid inside mGBA Cable Link".into());
         }
         if let Some(peer) = peer_rom {
-            if !peer.is_file() || peer.extension().and_then(|v|v.to_str()) != Some("gba")
+            let wanted = if platform == Platform::Gba { "gba" } else { "gb" };
+            if !peer.is_file() || peer.extension().and_then(|v|v.to_str()) != Some(wanted)
                 || !peer.to_string_lossy().contains("/link-peer-cache/") {
                 return Err("Unverified remote ROM cache location".into());
             }

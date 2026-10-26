@@ -148,6 +148,7 @@ fn portable_core_recipe(backend: Backend) -> [u8; 32] {
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/mgba/zz-gb-link-mode.patch")),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/mgba/zz-link-peer-frameskip.patch")),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/mgba/zz-link-peer-silence.patch")),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/mgba/zz-gb-link-rtc.patch")),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/patch-mgba-speculative-audio.py")),
         ],
         Backend::GpspNetpacket => &[
