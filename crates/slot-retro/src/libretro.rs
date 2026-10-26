@@ -962,6 +962,11 @@ impl RetroCore for LibretroCore {
             buf.len()
         } else {
             self.mgba_runahead_size_age = 0;
+            // Pinned mGBA finishes its deferred setup in whichever of
+            // retro_run/serialize_size/serialize/unserialize comes first,
+            // and that setup publishes SET_MEMORY_MAPS. Without a bound
+            // host the map is lost and achievements see no RAM.
+            let _a = Active::bind(&mut self.host);
             unsafe { (self.api.serialize_size)() }
         };
         if size == 0 {
@@ -975,7 +980,10 @@ impl RetroCore for LibretroCore {
         if !ok && reuse_mgba {
             // A newly required save-data/RTC section may increase size.
             // Never continue Run-Ahead with a truncated libretro state.
-            let fresh = unsafe { (self.api.serialize_size)() };
+            let fresh = {
+                let _a = Active::bind(&mut self.host);
+                unsafe { (self.api.serialize_size)() }
+            };
             if fresh == 0 {
                 return Err(CoreError::State("core reports no state".into()));
             }

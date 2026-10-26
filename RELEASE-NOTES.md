@@ -1,4 +1,4 @@
-# slot. for KONKR Pocket Advance — v1.3.1
+# slot. for KONKR Pocket Advance — v1.3.2
 
 A big update: a second core for Game Boy and Game Boy Color, new screen sizes and overlays, sharper visuals at the KONKR's native resolution, and controls that respond like RetroArch.
 
@@ -13,6 +13,13 @@ A big update: a second core for Game Boy and Game Boy Color, new screen sizes an
 - **More responsive controls** — The D-pad (hat) is read directly with no buffering, quick taps between two frames are no longer lost, and inputs are polled at a steady point in each frame, as in RetroArch. Audio output latency is lower too.
 - **Adaptive Link Cable delay** — The mGBA Link Cable input delay now adjusts automatically to the connection quality between the two consoles.
 - **Faster game launch** — Games start quickly even after idling on the shelf, and the first scroll after ejecting a game is smooth.
+
+### Fixed in 1.3.2
+
+- **RetroAchievements on GBA** — Some games, such as Super Mario Advance, showed "Core does not expose achievement RAM" at launch when Run-Ahead was on. Achievements now work with Run-Ahead.
+- **Pokémon Emerald achievements** — Games with a large achievement set, such as Pokémon Emerald, showed "Achievement tracking interrupted" right after launch. Tracking now starts cleanly.
+- **BIOS message at startup** — With slot. as the home app, "Couldn't import BIOS files" no longer appears after restarting the console. Your BIOS files were never lost.
+- **Controls after sleep** — Buttons now respond as soon as the console wakes up, with no 2-second delay or grey screen.
 
 ### Fixed in 1.3.1
 

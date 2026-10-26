@@ -2,6 +2,13 @@
 
 This changelog covers the public releases of the dedicated KONKR Pocket Advance Android port. Earlier development experiments are preserved in Git history.
 
+## v1.3.2 — 26 October 2026
+
+- RetroAchievements on GBA: achievement RAM is exposed when Run-Ahead saves a state before the first frame (Super Mario Advance "Core does not expose achievement RAM").
+- RetroAchievements: no "tracking interrupted" after activating a large achievement set (Pokémon Emerald); larger evaluator frame queue and logcat diagnostics.
+- No "Couldn't import BIOS files" toast after a reboot with slot. as the home app; the silent startup restore retries quietly. Shorter "BIOS ready." toast.
+- Controls no longer frozen for ~2 s after waking the console: Wi-Fi and Bluetooth status are read off the UI thread.
+
 ## v1.3.1 — 25 October 2026
 
 - Fixed "Couldn't save" on Save and Eject for Pokémon Gen III games on mGBA that had not been saved in-game yet. The Flash guard now only refuses an image that would replace a complete save on disk.

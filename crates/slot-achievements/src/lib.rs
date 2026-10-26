@@ -21,10 +21,33 @@ use storage::{Config, Store, Unlock};
 
 const RAM_SIZE: usize = 0x58000;
 const GB_COVERAGE_SIZE: usize = 0x17000;
-const QUEUE_SIZE: usize = 8;
+// RetroArch evaluates every real frame. Here a frame the worker cannot take
+// is lost and resets all progress ("Achievement tracking interrupted"), so
+// the queue must absorb an unlock's fsync or a Fast Forward burst: about
+// half a second at 1x. Snapshots are allocated only while the worker lags.
+const QUEUE_SIZE: usize = 32;
 // F10: if nothing arrives, poll HTTP preparation / award retries at most
 // four times per second. Frames and controls signal the evaluator instantly.
 const EVALUATOR_IDLE_WATCHDOG: Duration = Duration::from_millis(250);
+
+#[cfg(target_os = "android")]
+#[link(name = "log")]
+unsafe extern "C" {
+    fn __android_log_write(priority: i32, tag: *const std::ffi::c_char,
+        text: *const std::ffi::c_char) -> i32;
+}
+
+/// Diagnostics reach logcat on the device (tag SlotKONKR), stderr elsewhere.
+fn log(message: &str) {
+    #[cfg(target_os = "android")]
+    if let Ok(text) = std::ffi::CString::new(format!("slot-ra: {message}")) {
+        unsafe {
+            __android_log_write(4, c"SlotKONKR".as_ptr(), text.as_ptr());
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    eprintln!("slot: {message}");
+}
 
 fn wake_evaluator(wake: &mpsc::SyncSender<()>) {
     // Coalesce signals: only one pending wake is necessary. Never allow a
@@ -93,7 +116,7 @@ pub struct Notice {
 impl Notice {
     fn status(generation: u64, title: &str) -> Self {
         // Background diagnostics only; routine status is represented by the shelf icon.
-        eprintln!("slot: {title}");
+        log(title);
         Self {
             badge: None,
             generation,
@@ -437,7 +460,10 @@ fn run(
                     // waiting on a timeout or preparing another ROM in the library.
                     let dir = store.lock().unwrap().dir.clone();
                     if storage::read::<storage::Auth>(&dir.join("auth.json")).is_ok() {
-                        if let Ok(hash) = library::hash(&dir, &load.path) {
+                        let started = Instant::now();
+                        let hash = library::hash(&dir, &load.path);
+                        log(&format!("cart identified in {} ms", started.elapsed().as_millis()));
+                        if let Ok(hash) = hash {
                             if let Ok((game, unlocked)) =
                                 storage::read::<(storage::Game, std::collections::BTreeSet<u32>)>(
                                     &dir.join(format!("{hash}.json")),
@@ -507,6 +533,7 @@ fn run(
                 game.achievements = updated;
                 continue;
             }
+            let activating = Instant::now();
             let Some(mut runtime) = runtime::Runtime::new() else {
                 continue;
             };
@@ -539,6 +566,8 @@ fn run(
                 }
             }
             drop(store);
+            log(&format!("tracking {} achievements ({unsupported} unsupported) after {} ms",
+                achievements.len(), activating.elapsed().as_millis()));
             let title = if prepared.game.id == 0 {
                 "No achievements for this ROM".into()
             } else {
@@ -567,6 +596,14 @@ fn run(
                 previous: None,
                 warned_gap: false,
             });
+            // Activating a large set takes over a second on the device
+            // (Pokémon Emerald: 197 achievements). Frames queued meanwhile
+            // predate tracking, and the queue overflowed behind them: start
+            // from the next live frame, as RetroArch does once its set is
+            // loaded, instead of reporting that gap as an interruption.
+            for frame in frames.try_iter() {
+                let _ = frame.recycle.try_send(frame.ram);
+            }
         }
         // F10: frames and controls now wake this worker immediately with
         // a bounded, nonblocking notification. On silence (paused, ejected,
@@ -601,6 +638,10 @@ fn evaluate(
         if let Some((sequence, timeline)) = game.previous {
             if timeline != frame.timeline || sequence + 1 != frame.sequence {
                 game.runtime.reset();
+                if timeline == frame.timeline {
+                    log(&format!("achievements skipped {} frames",
+                        frame.sequence.saturating_sub(sequence + 1)));
+                }
                 if timeline == frame.timeline && !game.warned_gap {
                     let _ = notices.send(Notice::status(
                         game.generation,
