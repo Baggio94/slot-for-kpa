@@ -2315,7 +2315,7 @@ class MainActivity : Activity() {
     }
 
     /** Runs sequentially with ROM materialization, never on the UI/GL thread. */
-    private fun importBiosFolder(uri: Uri, persistSelection: Boolean) {
+    private fun importBiosFolder(uri: Uri, persistSelection: Boolean, quietRetries: Int = 3) {
         gameLoader.execute {
             try {
                 val imported = BiosLibrary.importFrom(this, uri)
@@ -2340,7 +2340,18 @@ class MainActivity : Activity() {
             } catch (error: Exception) {
                 Log.e(TAG, "BIOS folder import failed", error)
                 runOnUiThread {
-                    if (!isDestroyed) {
+                    if (isDestroyed) return@runOnUiThread
+                    if (!persistSelection) {
+                        // Silent startup restore: right after a reboot (slot.
+                        // as home app) the storage provider may not be ready
+                        // yet. The previously staged BIOS copy is kept, so
+                        // retry quietly instead of showing an error.
+                        if (quietRetries > 0) {
+                            uiHandler.postDelayed({
+                                if (!isDestroyed) importBiosFolder(uri, false, quietRetries - 1)
+                            }, 5_000L)
+                        }
+                    } else {
                         SlotToast.makeText(this, "Couldn't import BIOS files. Check the folder.",
                             Toast.LENGTH_LONG).show()
                     }
