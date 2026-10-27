@@ -3754,6 +3754,9 @@ impl Engine {
         self.frame_delay.reset();
         AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
+    fn sun_top(&self) -> u8 {
+        self.game.as_ref().map_or(10, |game| game.sun_top())
+    }
     fn change_game_sun(&mut self, right: bool) {
         if self.game.as_ref().is_some_and(|game|game.linked() || game.requires_relaunch()) {
             set_message("Not available during Multiplayer.".into());
@@ -3763,11 +3766,11 @@ impl Engine {
         let core = self.selected_emulation_core();
         let mut profile = self.game_emulation
             .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
-        profile.change_sun(light_sensor(), right);
+        profile.change_sun(light_sensor(), self.sun_top(), right);
         self.save_game_sun(profile, &uri, core);
     }
     /// L3 / R3 in a solar game, as mGBA's own R3 brighten / L3 darken:
-    /// one step within 0..=10, nothing while the light sensor decides.
+    /// one step within 0..=top, nothing while the light sensor decides.
     fn nudge_sun(&mut self, brighter: bool) {
         if self.game.as_ref().is_some_and(|game|game.linked() || game.requires_relaunch()) {
             return;
@@ -3776,13 +3779,13 @@ impl Engine {
         let core = self.selected_emulation_core();
         let mut profile = self.game_emulation
             .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
-        let sun = profile.sun(light_sensor());
+        let sun = profile.sun(light_sensor(), self.sun_top());
         let time = self.born.elapsed().as_millis() as u64;
         if sun == crate::emulation::SUN_SENSOR {
             self.hud.toast(Toast::SunSensor, time);
             return;
         }
-        let next = if brighter { (sun + 1).min(10) } else { sun.saturating_sub(1) };
+        let next = if brighter { (sun + 1).min(self.sun_top()) } else { sun.saturating_sub(1) };
         // The same banner as State Saved or a shader change.
         self.hud.toast(Toast::Sun(next), time);
         if next == sun { return; }
@@ -3798,7 +3801,7 @@ impl Engine {
         } else { return; }
         self.game_emulation = Some(profile);
         if let Some(session) = self.game.as_mut() {
-            session.set_sun(profile.sun(light_sensor()));
+            session.set_sun(profile.sun(light_sensor(), session.sun_top()));
         }
     }
     fn reset_game_emulation(&mut self) {
@@ -4260,7 +4263,7 @@ impl Engine {
             if key > 31 && key != SUN_KEY { continue; } // Action-only rows have no value.
             let (tex, width, height) =
                 if key == SUN_KEY {
-                    let sun = self.current_emulation().sun(light_sensor());
+                    let sun = self.current_emulation().sun(light_sensor(), self.sun_top());
                     self.setting_values[if sun == crate::emulation::SUN_SENSOR { 53 }
                         else { 54 + sun as usize }]
                 } else if key == 16 && matches!(self.settings.wallpaper,
@@ -5053,7 +5056,8 @@ impl Engine {
                     self.ra_resampler.reset();
                     self.ra_sync_steps.reset();
                     let mut session = session;
-                    session.set_sun(self.current_emulation().sun(light_sensor()));
+                    let top = session.sun_top();
+                    session.set_sun(self.current_emulation().sun(light_sensor(), top));
                     self.game = Some(session);
                     // Focus and Recents were persisted during core
                     // preparation; avoid synchronous IO/rebuilding the

@@ -1471,6 +1471,11 @@ impl GameSession {
 
     pub fn solar(&self) -> bool { self.solar.is_some() }
 
+    /// The highest manual sun of this solar game, one per gauge bar.
+    pub fn sun_top(&self) -> u8 {
+        crate::emulation::sun_top(self.solar == Some(Solar::Boktai1))
+    }
+
     /// Boktai's sun, live: mGBA reads it the next time the game samples
     /// its solar sensor. SENSOR follows the light sensor every frame.
     pub fn set_sun(&mut self, sun: u8) {

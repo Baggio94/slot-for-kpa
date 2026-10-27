@@ -38,18 +38,23 @@ pub const SUN_SENSOR: u8 = 11;
 pub fn default_sun(light_sensor: bool) -> u8 {
     if light_sensor { SUN_SENSOR } else { 5 }
 }
+/// The highest manual sun: one per bar of the game's gauge, 8 in
+/// Boktai 1 and 10 in Boktai 2 and 3.
+pub fn sun_top(boktai1: bool) -> u8 {
+    if boktai1 { 8 } else { 10 }
+}
 /// The light a solar cartridge reads for a manual sun, None for SENSOR.
-/// Boktai 1 keeps mGBA's own steps (0x16 + GBA_LUX_LEVELS). Boktai 2
-/// and 3 fill their 10-bar gauge unevenly: measured on a KPA with the
-/// light set directly, 123 shows 0 bars, 143 three, 164 five, 184 six,
-/// 204 seven and 225 eight. Sun N is aimed at N bars.
+/// Sun N shows N bars, measured on a KPA with the light set directly.
+/// Boktai 1 (8 bars) uses mGBA's own steps (0x16 + GBA_LUX_LEVELS),
+/// leaving out the two that repeated a bar (106 and 161). Boktai 2 and 3
+/// fill their 10 bars unevenly: 123 shows 0 bars, 143 three, 164 five,
+/// 184 six, 204 seven and 225 eight.
 pub fn sun_luminance(sun: u8, boktai1: bool) -> Option<u8> {
-    const MGBA: [u8; 10] = [5, 11, 18, 27, 42, 62, 84, 109, 139, 183];
+    const BOKTAI1: [u8; 9] = [22, 27, 33, 40, 49, 64, 84, 131, 205];
     const LATER: [u8; 11] = [22, 130, 137, 145, 155, 166, 186, 206, 227, 242, 255];
     if sun == SUN_SENSOR { return None; }
-    let sun = sun.min(10);
-    Some(if !boktai1 { LATER[sun as usize] }
-        else if sun == 0 { 0x16 } else { 0x16 + MGBA[sun as usize - 1] })
+    let sun = usize::from(sun.min(sun_top(boktai1)));
+    Some(if boktai1 { BOKTAI1[sun] } else { LATER[sun] })
 }
 /// mGBA's own conversion of light sensor lux (cbrt(lux) * 8).
 pub fn lux_luminance(lux: f32) -> u8 {
@@ -165,17 +170,21 @@ impl EmulationProfile {
         }
         *self != before
     }
-    pub fn sun(&self, light_sensor: bool) -> u8 {
+    /// The game's sun, `top` being its highest manual level.
+    pub fn sun(&self, light_sensor: bool, top: u8) -> u8 {
         match self.sun {
             Some(SUN_SENSOR) if !light_sensor => default_sun(false),
-            Some(sun) => sun,
+            Some(SUN_SENSOR) => SUN_SENSOR,
+            Some(sun) => sun.min(top),
             None => default_sun(light_sensor),
         }
     }
-    /// 0, 1 … 10, then SENSOR when the handheld has a light sensor.
-    pub fn change_sun(&mut self, light_sensor: bool, right: bool) {
-        let max = if light_sensor { SUN_SENSOR } else { 10 };
-        self.sun = Some(settings::cycle_u8(self.sun(light_sensor), max, right));
+    /// 0, 1 … top, then SENSOR when the handheld has a light sensor.
+    pub fn change_sun(&mut self, light_sensor: bool, top: u8, right: bool) {
+        let sun = self.sun(light_sensor, top);
+        let at = if sun == SUN_SENSOR { top + 1 } else { sun };
+        let next = settings::cycle_u8(at, top + light_sensor as u8, right);
+        self.sun = Some(if next > top { SUN_SENSOR } else { next });
     }
     fn legacy_path(root: &Path, uri: &str) -> PathBuf {
         root.join("GameEmulation").join(format!("{}.json", core_selection::key(uri)))
@@ -239,16 +248,21 @@ mod tests {
     #[test]
     fn sun_follows_the_handheld_until_chosen() {
         let mut profile=EmulationProfile::default();
-        assert_eq!(profile.sun(true), SUN_SENSOR);
-        assert_eq!(profile.sun(false), 5);
-        profile.change_sun(true, true);
-        assert_eq!(profile.sun(true), 0, "after SENSOR comes 0");
-        profile.change_sun(false, false);
-        assert_eq!(profile.sun(false), 10);
+        assert_eq!(profile.sun(true, 10), SUN_SENSOR);
+        assert_eq!(profile.sun(false, 10), 5);
+        profile.change_sun(true, 10, true);
+        assert_eq!(profile.sun(true, 10), 0, "after SENSOR comes 0");
+        profile.change_sun(false, 10, false);
+        assert_eq!(profile.sun(false, 10), 10);
+        assert_eq!(profile.sun(false, 8), 8, "Boktai 1 stops at 8 bars");
+        profile.change_sun(true, 8, true);
+        assert_eq!(profile.sun(true, 8), SUN_SENSOR, "SENSOR follows 8 in Boktai 1");
         profile.sun=Some(SUN_SENSOR);
-        assert_eq!(profile.sun(false), 5, "no light sensor on this handheld");
+        assert_eq!(profile.sun(false, 10), 5, "no light sensor on this handheld");
         assert_eq!(sun_luminance(SUN_SENSOR, true), None);
         assert_eq!(sun_luminance(0, true), Some(0x16));
+        assert_eq!(sun_luminance(7, true), Some(0x16 + 109));
+        assert_eq!(sun_luminance(8, true), Some(0x16 + 183));
         assert_eq!(sun_luminance(10, true), Some(0x16 + 183));
         assert_eq!(sun_luminance(0, false), Some(22));
         assert_eq!(sun_luminance(5, false), Some(166));
