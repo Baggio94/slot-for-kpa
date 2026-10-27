@@ -19,6 +19,8 @@ use crate::link_kind::LinkKind;
 
 const PORT: u16 = 7211;
 const BOUND: Duration = Duration::from_secs(30);
+// Keep the Host listening while the Join user enters a fallback IPv4 address.
+const HOST_BOUND: Duration = Duration::from_secs(180);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Role { Host, Join }
@@ -33,6 +35,14 @@ pub enum Progress {
     PeerRomConsent(String),
     Ready(TcpLink, Option<PathBuf>),
     Failed(Failure),
+}
+
+
+fn report_direct_ip_step(message: &str) {
+    #[cfg(target_os = "android")]
+    crate::game::log_launch_timing(message);
+    #[cfg(not(target_os = "android"))]
+    eprintln!("SlotKONKR: {message}");
 }
 
 fn report_setup_error(error: &io::Error) {
@@ -227,7 +237,7 @@ fn connect(role: Role, local: Ipv4Addr, config: &LinkConfig,
             // Bind TCP before publishing mDNS, so discovery never races the listener.
             // New Lab v2 handshake is isolated from legacy SLOT/1 on Beta5.
             let result = TcpLink::host_lab_greeted_until(
-                &local.to_string(), PORT, BOUND, cancel, &fingerprint,
+                &local.to_string(), PORT, HOST_BOUND, cancel, &fingerprint,
                 || advert = Some(Advertiser::start_with(Box::new(wire), info)),
             );
             drop(advert); // Publish DNS-SD goodbye on both success and failure.
@@ -242,6 +252,31 @@ fn connect(role: Role, local: Ipv4Addr, config: &LinkConfig,
     }?;
     let peer_path = stage_mgba_peer(&mut link, &fingerprint, config,
         role == Role::Host, cancel, ui, approval)?;
+    Ok((link, peer_path))
+}
+
+
+/// Bypass mDNS only when Join's 30-second automatic lookup failed.
+/// All existing KMLB greeting, ROM/core/BIOS and trusted-device checks
+/// remain mandatory; the manual IP is never an authentication mechanism.
+fn connect_direct(local: Ipv4Addr, peer: Ipv4Addr, config: &LinkConfig,
+                  cancel: &Cancel, ui: &Sender<Progress>,
+                  approval: &Receiver<PeerPermission>)
+    -> io::Result<(TcpLink, Option<PathBuf>)> {
+    if local.is_unspecified() || local.is_loopback() || local.is_multicast()
+        || local.is_link_local() || local.is_broadcast()
+        || peer.is_unspecified() || peer.is_loopback() || peer.is_multicast()
+        || peer.is_link_local() || peer.is_broadcast() {
+        return Err(io::Error::new(io::ErrorKind::AddrNotAvailable,
+            "invalid local or host Wi-Fi IPv4 address"));
+    }
+    let fingerprint = config.fingerprint()?;
+    report_direct_ip_step(&format!(
+        "Link direct-IP join: local={local} peer={peer}:{PORT} (strict greeting enabled)"));
+    let mut link = TcpLink::join_lab_greeted(
+        std::net::SocketAddrV4::new(peer, PORT).into(), &fingerprint)?;
+    let peer_path = stage_mgba_peer(&mut link, &fingerprint, config,
+        false, cancel, ui, approval)?;
     Ok((link, peer_path))
 }
 
@@ -355,6 +390,16 @@ pub struct LinkStarter {
 
 impl LinkStarter {
     pub fn spawn(role: Role, local: Ipv4Addr, config: LinkConfig) -> io::Result<Self> {
+        Self::spawn_with_peer(role, local, None, config)
+    }
+
+    pub fn spawn_direct(local: Ipv4Addr, peer: Ipv4Addr,
+                        config: LinkConfig) -> io::Result<Self> {
+        Self::spawn_with_peer(Role::Join, local, Some(peer), config)
+    }
+
+    fn spawn_with_peer(role: Role, local: Ipv4Addr, peer: Option<Ipv4Addr>,
+                       config: LinkConfig) -> io::Result<Self> {
         if game_code(&config.game).is_none() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid GBA Link code"));
         }
@@ -364,7 +409,15 @@ impl LinkStarter {
         let worker_cancel = cancel.clone();
         thread::spawn(move || {
             let _ = tx.send(Progress::Looking);
-            let result = connect(role, local, &config, &worker_cancel, &tx, &approval);
+            report_direct_ip_step(&format!(
+                "Link connection worker: role={role:?} local={local} direct={}",
+                peer.map_or_else(|| "mDNS".to_owned(), |ip| ip.to_string())));
+            let result = match peer {
+                Some(peer) => connect_direct(local, peer, &config,
+                    &worker_cancel, &tx, &approval),
+                None => connect(role, local, &config,
+                    &worker_cancel, &tx, &approval),
+            };
             if let Err(ref error) = result { report_setup_error(error); }
             let report = match result {
                 Ok((link, remote)) if !worker_cancel.is_cancelled() =>
