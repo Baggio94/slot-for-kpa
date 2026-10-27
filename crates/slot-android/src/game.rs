@@ -228,6 +228,8 @@ pub struct GameSession {
     manual_export_prefix: PathBuf,
     state: PathBuf,
     retroarch_export: PathBuf,
+    /// RetroArch's Gambatte predates the Sachen items: export its layout.
+    gambatte_legacy_export: bool,
     ring: StateRing,
     rewind: RewindThread,
     rewind_frames: u8,
@@ -693,12 +695,18 @@ impl GameSession {
                 retroarch_export = root.join(format!("{key}.retroarch-export.state.auto"));
             }
         }
+        let gambatte_legacy_export = which == Core::Gambatte && std::fs::read(&retroarch_import)
+            .ok().and_then(|bytes| retroarch_state::decode(&bytes).ok())
+            .is_some_and(|raw| crate::gambatte_state::lacks_sachen(&raw));
         if resume_state && linked_boot.is_none() && !cross_core_import && !carried_battery {
             // Prefer a successfully decoded RetroArch auto state, then the
             // Slot private state. A compressed/unrecognized external file is
             // kept intact and is NEVER interpreted as raw emulator memory.
             let external = std::fs::read(&retroarch_import)
                 .ok().and_then(|bytes| match retroarch_state::decode(&bytes) {
+                    // An older RetroArch Gambatte's state gets today's layout.
+                    Ok(raw) if gambatte_legacy_export =>
+                        Some(crate::gambatte_state::add_sachen(&raw).unwrap_or(raw)),
                     Ok(raw) => Some(raw),
                     Err(error) => {
                         eprintln!("slot-konkr: external {} savestate skipped: {error}", which.text());
@@ -770,7 +778,8 @@ impl GameSession {
         let mut session = Self {
             core, link: None, game_link: None, link_touched: false, linked_boot, gpsp_serial,
             rom_path: rom.to_path_buf(), rom_stem: rom_stem.to_owned(),
-            save, rtc, manual_export_prefix, state, retroarch_export, ring,
+            save, rtc, manual_export_prefix, state, retroarch_export,
+            gambatte_legacy_export, ring,
             rewind: RewindThread::spawn(REWIND_BYTES), rewind_frames: 0,
             frame_count: 0, palette_live, core_kind: which,
             runahead_video: Vec::new(), runahead_state: Vec::new(),
@@ -1640,6 +1649,12 @@ impl GameSession {
     /// boolean used OR, so a successful RTC could hide a failed battery write.
     /// Return every attempted file write's error to callers that must retain
     /// the session (Save & Eject); none means the cartridge has no such file.
+    /// The state in the layout of the RetroArch core that will load it.
+    fn for_retroarch(&self, state: Vec<u8>) -> Vec<u8> {
+        if !self.gambatte_legacy_export { return state; }
+        crate::gambatte_state::strip_sachen(&state).unwrap_or(state)
+    }
+
     fn save_sram_checked(&mut self) -> Result<bool, String> {
         // Mandatory suspend/eject: wait for all older periodic generations
         // before writing fresh SRAM/RTC and optionally a matching state.
@@ -1692,7 +1707,7 @@ impl GameSession {
             .map_err(|e| format!("Auto state capture: {e}"))?;
         atomic_write(&self.state, &data)
             .map_err(|e| format!("Auto state write: {e}"))?;
-        let container = retroarch_state::encode(&data)
+        let container = retroarch_state::encode(&self.for_retroarch(data))
             .map_err(|e| format!("RetroArch state encoding: {e}"))?;
         atomic_write(&self.retroarch_export, &container)
             .map_err(|e| format!("RetroArch state export: {e}"))?;
@@ -1737,7 +1752,7 @@ impl GameSession {
         }));
         // Keep Slot's Polaroid history private. The Android storage worker
         // publishes a distinct, verified RetroArch .stateN after this returns.
-        let encoded = retroarch_state::encode(&state)?;
+        let encoded = retroarch_state::encode(&self.for_retroarch(state.clone()))?;
         let export = std::path::PathBuf::from(format!(
             "{}.{}.rastate", self.manual_export_prefix.display(), stamp
         ));
