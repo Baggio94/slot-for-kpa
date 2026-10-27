@@ -780,8 +780,7 @@ impl GameSession {
         };
         // The handheld's default sun until the runtime applies this game's own.
         let light = slot_retro::sensors::available() & slot_retro::sensors::ILLUMINANCE != 0;
-        let top = session.sun_top();
-        session.set_sun(crate::emulation::default_sun(light, top));
+        session.set_sun(crate::emulation::default_sun(light));
         Ok(session)
     }
 
