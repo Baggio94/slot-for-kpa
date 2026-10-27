@@ -37,6 +37,14 @@ pub enum Progress {
     Failed(Failure),
 }
 
+
+fn report_direct_ip_step(message: &str) {
+    #[cfg(target_os = "android")]
+    crate::game::log_launch_timing(message);
+    #[cfg(not(target_os = "android"))]
+    eprintln!("SlotKONKR: {message}");
+}
+
 fn report_setup_error(error: &io::Error) {
     let message = format!("KMLB4 setup failure: kind={:?} reason={error}",
         error.kind());
@@ -263,7 +271,7 @@ fn connect_direct(local: Ipv4Addr, peer: Ipv4Addr, config: &LinkConfig,
             "invalid local or host Wi-Fi IPv4 address"));
     }
     let fingerprint = config.fingerprint()?;
-    crate::game::log_launch_timing(&format!(
+    report_direct_ip_step(&format!(
         "Link direct-IP join: local={local} peer={peer}:{PORT} (strict greeting enabled)"));
     let mut link = TcpLink::join_lab_greeted(
         std::net::SocketAddrV4::new(peer, PORT).into(), &fingerprint)?;
@@ -401,7 +409,7 @@ impl LinkStarter {
         let worker_cancel = cancel.clone();
         thread::spawn(move || {
             let _ = tx.send(Progress::Looking);
-            crate::game::log_launch_timing(&format!(
+            report_direct_ip_step(&format!(
                 "Link connection worker: role={role:?} local={local} direct={}",
                 peer.map_or_else(|| "mDNS".to_owned(), |ip| ip.to_string())));
             let result = match peer {
