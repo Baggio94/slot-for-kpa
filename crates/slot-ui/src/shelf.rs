@@ -377,7 +377,7 @@ impl Shelf {
             (self.slot_width(a), self.slot_width(a + 1));
         let (sa, sb) = (shrink(a as f32 - u), shrink((a + 1) as f32 - u));
         let gap_of = if gba_a || gba_b { CART_W as f32 } else { wa };
-        wa * sa / 2.0 + gap_of * (1.0 - (sa + sb) / 2.0) + wb * sb / 2.0
+        fit() * (wa * sa / 2.0 + gap_of * (1.0 - (sa + sb) / 2.0) + wb * sb / 2.0)
     }
 
     fn centre(&self, slot: i32) -> f32 {
@@ -394,7 +394,7 @@ impl Shelf {
 
     pub fn selected_at(&self) -> (f32, f32) {
         let (w, _) = self.slot_width(0);
-        let scale = shrink(self.scroll_target() - self.scroll);
+        let scale = fit() * shrink(self.scroll_target() - self.scroll);
         (self.centre(0) - w * scale / 2.0, scale)
     }
 
@@ -435,7 +435,7 @@ impl Shelf {
             }
             let offset = target + slot as f32 - self.scroll;
             let t = offset.abs().min(1.0);
-            let scale = shrink(offset);
+            let scale = fit() * shrink(offset);
             let alpha = (1.0 + (SIDE_ALPHA - 1.0) * t) * (1.0 - recede);
             let (cw, ch) = cart_box(cart.platform);
             let (w, h) = (cw as f32 * scale, ch as f32 * scale);
@@ -495,6 +495,12 @@ impl Shelf {
             }
         }
     }
+}
+
+/// Narrower screens than the KONKR's 3:2 (4:3, the Retroid Pocket Classic)
+/// show the rack a little smaller, so the side carts keep their room.
+fn fit() -> f32 {
+    (out_w() as f32 / slot_gfx::BASE_W as f32).clamp(0.85, 1.0)
 }
 
 fn shrink(offset: f32) -> f32 {
