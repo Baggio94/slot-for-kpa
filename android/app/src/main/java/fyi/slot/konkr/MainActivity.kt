@@ -168,6 +168,8 @@ class MainActivity : Activity() {
     external fun nativeLinkPeerLabel(): String?
     external fun nativeLinkNetworkReady(ipv4: String)
     external fun nativeLinkNetworkError(reason: String)
+    external fun nativeLinkRetry()
+    external fun nativeLinkJoinDirect(local: String, peer: String)
     external fun nativeLinkNeedsMulticast(): Boolean
 
     private var pendingCartLabelUri: String? = null
@@ -475,6 +477,67 @@ class MainActivity : Activity() {
         }
     }
 
+
+    /** Diagnostic fallback only: the normal mDNS path remains invisible when it works. */
+    private fun showLinkIpFallback() {
+        if (!resumed || isDestroyed || isFinishing) return
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Can't find the other player")
+            .setMessage("Automatic discovery timed out after 30 seconds. " +
+                "You can retry or enter the Host console's Wi-Fi IP address.")
+            .setPositiveButton("JOIN BY IP") { _, _ -> showLinkIpEntry() }
+            .setNeutralButton("RETRY") { _, _ -> nativeLinkRetry() }
+            .setNegativeButton("CANCEL", null)
+            .show()
+    }
+
+    private fun showLinkIpEntry() {
+        if (!resumed || isDestroyed || isFinishing) return
+        val entry = EditText(this).apply {
+            hint = "192.168.1.42"
+            inputType = android.text.InputType.TYPE_CLASS_PHONE
+            setSingleLine(true)
+        }
+        val layout = FrameLayout(this).apply {
+            val space = (24 * resources.displayMetrics.density).toInt()
+            setPadding(space, space / 2, space, 0)
+            addView(entry, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT))
+        }
+        val dialog = android.app.AlertDialog.Builder(this)
+            .setTitle("JOIN BY IP")
+            .setMessage("Enter the Host device's IPv4 address from its Wi-Fi settings. " +
+                "Both devices must be on the same local network.")
+            .setView(layout)
+            .setPositiveButton("CONNECT", null)
+            .setNegativeButton("CANCEL", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener {
+                    val parts = entry.text.toString().trim().split(".")
+                    val values = parts.map { part ->
+                        if (part.isNotEmpty() && part.length <= 3
+                            && part.all { it in '0'..'9' }) part.toIntOrNull() else null
+                    }
+                    if (values.size != 4 || values.any { it == null || it !in 0..255 }) {
+                        entry.error = "Enter a valid IPv4 address"
+                        return@setOnClickListener
+                    }
+                    val host = values.joinToString(".")
+                    val local = linkWifiAddress()
+                    if (local == null) {
+                        entry.error = "Connect both consoles to Wi-Fi first"
+                        return@setOnClickListener
+                    }
+                    nativeLinkJoinDirect(local, host)
+                    dialog.dismiss()
+                }
+        }
+        dialog.show()
+    }
+
     private fun requestLinkWifi() {
         if (!resumed) {
             nativeLinkNetworkError("Return to slot. before starting Multiplayer.")
@@ -494,6 +557,8 @@ class MainActivity : Activity() {
             linkMulticastLock = lock
             // Lock must be held before the Rust discovery worker starts.
             nativeLinkNetworkReady(address)
+            Log.i(TAG, "Link Wi-Fi IPv4: $address (manual Host fallback on TCP 7211)")
+            SlotToast.makeText(this, "This console's Wi-Fi IP: $address", Toast.LENGTH_LONG).show()
         } catch (error: Exception) {
             releaseLinkMulticast()
             Log.w(TAG, "Unable to acquire LAN discovery lock", error)
@@ -640,6 +705,7 @@ class MainActivity : Activity() {
                     slotUpdater.refreshVisibleStatus()
                     if (enabled) slotUpdater.check(false)
                 }
+                23 -> showLinkIpFallback()
             }
             // Multicast is required during discovery, not for ongoing TCP
             // emulation. Release on success, cancellation and timeout.
