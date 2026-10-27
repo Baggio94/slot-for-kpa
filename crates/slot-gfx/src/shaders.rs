@@ -164,10 +164,10 @@ void main() {
 
     if (!inside) {
     } else if (u_mode > 11.5) {
-        // Themaister sharp-bilinear: automatic prescale=3 at Slot 720x480.
+        // Themaister sharp-bilinear: automatic prescale from the shown rows.
         vec2 texel=uv*u_src;
         vec2 s=fract(texel);
-        float scale=max(1.0,floor((u_rect.w*u_fbo.y)/u_src.y+0.01));
+        float scale=max(1.0,floor((u_rect.w*u_fbo.y)/(u_uv.w*u_src.y)+0.01));
         float bound=0.5-0.5/scale;
         vec2 delta=s-vec2(0.5);
         vec2 filtered=(delta-clamp(delta,vec2(-bound),vec2(bound)))*scale+0.5;

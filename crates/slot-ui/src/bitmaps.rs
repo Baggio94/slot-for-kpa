@@ -1,6 +1,5 @@
 use std::sync::OnceLock;
 
-use slot_gfx::out_w;
 
 use crate::art::decode_png_bytes;
 
@@ -184,11 +183,11 @@ pub fn chip() -> &'static [u8] {
 /// Official Slot v1.7 full-panel transparent bezels, native source 720x480.
 pub fn bezel_gb() -> &'static [u8] {
     static P: OnceLock<Vec<u8>>=OnceLock::new();
-    load(BEZEL_GB_PNG,out_w(),480,&P)
+    load(BEZEL_GB_PNG,720,480,&P)
 }
 pub fn bezel_gbc() -> &'static [u8] {
     static P: OnceLock<Vec<u8>>=OnceLock::new();
-    load(BEZEL_GBC_PNG,out_w(),480,&P)
+    load(BEZEL_GBC_PNG,720,480,&P)
 }
 
 /// Watomsk full-panel overlays, already at the native 960x640.

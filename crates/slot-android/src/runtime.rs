@@ -125,8 +125,19 @@ static SHARE_SAVES_ENABLED: AtomicBool = AtomicBool::new(false);
 /// surface. 0 keeps the KONKR's 960x640.
 static PANEL_SIZE: AtomicU64 = AtomicU64::new(0);
 
+/// Paused Screen settings row choosing GBA's size off the 3:2 KONKR.
+const SCREEN_SIZE_KEY: usize = 40;
+/// "INTEGER", "ORIGINAL RATIO", "STRETCH" in the setting value faces.
+const SCREEN_SIZE_VALUE: usize = 65;
+
+/// A canvas fitted to a panel that isn't 3:2: the game uses the real panel.
+fn fitted_canvas() -> bool {
+    slot_gfx::out_w() != slot_gfx::BASE_W
+}
+
 /// Whether the 3:2 game frame is a whole multiple of 240x160 on `panel`.
 fn whole_game_scale(panel: (u32, u32)) -> bool {
+    if fitted_canvas() { return true; }
     let h = slot_gfx::default_area()[3] * panel.1 as f32 / OUT_H as f32;
     let k = h / slot_gfx::SRC_H as f32;
     k >= 1.0 && (k - k.round()).abs() < 0.01
@@ -424,7 +435,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 120] = [
+const MENU_TEXT: [&str; 121] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -545,6 +556,7 @@ const MENU_TEXT: [&str; 120] = [
     "SYSTEMS",                           // 117
     "Default Core",                      // 118
     "Sun",                               // 119, Boktai's solar sensor
+    "Screen Size",                        // 120
 ];
 
 /// Pause Emulation's Sun row, drawn with the sun values, not a Settings key.
@@ -696,6 +708,8 @@ struct Engine {
     gbc_bezel_tex: slot_gfx::TexId,
     /// Watomsk GB, Pocket and Color overlays.
     overlay_texs: [slot_gfx::TexId; 3],
+    /// The bezel refitted to a panel that isn't 3:2, and what it was fitted for.
+    fitted_bezel: Option<(slot_gfx::TexId, (crate::settings::Bezel, Platform, (u32, u32)))>,
     custom_wallpaper_present: bool,
     setting_values: Vec<(slot_gfx::TexId, u32, u32)>,
     // Settings > Systems default cores, by Platform order.
@@ -1071,7 +1085,8 @@ impl Engine {
                                "RA CLOCK LAB", "RETROARCH", "NATIVE",
                                "SLOT.", "GAME BOY", "POCKET", "COLOR",
                                "mGBA", "gpSP", "Gambatte", "SENSOR",
-                               "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+                               "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+                               "INTEGER", "ORIGINAL RATIO", "STRETCH"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -1251,6 +1266,7 @@ impl Engine {
             gb_bezel_tex,
             gbc_bezel_tex,
             overlay_texs,
+            fitted_bezel: None,
             custom_wallpaper_present,
             setting_values,
             default_cores: [Core::Mgba; 3],
@@ -3482,12 +3498,24 @@ impl Engine {
         let x2 = 1.0 - x;
         let y2 = 1.0 - y;
         self.gpu.set_picture([x, y, x2, y2]);
-        self.gpu.set_game_source_rect(video_mode::source_rect(platform, self.video_mode));
+        if fitted_canvas() {
+            // Off the 3:2 KONKR each size is laid out on the real panel.
+            let panel = panel_size();
+            let [px, py, pw, ph] = video_mode::picture_rect(platform, self.video_mode, panel);
+            let (sx, sy) = (slot_gfx::out_w() as f32 / panel.0 as f32,
+                OUT_H as f32 / panel.1 as f32);
+            self.gpu.set_game_area([px * sx, py * sy, pw * sx, ph * sy]);
+            self.gpu.set_game_source_rect(video_mode::picture_source(platform));
+        } else {
+            self.gpu.set_game_area(slot_gfx::default_area());
+            self.gpu.set_game_source_rect(video_mode::source_rect(platform, self.video_mode));
+        }
         self.gpu.set_screen_effect(self.game_effect());
     }
 
     fn set_video_mode(&mut self, mode: VideoMode) {
-        if self.video_mode == mode || self.current_cart_platform() == Platform::Gba {
+        if self.video_mode == mode
+            || (self.current_cart_platform() == Platform::Gba && !fitted_canvas()) {
             return;
         }
         self.video_mode = mode;
@@ -3520,9 +3548,13 @@ impl Engine {
     fn game_effect(&self) -> slot_gfx::ScreenEffect {
         let effect = video_mode::screen_effect(self.game_shader(),
             self.current_cart_platform(), self.video_mode);
-        // Off the KONKR the 3:2 game frame is rarely a whole multiple of
-        // 240x160: keep every pixel the same size, as in Original Ratio.
-        if effect == slot_gfx::ScreenEffect::None && !whole_game_scale(panel_size()) {
+        // Off the KONKR Original Ratio is rarely a whole multiple of the
+        // picture: keep every pixel the same size, as on the KONKR.
+        let platform = self.current_cart_platform();
+        let uneven = fitted_canvas() && self.video_mode != VideoMode::Stretch
+            && !video_mode::whole_scale(platform,
+                video_mode::picture_rect(platform, self.video_mode, panel_size()));
+        if effect == slot_gfx::ScreenEffect::None && (uneven || !whole_game_scale(panel_size())) {
             slot_gfx::ScreenEffect::SharpBilinear
         } else { effect }
     }
@@ -3548,19 +3580,49 @@ impl Engine {
     /// Native 3:2 KONKR: GBA fills the panel and has no forced letterbox bezel.
     /// GB/GBC preserve the official 720×480 transparent overlays and offer
     /// Watomsk's; a bezel that can't frame the screen size is hidden, and
-    /// the setting is kept for later.
-    fn game_bezel(&self) -> Option<slot_gfx::TexId> {
+    /// the setting is kept for later. Elsewhere the bezel is refitted to the
+    /// panel around the picture, or hidden when the panel leaves no room.
+    /// Returns the texture and the canvas rect it covers.
+    fn game_bezel(&mut self) -> Option<(slot_gfx::TexId, [f32; 4])> {
         use crate::settings::Bezel;
-        let bezel=self.game_settings().bezel_for(self.current_cart_platform());
+        let platform=self.current_cart_platform();
+        let bezel=self.game_settings().bezel_for(platform);
         if !video_mode::bezel_fits(bezel,self.video_mode) {return None;}
-        match (bezel,self.current_cart_platform()) {
-            (Bezel::None,_) | (_,Platform::Gba)=>None,
-            (Bezel::Default,Platform::Gb)=>Some(self.gb_bezel_tex),
-            (Bezel::Default,Platform::Gbc)=>Some(self.gbc_bezel_tex),
-            (Bezel::Gb,_)=>Some(self.overlay_texs[0]),
-            (Bezel::Pocket,_)=>Some(self.overlay_texs[1]),
-            (Bezel::Color,_)=>Some(self.overlay_texs[2]),
+        if bezel==Bezel::None || platform==Platform::Gba {return None;}
+        if !fitted_canvas() {
+            let tex=match (bezel,platform) {
+                (Bezel::Default,Platform::Gb)=>self.gb_bezel_tex,
+                (Bezel::Default,_)=>self.gbc_bezel_tex,
+                (Bezel::Gb,_)=>self.overlay_texs[0],
+                (Bezel::Pocket,_)=>self.overlay_texs[1],
+                _=>self.overlay_texs[2],
+            };
+            // Bezels frame the 3:2 game frame, wherever it sits.
+            return Some((tex,slot_gfx::default_area()));
         }
+        let panel=panel_size();
+        if !video_mode::bezel_has_room(bezel,platform,panel) {return None;}
+        let whole=[0.0,0.0,slot_gfx::out_w() as f32,OUT_H as f32];
+        let key=(bezel,platform,panel);
+        if let Some((tex,fitted))=self.fitted_bezel {
+            if fitted==key {return Some((tex,whole));}
+        }
+        use slot_ui::bitmaps;
+        use slot_ui::fit_overlay::{fit_overlay, slot_bezel, watomsk};
+        let art=match (bezel,platform) {
+            (Bezel::Default,Platform::Gb)=>slot_bezel(bitmaps::bezel_gb()),
+            (Bezel::Default,_)=>slot_bezel(bitmaps::bezel_gbc()),
+            (Bezel::Gb,_)=>watomsk(bitmaps::overlay_gb()),
+            (Bezel::Pocket,_)=>watomsk(bitmaps::overlay_pocket()),
+            _=>watomsk(bitmaps::overlay_color()),
+        };
+        let rgba=fit_overlay(&art,panel,video_mode::bezel_window(bezel,platform,panel));
+        let tex=match self.fitted_bezel {
+            Some((tex,_)) => { self.gpu.update_texture(tex,panel.0,panel.1,&rgba); tex }
+            None => self.gpu.create_texture(panel.0,panel.1,&rgba),
+        };
+        self.fitted_bezel=Some((tex,key));
+        Some((tex,whole))
     }
 
     fn screen_rows(platform: Platform)-> &'static [usize] {
@@ -3632,6 +3694,10 @@ impl Engine {
     }
 
     fn pause_screen_rows(&self) -> &'static [usize] {
+        // GB/GBC resize with L1/R1; GBA's shoulders belong to the game.
+        if self.current_cart_platform()==Platform::Gba && fitted_canvas() {
+            return &[34,29,120];
+        }
         if self.current_cart_platform()==Platform::Gb &&
             !self.game.as_ref().is_some_and(GameSession::can_change_gb_palette) {
             &[89,29,90]
@@ -3640,6 +3706,9 @@ impl Engine {
         }
     }
     fn pause_screen_key(&self,row:usize)->Option<usize> {
+        if self.current_cart_platform()==Platform::Gba && fitted_canvas() {
+            return [0,22,SCREEN_SIZE_KEY].get(row).copied();
+        }
         if self.current_cart_platform()==Platform::Gb &&
             !self.game.as_ref().is_some_and(GameSession::can_change_gb_palette) {
             [1,24,27].get(row).copied()
@@ -3727,6 +3796,14 @@ impl Engine {
         });
     }
     fn change_game_screen_or_gameplay(&mut self, key: usize, right: bool) {
+        if key == SCREEN_SIZE_KEY {
+            let mode = if right { self.video_mode.bigger() } else { self.video_mode.smaller() };
+            if mode != self.video_mode {
+                self.set_video_mode(mode);
+                self.hud.toast(self.video_mode_toast(), self.born.elapsed().as_millis() as u64);
+            }
+            return;
+        }
         let Some(uri)=self.selected_rom_uri() else { return };
         let core=self.selected_emulation_core();
         let platform=self.current_cart_platform();
@@ -4310,6 +4387,9 @@ impl Engine {
             23 => if scoped.colour_correction_gbc {4}else{5},
             24 => if scoped.colour_correction_gb {4}else{5},
             25 => if scoped.bezel_gba==crate::settings::Bezel::None {5}else{4},
+            SCREEN_SIZE_KEY => SCREEN_SIZE_VALUE + match self.video_mode {
+                VideoMode::Actual => 0, VideoMode::Aspect => 1, VideoMode::Stretch => 2,
+            },
             26 => bezel_value(scoped.bezel_gbc),
             27 => bezel_value(scoped.bezel_gb),
             28 => if self.settings.time_format==crate::settings::TimeFormat::TwelveHour
@@ -5589,9 +5669,7 @@ impl Engine {
             } else {
                 commands.push(Draw::Game);
             }
-            if let Some(tex)=bezel {
-                // Bezels frame the 3:2 game frame, wherever it sits.
-                let [x,y,w,h]=slot_gfx::default_area();
+            if let Some((tex,[x,y,w,h]))=bezel {
                 commands.push(Draw::Tex { x,y,w,h,tex,alpha:1.0 });
             }
             self.hud.draw(self.born.elapsed().as_millis() as u64, &mut commands);
