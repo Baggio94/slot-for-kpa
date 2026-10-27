@@ -49,11 +49,11 @@ pub fn sun_top(boktai1: bool) -> u8 {
 /// Sun N shows N bars, measured on a KPA with the game calibrated at 0.
 /// Boktai 1 (8 bars) uses mGBA's own steps (0x16 + GBA_LUX_LEVELS),
 /// leaving out the two that repeated a bar (106 and 161). Boktai 2 (10
-/// bars) showed 3 bars at 45, 5 at 68, 7 at 91, 8 at 114, 9 at 137 and
-/// 10 from 183; 1, 2, 4 and 6 lie between those.
+/// bars) showed 2 bars at 33, 3 at 39 and 45, 4 at 56, 5 at 68, 6 at 80,
+/// 7 at 91, 8 at 114, 9 at 137 and 10 from 183; 1 lies below 33.
 pub fn sun_luminance(sun: u8, boktai1: bool) -> Option<u8> {
     const BOKTAI1: [u8; 9] = [22, 27, 33, 40, 49, 64, 84, 131, 205];
-    const LATER: [u8; 11] = [22, 33, 39, 45, 56, 68, 80, 91, 114, 137, 183];
+    const LATER: [u8; 11] = [22, 27, 33, 45, 56, 68, 80, 91, 114, 137, 183];
     if sun == SUN_SENSOR { return None; }
     let sun = usize::from(sun.min(sun_top(boktai1)));
     Some(if boktai1 { BOKTAI1[sun] } else { LATER[sun] })
