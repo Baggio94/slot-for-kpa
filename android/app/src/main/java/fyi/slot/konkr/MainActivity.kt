@@ -937,7 +937,7 @@ class MainActivity : Activity() {
                 if (retroidInput != null && ready) {
                     val toGlUs = (a12StartedNs - retroidInput.deliveredNs) / 1000L
                     if (toGlUs >= 0) {
-                        Log.i(TAG, "Retroid input timing: button=${retroidInput.button} " +
+                        Log.e(TAG, "Retroid input timing: button=${retroidInput.button} " +
                             "android_dispatch_ms=${retroidInput.androidDispatchMs} " +
                             "key_to_gl_start_us=$toGlUs native_draw_us=$a12NativeUs " +
                             "note=GL_callback_not_screen_present")
@@ -1201,6 +1201,9 @@ class MainActivity : Activity() {
                 // requested frame can start before the MODE event is queued.
                 nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, true)
                 wakeCarouselRender()
+                // RPC firmware drops INFO/WARN, so temporary ERROR-level diagnostics.
+                Log.e(TAG, "RPC input dispatch: path=ROUND key=$keyCode " +
+                    "scan=${event.scanCode} device=${event.device?.name ?: \"unknown\"}")
             }
             return true
         }
@@ -1233,6 +1236,10 @@ class MainActivity : Activity() {
             }
             nativeKey(keyCode, true)
             wakeCarouselRender()
+            if (keyCode == KeyEvent.KEYCODE_BUTTON_A) {
+                Log.e(TAG, "RPC input dispatch: path=A key=$keyCode " +
+                    "scan=${event.scanCode} device=${event.device?.name ?: \"unknown\"}")
+            }
         }
         return true
     }
