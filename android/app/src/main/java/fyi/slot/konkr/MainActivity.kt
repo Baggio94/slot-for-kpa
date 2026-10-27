@@ -253,8 +253,9 @@ class MainActivity : Activity() {
     )
     private val retroidPressTiming =
         java.util.concurrent.atomic.AtomicReference<RetroidPressTiming?>(null)
-    // Opt-in A/B only. A settled shelf's ROUND can bypass the MODE->A
-    // forwarding path; games keep native MODE with their 650ms hold.
+    // Opt-in A/B only. The visible, empty-slot shelf's ROUND may use A directly.
+    // Do not depend on nativeCarouselQuiet(): it also waits for unrelated
+    // artwork/network/idle-throttling conditions. In-game MODE stays unchanged.
     private val rpcRoundDirectShelfAExperiment by lazy {
         intent.getBooleanExtra("fyi.slot.konkr.experiment.rpc_round_direct_shelf_a", false)
     }
@@ -1202,11 +1203,15 @@ class MainActivity : Activity() {
             if (event.repeatCount == 0) {
                 EmulationDiagnostics.input(keyCode, true, event, KeyEvent.KEYCODE_BUTTON_MODE)
                 warmedCandidate.set(null)
-                // In the opt-in experiment, issue the exact same A event as
-                // the Retroid A button only on an idle, settled shelf.
-                // Latch route until UP even if the game launches meanwhile.
-                val directA = rpcRoundDirectShelfAExperiment &&
-                    !nativeIsPlaying() && nativeCarouselQuiet()
+                // Native shelf chrome bit 0 is published only while the
+                // cartridge shelf (no overlay, no insertion) is visible.
+                // Unlike nativeCarouselQuiet it does not depend on artwork
+                // preloads, library sync, or a 3.2-second inactivity timer.
+                // Latch the chosen route until UP even if the game loads.
+                val experimentEnabled = rpcRoundDirectShelfAExperiment
+                val playing = nativeIsPlaying()
+                val shelfVisible = (nativeShelfIndicatorFlags() and 1) != 0
+                val directA = experimentEnabled && !playing && shelfVisible
                 rpcRoundSentAsA = directA
                 markRetroidPress(if (directA) "ROUND_DIRECT_A" else "ROUND_MODE", event)
                 // Stage before waking a dozing shelf to avoid a stale frame.
@@ -1216,7 +1221,8 @@ class MainActivity : Activity() {
                 // RPC firmware drops INFO/WARN, so temporary ERROR-level diagnostics.
                 Log.e(TAG, "RPC input dispatch: path=ROUND key=$keyCode " +
                     "scan=${event.scanCode} device=" + (event.device?.name ?: "unknown") +
-                    " route=" + (if (directA) "DIRECT_A" else "MODE"))
+                    " route=" + (if (directA) "DIRECT_A" else "MODE") +
+                    " experiment=$experimentEnabled shelf_visible=$shelfVisible playing=$playing")
             }
             return true
         }
