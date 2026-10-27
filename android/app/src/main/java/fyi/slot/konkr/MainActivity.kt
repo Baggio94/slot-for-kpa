@@ -253,6 +253,12 @@ class MainActivity : Activity() {
     )
     private val retroidPressTiming =
         java.util.concurrent.atomic.AtomicReference<RetroidPressTiming?>(null)
+    // Opt-in A/B only. A settled shelf's ROUND can bypass the MODE->A
+    // forwarding path; games keep native MODE with their 650ms hold.
+    private val rpcRoundDirectShelfAExperiment by lazy {
+        intent.getBooleanExtra("fyi.slot.konkr.experiment.rpc_round_direct_shelf_a", false)
+    }
+    private var rpcRoundSentAsA = false
     private fun markRetroidPress(button: String, event: KeyEvent) {
         retroidPressTiming.set(RetroidPressTiming(
             button,
@@ -1196,14 +1202,21 @@ class MainActivity : Activity() {
             if (event.repeatCount == 0) {
                 EmulationDiagnostics.input(keyCode, true, event, KeyEvent.KEYCODE_BUTTON_MODE)
                 warmedCandidate.set(null)
-                markRetroidPress("ROUND", event)
-                // Stage the key before waking a dozing shelf. Otherwise a
-                // requested frame can start before the MODE event is queued.
-                nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, true)
+                // In the opt-in experiment, issue the exact same A event as
+                // the Retroid A button only on an idle, settled shelf.
+                // Latch route until UP even if the game launches meanwhile.
+                val directA = rpcRoundDirectShelfAExperiment &&
+                    !nativeIsPlaying() && nativeCarouselQuiet()
+                rpcRoundSentAsA = directA
+                markRetroidPress(if (directA) "ROUND_DIRECT_A" else "ROUND_MODE", event)
+                // Stage before waking a dozing shelf to avoid a stale frame.
+                nativeKey(if (directA) KeyEvent.KEYCODE_BUTTON_A
+                    else KeyEvent.KEYCODE_BUTTON_MODE, true)
                 wakeCarouselRender()
                 // RPC firmware drops INFO/WARN, so temporary ERROR-level diagnostics.
                 Log.e(TAG, "RPC input dispatch: path=ROUND key=$keyCode " +
-                    "scan=${event.scanCode} device=" + (event.device?.name ?: "unknown"))
+                    "scan=${event.scanCode} device=" + (event.device?.name ?: "unknown") +
+                    " route=" + (if (directA) "DIRECT_A" else "MODE"))
             }
             return true
         }
@@ -1315,8 +1328,12 @@ class MainActivity : Activity() {
         if (isRetroidSlotKey(keyCode, event)) {
             EmulationDiagnostics.input(keyCode, false, event, KeyEvent.KEYCODE_BUTTON_MODE)
             warmedCandidate.set(null)
-            // A short MODE release opens the pause menu: queue it before wake.
-            nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, false)
+            // Preserve the matching route across the whole press/release.
+            // A game started while held must still see its original A release.
+            val directA = rpcRoundSentAsA
+            rpcRoundSentAsA = false
+            nativeKey(if (directA) KeyEvent.KEYCODE_BUTTON_A
+                else KeyEvent.KEYCODE_BUTTON_MODE, false)
             wakeCarouselRender()
             return true
         }
