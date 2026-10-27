@@ -214,7 +214,13 @@ fn connect(role: Role, local: Ipv4Addr, config: &LinkConfig,
         return Err(io::Error::new(io::ErrorKind::AddrNotAvailable,
             "no usable Wi-Fi IPv4 address"));
     }
-    let fingerprint = config.fingerprint()?;
+    // Fingerprinting ROM/core/BIOS happens before either multicast socket is
+    // opened. Preserve that stage in the error: ENODEV can also come from an
+    // Android file provider, and must not be misdiagnosed as broken Wi-Fi.
+    let fingerprint = config.fingerprint().map_err(|error| {
+        io::Error::new(error.kind(),
+            format!("prepare Link ROM/core/BIOS fingerprint: {error}"))
+    })?;
     let mut link = match role {
         Role::Host => {
             // Validate multicast and join the correct interface before announcing.
