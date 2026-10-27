@@ -3819,7 +3819,8 @@ impl Engine {
         } else { return; }
         self.game_emulation = None;
         if let Some(session) = self.game.as_mut() {
-            session.set_sun(crate::emulation::default_sun(light_sensor()));
+            let top = session.sun_top();
+            session.set_sun(crate::emulation::default_sun(light_sensor(), top));
         }
         let globals=self.game_settings();
         let platform=self.current_cart_platform();

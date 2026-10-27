@@ -33,15 +33,17 @@ pub struct EmulationProfile {
 }
 
 pub const SUN_SENSOR: u8 = 11;
-/// RetroArch starts at 0 (night); slot. starts playable mid-day, or on
-/// the real light when the handheld can measure it.
-pub fn default_sun(light_sensor: bool) -> u8 {
-    if light_sensor { SUN_SENSOR } else { 5 }
+/// RetroArch starts at 0 (night); slot. starts playable mid-day, half
+/// the gauge (4 in Boktai 1, 5 in Boktai 2 and 3), or on the real light
+/// when the handheld can measure it.
+pub fn default_sun(light_sensor: bool, top: u8) -> u8 {
+    if light_sensor { SUN_SENSOR } else { top.div_ceil(2) }
 }
-/// The highest manual sun: one per bar of the game's gauge, 8 in
-/// Boktai 1 and 10 in Boktai 2 and 3.
+/// The highest manual sun: one per bar of the game's gauge. Boktai 1
+/// has 8 bars. Boktai 2 and 3 have 10, but no light fills the last one
+/// in mGBA: every value from 242 to 253 showed 9 bars.
 pub fn sun_top(boktai1: bool) -> u8 {
-    if boktai1 { 8 } else { 10 }
+    if boktai1 { 8 } else { 9 }
 }
 /// The light a solar cartridge reads for a manual sun, None for SENSOR.
 /// Sun N shows N bars, measured on a KPA with the light set directly.
@@ -51,15 +53,14 @@ pub fn sun_top(boktai1: bool) -> u8 {
 /// 184 six, 204 seven, 225 eight and 242 nine.
 pub fn sun_luminance(sun: u8, boktai1: bool) -> Option<u8> {
     const BOKTAI1: [u8; 9] = [22, 27, 33, 40, 49, 64, 84, 131, 205];
-    const LATER: [u8; 11] = [22, 130, 137, 145, 155, 166, 186, 206, 227, 242, MAX_LUMINANCE];
+    const LATER: [u8; 10] = [22, 130, 137, 145, 155, 166, 186, 206, 227, 242];
     if sun == SUN_SENSOR { return None; }
     let sun = usize::from(sun.min(sun_top(boktai1)));
     Some(if boktai1 { BOKTAI1[sun] } else { LATER[sun] })
 }
-/// The brightest light a game accepts. At 255 the cartridge answers
-/// before the game's first clock, which Boktai 2 reads as no sun at all:
-/// its gauge drained to 0 there.
-pub const MAX_LUMINANCE: u8 = 254;
+/// The brightest light a game accepts: from 254, Boktai 2 reads the
+/// cartridge's answer as no sun at all and its gauge drains to 0.
+pub const MAX_LUMINANCE: u8 = 253;
 /// mGBA's own conversion of light sensor lux (cbrt(lux) * 8).
 pub fn lux_luminance(lux: f32) -> u8 {
     (lux.max(0.0).cbrt() * 8.0).min(f32::from(MAX_LUMINANCE)) as u8
@@ -177,10 +178,10 @@ impl EmulationProfile {
     /// The game's sun, `top` being its highest manual level.
     pub fn sun(&self, light_sensor: bool, top: u8) -> u8 {
         match self.sun {
-            Some(SUN_SENSOR) if !light_sensor => default_sun(false),
+            Some(SUN_SENSOR) if !light_sensor => default_sun(false, top),
             Some(SUN_SENSOR) => SUN_SENSOR,
             Some(sun) => sun.min(top),
-            None => default_sun(light_sensor),
+            None => default_sun(light_sensor, top),
         }
     }
     /// 0, 1 … top, then SENSOR when the handheld has a light sensor.
@@ -252,17 +253,18 @@ mod tests {
     #[test]
     fn sun_follows_the_handheld_until_chosen() {
         let mut profile=EmulationProfile::default();
-        assert_eq!(profile.sun(true, 10), SUN_SENSOR);
-        assert_eq!(profile.sun(false, 10), 5);
-        profile.change_sun(true, 10, true);
-        assert_eq!(profile.sun(true, 10), 0, "after SENSOR comes 0");
-        profile.change_sun(false, 10, false);
-        assert_eq!(profile.sun(false, 10), 10);
+        assert_eq!(profile.sun(true, 9), SUN_SENSOR);
+        assert_eq!(profile.sun(false, 9), 5, "half of Boktai 2/3's gauge");
+        assert_eq!(profile.sun(false, 8), 4, "half of Boktai 1's gauge");
+        profile.change_sun(true, 9, true);
+        assert_eq!(profile.sun(true, 9), 0, "after SENSOR comes 0");
+        profile.change_sun(false, 9, false);
+        assert_eq!(profile.sun(false, 9), 9);
         assert_eq!(profile.sun(false, 8), 8, "Boktai 1 stops at 8 bars");
         profile.change_sun(true, 8, true);
         assert_eq!(profile.sun(true, 8), SUN_SENSOR, "SENSOR follows 8 in Boktai 1");
         profile.sun=Some(SUN_SENSOR);
-        assert_eq!(profile.sun(false, 10), 5, "no light sensor on this handheld");
+        assert_eq!(profile.sun(false, 9), 5, "no light sensor on this handheld");
         assert_eq!(sun_luminance(SUN_SENSOR, true), None);
         assert_eq!(sun_luminance(0, true), Some(0x16));
         assert_eq!(sun_luminance(7, true), Some(0x16 + 109));
@@ -270,9 +272,10 @@ mod tests {
         assert_eq!(sun_luminance(10, true), Some(0x16 + 183));
         assert_eq!(sun_luminance(0, false), Some(22));
         assert_eq!(sun_luminance(5, false), Some(166));
-        assert_eq!(sun_luminance(10, false), Some(254));
+        assert_eq!(sun_luminance(9, false), Some(242));
+        assert_eq!(sun_luminance(10, false), Some(242), "an old Sun 10 plays as 9");
         assert_eq!(lux_luminance(1000.0), 80);
-        assert_eq!(lux_luminance(1e9), 254);
+        assert_eq!(lux_luminance(1e9), 253);
         assert_eq!(EmulationProfile { sun: Some(40), ..profile }.sanitize().sun, None);
     }
     #[test]
