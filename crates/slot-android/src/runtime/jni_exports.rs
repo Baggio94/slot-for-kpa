@@ -299,6 +299,28 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeLinkNetworkReady(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeLinkRetry(
+    _env: *mut c_void, _this: *mut c_void,
+) {
+    INPUT.lock().unwrap_or_else(|e| e.into_inner())
+        .push_back(Input::LinkRetry);
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeLinkJoinDirect(
+    mut env: JNIEnv<'_>, _this: JObject<'_>,
+    local: JString<'_>, peer: JString<'_>,
+) {
+    if let (Ok(local), Ok(peer)) = (env.get_string(&local), env.get_string(&peer)) {
+        INPUT.lock().unwrap_or_else(|e| e.into_inner())
+            .push_back(Input::LinkJoinDirect {
+                local: local.to_string_lossy().into_owned(),
+                peer: peer.to_string_lossy().into_owned(),
+            });
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeLinkNetworkError(
     mut env: JNIEnv<'_>, _this: JObject<'_>, reason: JString<'_>,
 ) {
