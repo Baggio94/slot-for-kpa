@@ -107,6 +107,8 @@ enum Input {
     // Kotlin acquires the multicast lock before returning a Wi-Fi IPv4.
     LinkNetworkReady(String),
     LinkNetworkError(String),
+    LinkRetry,
+    LinkJoinDirect { local: String, peer: String },
     LinkPeerRomConsent(i32),
     RaPrefetchHash(String, u32),
     ExternalReturn,
@@ -1934,6 +1936,10 @@ impl Engine {
                     }
                 }
                 LinkProgress::Failed(reason) => {
+                    // The IP fallback appears only when automatic Join genuinely
+                    // exhausted its 30-second mDNS discovery without an answer.
+                    let offer_ip = self.link_role == LinkRow::Join
+                        && reason == crate::multiplayer::Failure::NobodyCame;
                     let fail = match reason {
                         crate::multiplayer::Failure::NoNetwork => LinkFail::Radio,
                         crate::multiplayer::Failure::NobodyCame => LinkFail::NobodyCame,
@@ -1952,6 +1958,10 @@ impl Engine {
                         }
                     };
                     self.fail_multiplayer(details, fail);
+                    if offer_ip {
+                        UI_ACTION.lock().unwrap_or_else(|e| e.into_inner())
+                            .push_back(23);
+                    }
                 }
             }
         }
@@ -2004,6 +2014,40 @@ impl Engine {
                     }
                 } else {
                     LINK_NEEDS_MULTICAST.store(false, Ordering::Release);
+                }
+            }
+            Input::LinkRetry => {
+                if matches!(self.overlay, ShelfOverlay::Multiplayer)
+                    && matches!(self.link_phase, LinkMenu::Failed { .. })
+                    && self.link_role == LinkRow::Join {
+                    self.request_multiplayer_network();
+                }
+            }
+            Input::LinkJoinDirect { local, peer } => {
+                if matches!(self.overlay, ShelfOverlay::Multiplayer)
+                    && matches!(self.link_phase, LinkMenu::Failed { .. })
+                    && self.link_role == LinkRow::Join {
+                    let start = (|| -> Result<crate::multiplayer::LinkStarter, String> {
+                        let local = local.parse::<Ipv4Addr>()
+                            .map_err(|_| "Invalid local Wi-Fi IPv4 address.")?;
+                        let peer = peer.parse::<Ipv4Addr>()
+                            .map_err(|_| "Invalid host IPv4 address.")?;
+                        let config = self.link_config()?;
+                        crate::multiplayer::LinkStarter::spawn_direct(local, peer, config)
+                            .map_err(|e| e.to_string())
+                    })();
+                    match start {
+                        Ok(starter) => {
+                            self.cancel_link_discovery();
+                            self.link_starter = Some(starter);
+                            self.link_worked_at = self.link_millis();
+                            self.link_phase = LinkMenu::Working {
+                                role: self.link_role, step: LinkStep::Waiting,
+                                since: self.link_worked_at,
+                            };
+                        }
+                        Err(error) => self.fail_multiplayer(&error, LinkFail::Radio),
+                    }
                 }
             }
             Input::LinkNetworkError(reason) => {
