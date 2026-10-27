@@ -582,9 +582,9 @@ impl GameSession {
         core.load(rom).map_err(|e| e.to_string())?;
         let load_ms = opening_at.elapsed().as_millis();
         let restore_started = Instant::now();
-        // A GB/GBC cart switched between mGBA and Gambatte brings its newer
-        // battery along; that core's older save state must not resume.
-        let carried_battery = linked_boot.is_none() && match
+        // With Share Saves, a GB/GBC cart switched between mGBA and Gambatte
+        // brings its newer battery along; that core's older state must not resume.
+        let carried_battery = linked_boot.is_none() && crate::gb_core_switch::sharing() && match
             crate::gb_core_switch::carry_battery(&root, rom_stem, which, platform) {
             Ok(carried) => carried,
             Err(error) => {

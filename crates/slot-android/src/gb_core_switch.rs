@@ -3,8 +3,16 @@
 //! must bring the newer cartridge battery along instead of starting over.
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use slot_store::{Core, Platform};
+
+/// Library > Share Saves: off keeps each core's own battery, like mGBA/gpSP.
+static SHARING: AtomicBool = AtomicBool::new(false);
+
+pub fn set_sharing(enabled: bool) { SHARING.store(enabled, Ordering::Release); }
+
+pub fn sharing() -> bool { SHARING.load(Ordering::Acquire) }
 
 /// Slot's palette list uses mGBA's names; Gambatte ships the same GBC boot
 /// and SGB palettes under its own names.

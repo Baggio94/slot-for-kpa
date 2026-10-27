@@ -1165,6 +1165,17 @@ class MainActivity : Activity() {
             }
             return true
         }
+        if (isRetroidSlotKey(keyCode, event)) {
+            // The Retroid's round centre key sends BACK: there it is the
+            // slot. button, with the KONKR top key's exact behaviour.
+            if (event.repeatCount == 0) {
+                EmulationDiagnostics.input(keyCode, true, event, KeyEvent.KEYCODE_BUTTON_MODE)
+                warmedCandidate.set(null)
+                wakeCarouselRender()
+                nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, true)
+            }
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             onBackPressed()
             return true
@@ -1261,6 +1272,13 @@ class MainActivity : Activity() {
             nativeKey(button, false)
             return true
         }
+        if (isRetroidSlotKey(keyCode, event)) {
+            EmulationDiagnostics.input(keyCode, false, event, KeyEvent.KEYCODE_BUTTON_MODE)
+            warmedCandidate.set(null)
+            wakeCarouselRender()
+            nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, false)
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) return true
         if (keyCode == KeyEvent.KEYCODE_BUTTON_MODE) {
             Log.i(TAG, "KONKR MENU BTN_MODE up: Android code=" + keyCode)
@@ -1271,6 +1289,13 @@ class MainActivity : Activity() {
         wakeCarouselRender()
         nativeKey(keyCode, false)
         return true
+    }
+
+    /** BACK from a Retroid's built-in controller, not the navigation bar. */
+    private fun isRetroidSlotKey(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode != KeyEvent.KEYCODE_BACK) return false
+        val device = event.device ?: return false
+        return !device.isVirtual && device.name.contains("Retroid", ignoreCase = true)
     }
 
     @Deprecated("Android 12 back key")
@@ -2338,8 +2363,8 @@ class MainActivity : Activity() {
         }
         nativeSetShareSaves(enabled)
         SlotToast.makeText(this,
-            if (enabled) "mGBA and gpSP now share the same saves."
-            else "mGBA and gpSP now keep separate saves.",
+            if (enabled) "mGBA, gpSP and Gambatte now share the same saves."
+            else "Each core now keeps its own saves.",
             Toast.LENGTH_LONG).show()
     }
 

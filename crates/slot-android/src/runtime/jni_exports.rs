@@ -490,6 +490,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetShareSaves(
     _env: *mut c_void, _this: *mut c_void, enabled: jboolean,
 ) {
     SHARE_SAVES_ENABLED.store(enabled != 0, Ordering::Release);
+    crate::gb_core_switch::set_sharing(enabled != 0);
 }
 
 /// The display size, before the first surface: the canvas follows its shape.

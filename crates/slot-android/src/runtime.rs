@@ -504,7 +504,7 @@ const MENU_TEXT: [&str; 120] = [
     "",                                 // 76 retired: no middle-page helper text
     "",                                 // 77 retired: upstream shows A OK
     "Eject to play solo",               // 78
-    "Share Saves (mGBA/gpSP)",          // 79
+    "Share Saves",                      // 79
     "",                                  // 80 retired: value rendered at right
     "General",                            // 81, official Slot v1.7 menu
     "GENERAL",                            // 82
@@ -1444,18 +1444,21 @@ impl Engine {
     }
 
     /// The slot. button on any handheld, in game: SELECT+X is a short press
-    /// (game menu, twice for the Polaroids) and SELECT+START held is the long
-    /// press (save and eject). Both keys' releases are consumed too.
+    /// (game menu, twice for the Polaroids) and SELECT+START ejects at once
+    /// (save and eject). Both keys' releases are consumed too.
     fn select_slot_combo(&mut self, code: i32, pressed: bool) -> bool {
         let bit = match code { 99 => 1u8, 108 => 2, _ => return false };
         if !pressed {
             if self.combo_releases & bit == 0 { return false; }
             self.combo_releases &= !bit;
-            if code == 108 { self.mode_down_at = None; }
             return true;
         }
         if !self.select_physical || self.game.is_none()
             || !matches!(self.overlay, ShelfOverlay::None | ShelfOverlay::GameMenu { .. }) {
+            return false;
+        }
+        // A+B+START+SELECT is the Game Boy soft reset: leave it to the game.
+        if code == 108 && self.buttons & (ButtonMask::A | ButtonMask::B) != 0 {
             return false;
         }
         self.combo_releases |= bit;
@@ -1468,7 +1471,9 @@ impl Engine {
             self.slot_button_tap();
         } else {
             self.mode_last_tap = None;
-            self.mode_down_at = Some(Instant::now());
+            self.mode_down_at = None;
+            crate::game::log_launch_timing("Exit requested by SELECT+START");
+            self.handle(Input::Exit);
         }
         true
     }
