@@ -155,3 +155,11 @@ fn the_bios_intro_plays_when_a_bios_is_present() {
         "{lit} of {all} pixels are lit: the rom is already painting and the intro was skipped"
     );
 }
+
+#[test]
+fn an_empty_state_is_refused_instead_of_crashing_mgba() {
+    let _g = lock();
+    let Some(mut c) = test_core() else { return };
+    c.load(&test_rom()).unwrap();
+    assert!(c.unserialize(&[]).is_err());
+}

@@ -2,6 +2,15 @@
 
 This changelog covers the public releases of the dedicated KONKR Pocket Advance Android port. Earlier development experiments are preserved in Git history.
 
+## v1.3.4 — 27 October 2026
+
+- Analog stick: the first centred stick event reaches Android again, so its stick-to-D-pad conversion releases the direction (#68).
+- Libretro sensor interface: accelerometer and gyroscope from Android, in RetroArch's Android units and rotation; MBC7 tilt axes inverted as mGBA expects (#67).
+- Boktai 1/2/3: per-game Sun setting (0..8 / 0..10, one gauge bar per level; SENSOR with a light sensor), handed to mGBA through slot_mgba_set_sun so resumed games keep it; L3/R3 and SELECT+L2/R2 adjust it; starts at 0 so the game calibrates in the dark (#69).
+- Sensor cartridges start on mGBA instead of gpSP; MBC7 cartridges on mGBA instead of Gambatte.
+- Core options are available in retro_init: Gambatte now shows the GB/GBC boot ROM (#71). Gambatte rumble level 10.
+- An empty save state is refused instead of crashing mGBA.
+
 ## v1.3.3 — 26 October 2026
 
 - GB/GBC multiplayer over Wi-Fi (SELECT + HOME, Host/Join). mGBA: GB lockstep link, cartridge identity for GB/GBC, peer ROM .gb/.gbc, Pokémon Gold/Silver/Crystal clock kept during the link. Gambatte: Game Link (netlink) driven by HOST/JOIN, with reconnect, timeouts and a serial shift fix.

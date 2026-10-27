@@ -44,11 +44,17 @@ fn the_banner_says_what_happened_and_never_what_is_on_screen() {
         ],
         "a banner was added or dropped: every face is uploaded by its place in this list"
     );
-    let palettes = all.len() - GbPalette::all().count();
+    let suns = all.len() - 11;
+    let palettes = suns - GbPalette::all().count();
     assert_eq!(
-        all[palettes..],
+        all[palettes..suns],
         GbPalette::all().map(Toast::Palette).collect::<Vec<_>>()[..],
         "the palette banners do not follow the fixed ones in palette order"
+    );
+    assert_eq!(
+        all[suns..],
+        (0..=10).map(Toast::Sun).collect::<Vec<_>>()[..],
+        "the sun banners close the list, 0 to 10"
     );
     for (i, t) in all.iter().enumerate() {
         assert_eq!(t.index(), i, "{t:?} does not answer to its own place");

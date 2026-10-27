@@ -4,6 +4,7 @@ mod libretro;
 mod link;
 mod mock;
 mod rumble;
+pub mod sensors;
 
 pub use core::{AvInfo, ButtonMask, CoreError, RetroCore, GBA_H, GBA_W};
 pub use ffi::{

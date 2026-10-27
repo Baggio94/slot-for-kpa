@@ -63,8 +63,8 @@ pub fn open(spec: &Spec, battery: Option<&[u8]>) -> Result<Box<dyn RetroCore>, S
     let library = private_library_path(spec).ok_or("core file has no name")?;
     copy_if_changed(&spec.core_file, &library)
         .map_err(|e| format!("cannot copy core library: {e}"))?;
-    let mut core = LibretroCore::open_secondary(&library, &spec.system_dir, &spec.scratch_dir)
-        .map_err(|e| e.to_string())?;
+    let mut core = LibretroCore::open_secondary(&library, &spec.system_dir, &spec.scratch_dir,
+        &spec.options).map_err(|e| e.to_string())?;
     if core.instance_id() == spec.primary_id {
         return Err("dynamic linker reused the real core's library".into());
     }

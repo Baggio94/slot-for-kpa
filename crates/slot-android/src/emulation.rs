@@ -27,7 +27,46 @@ pub struct EmulationProfile {
     pub turbo_override: Option<bool>, // original KONKR "X/Y Buttons"
     pub rumble_override: Option<bool>,
     pub eject_save_override: Option<bool>,
+    // Boktai's sun: mGBA's level 0..=10, or SUN_SENSOR for the light
+    // sensor. None follows the handheld (sensor if it has one).
+    pub sun: Option<u8>,
 }
+
+pub const SUN_SENSOR: u8 = 11;
+/// Night, like RetroArch, or the real light when the handheld can
+/// measure it. Each Boktai calibrates its sensor in the dark once and
+/// counts its bars from there: calibrated under a manual sun, its gauge
+/// never fills.
+pub fn default_sun(light_sensor: bool) -> u8 {
+    if light_sensor { SUN_SENSOR } else { 0 }
+}
+/// The highest manual sun: one per bar of the game's gauge, 8 in
+/// Boktai 1 and 10 in Boktai 2 and 3.
+pub fn sun_top(boktai1: bool) -> u8 {
+    if boktai1 { 8 } else { 10 }
+}
+/// The light a solar cartridge reads for a manual sun, None for SENSOR.
+/// Sun N shows N bars, measured on a KPA with the game calibrated at 0.
+/// Boktai 1 (8 bars) uses mGBA's own steps (0x16 + GBA_LUX_LEVELS),
+/// leaving out the two that repeated a bar (106 and 161). Boktai 2 (10
+/// bars) showed 2 bars at 33, 3 at 39 and 45, 4 at 56, 5 at 68, 6 at 80,
+/// 7 from 91 (flickering with 6 right there), 8 at 114, 9 at 137 and 10
+/// from 183; 1 lies below 33.
+pub fn sun_luminance(sun: u8, boktai1: bool) -> Option<u8> {
+    const BOKTAI1: [u8; 9] = [22, 27, 33, 40, 49, 64, 84, 131, 205];
+    const LATER: [u8; 11] = [22, 27, 33, 45, 56, 68, 80, 96, 114, 137, 183];
+    if sun == SUN_SENSOR { return None; }
+    let sun = usize::from(sun.min(sun_top(boktai1)));
+    Some(if boktai1 { BOKTAI1[sun] } else { LATER[sun] })
+}
+/// The brightest light a game accepts: from 254, Boktai 2 reads the
+/// cartridge's answer as no sun at all and its gauge drains to 0.
+pub const MAX_LUMINANCE: u8 = 253;
+/// mGBA's own conversion of light sensor lux (cbrt(lux) * 8).
+pub fn lux_luminance(lux: f32) -> u8 {
+    (lux.max(0.0).cbrt() * 8.0).min(f32::from(MAX_LUMINANCE)) as u8
+}
+
 impl EmulationProfile {
     pub fn from_settings(settings: &Settings) -> Self {
         Self { show_fps: settings.show_fps,
@@ -40,7 +79,7 @@ impl EmulationProfile {
             ff_sound_override: None, rewind_override: None,
             rewind_speed_override: None,
             turbo_override: None, rumble_override: None,
-            eject_save_override: None }
+            eject_save_override: None, sun: None }
     }
     /// Materialise the *current* game's per-ROM settings without mutating
     /// Settings.json or any other game's configured defaults.
@@ -120,6 +159,7 @@ impl EmulationProfile {
         if !settings::SPEEDS.contains(&self.ff_speed_override.unwrap_or(2)) {
             self.ff_speed_override=None;
         }
+        if self.sun.is_some_and(|sun| sun > SUN_SENSOR) { self.sun = None; }
         self
     }
     pub fn change(&mut self, key: usize, right: bool) -> bool {
@@ -135,6 +175,22 @@ impl EmulationProfile {
             _ => return false,
         }
         *self != before
+    }
+    /// The game's sun, `top` being its highest manual level.
+    pub fn sun(&self, light_sensor: bool, top: u8) -> u8 {
+        match self.sun {
+            Some(SUN_SENSOR) if !light_sensor => default_sun(false),
+            Some(SUN_SENSOR) => SUN_SENSOR,
+            Some(sun) => sun.min(top),
+            None => default_sun(light_sensor),
+        }
+    }
+    /// 0, 1 … top, then SENSOR when the handheld has a light sensor.
+    pub fn change_sun(&mut self, light_sensor: bool, top: u8, right: bool) {
+        let sun = self.sun(light_sensor, top);
+        let at = if sun == SUN_SENSOR { top + 1 } else { sun };
+        let next = settings::cycle_u8(at, top + light_sensor as u8, right);
+        self.sun = Some(if next > top { SUN_SENSOR } else { next });
     }
     fn legacy_path(root: &Path, uri: &str) -> PathBuf {
         root.join("GameEmulation").join(format!("{}.json", core_selection::key(uri)))
@@ -195,6 +251,32 @@ impl EmulationProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sun_follows_the_handheld_until_chosen() {
+        let mut profile=EmulationProfile::default();
+        assert_eq!(profile.sun(true, 10), SUN_SENSOR);
+        assert_eq!(profile.sun(false, 10), 0, "night, to calibrate in the dark");
+        profile.change_sun(true, 10, true);
+        assert_eq!(profile.sun(true, 10), 0, "after SENSOR comes 0");
+        profile.change_sun(false, 10, false);
+        assert_eq!(profile.sun(false, 10), 10);
+        assert_eq!(profile.sun(false, 8), 8, "Boktai 1 stops at 8 bars");
+        profile.change_sun(true, 8, true);
+        assert_eq!(profile.sun(true, 8), SUN_SENSOR, "SENSOR follows 8 in Boktai 1");
+        profile.sun=Some(SUN_SENSOR);
+        assert_eq!(profile.sun(false, 10), 0, "no light sensor on this handheld");
+        assert_eq!(sun_luminance(SUN_SENSOR, true), None);
+        assert_eq!(sun_luminance(0, true), Some(0x16));
+        assert_eq!(sun_luminance(7, true), Some(0x16 + 109));
+        assert_eq!(sun_luminance(8, true), Some(0x16 + 183));
+        assert_eq!(sun_luminance(10, true), Some(0x16 + 183));
+        assert_eq!(sun_luminance(0, false), Some(22));
+        assert_eq!(sun_luminance(5, false), Some(68));
+        assert_eq!(sun_luminance(10, false), Some(183));
+        assert_eq!(lux_luminance(1000.0), 80);
+        assert_eq!(lux_luminance(1e9), MAX_LUMINANCE);
+        assert_eq!(EmulationProfile { sun: Some(40), ..profile }.sanitize().sun, None);
+    }
     #[test]
     fn old_per_game_gba_grid_becomes_grid_v2_without_changing_gb() {
         let profile=EmulationProfile {

@@ -408,7 +408,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 119] = [
+const MENU_TEXT: [&str; 120] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -528,7 +528,15 @@ const MENU_TEXT: [&str; 119] = [
     "Clock",                             // 116, Its-TroyM PR #2 (Time Format)
     "SYSTEMS",                           // 117
     "Default Core",                      // 118
+    "Sun",                               // 119, Boktai's solar sensor
 ];
+
+/// Pause Emulation's Sun row, drawn with the sun values, not a Settings key.
+const SUN_KEY: usize = 100;
+
+fn light_sensor() -> bool {
+    slot_retro::sensors::available() & slot_retro::sensors::ILLUMINANCE != 0
+}
 
 /// GB/GBC Bezel row value: OFF, SLOT., or a Watomsk overlay's name.
 fn bezel_value(bezel: crate::settings::Bezel) -> usize {
@@ -1035,7 +1043,8 @@ impl Engine {
                                "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN",
                                "RA CLOCK LAB", "RETROARCH", "NATIVE",
                                "SLOT.", "GAME BOY", "POCKET", "COLOR",
-                               "mGBA", "gpSP", "Gambatte"]
+                               "mGBA", "gpSP", "Gambatte", "SENSOR",
+                               "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -1457,6 +1466,10 @@ impl Engine {
                         Err(err) => set_error_message("Save state created, but couldn't copy it to your save state folder.", &err),
                     }
                 }
+            }
+            // Boktai's sun, like L3 / R3, for handhelds without stick clicks.
+            104 | 105 if self.game.as_ref().is_some_and(GameSession::solar) => {
+                self.nudge_sun(code == 105);
             }
             // Also valid for GB-compatible .gbc ROMs (CGB flag bit 7 unset).
             104 | 105 if self.game_settings().gb_palettes
@@ -2627,8 +2640,9 @@ impl Engine {
                             },
                             ShelfOverlay::PauseEmulationSettings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::PauseEmulationSettings {
-                                    row: move_menu_row(row, code, 3),
+                                    row: move_menu_row(row, code, self.pause_emulation_rows().len()),
                                 },
+                                21 | 22 if row == 3 => self.change_game_sun(code == 22),
                                 21 | 22 => self.change_game_emulation(row + 10, code == 22),
                                 97 => self.overlay = ShelfOverlay::PauseSettings { row: 2 },
                                 _ => {}
@@ -2671,6 +2685,13 @@ impl Engine {
                     // local time travel or accelerated single-player frames.
                     if self.game.as_ref().is_some_and(GameSession::linked)
                         && (code == 104 || code == 105) { return; }
+                    // Stick clicks (L3 / R3) set Boktai's sun, as in mGBA.
+                    if code == 106 || code == 107 {
+                        if pressed && self.game.as_ref().is_some_and(GameSession::solar) {
+                            self.nudge_sun(code == 107);
+                        }
+                        return;
+                    }
                     if code == 104 {
                         if !self.live_game_options().rewind { return; }
                         if pressed {
@@ -3280,7 +3301,15 @@ impl Engine {
             let platform = self.shelves[self.active].carts
                 .get(self.shelves[self.active].index)
                 .map_or(Platform::Gba, |cart|cart.platform);
-            let core = core_selection::selected_for(&storage, uri, platform);
+            let mut core = core_selection::selected_for(&storage, uri, platform);
+            if core == Core::Gambatte && crate::game::gambatte_cannot_run(Path::new(local)) {
+                crate::game::log_launch_timing("MBC7 tilt cartridge: mGBA instead of Gambatte");
+                core = Core::Mgba;
+            }
+            if core == Core::Gpsp && crate::game::gpsp_cannot_run(Path::new(local)) {
+                crate::game::log_launch_timing("Sensor cartridge: mGBA instead of gpSP");
+                core = Core::Mgba;
+            }
             let core_file = library.join(format!("lib{}_libretro.so", core.as_str()));
             // First game still wakes RA if the asynchronous SAF scan has not run.
             // Perform this mutable operation BEFORE borrowing rom_stem.
@@ -3539,6 +3568,13 @@ impl Engine {
             Self::screen_keys(self.current_cart_platform()).get(row).copied()
         }
     }
+    fn pause_emulation_rows(&self) -> &'static [usize] {
+        if self.game.as_ref().is_some_and(GameSession::solar) {
+            &[51,52,55,119]
+        } else {
+            &[51,52,55]
+        }
+    }
     fn pause_settings_rows(&self) -> &'static [usize] {
         if self.game.as_ref().is_some_and(GameSession::linked) {
             // Display-only settings cannot alter GBA Link/RFU state.
@@ -3590,6 +3626,8 @@ impl Engine {
     fn selected_emulation_core(&self) -> Core {
         // GB/GBC never invoke gpSP, nor GBA Gambatte, even if a stale core
         // preference exists.
+        // A running game names its own core (MBC7 carts run on mGBA).
+        if let Some(game) = self.game.as_ref() { return game.core_kind(); }
         let platform = self.current_cart_platform();
         let Some(uri) = self.selected_rom_uri() else { return Core::Mgba; };
         PATHS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
@@ -3724,6 +3762,56 @@ impl Engine {
         self.frame_delay.reset();
         AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
+    fn sun_top(&self) -> u8 {
+        self.game.as_ref().map_or(10, |game| game.sun_top())
+    }
+    fn change_game_sun(&mut self, right: bool) {
+        if self.game.as_ref().is_some_and(|game|game.linked() || game.requires_relaunch()) {
+            set_message("Not available during Multiplayer.".into());
+            return;
+        }
+        let Some(uri) = self.selected_rom_uri() else { return; };
+        let core = self.selected_emulation_core();
+        let mut profile = self.game_emulation
+            .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
+        profile.change_sun(light_sensor(), self.sun_top(), right);
+        self.save_game_sun(profile, &uri, core);
+    }
+    /// L3 / R3 in a solar game, as mGBA's own R3 brighten / L3 darken:
+    /// one step within 0..=top, nothing while the light sensor decides.
+    fn nudge_sun(&mut self, brighter: bool) {
+        if self.game.as_ref().is_some_and(|game|game.linked() || game.requires_relaunch()) {
+            return;
+        }
+        let Some(uri) = self.selected_rom_uri() else { return; };
+        let core = self.selected_emulation_core();
+        let mut profile = self.game_emulation
+            .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
+        let sun = profile.sun(light_sensor(), self.sun_top());
+        let time = self.born.elapsed().as_millis() as u64;
+        if sun == crate::emulation::SUN_SENSOR {
+            self.hud.toast(Toast::SunSensor, time);
+            return;
+        }
+        let next = if brighter { (sun + 1).min(self.sun_top()) } else { sun.saturating_sub(1) };
+        // The same banner as State Saved or a shader change.
+        self.hud.toast(Toast::Sun(next), time);
+        if next == sun { return; }
+        profile.sun = Some(next);
+        self.save_game_sun(profile, &uri, core);
+    }
+    fn save_game_sun(&mut self, profile: EmulationProfile, uri: &str, core: Core) {
+        if let Some((root, _)) = PATHS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            if let Err(error) = profile.save(root, uri, core) {
+                set_error_message("Couldn't save this game's settings.", &error);
+                return;
+            }
+        } else { return; }
+        self.game_emulation = Some(profile);
+        if let Some(session) = self.game.as_mut() {
+            session.set_sun(profile.sun(light_sensor(), session.sun_top()));
+        }
+    }
     fn reset_game_emulation(&mut self) {
         if self.game.as_ref().is_some_and(|game|game.linked() || game.requires_relaunch()) {
             set_message("Not available during Multiplayer.".into());
@@ -3738,6 +3826,9 @@ impl Engine {
             }
         } else { return; }
         self.game_emulation = None;
+        if let Some(session) = self.game.as_mut() {
+            session.set_sun(crate::emulation::default_sun(light_sensor()));
+        }
         let globals=self.game_settings();
         let platform=self.current_cart_platform();
         self.gpu.set_screen_effect(self.game_effect());
@@ -4177,9 +4268,13 @@ impl Engine {
     fn draw_setting_values(&self, row: usize, keys: &[usize], out: &mut Vec<Draw>) {
         let top = settings_row_top(keys.len());
         for (index, key) in keys.iter().copied().enumerate() {
-            if key > 31 { continue; } // Action-only rows have no value.
+            if key > 31 && key != SUN_KEY { continue; } // Action-only rows have no value.
             let (tex, width, height) =
-                if key == 16 && matches!(self.settings.wallpaper,
+                if key == SUN_KEY {
+                    let sun = self.current_emulation().sun(light_sensor(), self.sun_top());
+                    self.setting_values[if sun == crate::emulation::SUN_SENSOR { 53 }
+                        else { 54 + sun as usize }]
+                } else if key == 16 && matches!(self.settings.wallpaper,
                     crate::settings::WallpaperPick::File(_)) {
                     self.wallpaper_name_face.unwrap_or(self.setting_values[26])
                 } else if let Some(face) = (key == 3).then(|| self.palette_value()).flatten() {
@@ -4389,7 +4484,7 @@ impl Engine {
                 self.draw_setting_values(row, &[10, 11, 12], out);
             }
             ShelfOverlay::PauseEmulationSettings { row } => {
-                self.draw_original_style_menu(50, &[51, 52, 55], row, out);
+                self.draw_original_style_menu(50, self.pause_emulation_rows(), row, out);
                 // Identify the selected core without changing Slot's menu
                 // layout or existing keycap typography.
                 let (tex, w, h) = self.emulation_core_labels[self.selected_emulation_core().index()];
@@ -4404,10 +4499,13 @@ impl Engine {
                     w: w as f32 * scale, h: h as f32 * scale,
                     tex, alpha: 0.68 * fade,
                 });
-                // The pause menu has three visible rows, not four.
-                // The extra action sentinel displaced ALL value glyphs by
-                // half a row and desynchronised them from their carets.
-                self.draw_setting_values(row, &[10, 11, 12], out);
+                // One value per visible row: an extra action sentinel
+                // displaced ALL value glyphs by half a row and
+                // desynchronised them from their carets.
+                let keys: &[usize] = if self.pause_emulation_rows().len() == 4 {
+                    &[10, 11, 12, SUN_KEY]
+                } else { &[10, 11, 12] };
+                self.draw_setting_values(row, keys, out);
             }
             ShelfOverlay::ScreenSettings { row } => {
                 self.draw_original_style_menu(117, &[91,92,93], row, out);
@@ -4863,7 +4961,8 @@ impl Engine {
             ShelfOverlay::About { row } => (17u8, row, 2usize),
             ShelfOverlay::InterfaceSettings { row } => (10u8, row, INTERFACE_ROWS.len()),
             ShelfOverlay::EmulationSettings { row } => (8u8, row, 3usize),
-            ShelfOverlay::PauseEmulationSettings { row } => (9u8, row, 3usize),
+            ShelfOverlay::PauseEmulationSettings { row } =>
+                (9u8, row, self.pause_emulation_rows().len()),
             ShelfOverlay::ScreenSettings { row } => (5u8, row, 3usize),
             ShelfOverlay::ScreenSystemSettings { platform,row } =>
                 (16u8,row,Self::system_rows(platform).len()),
@@ -4964,6 +5063,9 @@ impl Engine {
                         else { session.sample_rate }, Ordering::Release);
                     self.ra_resampler.reset();
                     self.ra_sync_steps.reset();
+                    let mut session = session;
+                    let top = session.sun_top();
+                    session.set_sun(self.current_emulation().sun(light_sensor(), top));
                     self.game = Some(session);
                     // Focus and Recents were persisted during core
                     // preparation; avoid synchronous IO/rebuilding the

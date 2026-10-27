@@ -99,6 +99,42 @@ pub(crate) fn core_sample_rate(reported: i32) -> i32 {
     reported.clamp(8_000, 192_000)
 }
 
+/// Gambatte refuses MBC7 cartridges (Kirby Tilt 'n' Tumble, Command
+/// Master): their tilt sensor only runs on mGBA.
+pub fn gambatte_cannot_run(rom: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(rom) else { return false; };
+    if file.seek(SeekFrom::Start(0x147)).is_err() { return false; }
+    let mut cart = [0u8; 1];
+    file.read_exact(&mut cart).is_ok() && cart[0] == 0x22
+}
+
+/// gpSP emulates no cartridge sensor: Boktai's solar sensor, the tilt
+/// of Yoshi Topsy-Turvy and Koro Koro Puzzle, WarioWare: Twisted!'s gyro.
+/// These games only run on mGBA.
+pub fn gpsp_cannot_run(rom: &Path) -> bool {
+    const SENSOR_GAMES: [&[u8; 3]; 6] = [b"U3I", b"U32", b"U33", b"KYG", b"KHP", b"RZW"];
+    let Ok(mut file) = std::fs::File::open(rom) else { return false; };
+    if file.seek(SeekFrom::Start(0xAC)).is_err() { return false; }
+    let mut code = [0u8; 3];
+    file.read_exact(&mut code).is_ok() && SENSOR_GAMES.contains(&&code)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Solar { Boktai1, Later }
+
+/// Boktai 1, 2 and 3: cartridges with a solar sensor, which only mGBA
+/// emulates.
+fn solar_cart(rom: &Path, which: Core, platform: Platform) -> Option<Solar> {
+    if which != Core::Mgba || platform != Platform::Gba { return None; }
+    let mut file = std::fs::File::open(rom).ok()?;
+    file.seek(SeekFrom::Start(0xAC)).ok()?;
+    let mut code = [0u8; 4];
+    file.read_exact(&mut code).ok()?;
+    if code.starts_with(b"U3I") { Some(Solar::Boktai1) }
+    else if code.starts_with(b"U32") || code.starts_with(b"U33") { Some(Solar::Later) }
+    else { None }
+}
+
 fn sma4_runahead_guard(rom: &Path, platform: Platform) -> bool {
     if platform != Platform::Gba { return false; }
     let Ok(mut file) = std::fs::File::open(rom) else { return false; };
@@ -217,6 +253,9 @@ pub struct GameSession {
     // Keep mGBA speculative frames away from Pokémon Gen III FLASH1M.
     mgba_flash_runahead_guard: bool,
     sma4_runahead_guard: bool,
+    solar: Option<Solar>,
+    // The light handed to a solar cart; None while the light sensor decides.
+    sun_luminance: Option<u8>,
     palette_live: bool,
     core_kind: Core,
     pending_undo: Option<(Instant, PendingUndo)>,
@@ -437,7 +476,13 @@ impl GameSession {
         // has already staged only allowed BIOS files into this private folder.
         let bios = storage.join("BIOS");
         std::fs::create_dir_all(&bios).map_err(|e| e.to_string())?;
-        let mut core = LibretroCore::open_with(core_file, &bios, &core_root)
+        // Gambatte decides on the boot ROM in retro_init, before the
+        // options below are set.
+        let init_options = match which {
+            Core::Gambatte => vec![("gambatte_gb_bootloader".to_string(), "enabled".to_string())],
+            _ => Vec::new(),
+        };
+        let mut core = LibretroCore::open_with_options(core_file, &bios, &core_root, &init_options)
             .map_err(|e| e.to_string())?;
         // Exact upstream Slot libretro options for colour and Game Boy palettes.
         // Read only the 336-byte header: never read the entire cached ROM.
@@ -448,6 +493,9 @@ impl GameSession {
                 Ok(header[0x143] & 0x80 == 0)
             }).unwrap_or(false);
         let palette_live = dmg_only && gb_palette.is_some();
+        let solar = solar_cart(rom, which, platform);
+        slot_retro::sensors::set_light_wanted(false);
+        slot_retro::sensors::set_tilt_inverted(platform != Platform::Gba);
         match which {
             Core::Mgba => {
                 if let Some(role) = linked_boot {
@@ -498,6 +546,9 @@ impl GameSession {
                 core.set_option("gambatte_gb_hwmode", "Auto");
                 core.set_option("gambatte_gb_bootloader", "enabled");
                 core.set_option("gambatte_up_down_allowed", "disabled");
+                // RetroArch's default. Without a value Gambatte reads 0
+                // and rumble carts (Pokémon Pinball) never vibrate.
+                core.set_option("gambatte_rumble_level", "10");
                 match gb_palette.and_then(crate::gb_core_switch::gambatte_palette) {
                     Some(name) => {
                         core.set_option("gambatte_gb_colorization", "internal");
@@ -716,7 +767,7 @@ impl GameSession {
                 }
             }
         } else { None };
-        Ok(Self {
+        let mut session = Self {
             core, link: None, game_link: None, link_touched: false, linked_boot, gpsp_serial,
             rom_path: rom.to_path_buf(), rom_stem: rom_stem.to_owned(),
             save, rtc, manual_export_prefix, state, retroarch_export, ring,
@@ -733,10 +784,15 @@ impl GameSession {
             last_step_timings: FrameStepTimings::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
+            solar, sun_luminance: None,
             pending_undo: None, last_sram: Instant::now(), battery_writer,
             sample_rate: core_sample_rate(sample_rate),
             fps,
-        })
+        };
+        // The handheld's default sun until the runtime applies this game's own.
+        let light = slot_retro::sensors::available() & slot_retro::sensors::ILLUMINANCE != 0;
+        session.set_sun(crate::emulation::default_sun(light));
+        Ok(session)
     }
 
     /// False while cable lockstep is awaiting the other player. The caller
@@ -752,6 +808,7 @@ impl GameSession {
         }
         if self.game_link.as_ref().is_some_and(|link| !link.may_run()) { return false; }
         self.runahead_video.clear();
+        self.follow_light_sensor();
         if self.link.is_none() && !self.preempt_before_frame(buttons, turbo) { return false; }
         let pressed = ButtonMask(buttons);
         let mapped = xy_buttons(pressed, turbo, self.frame_count);
@@ -1224,6 +1281,11 @@ impl GameSession {
                     log_launch_timing(&format!(
                         "Run-Ahead second instance ready in {}ms", started.elapsed().as_millis()));
                     self.runahead_secondary = Some(copy);
+                    if self.solar.is_some() {
+                        let luminance = self.sun_luminance.unwrap_or_else(||
+                            crate::emulation::lux_luminance(slot_retro::sensors::illuminance()));
+                        if let Some(copy) = self.runahead_secondary.as_mut() { copy.set_sun(luminance); }
+                    }
                 }
                 Err(error) => {
                     self.runahead_secondary_unavailable = true;
@@ -1416,6 +1478,35 @@ impl GameSession {
                 if enabled { "GBC only" } else { "disabled" }),
         };
         self.set_core_option(key, value);
+    }
+
+    pub fn solar(&self) -> bool { self.solar.is_some() }
+
+    /// The highest manual sun of this solar game, one per gauge bar.
+    pub fn sun_top(&self) -> u8 {
+        crate::emulation::sun_top(self.solar == Some(Solar::Boktai1))
+    }
+
+    /// Boktai's sun, live: mGBA reads it the next time the game samples
+    /// its solar sensor. SENSOR follows the light sensor every frame.
+    pub fn set_sun(&mut self, sun: u8) {
+        let Some(solar) = self.solar else { return };
+        let luminance = crate::emulation::sun_luminance(sun, solar == Solar::Boktai1);
+        slot_retro::sensors::set_light_wanted(luminance.is_none());
+        self.sun_luminance = luminance;
+        self.give_sun(luminance.unwrap_or_else(||
+            crate::emulation::lux_luminance(slot_retro::sensors::illuminance())));
+    }
+
+    fn give_sun(&mut self, luminance: u8) {
+        self.core.set_sun(luminance);
+        if let Some(copy) = self.runahead_secondary.as_mut() { copy.set_sun(luminance); }
+    }
+
+    fn follow_light_sensor(&mut self) {
+        if self.solar.is_some() && self.sun_luminance.is_none() {
+            self.give_sun(crate::emulation::lux_luminance(slot_retro::sensors::illuminance()));
+        }
     }
 
     pub fn rumble_strength(&self) -> u16 {

@@ -95,7 +95,7 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: Validate core patch scripts
-        run: python3 -m py_compile scripts/patch-mgba-speculative-audio.py scripts/patch-gpsp-speculative-audio.py scripts/patch-mgba-active-sram.py scripts/patch-gpsp-backend-diagnostic.py
+        run: python3 -m py_compile scripts/patch-mgba-speculative-audio.py scripts/patch-gpsp-speculative-audio.py scripts/patch-mgba-active-sram.py scripts/patch-mgba-sun.py scripts/patch-gpsp-backend-diagnostic.py
       - name: Build mGBA arm64 libretro core
         run: |
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
@@ -237,6 +237,7 @@ jobs:
                   "gb-dmg-palette-follows-option.patch",
                   "543a19758-mbc2-sram-bank.patch"} <= set(mgba["patches"])
           assert "patch-mgba-active-sram.py" in mgba["patches"]
+          assert "patch-mgba-sun.py" in mgba["patches"]
           assert "aw-session-reset.patch" in gpsp["patches"]
           assert "patch-gpsp-backend-diagnostic.py" in gpsp["patches"]
           assert gpsp["native_aw_harness"] == "asan-passed"

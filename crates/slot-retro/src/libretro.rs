@@ -11,6 +11,7 @@ use crate::core::{AvInfo, ButtonMask, CoreError, RetroCore, GBA_H, GBA_W};
 use crate::ffi::*;
 use crate::link::Link;
 use crate::rumble::Rumble;
+use crate::sensors;
 
 const VIDEO_BYTES: usize = (GBA_W * GBA_H * 4) as usize;
 
@@ -37,6 +38,7 @@ struct Host {
     rumble: Rumble,
     asked_for_rumble: bool,
     suppress_speculative_rumble: bool,
+    sensors: sensors::Enabled,
     netpacket: Option<NetpacketCallback>,
     net: Link,
     net_peer: Option<u16>,
@@ -82,6 +84,15 @@ unsafe extern "C" fn set_rumble_state(port: c_uint, effect: c_uint, strength: u1
         if h.suppress_speculative_rumble { true }
         else { h.rumble.set(port, effect, strength) }
     }).unwrap_or(false)
+}
+
+unsafe extern "C" fn set_sensor_state(port: c_uint, action: c_uint, _rate: c_uint) -> bool {
+    port == 0 && with_host(|h| h.sensors.action(action)).unwrap_or(false)
+}
+
+unsafe extern "C" fn get_sensor_input(port: c_uint, id: c_uint) -> f32 {
+    if port != 0 { return 0.0; }
+    with_host(|h| h.sensors.input(id)).unwrap_or(0.0)
 }
 
 unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
@@ -208,6 +219,13 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
                 (*(data as *mut RumbleInterface)).set_rumble_state = set_rumble_state;
             })
             .is_some()
+        }
+        GET_SENSOR_INTERFACE => {
+            if data.is_null() {
+                return false;
+            }
+            *(data as *mut SensorInterface) = SensorInterface { set_sensor_state, get_sensor_input };
+            true
         }
         GET_LOG_INTERFACE => {
             if data.is_null() {
@@ -445,6 +463,8 @@ type AudioSidecarSizeFn = unsafe extern "C" fn() -> usize;
 // possibly stale libretro RETRO_MEMORY_SAVE_RAM mirror after unserialize.
 type ActiveBatteryFn = unsafe extern "C" fn(*mut c_void, usize, *mut usize) -> bool;
 type GpspBackendFn = unsafe extern "C" fn() -> c_int;
+// KPA mGBA: the solar sensor's light, 0..=255 (scripts/patch-mgba-sun.py).
+type SetSunFn = unsafe extern "C" fn(c_int);
 struct AudioSidecar {
     transfer: AudioSidecarFn,
     snapshot: Vec<u8>,
@@ -462,6 +482,7 @@ pub struct LibretroCore {
     mgba_audio_exports: Option<(AudioSidecarSizeFn, AudioSidecarFn)>,
     mgba_audio: Option<AudioSidecar>,
     mgba_active_battery: Option<ActiveBatteryFn>,
+    mgba_set_sun: Option<SetSunFn>,
     // mGBA's retro_serialize_size() serializes the whole core internally;
     // skip this duplicate work on stable-sized speculative snapshots.
     mgba_runahead_size_age: u16,
@@ -486,10 +507,18 @@ impl LibretroCore {
     }
 
     pub fn open_with(dylib: &Path, system_dir: &Path, save_dir: &Path) -> Result<Self, CoreError> {
+        Self::open_with_options(dylib, system_dir, save_dir, &[])
+    }
+
+    /// Open with options the core can already read in retro_init, as
+    /// RetroArch's are: Gambatte reads gambatte_gb_bootloader only there.
+    pub fn open_with_options(dylib: &Path, system_dir: &Path, save_dir: &Path,
+        options: &[(String, String)]) -> Result<Self, CoreError>
+    {
         if LIVE.swap(true, Ordering::SeqCst) {
             return Err(CoreError::Unsupported("a core is already open".into()));
         }
-        Self::open_inner(dylib, system_dir, save_dir)
+        Self::open_inner(dylib, system_dir, save_dir, options)
             .inspect_err(|_| LIVE.store(false, Ordering::SeqCst))
     }
 
@@ -497,13 +526,13 @@ impl LibretroCore {
     /// copy of the primary core file: the dynamic linker would otherwise
     /// hand back the primary's library and both would share core globals.
     /// Callers verify that with [`LibretroCore::instance_id`].
-    pub fn open_secondary(dylib: &Path, system_dir: &Path, save_dir: &Path)
-        -> Result<Self, CoreError>
+    pub fn open_secondary(dylib: &Path, system_dir: &Path, save_dir: &Path,
+        options: &[(String, String)]) -> Result<Self, CoreError>
     {
         if SECONDARY_LIVE.swap(true, Ordering::SeqCst) {
             return Err(CoreError::Unsupported("a secondary core is already open".into()));
         }
-        Self::open_inner(dylib, system_dir, save_dir)
+        Self::open_inner(dylib, system_dir, save_dir, options)
             .map(|mut core| { core.secondary = true; core })
             .inspect_err(|_| SECONDARY_LIVE.store(false, Ordering::SeqCst))
     }
@@ -582,7 +611,9 @@ impl LibretroCore {
             .map(|s| s.to_string())
     }
 
-    fn open_inner(dylib: &Path, system_dir: &Path, save_dir: &Path) -> Result<Self, CoreError> {
+    fn open_inner(dylib: &Path, system_dir: &Path, save_dir: &Path,
+        options: &[(String, String)]) -> Result<Self, CoreError>
+    {
         let lib = unsafe { Library::new(dylib) }.map_err(|e| CoreError::Load(e.to_string()))?;
         let api = unsafe { Api::load(&lib) }?;
         let name = dylib.file_name().and_then(|name| name.to_str());
@@ -601,6 +632,9 @@ impl LibretroCore {
         let mgba_active_battery = if is_mgba {
             unsafe { lib.get::<ActiveBatteryFn>(b"slot_mgba_clone_active_save_ram\0") }
                 .ok().map(|v| *v)
+        } else { None };
+        let mgba_set_sun = if is_mgba {
+            unsafe { lib.get::<SetSunFn>(b"slot_mgba_set_sun\0") }.ok().map(|v| *v)
         } else { None };
         let gpsp_backend = if is_gpsp {
             unsafe { lib.get::<GpspBackendFn>(b"slot_gpsp_backend_is_interpreter\0") }
@@ -644,11 +678,14 @@ impl LibretroCore {
             rumble: Rumble::default(),
             asked_for_rumble: false,
             suppress_speculative_rumble: false,
+            sensors: sensors::Enabled::default(),
             netpacket: None,
             net: Link::default(),
             net_peer: None,
             audio_status: None,
-            options: std::collections::HashMap::new(),
+            options: options.iter()
+                .filter_map(|(k, v)| Some((k.clone(), CString::new(v.as_str()).ok()?)))
+                .collect(),
             options_dirty: false,
             declared: std::collections::HashMap::new(),
         });
@@ -673,6 +710,7 @@ impl LibretroCore {
             mgba_audio_exports,
             mgba_audio: None,
             mgba_active_battery,
+            mgba_set_sun,
             mgba_runahead_size_age: 0,
             host,
             rom: Vec::new(),
@@ -699,6 +737,7 @@ impl LibretroCore {
         // be reused when another ROM allocates a different audio queue.
         self.mgba_audio = None;
         self.mgba_runahead_size_age = 0;
+        self.host.sensors.release();
         // Release the borrowed descriptor pointers only after libretro
         // returns and Active drops its exclusive Host borrow.
         self.host.memory.clear();
@@ -919,6 +958,12 @@ impl RetroCore for LibretroCore {
         self.host.suppress_speculative_rumble = false;
     }
 
+    fn set_sun(&mut self, luminance: u8) {
+        if let Some(set_sun) = self.mgba_set_sun {
+            unsafe { set_sun(c_int::from(luminance)) };
+        }
+    }
+
     fn set_frame_skip(&mut self, skip: bool) {
         let _a = Active::bind(&mut self.host);
         unsafe { report_audio_status(skip) };
@@ -998,6 +1043,9 @@ impl RetroCore for LibretroCore {
     }
 
     fn unserialize(&mut self, data: &[u8]) -> Result<(), CoreError> {
+        if data.is_empty() {
+            return Err(CoreError::State("empty state".into()));
+        }
         let ok = {
             let _a = Active::bind(&mut self.host);
             unsafe { (self.api.unserialize)(data.as_ptr() as *const c_void, data.len()) }
@@ -1184,6 +1232,7 @@ mod tests {
             rumble: Rumble::default(),
             asked_for_rumble: false,
             suppress_speculative_rumble: false,
+            sensors: sensors::Enabled::default(),
             netpacket: None,
             net: Link::default(),
             net_peer: None,

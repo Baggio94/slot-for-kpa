@@ -111,6 +111,9 @@ impl RetroCore for Tracked {
     fn set_option(&mut self, key: &str, value: &str) {
         self.core.set_option(key, value);
     }
+    fn set_sun(&mut self, luminance: u8) {
+        self.core.set_sun(luminance);
+    }
     fn set_frame_skip(&mut self, skip: bool) {
         self.core.set_frame_skip(skip);
     }
