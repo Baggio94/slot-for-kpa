@@ -426,20 +426,51 @@ class MainActivity : Activity() {
     /** The LAN need not have Internet: the two handhelds only need the same Wi-Fi.
      *  Resolve the actual interface's IPv4 address, never use the default
      *  network's mobile/VPN address or a hardcoded 10.42.0.1 Linux radio. */
+    /**
+     * Only advertise the IPv4 that really belongs to a live Wi-Fi interface.
+     * Android may report a VPN (with Wi-Fi as an underlying transport) or
+     * stale LinkProperties among allNetworks. Passing its address to native
+     * IP_ADD_MEMBERSHIP fails with ENODEV on some handhelds, before Host/Join.
+     */
     private fun linkWifiAddress(): String? {
         val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return null
         for (network in cm.allNetworks) {
             val capabilities = cm.getNetworkCapabilities(network) ?: continue
-            if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+            if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
             val links = cm.getLinkProperties(network) ?: continue
+            val interfaceName = links.interfaceName ?: continue
+            val iface = try {
+                java.net.NetworkInterface.getByName(interfaceName)
+            } catch (error: java.net.SocketException) {
+                Log.w(TAG, "Link Wi-Fi could not inspect interface $interfaceName", error)
+                null
+            } ?: continue
+            val currentAddresses = try {
+                if (!iface.isUp) continue
+                val values = mutableSetOf<String>()
+                val addresses = iface.inetAddresses
+                while (addresses.hasMoreElements()) {
+                    val address = addresses.nextElement()
+                    if (address is Inet4Address) values.add(address.hostAddress)
+                }
+                values
+            } catch (error: java.net.SocketException) {
+                Log.w(TAG, "Link Wi-Fi interface $interfaceName unavailable", error)
+                continue
+            }
             for (address in links.linkAddresses) {
                 val ip = address.address
                 if (ip is Inet4Address && !ip.isLoopbackAddress &&
-                    !ip.isLinkLocalAddress && !ip.isMulticastAddress && !ip.isAnyLocalAddress) {
+                    !ip.isLinkLocalAddress && !ip.isMulticastAddress &&
+                    !ip.isAnyLocalAddress && currentAddresses.contains(ip.hostAddress)) {
+                    Log.i(TAG, "Link Wi-Fi selected: interface=$interfaceName ipv4=${ip.hostAddress}")
                     return ip.hostAddress
                 }
             }
+            Log.w(TAG, "Link Wi-Fi skipped stale address on interface=$interfaceName")
         }
+        Log.w(TAG, "Link Wi-Fi could not find a live interface with a matching IPv4 address")
         return null
     }
 

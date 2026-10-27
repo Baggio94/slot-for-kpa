@@ -69,6 +69,19 @@ fn set<T>(fd: libc::c_int, level: libc::c_int, name: libc::c_int, value: &T) -> 
     })
 }
 
+/// Preserve the errno category while recording exactly which mDNS operation
+/// failed. A vanished Wi-Fi interface is a local network error, not a lost peer.
+fn multicast_step<T>(step: &str, local: Ipv4Addr, result: io::Result<T>) -> io::Result<T> {
+    result.map_err(|error| {
+        let kind = if error.raw_os_error() == Some(libc::ENODEV) {
+            io::ErrorKind::AddrNotAvailable
+        } else {
+            error.kind()
+        };
+        io::Error::new(kind, format!("mDNS {step} on Wi-Fi IPv4 {local}: {error}"))
+    })
+}
+
 impl Multicast {
     /// Every socket option here is one mDNS asks of a responder that shares its port: address
     /// and port reuse so Avahi and this can both listen, membership on the one interface the
@@ -90,13 +103,13 @@ impl Multicast {
             #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
             sin_len: std::mem::size_of::<libc::sockaddr_in>() as u8,
         };
-        check(unsafe {
+        multicast_step("bind UDP 5353", local, check(unsafe {
             libc::bind(
                 fd,
                 &bind as *const libc::sockaddr_in as *const libc::sockaddr,
                 std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
             )
-        })?;
+        }))?;
         let member = libc::ip_mreq {
             imr_multiaddr: libc::in_addr {
                 s_addr: u32::from(GROUP).to_be(),
@@ -105,11 +118,13 @@ impl Multicast {
                 s_addr: u32::from(local).to_be(),
             },
         };
-        set(fd, libc::IPPROTO_IP, libc::IP_ADD_MEMBERSHIP, &member)?;
+        multicast_step("IP_ADD_MEMBERSHIP", local,
+            set(fd, libc::IPPROTO_IP, libc::IP_ADD_MEMBERSHIP, &member))?;
         let out = libc::in_addr {
             s_addr: u32::from(local).to_be(),
         };
-        set(fd, libc::IPPROTO_IP, libc::IP_MULTICAST_IF, &out)?;
+        multicast_step("IP_MULTICAST_IF", local,
+            set(fd, libc::IPPROTO_IP, libc::IP_MULTICAST_IF, &out))?;
         let hops: libc::c_int = 255;
         set(fd, libc::IPPROTO_IP, libc::IP_MULTICAST_TTL, &hops)?;
         Ok(Multicast { sock })
@@ -288,6 +303,27 @@ pub fn instance_name() -> String {
         .map_or(0, |d| d.subsec_nanos());
     let mix = nanos ^ std::process::id().rotate_left(16);
     format!("slot-{:04x}", (mix ^ (mix >> 16)) & 0xffff)
+}
+
+#[cfg(test)]
+mod multicast_interface_tests {
+    use super::*;
+
+    #[test]
+    fn missing_wifi_interface_is_local_network_failure() {
+        let error = multicast_step("IP_ADD_MEMBERSHIP", Ipv4Addr::new(192, 168, 1, 2),
+            Err::<(), _>(io::Error::from_raw_os_error(libc::ENODEV))).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AddrNotAvailable);
+        assert!(error.to_string().contains("IP_ADD_MEMBERSHIP"));
+        assert!(error.to_string().contains("No such device"));
+    }
+
+    #[test]
+    fn other_multicast_errors_preserve_kind() {
+        let error = multicast_step("IP_MULTICAST_IF", Ipv4Addr::new(192, 168, 1, 3),
+            Err::<(), _>(io::Error::from_raw_os_error(libc::EACCES))).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
 }
 
 #[cfg(test)]

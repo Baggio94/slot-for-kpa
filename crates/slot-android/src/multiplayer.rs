@@ -180,12 +180,16 @@ impl LinkConfig {
         let game: [u8; 4] = code.as_bytes().try_into()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid game code"))?;
         let bios_sha256 = if self.bios_file.is_file() {
-            sha256_file(&self.bios_file, 1024 * 1024)?
+            sha256_file(&self.bios_file, 1024 * 1024).map_err(|error| {
+                io::Error::new(error.kind(), format!("read selected GBA BIOS fingerprint: {error}"))
+            })?
         } else { [0u8; 32] };
         // Refuse a missing/empty/unreasonably sized native core. Its ELF
         // digest is deliberately NOT compared across CPU architectures.
         // The pinned source + Slot patches supply a portable identity.
-        let metadata = std::fs::metadata(&self.core_file)?;
+        let metadata = std::fs::metadata(&self.core_file).map_err(|error| {
+            io::Error::new(error.kind(), format!("inspect native Link core file: {error}"))
+        })?;
         if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 64 * 1024 * 1024 {
             return Err(io::Error::new(io::ErrorKind::InvalidData,
                 "Invalid Multiplayer native core file"));
@@ -199,7 +203,9 @@ impl LinkConfig {
             mode: match self.mode {
                 LinkKind::Cable => 1, LinkKind::Wireless => 2,
             },
-            rom_sha256: sha256_file(&self.rom, 128 * 1024 * 1024)?,
+            rom_sha256: sha256_file(&self.rom, 128 * 1024 * 1024).map_err(|error| {
+                io::Error::new(error.kind(), format!("read active ROM fingerprint: {error}"))
+            })?,
             core_sha256: portable_core_recipe(self.backend),
             bios_sha256,
         })
@@ -214,7 +220,19 @@ fn connect(role: Role, local: Ipv4Addr, config: &LinkConfig,
         return Err(io::Error::new(io::ErrorKind::AddrNotAvailable,
             "no usable Wi-Fi IPv4 address"));
     }
-    let fingerprint = config.fingerprint()?;
+    // Fingerprinting ROM/core/BIOS happens before either multicast socket is
+    // opened. Preserve that stage in the error: ENODEV can also come from an
+    // Android file provider, and must not be misdiagnosed as broken Wi-Fi.
+    #[cfg(target_os = "android")]
+    crate::game::log_launch_timing(&format!(
+        "KMLB4 fingerprint start: bios_present={} backend={:?} mode={:?}",
+        config.bios_file.is_file(), config.backend, config.mode));
+    let fingerprint = config.fingerprint().map_err(|error| {
+        io::Error::new(error.kind(),
+            format!("prepare Link ROM/core/BIOS fingerprint: {error}"))
+    })?;
+    #[cfg(target_os = "android")]
+    crate::game::log_launch_timing("KMLB4 fingerprint OK; opening LAN transport");
     let mut link = match role {
         Role::Host => {
             // Validate multicast and join the correct interface before announcing.
