@@ -246,6 +246,20 @@ class MainActivity : Activity() {
     }
     private val vibrator by lazy { getSystemService(VIBRATOR_SERVICE) as? Vibrator }
     private var lastRumbleAt = 0L
+    // Retroid A vs round/BACK: isolate Android event delivery from the first
+    // GL callback, without adding per-key logging on the input/UI thread.
+    private data class RetroidPressTiming(
+        val button: String, val androidDispatchMs: Long, val deliveredNs: Long
+    )
+    private val retroidPressTiming =
+        java.util.concurrent.atomic.AtomicReference<RetroidPressTiming?>(null)
+    private fun markRetroidPress(button: String, event: KeyEvent) {
+        retroidPressTiming.set(RetroidPressTiming(
+            button,
+            (SystemClock.uptimeMillis() - event.eventTime).coerceAtLeast(0L),
+            SystemClock.elapsedRealtimeNanos()
+        ))
+    }
     // Tilt, gyro and solar cartridges: the core switches sensors on and
     // Android listens only while it wants them, like RetroArch.
     private val sensorManager by lazy { getSystemService(SENSOR_SERVICE) as? SensorManager }
@@ -881,6 +895,8 @@ class MainActivity : Activity() {
             }
             override fun onDrawFrame(gl: GL10?) {
                 val a12StartedNs = SystemClock.elapsedRealtimeNanos()
+                // A new press arriving while GL draws is sampled next frame.
+                val retroidInput = retroidPressTiming.getAndSet(null)
                 // Beta8 observer: age of last Choreographer timestamp
                 // when GL starts, not a measured display-present time.
                 val vsyncStamp = latestVsyncFrameNs
@@ -917,6 +933,15 @@ class MainActivity : Activity() {
                 } else {
                     GLES20.glClearColor(0f, 0f, 0f, 1f)
                     GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                }
+                if (retroidInput != null && ready) {
+                    val toGlUs = (a12StartedNs - retroidInput.deliveredNs) / 1000L
+                    if (toGlUs >= 0) {
+                        Log.i(TAG, "Retroid input timing: button=${retroidInput.button} " +
+                            "android_dispatch_ms=${retroidInput.androidDispatchMs} " +
+                            "key_to_gl_start_us=$toGlUs native_draw_us=$a12NativeUs " +
+                            "note=GL_callback_not_screen_present")
+                    }
                 }
                 // RetroArch's GPU Hard Sync in the swap-paced loop: queue only
                 // a finished picture, so the compositor never waits on our GPU.
@@ -1171,8 +1196,11 @@ class MainActivity : Activity() {
             if (event.repeatCount == 0) {
                 EmulationDiagnostics.input(keyCode, true, event, KeyEvent.KEYCODE_BUTTON_MODE)
                 warmedCandidate.set(null)
-                wakeCarouselRender()
+                markRetroidPress("ROUND", event)
+                // Stage the key before waking a dozing shelf. Otherwise a
+                // requested frame can start before the MODE event is queued.
                 nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, true)
+                wakeCarouselRender()
             }
             return true
         }
@@ -1198,8 +1226,13 @@ class MainActivity : Activity() {
         if (event.repeatCount == 0) {
             EmulationDiagnostics.input(keyCode, true, event, keyCode)
             warmedCandidate.set(null)
-            wakeCarouselRender()
+            // Baseline ordinary A against Retroid round/BACK.
+            if (keyCode == KeyEvent.KEYCODE_BUTTON_A &&
+                event.device?.name?.contains("Retroid", ignoreCase = true) == true) {
+                markRetroidPress("A", event)
+            }
             nativeKey(keyCode, true)
+            wakeCarouselRender()
         }
         return true
     }
@@ -1275,8 +1308,9 @@ class MainActivity : Activity() {
         if (isRetroidSlotKey(keyCode, event)) {
             EmulationDiagnostics.input(keyCode, false, event, KeyEvent.KEYCODE_BUTTON_MODE)
             warmedCandidate.set(null)
-            wakeCarouselRender()
+            // A short MODE release opens the pause menu: queue it before wake.
             nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, false)
+            wakeCarouselRender()
             return true
         }
         if (keyCode == KeyEvent.KEYCODE_BACK) return true
