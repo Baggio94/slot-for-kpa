@@ -1467,6 +1467,10 @@ impl Engine {
                     }
                 }
             }
+            // Boktai's sun, like L3 / R3, for handhelds without stick clicks.
+            104 | 105 if self.game.as_ref().is_some_and(GameSession::solar) => {
+                self.nudge_sun(code == 105);
+            }
             // Also valid for GB-compatible .gbc ROMs (CGB flag bit 7 unset).
             104 | 105 if self.game_settings().gb_palettes
                 && self.game.as_ref().is_some_and(|g| g.can_change_gb_palette()) => {
@@ -3300,6 +3304,10 @@ impl Engine {
             let mut core = core_selection::selected_for(&storage, uri, platform);
             if core == Core::Gambatte && crate::game::gambatte_cannot_run(Path::new(local)) {
                 crate::game::log_launch_timing("MBC7 tilt cartridge: mGBA instead of Gambatte");
+                core = Core::Mgba;
+            }
+            if core == Core::Gpsp && crate::game::gpsp_cannot_run(Path::new(local)) {
+                crate::game::log_launch_timing("Sensor cartridge: mGBA instead of gpSP");
                 core = Core::Mgba;
             }
             let core_file = library.join(format!("lib{}_libretro.so", core.as_str()));

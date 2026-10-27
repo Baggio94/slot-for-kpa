@@ -108,6 +108,17 @@ pub fn gambatte_cannot_run(rom: &Path) -> bool {
     file.read_exact(&mut cart).is_ok() && cart[0] == 0x22
 }
 
+/// gpSP emulates no cartridge sensor: Boktai's solar sensor, the tilt
+/// of Yoshi Topsy-Turvy and Koro Koro Puzzle, WarioWare: Twisted!'s gyro.
+/// These games only run on mGBA.
+pub fn gpsp_cannot_run(rom: &Path) -> bool {
+    const SENSOR_GAMES: [&[u8; 3]; 6] = [b"U3I", b"U32", b"U33", b"KYG", b"KHP", b"RZW"];
+    let Ok(mut file) = std::fs::File::open(rom) else { return false; };
+    if file.seek(SeekFrom::Start(0xAC)).is_err() { return false; }
+    let mut code = [0u8; 3];
+    file.read_exact(&mut code).is_ok() && SENSOR_GAMES.contains(&&code)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Solar { Boktai1, Later }
 
