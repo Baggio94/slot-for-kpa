@@ -46,16 +46,17 @@ pub fn sun_top(boktai1: bool) -> u8 {
     if boktai1 { 8 } else { 10 }
 }
 /// The light a solar cartridge reads for a manual sun, None for SENSOR.
-/// Boktai 1 (8 bars, calibrated at 0) uses mGBA's own steps
-/// (0x16 + GBA_LUX_LEVELS), leaving out the two that repeated a bar
-/// (106 and 161). Boktai 2 and 3 spread 0..=10 evenly up to the
-/// brightest light they accept.
+/// Sun N shows N bars, measured on a KPA with the game calibrated at 0.
+/// Boktai 1 (8 bars) uses mGBA's own steps (0x16 + GBA_LUX_LEVELS),
+/// leaving out the two that repeated a bar (106 and 161). Boktai 2 (10
+/// bars) showed 3 bars at 45, 5 at 68, 7 at 91, 8 at 114, 9 at 137 and
+/// 10 from 183; 1, 2, 4 and 6 lie between those.
 pub fn sun_luminance(sun: u8, boktai1: bool) -> Option<u8> {
     const BOKTAI1: [u8; 9] = [22, 27, 33, 40, 49, 64, 84, 131, 205];
+    const LATER: [u8; 11] = [22, 33, 39, 45, 56, 68, 80, 91, 114, 137, 183];
     if sun == SUN_SENSOR { return None; }
-    let sun = sun.min(sun_top(boktai1));
-    Some(if boktai1 { BOKTAI1[usize::from(sun)] }
-        else { (22 + u16::from(sun) * u16::from(MAX_LUMINANCE - 22) / 10) as u8 })
+    let sun = usize::from(sun.min(sun_top(boktai1)));
+    Some(if boktai1 { BOKTAI1[sun] } else { LATER[sun] })
 }
 /// The brightest light a game accepts: from 254, Boktai 2 reads the
 /// cartridge's answer as no sun at all and its gauge drains to 0.
@@ -269,8 +270,8 @@ mod tests {
         assert_eq!(sun_luminance(8, true), Some(0x16 + 183));
         assert_eq!(sun_luminance(10, true), Some(0x16 + 183));
         assert_eq!(sun_luminance(0, false), Some(22));
-        assert_eq!(sun_luminance(5, false), Some(137));
-        assert_eq!(sun_luminance(10, false), Some(MAX_LUMINANCE));
+        assert_eq!(sun_luminance(5, false), Some(68));
+        assert_eq!(sun_luminance(10, false), Some(183));
         assert_eq!(lux_luminance(1000.0), 80);
         assert_eq!(lux_luminance(1e9), MAX_LUMINANCE);
         assert_eq!(EmulationProfile { sun: Some(40), ..profile }.sanitize().sun, None);
