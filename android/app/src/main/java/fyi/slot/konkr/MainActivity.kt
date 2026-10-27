@@ -1203,7 +1203,7 @@ class MainActivity : Activity() {
                 wakeCarouselRender()
                 // RPC firmware drops INFO/WARN, so temporary ERROR-level diagnostics.
                 Log.e(TAG, "RPC input dispatch: path=ROUND key=$keyCode " +
-                    "scan=${event.scanCode} device=${event.device?.name ?: \"unknown\"}")
+                    "scan=${event.scanCode} device=" + (event.device?.name ?: "unknown"))
             }
             return true
         }
@@ -1238,7 +1238,7 @@ class MainActivity : Activity() {
             wakeCarouselRender()
             if (keyCode == KeyEvent.KEYCODE_BUTTON_A) {
                 Log.e(TAG, "RPC input dispatch: path=A key=$keyCode " +
-                    "scan=${event.scanCode} device=${event.device?.name ?: \"unknown\"}")
+                    "scan=${event.scanCode} device=" + (event.device?.name ?: "unknown"))
             }
         }
         return true
