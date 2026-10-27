@@ -1,10 +1,10 @@
-# slot. for KONKR Pocket Advance — v1.3.3
+# slot. for KONKR Pocket Advance — v1.3.4
 
 A big update: a second core for Game Boy and Game Boy Color, new screen sizes and overlays, sharper visuals at the KONKR's native resolution, and controls that respond like RetroArch.
 
 ### What's New
 
-- **Game Boy and Game Boy Color multiplayer** — Multiplayer now works in GB and GBC games, as on GBA, with both mGBA and Gambatte.
+- **Game Boy and Game Boy Color multiplayer** — Multiplayer now works in GB and GBC games, with both mGBA and Gambatte.
 - **Gambatte core for Game Boy and Game Boy Color** — GB and GBC games can now run on Gambatte as well as mGBA. Press SELECT on a cartridge to choose the core for that game. Your saves follow you when you switch cores.
 - **Default core per system** — Settings → Systems now has a page for each system (GBA, GBC, GB) with a Default Core option. You can still override it for any game with SELECT.
 - **New GB/GBC screen sizes** — L1 and R1 switch between Integer, Original Ratio and Stretch.
@@ -15,9 +15,19 @@ A big update: a second core for Game Boy and Game Boy Color, new screen sizes an
 - **Adaptive Link Cable delay** — The mGBA Link Cable input delay now adjusts automatically to the connection quality between the two consoles.
 - **Faster game launch** — Games start quickly even after idling on the shelf, and the first scroll after ejecting a game is smooth.
 
+### Fixed in 1.3.4
+
+- **Stick stuck on a direction** ([#68](https://github.com/Baggio94/slot-for-kpa/issues/68)) — On handhelds whose analog stick also drives the D-pad, a direction could stay held after letting go of the stick. The stick now releases cleanly.
+- **Tilt and gyro games** ([#67](https://github.com/Baggio94/slot-for-kpa/issues/67)) — slot. now passes the handheld's accelerometer and gyroscope to mGBA, as RetroArch does. Yoshi Topsy-Turvy, Koro Koro Puzzle, WarioWare: Twisted! and Kirby Tilt 'n' Tumble are now playable on handhelds with motion sensors.
+- **Boktai solar sensor** ([#69](https://github.com/Baggio94/slot-for-kpa/issues/69)) — Boktai 1, 2 and 3 get a **Sun** setting in the in-game menu (Settings → Emulation), saved per game: each level lights one bar of the gauge (0 to 8 in Boktai 1, 0 to 10 in Boktai 2 and 3). L3 / R3 or SELECT + L2 / R2 change it while playing. On handhelds with a light sensor, SENSOR uses the real light. Sun starts at 0: set it to 0 before the game's solar sensor calibration.
+- **Sensor games on gpSP** — gpSP doesn't emulate cartridge sensors, so these games now always start on mGBA. Kirby Tilt 'n' Tumble starts on mGBA when Gambatte is chosen.
+- **Game Boy boot screen on Gambatte** ([#71](https://github.com/Baggio94/slot-for-kpa/issues/71)) — With gb_bios.bin / gbc_bios.bin in your BIOS folder, the Game Boy boot screen now shows on Gambatte, as on mGBA.
+- **Rumble on Gambatte** — Rumble cartridges such as Pokémon Pinball now vibrate on Gambatte too.
+- **Empty save state** — An empty save state file no longer crashes mGBA: the game starts fresh instead.
+
 ### Fixed in 1.3.3
 
-- **Stuck screen after an update** — After updating from inside slot., the "App installed" screen no longer gets stuck (OPEN did nothing, and with slot. as the home app the console had to be restarted). The fix applies to updates installed from 1.3.3 onward.
+- **Stuck screen after an update** — After updating from inside slot., the "App installed" screen no longer gets stuck. The fix applies to updates installed from 1.3.3 onward.
 
 ### Fixed in 1.3.2
 
