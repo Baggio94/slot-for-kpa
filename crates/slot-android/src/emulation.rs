@@ -48,17 +48,21 @@ pub fn sun_top(boktai1: bool) -> u8 {
 /// Boktai 1 (8 bars) uses mGBA's own steps (0x16 + GBA_LUX_LEVELS),
 /// leaving out the two that repeated a bar (106 and 161). Boktai 2 and 3
 /// fill their 10 bars unevenly: 123 shows 0 bars, 143 three, 164 five,
-/// 184 six, 204 seven and 225 eight.
+/// 184 six, 204 seven, 225 eight and 242 nine.
 pub fn sun_luminance(sun: u8, boktai1: bool) -> Option<u8> {
     const BOKTAI1: [u8; 9] = [22, 27, 33, 40, 49, 64, 84, 131, 205];
-    const LATER: [u8; 11] = [22, 130, 137, 145, 155, 166, 186, 206, 227, 242, 255];
+    const LATER: [u8; 11] = [22, 130, 137, 145, 155, 166, 186, 206, 227, 242, MAX_LUMINANCE];
     if sun == SUN_SENSOR { return None; }
     let sun = usize::from(sun.min(sun_top(boktai1)));
     Some(if boktai1 { BOKTAI1[sun] } else { LATER[sun] })
 }
+/// The brightest light a game accepts. At 255 the cartridge answers
+/// before the game's first clock, which Boktai 2 reads as no sun at all:
+/// its gauge drained to 0 there.
+pub const MAX_LUMINANCE: u8 = 254;
 /// mGBA's own conversion of light sensor lux (cbrt(lux) * 8).
 pub fn lux_luminance(lux: f32) -> u8 {
-    (lux.max(0.0).cbrt() * 8.0).min(255.0) as u8
+    (lux.max(0.0).cbrt() * 8.0).min(f32::from(MAX_LUMINANCE)) as u8
 }
 
 impl EmulationProfile {
@@ -266,9 +270,9 @@ mod tests {
         assert_eq!(sun_luminance(10, true), Some(0x16 + 183));
         assert_eq!(sun_luminance(0, false), Some(22));
         assert_eq!(sun_luminance(5, false), Some(166));
-        assert_eq!(sun_luminance(10, false), Some(255));
+        assert_eq!(sun_luminance(10, false), Some(254));
         assert_eq!(lux_luminance(1000.0), 80);
-        assert_eq!(lux_luminance(1e9), 255);
+        assert_eq!(lux_luminance(1e9), 254);
         assert_eq!(EmulationProfile { sun: Some(40), ..profile }.sanitize().sun, None);
     }
     #[test]
