@@ -103,6 +103,8 @@ pub trait RetroCore: Send {
         self.run_frame(p1);
     }
     fn set_option(&mut self, _key: &str, _value: &str) {}
+    /// A solar cartridge's light, 0..=255 (mGBA's own levels stop at 205).
+    fn set_sun(&mut self, _luminance: u8) {}
     fn set_frame_skip(&mut self, _skip: bool) {}
     fn video_xrgb8888(&self) -> &[u8];
     fn take_audio(&mut self) -> Vec<i16>;

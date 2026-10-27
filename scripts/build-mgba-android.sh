@@ -82,6 +82,8 @@ done
 python3 "$ROOT/scripts/patch-mgba-speculative-audio.py" "$SRC"
 # F5: never export a potentially stale libretro save mirror after state mask.
 python3 "$ROOT/scripts/patch-mgba-active-sram.py" "$SRC"
+# Boktai's sunlight, set by slot. on every sample (0..255).
+python3 "$ROOT/scripts/patch-mgba-sun.py" "$SRC"
 cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 \
@@ -107,7 +109,7 @@ esac
 NM="$NDK/toolchains/llvm/prebuilt/$NDK_HOST/bin/llvm-nm"
 [ -x "$NM" ] || { echo "Android NDK llvm-nm missing: $NM" >&2; exit 1; }
 SYMBOLS="$("$NM" -D --defined-only "$CORE")"
-for symbol in retro_init retro_load_game retro_run retro_serialize retro_unserialize slot_mgba_audio_sidecar slot_mgba_audio_sidecar_size slot_mgba_clone_active_save_ram; do
+for symbol in retro_init retro_load_game retro_run retro_serialize retro_unserialize slot_mgba_audio_sidecar slot_mgba_audio_sidecar_size slot_mgba_clone_active_save_ram slot_mgba_set_sun; do
   grep -q " $symbol$" <<< "$SYMBOLS" || {
     echo "mGBA ABI symbol missing: $symbol" >&2
     exit 1
@@ -134,6 +136,6 @@ fi
 # F11: machine-readable provenance shipped INSIDE the APK. These fields
 # record the exact pinned source and safety patches used in this binary.
 cat > "$ROOT/android/app/src/main/assets/core-build-mgba.json" <<EOF
-{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py"]}
+{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py","patch-mgba-sun.py"]}
 EOF
 echo "mGBA arm64 libretro: $DEST/libmgba_libretro.so"

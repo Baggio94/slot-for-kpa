@@ -243,6 +243,8 @@ pub struct GameSession {
     mgba_flash_runahead_guard: bool,
     sma4_runahead_guard: bool,
     solar: Option<Solar>,
+    // The light handed to a solar cart; None while the light sensor decides.
+    sun_luminance: Option<u8>,
     palette_live: bool,
     core_kind: Core,
     pending_undo: Option<(Instant, PendingUndo)>,
@@ -463,7 +465,13 @@ impl GameSession {
         // has already staged only allowed BIOS files into this private folder.
         let bios = storage.join("BIOS");
         std::fs::create_dir_all(&bios).map_err(|e| e.to_string())?;
-        let mut core = LibretroCore::open_with(core_file, &bios, &core_root)
+        // Gambatte decides on the boot ROM in retro_init, before the
+        // options below are set.
+        let init_options = match which {
+            Core::Gambatte => vec![("gambatte_gb_bootloader".to_string(), "enabled".to_string())],
+            _ => Vec::new(),
+        };
+        let mut core = LibretroCore::open_with_options(core_file, &bios, &core_root, &init_options)
             .map_err(|e| e.to_string())?;
         // Exact upstream Slot libretro options for colour and Game Boy palettes.
         // Read only the 336-byte header: never read the entire cached ROM.
@@ -475,12 +483,7 @@ impl GameSession {
             }).unwrap_or(false);
         let palette_live = dmg_only && gb_palette.is_some();
         let solar = solar_cart(rom, which, platform);
-        // The sun must be in place before load: mGBA asks for the light
-        // sensor once, when the game starts. The runtime then sets this
-        // game's own Sun.
-        let light = slot_retro::sensors::available() & slot_retro::sensors::ILLUMINANCE != 0;
-        slot_retro::sensors::set_sun(solar.and_then(|solar| crate::emulation::sun_luminance(
-            crate::emulation::default_sun(light), solar == Solar::Boktai1)));
+        slot_retro::sensors::set_light_wanted(false);
         slot_retro::sensors::set_tilt_inverted(platform != Platform::Gba);
         match which {
             Core::Mgba => {
@@ -515,11 +518,6 @@ impl GameSession {
                 }
                 core.set_option("mgba_color_correction",
                     if colour_correction { "Auto" } else { "OFF" });
-                // Solar carts read their light through the sensor
-                // interface: the light sensor or slot.'s Sun, 0..=255
-                // where mGBA's own levels stop at 205.
-                core.set_option("mgba_solar_sensor_level",
-                    if solar.is_some() { "sensor" } else { "0" });
             }
             Core::Gpsp => {
                 // Replicate official Slot/fork's core.rs: this option must
@@ -758,7 +756,7 @@ impl GameSession {
                 }
             }
         } else { None };
-        Ok(Self {
+        let mut session = Self {
             core, link: None, game_link: None, link_touched: false, linked_boot, gpsp_serial,
             rom_path: rom.to_path_buf(), rom_stem: rom_stem.to_owned(),
             save, rtc, manual_export_prefix, state, retroarch_export, ring,
@@ -775,11 +773,15 @@ impl GameSession {
             last_step_timings: FrameStepTimings::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
-            solar,
+            solar, sun_luminance: None,
             pending_undo: None, last_sram: Instant::now(), battery_writer,
             sample_rate: core_sample_rate(sample_rate),
             fps,
-        })
+        };
+        // The handheld's default sun until the runtime applies this game's own.
+        let light = slot_retro::sensors::available() & slot_retro::sensors::ILLUMINANCE != 0;
+        session.set_sun(crate::emulation::default_sun(light));
+        Ok(session)
     }
 
     /// False while cable lockstep is awaiting the other player. The caller
@@ -795,6 +797,7 @@ impl GameSession {
         }
         if self.game_link.as_ref().is_some_and(|link| !link.may_run()) { return false; }
         self.runahead_video.clear();
+        self.follow_light_sensor();
         if self.link.is_none() && !self.preempt_before_frame(buttons, turbo) { return false; }
         let pressed = ButtonMask(buttons);
         let mapped = xy_buttons(pressed, turbo, self.frame_count);
@@ -1267,6 +1270,11 @@ impl GameSession {
                     log_launch_timing(&format!(
                         "Run-Ahead second instance ready in {}ms", started.elapsed().as_millis()));
                     self.runahead_secondary = Some(copy);
+                    if self.solar.is_some() {
+                        let luminance = self.sun_luminance.unwrap_or_else(||
+                            crate::emulation::lux_luminance(slot_retro::sensors::illuminance()));
+                        if let Some(copy) = self.runahead_secondary.as_mut() { copy.set_sun(luminance); }
+                    }
                 }
                 Err(error) => {
                     self.runahead_secondary_unavailable = true;
@@ -1464,11 +1472,24 @@ impl GameSession {
     pub fn solar(&self) -> bool { self.solar.is_some() }
 
     /// Boktai's sun, live: mGBA reads it the next time the game samples
-    /// its solar sensor.
+    /// its solar sensor. SENSOR follows the light sensor every frame.
     pub fn set_sun(&mut self, sun: u8) {
-        if let Some(solar) = self.solar {
-            slot_retro::sensors::set_sun(
-                crate::emulation::sun_luminance(sun, solar == Solar::Boktai1));
+        let Some(solar) = self.solar else { return };
+        let luminance = crate::emulation::sun_luminance(sun, solar == Solar::Boktai1);
+        slot_retro::sensors::set_light_wanted(luminance.is_none());
+        self.sun_luminance = luminance;
+        self.give_sun(luminance.unwrap_or_else(||
+            crate::emulation::lux_luminance(slot_retro::sensors::illuminance())));
+    }
+
+    fn give_sun(&mut self, luminance: u8) {
+        self.core.set_sun(luminance);
+        if let Some(copy) = self.runahead_secondary.as_mut() { copy.set_sun(luminance); }
+    }
+
+    fn follow_light_sensor(&mut self) {
+        if self.solar.is_some() && self.sun_luminance.is_none() {
+            self.give_sun(crate::emulation::lux_luminance(slot_retro::sensors::illuminance()));
         }
     }
 

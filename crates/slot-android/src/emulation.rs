@@ -40,14 +40,19 @@ pub fn default_sun(light_sensor: bool) -> u8 {
 }
 /// The light a solar cartridge reads for a manual sun, None for SENSOR.
 /// Boktai 1 keeps mGBA's own steps (0x16 + GBA_LUX_LEVELS). Boktai 2
-/// and 3 read the same light lower: on those steps 5 was an empty gauge
-/// and 10 one bar short, so 0..=10 spans 84..=255 for them.
+/// and 3 read light differently: measured on a Pocket Micro 2, their
+/// 10-step gauge showed 3 steps at 84, 8 at 169 and was full from 220,
+/// so 0..=10 spans 22..=225 for them, about one step per Sun.
 pub fn sun_luminance(sun: u8, boktai1: bool) -> Option<u8> {
     const MGBA: [u8; 10] = [5, 11, 18, 27, 42, 62, 84, 109, 139, 183];
     if sun == SUN_SENSOR { return None; }
     let sun = sun.min(10);
-    Some(if !boktai1 { (84 + u32::from(sun) * 171 / 10) as u8 }
+    Some(if !boktai1 { (22 + u32::from(sun) * 203 / 10) as u8 }
         else if sun == 0 { 0x16 } else { 0x16 + MGBA[sun as usize - 1] })
+}
+/// mGBA's own conversion of light sensor lux (cbrt(lux) * 8).
+pub fn lux_luminance(lux: f32) -> u8 {
+    (lux.max(0.0).cbrt() * 8.0).min(255.0) as u8
 }
 
 impl EmulationProfile {
@@ -244,8 +249,11 @@ mod tests {
         assert_eq!(sun_luminance(SUN_SENSOR, true), None);
         assert_eq!(sun_luminance(0, true), Some(0x16));
         assert_eq!(sun_luminance(10, true), Some(0x16 + 183));
-        assert_eq!(sun_luminance(0, false), Some(84));
-        assert_eq!(sun_luminance(10, false), Some(255));
+        assert_eq!(sun_luminance(0, false), Some(22));
+        assert_eq!(sun_luminance(5, false), Some(123));
+        assert_eq!(sun_luminance(10, false), Some(225));
+        assert_eq!(lux_luminance(1000.0), 80);
+        assert_eq!(lux_luminance(1e9), 255);
         assert_eq!(EmulationProfile { sun: Some(40), ..profile }.sanitize().sun, None);
     }
     #[test]
