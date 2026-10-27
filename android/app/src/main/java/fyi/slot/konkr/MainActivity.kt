@@ -817,6 +817,12 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         // A staged sign-out must finish before any native HTTP worker is started.
         val cleanSignOut = RaAccount.finishPendingSignOut(filesDir)
+        // Experimental A/B switch from adb launch intent; default keeps Native
+        // GPU Hard Sync exactly as before. No persistent setting is changed.
+        val skipNativeGlFinishExperiment = intent.getBooleanExtra(
+            "fyi.slot.konkr.experiment.skip_native_gl_finish", false)
+        Log.i(TAG, "Native pacing experiment: gl_finish=" +
+            if (skipNativeGlFinishExperiment) "off" else "on")
         nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir)
         // The slot. canvas takes the display's shape (3:2 on the KONKR, 16:9,
         // 4:3...) before the renderer builds its first face.
@@ -843,6 +849,12 @@ class MainActivity : Activity() {
             private var nativeUsMax = 0L
             private var nativeOver16ms = 0
             private var nativeOver33ms = 0
+            // glFinish happens AFTER nativeDrawFrame; native_us_max does not
+            // include its driver wait. Sample this separately in Native mode.
+            private var glFinishCalls = 0
+            private var glFinishUsTotal = 0L
+            private var glFinishUsMax = 0L
+            private var glFinishOver8ms = 0
             private var vsyncAgeTotalUs = 0L
             private var vsyncAgeMaxUs = 0L
             private var vsyncAgeCount = 0
@@ -851,6 +863,8 @@ class MainActivity : Activity() {
                 probeStartNs = 0L; lastDrawNs = 0L; callbacks = 0
                 gapOver25ms = 0; gapOver40ms = 0; gapUsMax = 0L
                 nativeUsMax = 0L; nativeOver16ms = 0; nativeOver33ms = 0
+                glFinishCalls = 0; glFinishUsTotal = 0L
+                glFinishUsMax = 0L; glFinishOver8ms = 0
                 vsyncAgeTotalUs = 0L; vsyncAgeMaxUs = 0L; vsyncAgeCount = 0
                 glPacingCorrelation.reset()
                 previousUiVsyncFrameNs = 0L
@@ -918,9 +932,19 @@ class MainActivity : Activity() {
                     GLES20.glClearColor(0f, 0f, 0f, 1f)
                     GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
                 }
-                // RetroArch's GPU Hard Sync in the swap-paced loop: queue only
-                // a finished picture, so the compositor never waits on our GPU.
-                if (raSwapLoopApplied) GLES20.glFinish()
+                // Swap-paced Native normally waits for GPU Hard Sync. The A/B
+                // build can omit only this wait, leaving the core/clock, EGL
+                // swap, shaders, audio, input and saves unchanged.
+                if (raSwapLoopApplied && !skipNativeGlFinishExperiment) {
+                    val finishStartNs = SystemClock.elapsedRealtimeNanos()
+                    GLES20.glFinish()
+                    val finishUs =
+                        (SystemClock.elapsedRealtimeNanos() - finishStartNs) / 1000L
+                    glFinishCalls++
+                    glFinishUsTotal += finishUs
+                    glFinishUsMax = maxOf(glFinishUsMax, finishUs)
+                    if (finishUs > 8_000L) glFinishOver8ms++
+                }
                 // Beta9: record the ID of the frame swapped AFTER this
                 // callback and query earlier EGL presentation timestamps.
                 // Driver can report unsupported; no rendering changes.
@@ -955,7 +979,11 @@ class MainActivity : Activity() {
                             "native_over_16ms=$nativeOver16ms native_over_33ms=$nativeOver33ms " +
                             "vsync_gl_age_mean_us=${if (vsyncAgeCount > 0) vsyncAgeTotalUs / vsyncAgeCount else -1} " +
                             "vsync_gl_age_max_us=$vsyncAgeMaxUs " +
-                            "early_pcm_wakes_5s=${earlyPcmWakes.getAndSet(0)}")
+                            "early_pcm_wakes_5s=${earlyPcmWakes.getAndSet(0)} " +
+                            "native_gl_finish=${if (skipNativeGlFinishExperiment) "off" else "on"} " +
+                            "gl_finish_calls=$glFinishCalls " +
+                            "gl_finish_mean_us=${if (glFinishCalls > 0) glFinishUsTotal / glFinishCalls else -1L} " +
+                            "gl_finish_max_us=$glFinishUsMax gl_finish_over8ms=$glFinishOver8ms")
                         val frameCorrelation = glPacingCorrelation.snapshotAndReset()
                         Log.i(TAG, "GL vsync correlation: scheduler=ui " +
                             "ui_vsync_callbacks=${uiVsyncCallbacks.getAndSet(0L)} " +
@@ -979,6 +1007,10 @@ class MainActivity : Activity() {
                         nativeUsMax = 0L
                         nativeOver16ms = 0
                         nativeOver33ms = 0
+                        glFinishCalls = 0
+                        glFinishUsTotal = 0L
+                        glFinishUsMax = 0L
+                        glFinishOver8ms = 0
                         vsyncAgeTotalUs = 0L
                         vsyncAgeMaxUs = 0L
                         vsyncAgeCount = 0
