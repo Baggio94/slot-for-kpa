@@ -637,7 +637,9 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSystemStatus(
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeConfigure(
     mut env: JNIEnv<'_>, _this: JObject<'_>, root: JString<'_>, libraries: JString<'_>,
+    is_retroid_pocket_classic: jboolean,
 ) {
+    RPC_DEFAULT_RESPONSIVE.store(is_retroid_pocket_classic != 0, Ordering::Release);
     if let (Ok(root), Ok(libraries)) = (env.get_string(&root), env.get_string(&libraries)) {
         *PATHS.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((PathBuf::from(root.to_string_lossy().as_ref()), PathBuf::from(libraries.to_string_lossy().as_ref())));
