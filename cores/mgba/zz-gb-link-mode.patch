@@ -178,7 +178,7 @@ index 754846e..2aa210d 100644
  static const int keymap[] = {
  	RETRO_DEVICE_ID_JOYPAD_A,
  	RETRO_DEVICE_ID_JOYPAD_B,
-@@ -1634,6 +1780,291 @@ static void _postFrame(bool skipFrame) {
+@@ -1634,6 +1780,301 @@ static void _postFrame(bool skipFrame) {
  #endif
  }
  
@@ -201,13 +201,14 @@ index 754846e..2aa210d 100644
 +	linkStuck = true;
 +#ifdef __ANDROID__
 +	__android_log_print(ANDROID_LOG_ERROR, "SlotKONKR",
-+		"GB Link inner loop ended: phase=%d asleep=%d/%d mask=%u credits=%d/%d eventDiff=%d/%d nextEvent=%d/%d",
++		"GB Link inner loop ended: phase=%d asleep=%d/%d mask=%u credits=%d/%d eventDiff=%d/%d nextEvent=%d/%d deferred=%lld ids=%d/%d",
 +		gbLockstep.d.transferActive,
 +		linkGb[0].asleep, linkGb[1].asleep,
 +		_gbPlayer(0)->waitMask,
 +		linkGb[0].cyclesPosted, linkGb[1].cyclesPosted,
 +		linkGb[0].node.eventDiff, linkGb[1].node.eventDiff,
-+		linkGb[0].node.nextEvent, linkGb[1].node.nextEvent);
++		linkGb[0].node.nextEvent, linkGb[1].node.nextEvent,
++		(long long) gbDeferredMasterCredits, linkGb[0].node.id, linkGb[1].node.id);
 +#endif
 +}
 +
@@ -454,6 +455,15 @@ index 754846e..2aa210d 100644
 +			if (!linkStuck) {
 +				fprintf(stderr, "mgba: link: neither GB can run (asleep %d/%d, done %d/%d)\n",
 +				        linkGb[0].asleep, linkGb[1].asleep, done[0], done[1]);
++#ifdef __ANDROID__
++				__android_log_print(ANDROID_LOG_ERROR, "SlotKONKR",
++					"GB Link scheduler no runnable CPU: phase=%d asleep=%d/%d mask=%u credits=%d/%d deferred=%lld ids=%d/%d",
++					gbLockstep.d.transferActive, linkGb[0].asleep,
++					linkGb[1].asleep, _gbPlayer(0)->waitMask,
++					linkGb[0].cyclesPosted, linkGb[1].cyclesPosted,
++					(long long) gbDeferredMasterCredits,
++					linkGb[0].node.id, linkGb[1].node.id);
++#endif
 +				linkStuck = true;
 +			}
 +			_gbDiagMark(5, 0, iterations);
@@ -470,7 +480,7 @@ index 754846e..2aa210d 100644
  #ifdef M_CORE_GBA
  static void _linkSleep(struct mLockstepUser* user) {
  	((struct LinkGBA*) user)->asleep = true;
-@@ -1697,6 +2128,12 @@ static void _linkRunToFrameEnd(struct mCore* gbaCore) {
+@@ -1697,6 +2138,12 @@ static void _linkRunToFrameEnd(struct mCore* gbaCore) {
   * the mode to the other, and player 0 waits for player 1 to take it up. */
  static void _linkPlugIn(void) {
  	int i;
@@ -483,7 +493,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		struct mCore* gbaCore = linkGba[i].core;
  		gbaCore->rtc.override = RTC_FAKE_EPOCH;
-@@ -1735,6 +2172,12 @@ static void _linkUnplug(void) {
+@@ -1735,6 +2182,12 @@ static void _linkUnplug(void) {
  		return;
  	}
  	int i;
@@ -496,7 +506,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		linkGba[i].core->setPeripheral(linkGba[i].core, mPERIPH_GBA_LINK_PORT, NULL);
  		GBASIOLockstepCoordinatorDetach(&linkCoordinator, &linkGba[i].driver);
-@@ -1780,6 +2223,11 @@ static bool _linkCreatePeer(const struct retro_game_info* game, const char* bios
+@@ -1780,6 +2233,11 @@ static bool _linkCreatePeer(const struct retro_game_info* game, const char* bios
  	memset(linkGba, 0, sizeof(linkGba));
  	linkGba[linkPlayer].core = core;
  	linkGba[1 - linkPlayer].core = peer;
@@ -508,7 +518,7 @@ index 754846e..2aa210d 100644
  	return true;
  }
  
-@@ -1855,6 +2303,12 @@ static void _linkStep(void) {
+@@ -1855,6 +2313,12 @@ static void _linkStep(void) {
  	uint32_t start[2];
  	bool done[2] = { false, false };
  	int i;
@@ -521,7 +531,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		struct GBA* gba = linkGba[i].core->board;
  		target[i] = gba->video.frameCounter + 1;
-@@ -2486,7 +2940,11 @@ bool retro_load_game(const struct retro_game_info* game) {
+@@ -2486,7 +2950,11 @@ bool retro_load_game(const struct retro_game_info* game) {
  #endif
  
  #ifdef M_CORE_GBA
