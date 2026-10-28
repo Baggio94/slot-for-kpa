@@ -32,7 +32,7 @@ index 754846e..2aa210d 100644
  #endif
  #ifdef M_CORE_GBA
  #include <mgba/core/lockstep.h>
-@@ -164,6 +171,143 @@ static mColor* peerOutputBuffer;
+@@ -164,6 +171,145 @@ static mColor* peerOutputBuffer;
  static void* peerSavedata;
  #endif
  
@@ -60,6 +60,8 @@ index 754846e..2aa210d 100644
 + * the two nodes' ids at runtime whenever the console that claims the clock is not node 0. */
 +static struct LinkGB linkGb[2];
 +static struct GBSIOLockstep gbLockstep;
++/* Delay master credits until the parked master is released by the slave. */
++static int64_t gbDeferredMasterCredits;
 +
 +/* The stock non-root KPA disallows debuggerd native stacks. This Android-
 + * only observer samples an ATOMIC COPY of the lockstep state, never live GB
@@ -176,7 +178,7 @@ index 754846e..2aa210d 100644
  static const int keymap[] = {
  	RETRO_DEVICE_ID_JOYPAD_A,
  	RETRO_DEVICE_ID_JOYPAD_B,
-@@ -1634,6 +1778,243 @@ static void _postFrame(bool skipFrame) {
+@@ -1634,6 +1780,291 @@ static void _postFrame(bool skipFrame) {
  #endif
  }
  
@@ -209,43 +211,89 @@ index 754846e..2aa210d 100644
 +#endif
 +}
 +
-+/* Only the master ever waits, and only on the slaves named in the mask. */
-+static bool _gbWait(struct mLockstep* lockstep, unsigned mask) {
-+	UNUSED(lockstep);
-+	struct LinkGB* master = _gbPlayer(0);
-+	master->waitMask |= mask;
-+	/* Always true. False here is an abort() in _masterUpdate, and on one thread the master is
-+	 * running whenever it asks, so "yes, you are now asleep" is the truthful answer. */
-+	master->asleep = true;
-+	return true;
-+}
-+
-+/* A slave telling the master it has caught up. */
-+static bool _gbSignal(struct mLockstep* lockstep, unsigned mask) {
-+	UNUSED(lockstep);
-+	struct LinkGB* master = _gbPlayer(0);
-+	master->waitMask &= ~mask;
-+	if (!master->waitMask && master->asleep) {
-+		master->asleep = false;
-+		return true;
++/* mGBA Qt physically parks threads. Slot must instead stop running the
++ * sleeping GB and transfer control to the second one at an event boundary.
++ * Nodes can swap IDs on serial-clock claim; match the actual CPU pointer. */
++__attribute__((visibility("hidden"))) bool slot_mgba_gb_link_should_yield(
++	const struct SM83Core* cpu) {
++	if (!linkMode || !linkPlugged || !core ||
++	    core->platform(core) != mPLATFORM_GB) return false;
++	for (int i = 0; i < 2; ++i) {
++		if (linkGb[i].core && linkGb[i].core->cpu == cpu) {
++			return linkGb[i].asleep;
++		}
 +	}
 +	return false;
 +}
 +
-+/* id 0 credits the *slave* with the cycles the master has just run, and wakes it; a slave credits
-+ * itself. This is upstream's asymmetry, not a typo (MultiplayerController.cpp:104-113). */
++static void _gbPostSlaveCredits(int32_t cycles) {
++	struct LinkGB* slave = _gbPlayer(1);
++	if (cycles < 0 || slave->cyclesPosted > INT32_MAX - cycles) {
++		slot_mgba_gb_link_mark_fault();
++		return;
++	}
++	slave->cyclesPosted += cycles;
++	if (slave->asleep) {
++		slave->node.nextEvent += slave->cyclesPosted;
++		slave->asleep = false;
++	}
++}
++
++/* Called after the slave's acknowledgement. This is the point at which
++ * Qt's wait() returns to _masterUpdate() and posts the deferred eventDiff. */
++static void _gbReleaseMasterCredits(void) {
++	if (!gbDeferredMasterCredits) return;
++	if (gbDeferredMasterCredits > INT32_MAX) {
++		slot_mgba_gb_link_mark_fault();
++		return;
++	}
++	int32_t cycles = (int32_t) gbDeferredMasterCredits;
++	gbDeferredMasterCredits = 0;
++	_gbPostSlaveCredits(cycles);
++}
++
++static bool _gbWait(struct mLockstep* lockstep, unsigned mask) {
++	UNUSED(lockstep);
++	struct LinkGB* master = _gbPlayer(0);
++	master->waitMask |= mask;
++	master->asleep = true;
++	return true;
++}
++
++static bool _gbSignal(struct mLockstep* lockstep, unsigned mask) {
++	UNUSED(lockstep);
++	struct LinkGB* master = _gbPlayer(0);
++	master->waitMask &= ~mask;
++	if (!master->waitMask) {
++		bool woke = master->asleep;
++		master->asleep = false;
++		_gbReleaseMasterCredits();
++		return woke;
++	}
++	return false;
++}
++
 +static void _gbAddCycles(struct mLockstep* lockstep, int id, int32_t cycles) {
 +	UNUSED(lockstep);
-+	struct LinkGB* player;
++	if (cycles < 0) {
++		slot_mgba_gb_link_mark_fault();
++		return;
++	}
 +	if (!id) {
-+		player = _gbPlayer(1);
-+		player->cyclesPosted += cycles;
-+		if (player->asleep) {
-+			player->node.nextEvent += player->cyclesPosted;
-+			player->asleep = false;
++		if (_gbPlayer(0)->asleep && _gbPlayer(0)->waitMask) {
++			gbDeferredMasterCredits += cycles;
++			if (gbDeferredMasterCredits > INT32_MAX) {
++				slot_mgba_gb_link_mark_fault();
++			}
++			return;
 +		}
++		_gbPostSlaveCredits(cycles);
 +	} else {
-+		player = _gbPlayer(id);
++		struct LinkGB* player = _gbPlayer(id);
++		if (player->cyclesPosted > INT32_MAX - cycles) {
++			slot_mgba_gb_link_mark_fault();
++			return;
++		}
 +		player->cyclesPosted += cycles;
 +	}
 +}
@@ -304,6 +352,7 @@ index 754846e..2aa210d 100644
 +	gbLockstep.d.useCycles = _gbUseCycles;
 +	gbLockstep.d.unusedCycles = _gbUnusedCycles;
 +	gbLockstep.d.unload = _gbUnload;
++	gbDeferredMasterCredits = 0;
 +	for (i = 0; i < 2; ++i) {
 +		struct LinkGB* player = &linkGb[i];
 +		player->asleep = false;
@@ -321,6 +370,7 @@ index 754846e..2aa210d 100644
 +
 +static void _linkUnplugGB(void) {
 +	_gbDiagStop();
++	gbDeferredMasterCredits = 0;
 +	int i;
 +	for (i = 0; i < 2; ++i) {
 +		/* GBSIOSetDriver deinits the old driver, which is what detaches the node. */
@@ -420,7 +470,7 @@ index 754846e..2aa210d 100644
  #ifdef M_CORE_GBA
  static void _linkSleep(struct mLockstepUser* user) {
  	((struct LinkGBA*) user)->asleep = true;
-@@ -1697,6 +2078,12 @@ static void _linkRunToFrameEnd(struct mCore* gbaCore) {
+@@ -1697,6 +2128,12 @@ static void _linkRunToFrameEnd(struct mCore* gbaCore) {
   * the mode to the other, and player 0 waits for player 1 to take it up. */
  static void _linkPlugIn(void) {
  	int i;
@@ -433,7 +483,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		struct mCore* gbaCore = linkGba[i].core;
  		gbaCore->rtc.override = RTC_FAKE_EPOCH;
-@@ -1735,6 +2122,12 @@ static void _linkUnplug(void) {
+@@ -1735,6 +2172,12 @@ static void _linkUnplug(void) {
  		return;
  	}
  	int i;
@@ -446,7 +496,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		linkGba[i].core->setPeripheral(linkGba[i].core, mPERIPH_GBA_LINK_PORT, NULL);
  		GBASIOLockstepCoordinatorDetach(&linkCoordinator, &linkGba[i].driver);
-@@ -1780,6 +2173,11 @@ static bool _linkCreatePeer(const struct retro_game_info* game, const char* bios
+@@ -1780,6 +2223,11 @@ static bool _linkCreatePeer(const struct retro_game_info* game, const char* bios
  	memset(linkGba, 0, sizeof(linkGba));
  	linkGba[linkPlayer].core = core;
  	linkGba[1 - linkPlayer].core = peer;
@@ -458,7 +508,7 @@ index 754846e..2aa210d 100644
  	return true;
  }
  
-@@ -1855,6 +2253,12 @@ static void _linkStep(void) {
+@@ -1855,6 +2303,12 @@ static void _linkStep(void) {
  	uint32_t start[2];
  	bool done[2] = { false, false };
  	int i;
@@ -471,7 +521,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		struct GBA* gba = linkGba[i].core->board;
  		target[i] = gba->video.frameCounter + 1;
-@@ -2486,7 +2890,11 @@ bool retro_load_game(const struct retro_game_info* game) {
+@@ -2486,7 +2940,11 @@ bool retro_load_game(const struct retro_game_info* game) {
  #endif
  
  #ifdef M_CORE_GBA
