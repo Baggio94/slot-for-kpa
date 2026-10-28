@@ -285,7 +285,16 @@ impl Settings {
             ..Self::default()
         }
     }
-    pub fn load(dir: &Path) -> Self {
+    /// Device-local first-install defaults. All other handhelds keep NATIVE.
+    pub fn first_install_defaults_for_device(retroid_pocket_classic: bool) -> Self {
+        let mut defaults = Self::first_install_defaults();
+        if retroid_pocket_classic { defaults.responsive_loop = true; }
+        defaults
+    }
+    /// Existing Settings.json always wins, including an explicit NATIVE choice.
+    /// Only a missing or unreadable first-install configuration gets a
+    /// model-specific default; never rewrite the file just to apply a default.
+    pub fn load_for_device(dir: &Path, retroid_pocket_classic: bool) -> Self {
         fs::read(dir.join(NAME)).ok()
             .and_then(|b| {
                 let old_json=serde_json::from_slice::<serde_json::Value>(&b).ok();
@@ -338,7 +347,10 @@ impl Settings {
                     s.status_opt_in_v2 = true;
                 }
                 s
-            }).unwrap_or_else(Self::first_install_defaults)
+            }).unwrap_or_else(|| Self::first_install_defaults_for_device(retroid_pocket_classic))
+    }
+    pub fn load(dir: &Path) -> Self {
+        Self::load_for_device(dir, false)
     }
     pub fn save(&self, dir: &Path) -> io::Result<()> {
         fs::create_dir_all(dir)?;
@@ -745,6 +757,31 @@ mod tests {
         assert!(!s.responsive_loop);
         assert_eq!(s.run_ahead_frames,0);
     }
+    #[test]
+    fn rpc_only_defaults_to_responsive_on_fresh_install_preserving_saved_pacing() {
+        let root=std::env::temp_dir().join(format!(
+            "slot-rpc-responsive-default-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        assert!(Settings::load_for_device(&root, true).responsive_loop);
+        assert!(!Settings::load_for_device(&root, false).responsive_loop);
+        assert!(!Settings::first_install_defaults_for_device(false).responsive_loop);
+        assert!(Settings::first_install_defaults_for_device(true).responsive_loop);
+        assert!(!root.join(NAME).exists(), "defaults must never auto-save");
+        let mut native=Settings::first_install_defaults_for_device(true);
+        native.responsive_loop=false;
+        native.save(&root).unwrap();
+        assert!(!Settings::load_for_device(&root, true).responsive_loop,
+            "a user's explicit persisted NATIVE choice must survive");
+        native.responsive_loop=true;
+        native.save(&root).unwrap();
+        assert!(Settings::load_for_device(&root, true).responsive_loop);
+        assert!(Settings::load_for_device(&root, false).responsive_loop,
+            "a saved RESPONSIVE choice must also survive other models");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn missing_settings_file_gets_new_defaults_but_existing_json_is_untouched() {
         let root=std::env::temp_dir().join(format!(
