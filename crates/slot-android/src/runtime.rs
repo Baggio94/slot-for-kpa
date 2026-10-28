@@ -242,6 +242,9 @@ static RA_SWAP_LOOP: AtomicBool = AtomicBool::new(false);
 // Updated by the GL owner after an entirely settled, fully preloaded shelf frame.
 // Kotlin may switch the idle carousel to requestRender without affecting games.
 static CAROUSEL_QUIET: AtomicBool = AtomicBool::new(false);
+// Android reports the exact device model before the first EGL surface is made.
+// Used only to choose initial settings when no stored settings file exists.
+static RPC_DEFAULT_RESPONSIVE: AtomicBool = AtomicBool::new(false);
 // The GLES owner reports a stable selection, never dereferencing SAF URIs itself.
 static WARM_ROM_URI: Mutex<Option<String>> = Mutex::new(None);
 // Read-only GL-owned library swap gate for Kotlin's background scanner.
@@ -842,9 +845,10 @@ impl Engine {
         slot_gfx::set_canvas_for_panel(size);
         slot_ui::density::set_scale(size.1 as f32 / OUT_H as f32);
         let mut gpu = Compositor::new(&AndroidSurface { size }).map_err(|e| e.to_string())?;
+        let retroid_pocket_classic = RPC_DEFAULT_RESPONSIVE.load(Ordering::Acquire);
         let settings = PATHS.lock().unwrap_or_else(|e| e.into_inner())
-            .as_ref().map(|(root, _)| Settings::load(root))
-            .unwrap_or_else(Settings::first_install_defaults);
+            .as_ref().map(|(root, _)| Settings::load_for_device(root, retroid_pocket_classic))
+            .unwrap_or_else(|| Settings::first_install_defaults_for_device(retroid_pocket_classic));
         // Upstream Slot delegates colour correction to libretro core options.
         // Disable the dev13 approximate GPU grade to avoid double correction.
         gpu.enable_context_recovery();
