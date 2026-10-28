@@ -821,7 +821,7 @@ class MainActivity : Activity() {
         // GPU Hard Sync exactly as before. No persistent setting is changed.
         val skipNativeGlFinishExperiment = intent.getBooleanExtra(
             "fyi.slot.konkr.experiment.skip_native_gl_finish", false)
-        Log.i(TAG, "Native pacing experiment: gl_finish=" +
+        Log.e(TAG, "Native pacing experiment: gl_finish=" +
             if (skipNativeGlFinishExperiment) "off" else "on")
         nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir)
         // The slot. canvas takes the display's shape (3:2 on the KONKR, 16:9,
@@ -973,7 +973,7 @@ class MainActivity : Activity() {
                     val spanNs = SystemClock.elapsedRealtimeNanos() - probeStartNs
                     if (spanNs >= 5_000_000_000L) {
                         val fpsX10 = callbacks.toLong() * 10_000_000_000L / spanNs
-                        Log.i(TAG, "GL callback pacing: callbacks=$callbacks fps_x10=$fpsX10 " +
+                        Log.e(TAG, "GL callback pacing: callbacks=$callbacks fps_x10=$fpsX10 " +
                             "gap_over_25ms=$gapOver25ms gap_over_40ms=$gapOver40ms " +
                             "gap_us_max=$gapUsMax native_us_max=$nativeUsMax " +
                             "native_over_16ms=$nativeOver16ms native_over_33ms=$nativeOver33ms " +
@@ -985,7 +985,7 @@ class MainActivity : Activity() {
                             "gl_finish_mean_us=${if (glFinishCalls > 0) glFinishUsTotal / glFinishCalls else -1L} " +
                             "gl_finish_max_us=$glFinishUsMax gl_finish_over8ms=$glFinishOver8ms")
                         val frameCorrelation = glPacingCorrelation.snapshotAndReset()
-                        Log.i(TAG, "GL vsync correlation: scheduler=ui " +
+                        Log.e(TAG, "GL vsync correlation: scheduler=ui " +
                             "ui_vsync_callbacks=${uiVsyncCallbacks.getAndSet(0L)} " +
                             "ui_vsync_over25=${uiVsyncOver25ms.getAndSet(0L)} " +
                             "ui_vsync_over40=${uiVsyncOver40ms.getAndSet(0L)} " +
