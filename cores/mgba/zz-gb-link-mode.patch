@@ -16,7 +16,7 @@ diff --git a/src/platform/libretro/libretro.c b/src/platform/libretro/libretro.c
 index 754846e..2aa210d 100644
 --- a/src/platform/libretro/libretro.c
 +++ b/src/platform/libretro/libretro.c
-@@ -17,8 +17,10 @@
+@@ -17,8 +17,11 @@
  #ifdef M_CORE_GB
  #include <mgba/gb/core.h>
  #include <mgba/internal/gb/gb.h>
@@ -24,10 +24,11 @@ index 754846e..2aa210d 100644
  #include <mgba/internal/gb/mbc.h>
  #include <mgba/internal/gb/overrides.h>
 +#include <mgba/internal/gb/sio/lockstep.h>
++#include <time.h>
  #endif
  #ifdef M_CORE_GBA
  #include <mgba/core/lockstep.h>
-@@ -164,6 +166,32 @@ static mColor* peerOutputBuffer;
+@@ -164,6 +167,32 @@ static mColor* peerOutputBuffer;
  static void* peerSavedata;
  #endif
  
@@ -60,7 +61,7 @@ index 754846e..2aa210d 100644
  static const int keymap[] = {
  	RETRO_DEVICE_ID_JOYPAD_A,
  	RETRO_DEVICE_ID_JOYPAD_B,
-@@ -1634,6 +1662,187 @@ static void _postFrame(bool skipFrame) {
+@@ -1634,6 +1663,209 @@ static void _postFrame(bool skipFrame) {
  #endif
  }
  
@@ -203,10 +204,21 @@ index 754846e..2aa210d 100644
 + * coordinator's event early to sync at a frame boundary; the Game Boy's credit scheduler
 + * distributes slack differently and the stall it fixes may not exist here. Reproduce the stall
 + * before porting the fix. */
++/* The linked GB scheduler runs on the Android GL thread. A missing lockstep
++ * wakeup must never spin without bound or freeze the whole application.
++ * The Rust cable runner observes this error and refuses to advance an
++ * incomplete emulation frame or commit its save to SOLO. */
++__attribute__((visibility("default"))) uint32_t slot_mgba_gb_link_fault(void) {
++	return linkMode && core && core->platform(core) == mPLATFORM_GB && linkStuck ? 1 : 0;
++}
++
 +static void _linkStepGB(void) {
 +	uint32_t target[2];
 +	uint32_t start[2];
 +	bool done[2] = { false, false };
++	struct timespec began, now;
++	clock_gettime(CLOCK_MONOTONIC, &began);
++	unsigned iterations = 0;
 +	int i;
 +	for (i = 0; i < 2; ++i) {
 +		struct GB* gb = linkGb[i].core->board;
@@ -214,6 +226,17 @@ index 754846e..2aa210d 100644
 +		start[i] = mTimingCurrentTime(&gb->timing);
 +	}
 +	while (!done[0] || !done[1]) {
++		/* Sparse wall-clock reads have no effect on ordinary 60Hz frames.
++		 * 500ms / 200k iterations are failure bounds, not frame pacing. */
++		if (++iterations >= 200000 || ((iterations & 1023u) == 0 &&
++			(clock_gettime(CLOCK_MONOTONIC, &now) != 0 ||
++			 ((int64_t)(now.tv_sec - began.tv_sec) * 1000 +
++			  (now.tv_nsec - began.tv_nsec) / 1000000) >= 500))) {
++			linkStuck = true;
++			fprintf(stderr, "mgba: GB Link frame watchdog: iterations=%u asleep=%d/%d done=%d/%d\\n",
++				iterations, linkGb[0].asleep, linkGb[1].asleep, done[0], done[1]);
++			return;
++		}
 +		bool ran = false;
 +		for (i = 0; i < 2; ++i) {
 +			struct LinkGB* self = &linkGb[i];
@@ -248,7 +271,7 @@ index 754846e..2aa210d 100644
  #ifdef M_CORE_GBA
  static void _linkSleep(struct mLockstepUser* user) {
  	((struct LinkGBA*) user)->asleep = true;
-@@ -1697,6 +1906,12 @@ static void _linkRunToFrameEnd(struct mCore* gbaCore) {
+@@ -1697,6 +1929,12 @@ static void _linkRunToFrameEnd(struct mCore* gbaCore) {
   * the mode to the other, and player 0 waits for player 1 to take it up. */
  static void _linkPlugIn(void) {
  	int i;
@@ -261,7 +284,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		struct mCore* gbaCore = linkGba[i].core;
  		gbaCore->rtc.override = RTC_FAKE_EPOCH;
-@@ -1735,6 +1950,12 @@ static void _linkUnplug(void) {
+@@ -1735,6 +1973,12 @@ static void _linkUnplug(void) {
  		return;
  	}
  	int i;
@@ -274,7 +297,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		linkGba[i].core->setPeripheral(linkGba[i].core, mPERIPH_GBA_LINK_PORT, NULL);
  		GBASIOLockstepCoordinatorDetach(&linkCoordinator, &linkGba[i].driver);
-@@ -1780,6 +2001,11 @@ static bool _linkCreatePeer(const struct retro_game_info* game, const char* bios
+@@ -1780,6 +2024,11 @@ static bool _linkCreatePeer(const struct retro_game_info* game, const char* bios
  	memset(linkGba, 0, sizeof(linkGba));
  	linkGba[linkPlayer].core = core;
  	linkGba[1 - linkPlayer].core = peer;
@@ -286,7 +309,7 @@ index 754846e..2aa210d 100644
  	return true;
  }
  
-@@ -1855,6 +2081,12 @@ static void _linkStep(void) {
+@@ -1855,6 +2104,12 @@ static void _linkStep(void) {
  	uint32_t start[2];
  	bool done[2] = { false, false };
  	int i;
@@ -299,7 +322,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		struct GBA* gba = linkGba[i].core->board;
  		target[i] = gba->video.frameCounter + 1;
-@@ -2486,7 +2718,11 @@ bool retro_load_game(const struct retro_game_info* game) {
+@@ -2486,7 +2741,11 @@ bool retro_load_game(const struct retro_game_info* game) {
  #endif
  
  #ifdef M_CORE_GBA
