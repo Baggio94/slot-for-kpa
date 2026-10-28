@@ -84,6 +84,21 @@ python3 "$ROOT/scripts/patch-mgba-speculative-audio.py" "$SRC"
 python3 "$ROOT/scripts/patch-mgba-active-sram.py" "$SRC"
 # Boktai's sunlight, set by slot. on every sample (0..255).
 python3 "$ROOT/scripts/patch-mgba-sun.py" "$SRC"
+# The pinned libretro version script hides ALL non-retro symbols unless
+# explicitly exported. Keep the new GB/GBC watchdog result observable via dlsym.
+python3 - "$SRC/src/platform/libretro/link.T" <<'PY'
+from pathlib import Path
+import sys
+version_script = Path(sys.argv[1])
+source = version_script.read_text()
+name = "slot_mgba_gb_link_fault;"
+if name not in source:
+    before = "slot_mgba_set_sun;"
+    if source.count(before) != 1:
+        raise SystemExit("mGBA GB Link fault export cannot find audited link.T anchor")
+    version_script.write_text(source.replace(before, before + " " + name, 1))
+assert version_script.read_text().count(name) == 1
+PY
 cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 \
