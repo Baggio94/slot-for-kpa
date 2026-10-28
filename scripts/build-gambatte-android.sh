@@ -21,7 +21,7 @@ fi
 # Game Link network fixes: a server that missed its client retries on wall
 # time, sockets cannot freeze the emulation thread, and SB receives the right
 # bits when a game reads it mid-transfer. Apply strictly, never half-patched.
-for patch in netlink-fixes.patch; do
+for patch in netlink-fixes.patch netlink-framing.patch; do
   patch_file="$ROOT/cores/gambatte/$patch"
   if git -C "$SRC" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
     echo "Already applied: $patch"
@@ -33,6 +33,8 @@ for patch in netlink-fixes.patch; do
     exit 1
   fi
 done
+# The exact socket helpers are shared with the CI host fragmentation tests.
+cp "$ROOT/cores/gambatte/net_serial_io.h" "$SRC/libgambatte/libretro/net_serial_io.h"
 # Upstream's own Android recipe (jni/Android.mk): RGB565 video, static libc++,
 # 16 KiB pages. Only the KONKR ABI is built.
 "$NDK/ndk-build" -C "$SRC/libgambatte/libretro/jni" -j4 \
@@ -58,6 +60,6 @@ cp "$CORE" "$DEST/libgambatte_libretro.so"
 mkdir -p "$ROOT/android/app/src/main/assets/licenses"
 cp "$SRC/COPYING" "$ROOT/android/app/src/main/assets/licenses/gambatte-COPYING.txt"
 cat > "$ROOT/android/app/src/main/assets/core-build-gambatte.json" <<JSON
-{"core":"gambatte","revision":"$PIN","patches":["netlink-fixes.patch"]}
+{"core":"gambatte","revision":"$PIN","patches":["netlink-fixes.patch","netlink-framing.patch","net_serial_io.h"]}
 JSON
 echo "Gambatte arm64 core: $DEST/libgambatte_libretro.so"
