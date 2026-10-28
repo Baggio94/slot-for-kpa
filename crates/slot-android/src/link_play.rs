@@ -403,6 +403,18 @@ impl LinkPlay {
                 self.waiting_for_input_since = None;
                 let core_started = Instant::now();
                 core.run_frame_linked(p0, p1);
+                // GB/GBC linked mGBA must not advance the Cable frame after
+                // the native GB lockstep scheduler aborted an incomplete step.
+                // Otherwise one peer may silently consume future remote input
+                // and diverge, or the app can remain stuck in retro_run().
+                if core.link_step_fault() {
+                    let detail = "mGBA GB/GBC Link: incomplete native frame; ending unsafe lockstep session";
+                    #[cfg(target_os = "android")]
+                    crate::game::log_launch_timing(detail);
+                    #[cfg(not(target_os = "android"))]
+                    eprintln!("SlotKONKR: {detail}");
+                    return self.fail(LinkError::InvalidState);
+                }
                 let us = core_started.elapsed().as_micros().min(u64::MAX as u128) as u64;
                 self.pacing.core_calls += 1;
                 self.pacing.core_total_us = self.pacing.core_total_us.saturating_add(us);
@@ -490,6 +502,50 @@ mod tests {
         let b = Arc::new(Mutex::new(VecDeque::new()));
         (Box::new(Wire { recv: a.clone(), send: b.clone() }),
          Box::new(Wire { recv: b, send: a }))
+    }
+
+    /// A broken native GB scheduler may return without completing the next
+    /// emulated frame. Detect this before incrementing Cable's frame cursor.
+    struct FaultedGbCore { inner: MockCore }
+    impl RetroCore for FaultedGbCore {
+        fn load(&mut self, rom: &std::path::Path) -> Result<(), slot_retro::CoreError> {
+            self.inner.load(rom)
+        }
+        fn run_frame(&mut self, input: ButtonMask) { self.inner.run_frame(input) }
+        fn run_frame_linked(&mut self, a: ButtonMask, b: ButtonMask) {
+            self.inner.run_frame_linked(a, b);
+        }
+        fn link_step_fault(&self) -> bool { true }
+        fn video_xrgb8888(&self) -> &[u8] { self.inner.video_xrgb8888() }
+        fn take_audio(&mut self) -> Vec<i16> { self.inner.take_audio() }
+        fn serialize(&mut self) -> Result<Vec<u8>, slot_retro::CoreError> {
+            self.inner.serialize()
+        }
+        fn unserialize(&mut self, bytes: &[u8]) -> Result<(), slot_retro::CoreError> {
+            self.inner.unserialize(bytes)
+        }
+        fn save_ram(&self) -> Option<Vec<u8>> { self.inner.save_ram() }
+        fn load_save_ram(&mut self, bytes: &[u8]) -> Result<(), slot_retro::CoreError> {
+            self.inner.load_save_ram(bytes)
+        }
+        fn av_info(&self) -> slot_retro::AvInfo { self.inner.av_info() }
+    }
+
+    #[test]
+    fn gb_core_lockstep_failure_cannot_commit_incomplete_cable_frame() {
+        let inbound = Arc::new(Mutex::new(VecDeque::from([
+            cable::ready_packet().to_vec()
+        ])));
+        let outbound = Arc::new(Mutex::new(VecDeque::<Vec<u8>>::new()));
+        let wire: Box<dyn LinkChannel> = Box::new(Wire { recv: inbound, send: outbound });
+        let mut core = FaultedGbCore { inner: MockCore::new() };
+        let mut link = LinkPlay::begin(&mut core, Role::Host, LinkKind::Cable, wire).unwrap();
+        assert_eq!(link.cable.as_ref().unwrap().frame(), 0);
+        assert_eq!(link.frame(&mut core, ButtonMask(0)),
+            Frame::Failed(LinkError::InvalidState));
+        assert_eq!(link.cable.as_ref().unwrap().frame(), 0,
+            "fatal native GB step must not consume the synced input frame");
+        assert_eq!(link.fault(), Some(LinkError::InvalidState));
     }
 
     #[test]

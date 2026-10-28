@@ -102,6 +102,10 @@ pub trait RetroCore: Send {
     fn run_frame_linked(&mut self, p1: ButtonMask, _p2: ButtonMask) {
         self.run_frame(p1);
     }
+    /// True when a linked native core could not finish its emulation frame.
+    /// The Link session must fail without advancing either player's input
+    /// counters. Unpatched, standalone and mocked cores default to healthy.
+    fn link_step_fault(&self) -> bool { false }
     fn set_option(&mut self, _key: &str, _value: &str) {}
     /// A solar cartridge's light, 0..=255 (mGBA's own levels stop at 205).
     fn set_sun(&mut self, _luminance: u8) {}

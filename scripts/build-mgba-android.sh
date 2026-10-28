@@ -84,6 +84,21 @@ python3 "$ROOT/scripts/patch-mgba-speculative-audio.py" "$SRC"
 python3 "$ROOT/scripts/patch-mgba-active-sram.py" "$SRC"
 # Boktai's sunlight, set by slot. on every sample (0..255).
 python3 "$ROOT/scripts/patch-mgba-sun.py" "$SRC"
+# The pinned libretro version script hides ALL non-retro symbols unless
+# explicitly exported. Keep the new GB/GBC watchdog result observable via dlsym.
+python3 - "$SRC/src/platform/libretro/link.T" <<'PY'
+from pathlib import Path
+import sys
+version_script = Path(sys.argv[1])
+source = version_script.read_text()
+name = "slot_mgba_gb_link_fault;"
+if name not in source:
+    before = "slot_mgba_set_sun;"
+    if source.count(before) != 1:
+        raise SystemExit("mGBA GB Link fault export cannot find audited link.T anchor")
+    version_script.write_text(source.replace(before, before + " " + name, 1))
+assert version_script.read_text().count(name) == 1
+PY
 cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 \
@@ -109,7 +124,7 @@ esac
 NM="$NDK/toolchains/llvm/prebuilt/$NDK_HOST/bin/llvm-nm"
 [ -x "$NM" ] || { echo "Android NDK llvm-nm missing: $NM" >&2; exit 1; }
 SYMBOLS="$("$NM" -D --defined-only "$CORE")"
-for symbol in retro_init retro_load_game retro_run retro_serialize retro_unserialize slot_mgba_audio_sidecar slot_mgba_audio_sidecar_size slot_mgba_clone_active_save_ram slot_mgba_set_sun; do
+for symbol in retro_init retro_load_game retro_run retro_serialize retro_unserialize slot_mgba_audio_sidecar slot_mgba_audio_sidecar_size slot_mgba_clone_active_save_ram slot_mgba_set_sun slot_mgba_gb_link_fault; do
   grep -q " $symbol$" <<< "$SYMBOLS" || {
     echo "mGBA ABI symbol missing: $symbol" >&2
     exit 1
