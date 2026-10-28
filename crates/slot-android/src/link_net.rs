@@ -114,8 +114,13 @@ impl LabGreeting {
             std::str::from_utf8(&self.game).unwrap_or(""))
             || !crate::link_kind::has_wireless_adapter(
             std::str::from_utf8(&other.game).unwrap_or(""))) { return false; }
+        // mGBA Cable can run with its internal BIOS or a user-supplied BIOS.
+        // A different BIOS may change boot timing, but is not a protocol
+        // incompatibility. Keep the SHA-256 in the greeting for diagnostics;
+        // gpSP and Gambatte retain their stricter BIOS identity requirement.
         if self.backend!=other.backend || self.mode!=other.mode ||
-            self.core_sha256!=other.core_sha256 || self.bios_sha256!=other.bios_sha256{return false;}
+            self.core_sha256!=other.core_sha256 ||
+            (self.backend!=1 && self.bios_sha256!=other.bios_sha256){return false;}
         let mode=match self.mode{1=>crate::link_kind::LinkKind::Cable,
             2=>crate::link_kind::LinkKind::Wireless,_=>return false};
         if self.backend==2 {
@@ -144,7 +149,20 @@ fn vet_lab(stream:&mut TcpStream,local:&LabGreeting)->Option<LabGreeting>{
         stream.write_all(&local.bytes()).is_err(){return None;}
     if stream.set_read_timeout(None).is_err() ||
         stream.set_write_timeout(None).is_err(){return None;}
+    report_mgba_bios_mismatch(local, &peer);
     Some(peer)
+}
+
+/// Only report successfully negotiated differences: no BIOS bytes or hashes
+/// are exposed in logs, and the compatibility handshake stays unchanged.
+fn report_mgba_bios_mismatch(local: &LabGreeting, peer: &LabGreeting) {
+    if local.backend == 1 && local.bios_sha256 != peer.bios_sha256 {
+        #[cfg(target_os = "android")]
+        crate::game::log_launch_timing(
+            "KMLB/5 mGBA Cable: peer BIOS differs or is absent; Link permitted");
+        #[cfg(not(target_os = "android"))]
+        let _ = peer;
+    }
 }
 
 const CONTROL_ENDED: u8 = 0x00;
@@ -176,8 +194,9 @@ pub struct TcpLink {
 }
 
 impl TcpLink {
-    /// Lab-only strict negotiation: backend, Cable/Wireless mode, exact ROM,
-    /// compiled libretro core and active GBA BIOS must all match BEFORE Ready.
+    /// Lab negotiation validates backend, Link mode and core recipe; ROM
+    /// compatibility remains strict. mGBA tolerates different/missing BIOS
+    /// hashes, while the other backends still compare BIOS exactly.
     pub fn host_lab_greeted_until(
         addr: &str, port: u16, bound: Duration, cancel: &Cancel,
         identity: &LabGreeting, listening: impl FnOnce(),
@@ -252,6 +271,7 @@ impl TcpLink {
             if !identity.accepts(&host){return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,"incompatible KMLB/3 host identity"));}
             stream.set_read_timeout(None)?;stream.set_write_timeout(None)?;
+            report_mgba_bios_mismatch(identity, &host);
             TcpLink::wrap_identified(stream, Some(host))
         }
     }
@@ -357,9 +377,10 @@ impl TcpLink {
         })
     }
 
-    /// Authenticated against the local backend/core/BIOS before the socket
-    /// ever became visible to the link session. Used by KMLB/4 to prove the
-    /// remote ROM transfer matches the negotiated SHA-256 and game code.
+    /// Matched against the local backend/core/Link mode before the socket
+    /// became visible to the game. For mGBA, a differing BIOS is logged but
+    /// does not block the connection. KMLB/4 still verifies remote ROM data
+    /// against its negotiated SHA-256 and game code.
     pub fn peer_identity(&self) -> Option<&LabGreeting> {
         self.peer_identity.as_ref()
     }
@@ -779,6 +800,74 @@ mod lab_negotiation_tests {
     }
 
     #[test]
+    fn mgba_bios_difference_is_informational_and_other_checks_remain_strict() {
+        let host = identity();
+        for peer_bios in [[0; 32], [0x77; 32]] {
+            let mut guest = host.clone();
+            guest.bios_sha256 = peer_bios;
+            assert_ne!(host.bios_sha256, guest.bios_sha256);
+            assert!(host.accepts(&guest), "mGBA host permits a missing/different BIOS");
+            assert!(guest.accepts(&host), "mGBA joiner permits a missing/different BIOS");
+            assert_ne!(host.bytes(), guest.bytes(), "BIOS fingerprints stay on the wire");
+            assert_eq!(LabGreeting::decode(&guest.bytes()), Some(guest.clone()));
+
+            let mut wrong = guest.clone();
+            wrong.core_sha256[0] ^= 1;
+            assert!(!host.accepts(&wrong), "different mGBA core recipe still refused");
+            let mut wrong = guest.clone();
+            wrong.rom_sha256[0] ^= 1;
+            assert!(!host.accepts(&wrong), "modified ROM with same game code still refused");
+            let mut wrong = guest.clone();
+            wrong.mode = 2;
+            assert!(!host.accepts(&wrong), "mGBA Cable cannot negotiate RFU");
+            let mut wrong = guest.clone();
+            wrong.backend = 2;
+            assert!(!host.accepts(&wrong), "different backend still refused");
+        }
+
+        for backend in [2, 3] {
+            let mut strict = host.clone();
+            strict.backend = backend;
+            let mut mismatched = strict.clone();
+            mismatched.bios_sha256 = [0; 32];
+            assert!(!strict.accepts(&mismatched),
+                "gpSP/Gambatte BIOS safety policy must remain unchanged");
+        }
+    }
+
+    #[test]
+    fn mgba_missing_and_different_bios_complete_real_tcp_handshakes() {
+        use std::net::{SocketAddr, TcpListener};
+        for (host_bios, join_bios) in [
+            ([0; 32], [5; 32]),
+            ([5; 32], [0; 32]),
+            ([5; 32], [0xA7; 32]),
+        ] {
+            let mut host_greeting = identity();
+            host_greeting.bios_sha256 = host_bios;
+            let mut join_greeting = identity();
+            join_greeting.bios_sha256 = join_bios;
+            let reserved = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr: SocketAddr = reserved.local_addr().unwrap();
+            drop(reserved);
+            let (ready, listening) = channel();
+            let expected = host_greeting.clone();
+            let host_worker = std::thread::spawn(move || {
+                TcpLink::host_lab_greeted_until("127.0.0.1", addr.port(),
+                    Duration::from_secs(5), &Cancel::new(), &expected,
+                    || { ready.send(()).unwrap(); })
+                    .expect("mGBA Host must accept differing BIOS fingerprints")
+            });
+            listening.recv_timeout(Duration::from_secs(3)).unwrap();
+            let guest = TcpLink::join_lab_greeted(addr, &join_greeting)
+                .expect("mGBA Join must accept differing BIOS fingerprints");
+            let host = host_worker.join().unwrap();
+            assert_eq!(host.peer_identity().unwrap().bios_sha256, join_bios);
+            assert_eq!(guest.peer_identity().unwrap().bios_sha256, host_bios);
+        }
+    }
+
+    #[test]
     fn lab_greeting_is_not_legacy_slot_one() {
         assert_eq!(&identity().bytes()[..4], b"KMLB");
     }
@@ -821,7 +910,9 @@ mod lab_negotiation_tests {
         let addr: SocketAddr = reserve.local_addr().unwrap();
         drop(reserve);
         let (started, listening) = channel();
-        let expected = identity();
+        // KMLB/3 gpSP remains strict, including matching BIOS.
+        let mut expected = identity();
+        expected.backend = 2;
         let wanted = expected.clone();
         let host = thread::spawn(move || {
             TcpLink::host_lab_greeted_until(
