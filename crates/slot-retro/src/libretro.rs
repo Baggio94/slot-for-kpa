@@ -465,6 +465,9 @@ type ActiveBatteryFn = unsafe extern "C" fn(*mut c_void, usize, *mut usize) -> b
 type GpspBackendFn = unsafe extern "C" fn() -> c_int;
 // KPA mGBA: the solar sensor's light, 0..=255 (scripts/patch-mgba-sun.py).
 type SetSunFn = unsafe extern "C" fn(c_int);
+// Linked GB/GBC: 1 means the native mGBA frame scheduler stopped without
+// producing a complete paired frame. The GBA Link path is unaffected.
+type MgbaGbLinkFaultFn = unsafe extern "C" fn() -> u32;
 struct AudioSidecar {
     transfer: AudioSidecarFn,
     snapshot: Vec<u8>,
@@ -483,6 +486,7 @@ pub struct LibretroCore {
     mgba_audio: Option<AudioSidecar>,
     mgba_active_battery: Option<ActiveBatteryFn>,
     mgba_set_sun: Option<SetSunFn>,
+    mgba_gb_link_fault: Option<MgbaGbLinkFaultFn>,
     // mGBA's retro_serialize_size() serializes the whole core internally;
     // skip this duplicate work on stable-sized speculative snapshots.
     mgba_runahead_size_age: u16,
@@ -636,6 +640,10 @@ impl LibretroCore {
         let mgba_set_sun = if is_mgba {
             unsafe { lib.get::<SetSunFn>(b"slot_mgba_set_sun\0") }.ok().map(|v| *v)
         } else { None };
+        let mgba_gb_link_fault = if is_mgba {
+            unsafe { lib.get::<MgbaGbLinkFaultFn>(b"slot_mgba_gb_link_fault\0") }
+                .ok().map(|v| *v)
+        } else { None };
         let gpsp_backend = if is_gpsp {
             unsafe { lib.get::<GpspBackendFn>(b"slot_gpsp_backend_is_interpreter\0") }
                 .ok().map(|v| *v)
@@ -711,6 +719,7 @@ impl LibretroCore {
             mgba_audio: None,
             mgba_active_battery,
             mgba_set_sun,
+            mgba_gb_link_fault,
             mgba_runahead_size_age: 0,
             host,
             rom: Vec::new(),
@@ -919,6 +928,11 @@ impl RetroCore for LibretroCore {
 
     fn run_frame(&mut self, input: ButtonMask) {
         self.run_frame_linked(input, ButtonMask::default());
+    }
+
+    fn link_step_fault(&self) -> bool {
+        self.mgba_gb_link_fault
+            .is_some_and(|probe| unsafe { probe() != 0 })
     }
 
     fn run_frame_linked(&mut self, p1: ButtonMask, p2: ButtonMask) {
