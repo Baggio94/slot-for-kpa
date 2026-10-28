@@ -32,7 +32,7 @@ index 754846e..2aa210d 100644
  #endif
  #ifdef M_CORE_GBA
  #include <mgba/core/lockstep.h>
-@@ -164,6 +171,117 @@ static mColor* peerOutputBuffer;
+@@ -164,6 +171,143 @@ static mColor* peerOutputBuffer;
  static void* peerSavedata;
  #endif
  
@@ -68,8 +68,27 @@ index 754846e..2aa210d 100644
 + * Diagnostic only: never changes emulated CPU credits or serial scheduling. */
 +#ifdef __ANDROID__
 +static uint64_t gbDiagSnapshot;
++static uint64_t gbDiagInnerSnapshot;
++static uint32_t gbDiagInnerSeq;
 +static uint32_t gbDiagGeneration;
 +static uint32_t gbDiagCompleted;
++
++/* Inner-core trace hook. Events and CPU progress are sampled by the
++ * independent monitor. These atomics are written by only the GL thread,
++ * even when that thread is permanently stuck inside mTimingTick(). */
++__attribute__((visibility("hidden"))) void slot_mgba_gb_link_inner_trace(
++	unsigned kind, unsigned arg, unsigned value) {
++	if (!linkMode || !linkPlugged || !core ||
++	    core->platform(core) != mPLATFORM_GB) {
++		return;
++	}
++	uint32_t seq = ++gbDiagInnerSeq;
++	uint64_t word = ((uint64_t) (kind & 0xff) << 56)
++		| ((uint64_t) (arg & 0xffff) << 40)
++		| ((uint64_t) (value & 0xffff) << 24)
++		| (seq & 0xffffff);
++	__atomic_store_n(&gbDiagInnerSnapshot, word, __ATOMIC_RELEASE);
++}
 +
 +/* 64-bit snapshot:
 + * [63:32] completed linked frames; [31:16] iteration;
@@ -108,14 +127,19 @@ index 754846e..2aa210d 100644
 +			continue;
 +		}
 +		if (++stagnant >= 8 && (stagnant == 8 || (stagnant % 8) == 0)) {
++			uint64_t inner = __atomic_load_n(&gbDiagInnerSnapshot, __ATOMIC_ACQUIRE);
 +			__android_log_print(ANDROID_LOG_ERROR, "SlotKONKR",
-+				"GB Link CPU stall: duration_ms=%u frame=%u stage=%u player=%u phase=%u asleep=%u/%u iter=%u session=%u",
++				"GB Link CPU stall: duration_ms=%u frame=%u stage=%u player=%u phase=%u asleep=%u/%u iter=%u session=%u inner_kind=%u inner_arg=%u inner_value=%u inner_seq=%u",
 +				stagnant * 250, completed, stage,
 +				(unsigned) ((status >> 10) & 3),
 +				(unsigned) ((status >> 12) & 15),
 +				(unsigned) ((status >> 8) & 1),
 +				(unsigned) ((status >> 9) & 1),
-+				(unsigned) ((status >> 16) & 0xffff), generation);
++				(unsigned) ((status >> 16) & 0xffff), generation,
++				(unsigned) ((inner >> 56) & 0xff),
++				(unsigned) ((inner >> 40) & 0xffff),
++				(unsigned) ((inner >> 24) & 0xffff),
++				(unsigned) (inner & 0xffffff));
 +		}
 +	}
 +	return NULL;
@@ -123,7 +147,9 @@ index 754846e..2aa210d 100644
 +
 +static void _gbDiagStart(void) {
 +	gbDiagCompleted = 0;
++	gbDiagInnerSeq = 0;
 +	__atomic_store_n(&gbDiagSnapshot, 0, __ATOMIC_RELEASE);
++	__atomic_store_n(&gbDiagInnerSnapshot, 0, __ATOMIC_RELEASE);
 +	uint32_t generation = __atomic_add_fetch(&gbDiagGeneration, 1, __ATOMIC_ACQ_REL);
 +	pthread_t watcher;
 +	int rc = pthread_create(&watcher, NULL, _gbDiagMonitor,
@@ -150,7 +176,7 @@ index 754846e..2aa210d 100644
  static const int keymap[] = {
  	RETRO_DEVICE_ID_JOYPAD_A,
  	RETRO_DEVICE_ID_JOYPAD_B,
-@@ -1634,6 +1752,220 @@ static void _postFrame(bool skipFrame) {
+@@ -1634,6 +1778,220 @@ static void _postFrame(bool skipFrame) {
  #endif
  }
  
@@ -371,7 +397,7 @@ index 754846e..2aa210d 100644
  #ifdef M_CORE_GBA
  static void _linkSleep(struct mLockstepUser* user) {
  	((struct LinkGBA*) user)->asleep = true;
-@@ -1697,6 +2029,12 @@ static void _linkRunToFrameEnd(struct mCore* gbaCore) {
+@@ -1697,6 +2055,12 @@ static void _linkRunToFrameEnd(struct mCore* gbaCore) {
   * the mode to the other, and player 0 waits for player 1 to take it up. */
  static void _linkPlugIn(void) {
  	int i;
@@ -384,7 +410,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		struct mCore* gbaCore = linkGba[i].core;
  		gbaCore->rtc.override = RTC_FAKE_EPOCH;
-@@ -1735,6 +2073,12 @@ static void _linkUnplug(void) {
+@@ -1735,6 +2099,12 @@ static void _linkUnplug(void) {
  		return;
  	}
  	int i;
@@ -397,7 +423,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		linkGba[i].core->setPeripheral(linkGba[i].core, mPERIPH_GBA_LINK_PORT, NULL);
  		GBASIOLockstepCoordinatorDetach(&linkCoordinator, &linkGba[i].driver);
-@@ -1780,6 +2124,11 @@ static bool _linkCreatePeer(const struct retro_game_info* game, const char* bios
+@@ -1780,6 +2150,11 @@ static bool _linkCreatePeer(const struct retro_game_info* game, const char* bios
  	memset(linkGba, 0, sizeof(linkGba));
  	linkGba[linkPlayer].core = core;
  	linkGba[1 - linkPlayer].core = peer;
@@ -409,7 +435,7 @@ index 754846e..2aa210d 100644
  	return true;
  }
  
-@@ -1855,6 +2204,12 @@ static void _linkStep(void) {
+@@ -1855,6 +2230,12 @@ static void _linkStep(void) {
  	uint32_t start[2];
  	bool done[2] = { false, false };
  	int i;
@@ -422,7 +448,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		struct GBA* gba = linkGba[i].core->board;
  		target[i] = gba->video.frameCounter + 1;
-@@ -2486,7 +2841,11 @@ bool retro_load_game(const struct retro_game_info* game) {
+@@ -2486,7 +2867,11 @@ bool retro_load_game(const struct retro_game_info* game) {
  #endif
  
  #ifdef M_CORE_GBA
