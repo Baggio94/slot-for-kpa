@@ -352,8 +352,8 @@ index 754846e..2aa210d 100644
 +	gbLockstep.d.addCycles = _gbAddCycles;
 +	gbLockstep.d.useCycles = _gbUseCycles;
 +	gbLockstep.d.unusedCycles = _gbUnusedCycles;
-+	gbLockstep.d.unload = _gbUnload;
 +	gbDeferredMasterCredits = 0;
++	gbLockstep.d.unload = _gbUnload;
 +	for (i = 0; i < 2; ++i) {
 +		struct LinkGB* player = &linkGb[i];
 +		player->asleep = false;
