@@ -68,6 +68,9 @@ void SM83Run(struct SM83Core* cpu) {
 \t\t}
 \t\tif (cpu->cycles < cpu->nextEvent) {
 \t\t\trunning = _SM83TickInternal(cpu) && running;
+\t\t\t/* This tick can dispatch a serial event. Once the current GB
+\t\t\t * is parked, no further instructions may execute before wake. */
+\t\t\tif (slot_mgba_gb_link_should_yield(cpu)) return;
 \t\t} else {
 \t\t\tslot_mgba_gb_link_inner_trace(12, cpu->pc, cpu->cycles);
 \t\t\tcpu->irqh.processEvents(cpu);
