@@ -87,6 +87,10 @@ python3 "$ROOT/scripts/patch-mgba-sun.py" "$SRC"
 # Native diagnostic monitor is Android-only; the core links Android's liblog
 # to report a stalled GB Link from its separate monitor thread even when the
 # main GL emulation thread never returns from SM83Run().
+# Read-only inner-core probes reveal whether SM83 CPU stepping, GB event timing
+# or Game Boy SIO lockstep owns a deterministic spin. This does not change
+# emulated timing/saves. Do not ship this experimental trace in stable builds.
+python3 "$ROOT/scripts/patch-mgba-gb-inner-trace.py" "$SRC"
 # The pinned libretro version script hides ALL non-retro symbols unless
 # explicitly exported. Keep the new GB/GBC watchdog result observable via dlsym.
 python3 - "$SRC/src/platform/libretro/link.T" <<'PY'
@@ -155,6 +159,6 @@ fi
 # F11: machine-readable provenance shipped INSIDE the APK. These fields
 # record the exact pinned source and safety patches used in this binary.
 cat > "$ROOT/android/app/src/main/assets/core-build-mgba.json" <<EOF
-{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py","patch-mgba-sun.py"],"gb_link_diagnostics":"android_spin_monitor_v1"}
+{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py","patch-mgba-sun.py"],"gb_link_diagnostics":"android_spin_monitor_v1_inner_trace_v1"}
 EOF
 echo "mGBA arm64 libretro: $DEST/libmgba_libretro.so"
