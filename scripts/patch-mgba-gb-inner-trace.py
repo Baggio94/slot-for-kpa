@@ -47,6 +47,7 @@ replace("src/sm83/sm83.c", [
 extern void slot_mgba_gb_link_inner_trace(unsigned, unsigned, unsigned);
 extern void slot_mgba_gb_link_mark_fault(void);
 extern uint32_t slot_mgba_gb_link_fault(void);
+extern bool slot_mgba_gb_link_should_yield(const struct SM83Core*);
 
 void SM83Run(struct SM83Core* cpu) {
 \tbool running = true;
@@ -71,6 +72,10 @@ void SM83Run(struct SM83Core* cpu) {
 \t\t\tslot_mgba_gb_link_inner_trace(12, cpu->pc, cpu->cycles);
 \t\t\tcpu->irqh.processEvents(cpu);
 \t\t\tslot_mgba_gb_link_inner_trace(13, cpu->pc, cpu->cycles);
+\t\t\t/* The lockstep peer has suspended this GB. Return control
+\t\t\t * to Slot's scheduler instead of processing 1-cycle events
+\t\t\t * indefinitely while the CPU is supposed to sleep. */
+\t\t\tif (slot_mgba_gb_link_should_yield(cpu)) return;
 \t\t\trunning = false;
 \t\t}
 \t}
@@ -89,6 +94,7 @@ replace("src/gb/gb.c", [
 extern void slot_mgba_gb_link_inner_trace(unsigned, unsigned, unsigned);
 extern void slot_mgba_gb_link_mark_fault(void);
 extern uint32_t slot_mgba_gb_link_fault(void);
+extern bool slot_mgba_gb_link_should_yield(const struct SM83Core*);
 
 void GBProcessEvents(struct SM83Core* cpu) {
 \tstruct GB* gb = (struct GB*) cpu->master;
@@ -106,6 +112,14 @@ void GBProcessEvents(struct SM83Core* cpu) {
 \t\t\t\tslot_mgba_gb_link_inner_trace(22, cpu->pc, nextEvent);
 \t\t\t\tnextEvent = mTimingTick(&gb->timing, nextEvent);
 \t\t\t\tslot_mgba_gb_link_inner_trace(23, cpu->pc, nextEvent);
+\t\t\t\tif (slot_mgba_gb_link_should_yield(cpu)) {
+\t\t\t\t\t/* mLockstep.wait/useCycles suspended this GB during
+\t\t\t\t\t * the timing callback. In Qt the thread blocks HERE.
+\t\t\t\t\t * Preserve the timer queue and yield to the peer. */
+\t\t\t\t\tcpu->nextEvent = nextEvent;
+\t\t\t\t\tgb->earlyExit = false;
+\t\t\t\t\treturn;
+\t\t\t\t}
 \t\t\t\tif (++diagnosticEventTicks >= 32768) {
 \t\t\t\t\tslot_mgba_gb_link_mark_fault();
 \t\t\t\t\tif (slot_mgba_gb_link_fault()) {
