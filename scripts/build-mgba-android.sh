@@ -109,7 +109,7 @@ esac
 NM="$NDK/toolchains/llvm/prebuilt/$NDK_HOST/bin/llvm-nm"
 [ -x "$NM" ] || { echo "Android NDK llvm-nm missing: $NM" >&2; exit 1; }
 SYMBOLS="$("$NM" -D --defined-only "$CORE")"
-for symbol in retro_init retro_load_game retro_run retro_serialize retro_unserialize slot_mgba_audio_sidecar slot_mgba_audio_sidecar_size slot_mgba_clone_active_save_ram slot_mgba_set_sun; do
+for symbol in retro_init retro_load_game retro_run retro_serialize retro_unserialize slot_mgba_audio_sidecar slot_mgba_audio_sidecar_size slot_mgba_clone_active_save_ram slot_mgba_set_sun slot_mgba_gb_link_fault; do
   grep -q " $symbol$" <<< "$SYMBOLS" || {
     echo "mGBA ABI symbol missing: $symbol" >&2
     exit 1
