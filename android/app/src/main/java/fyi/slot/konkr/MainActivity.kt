@@ -9,6 +9,7 @@ import android.media.AudioTimestamp
 import android.media.PlaybackParams
 import android.os.Handler
 import android.os.Looper
+import android.os.Build
 import android.os.SystemClock
 import android.os.BatteryManager
 import android.os.VibrationEffect
@@ -124,7 +125,8 @@ class MainActivity : Activity() {
     external fun nativeShelfIndicatorFlags(): Int
     external fun nativeSetShelfStatus(code: Int)
     external fun nativeSetLibrary(json: String): Int
-    external fun nativeConfigure(dataDir: String, libraryDir: String)
+    external fun nativeConfigure(dataDir: String, libraryDir: String,
+        isRetroidPocketClassic: Boolean)
     external fun nativePollLaunchUri(): String?
     external fun nativeGameReady(uri: String, path: String)
     external fun nativeGameError(uri: String, message: String)
@@ -817,7 +819,10 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         // A staged sign-out must finish before any native HTTP worker is started.
         val cleanSignOut = RaAccount.finishPendingSignOut(filesDir)
-        nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir)
+        // Device-specific *initial preference* only. Existing persisted
+        // global/per-cartridge choices are never rewritten.
+        nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir,
+            Build.MODEL.equals("Retroid Pocket Classic", ignoreCase = true))
         // The slot. canvas takes the display's shape (3:2 on the KONKR, 16:9,
         // 4:3...) before the renderer builds its first face.
         windowManager.maximumWindowMetrics.bounds.let { panel ->
