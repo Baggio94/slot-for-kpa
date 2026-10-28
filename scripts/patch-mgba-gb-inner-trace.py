@@ -45,11 +45,22 @@ replace("src/sm83/sm83.c", [
 """,
      """/* SLOT_GB_INNER_TRACE_V1 */
 extern void slot_mgba_gb_link_inner_trace(unsigned, unsigned, unsigned);
+extern void slot_mgba_gb_link_mark_fault(void);
+extern uint32_t slot_mgba_gb_link_fault(void);
 
 void SM83Run(struct SM83Core* cpu) {
 \tbool running = true;
 \tunsigned diagnosticLoops = 0;
 \twhile (running || cpu->executionState != SM83_CORE_FETCH) {
+\t\t/* A parked GB may run its serial event forever without returning
+\t\t * to Slot's outer frame watchdog. Exit only if the linked GB
+\t\t * fault marker confirms a failed paired frame. */
+\t\tif (slot_mgba_gb_link_fault()) return;
+\t\tif (diagnosticLoops >= 262144) {
+\t\t\tslot_mgba_gb_link_mark_fault();
+\t\t\tif (slot_mgba_gb_link_fault()) return;
+\t\t\tdiagnosticLoops = 0;
+\t\t}
 \t\t/* Log only every 1024 ticks to keep diagnostic overhead negligible. */
 \t\tif ((++diagnosticLoops & 1023) == 0) {
 \t\t\tslot_mgba_gb_link_inner_trace(11, cpu->pc, cpu->cycles);
@@ -76,10 +87,13 @@ replace("src/gb/gb.c", [
 """,
      """/* SLOT_GB_INNER_TRACE_V1 */
 extern void slot_mgba_gb_link_inner_trace(unsigned, unsigned, unsigned);
+extern void slot_mgba_gb_link_mark_fault(void);
+extern uint32_t slot_mgba_gb_link_fault(void);
 
 void GBProcessEvents(struct SM83Core* cpu) {
 \tstruct GB* gb = (struct GB*) cpu->master;
 \tbool wasHalted = cpu->halted;
+\tunsigned diagnosticEventTicks = 0;
 \tslot_mgba_gb_link_inner_trace(21, cpu->pc, cpu->cycles);
 \twhile (true) {
 """),
@@ -92,6 +106,16 @@ void GBProcessEvents(struct SM83Core* cpu) {
 \t\t\t\tslot_mgba_gb_link_inner_trace(22, cpu->pc, nextEvent);
 \t\t\t\tnextEvent = mTimingTick(&gb->timing, nextEvent);
 \t\t\t\tslot_mgba_gb_link_inner_trace(23, cpu->pc, nextEvent);
+\t\t\t\tif (++diagnosticEventTicks >= 32768) {
+\t\t\t\t\tslot_mgba_gb_link_mark_fault();
+\t\t\t\t\tif (slot_mgba_gb_link_fault()) {
+\t\t\t\t\t\t/* Leave CPU event time intact so the incomplete
+\t\t\t\t\t\t * state can be discarded, never committed. */
+\t\t\t\t\t\tcpu->nextEvent = nextEvent;
+\t\t\t\t\t\treturn;
+\t\t\t\t\t}
+\t\t\t\t\tdiagnosticEventTicks = 0;
+\t\t\t\t}
 \t\t\t} while (gb->cpuBlocked);
 """),
     ("GBProcessEvents exit",
