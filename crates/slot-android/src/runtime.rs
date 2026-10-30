@@ -237,6 +237,8 @@ static EMULATION_DIAGNOSTICS: Mutex<Option<String>> = Mutex::new(None);
 static SHELF_INDICATOR_FLAGS: AtomicI32 = AtomicI32::new(0);
 // Read-only lifecycle bit polled by Kotlin; never touch WifiManager on GL.
 static LINK_NEEDS_MULTICAST: AtomicBool = AtomicBool::new(false);
+// Set while a Link session plays, so Kotlin holds Wi-Fi out of power save.
+static LINK_ACTIVE: AtomicBool = AtomicBool::new(false);
 // Authenticated peer key fingerprint, never a user-supplied device name.
 static LINK_PEER_LABEL: Mutex<Option<String>> = Mutex::new(None);
 
@@ -4814,6 +4816,7 @@ impl Engine {
         // The enclosing JNI caller's library gate and later EGL swap remain
         // outside the scope; Kotlin times the broader nativeDrawFrame call.
         let phase_native_started = Instant::now();
+        LINK_ACTIVE.store(self.game.as_ref().is_some_and(|game| game.linked()), Ordering::Release);
         self.tick_menu_repeat();
         self.refresh_system_status();
         // Poll the already-running achievement evaluator without blocking GL.

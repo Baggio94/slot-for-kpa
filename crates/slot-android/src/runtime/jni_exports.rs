@@ -315,6 +315,13 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeLinkNeedsMulticast
     LINK_NEEDS_MULTICAST.load(Ordering::Acquire) as jboolean
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeLinkActive(
+    _env: *mut c_void, _this: *mut c_void,
+) -> jboolean {
+    LINK_ACTIVE.load(Ordering::Acquire) as jboolean
+}
+
 /// Called on the GL thread through GLSurfaceView.queueEvent before changing
 /// account. The evaluator must drain its final queued frames, atomically store
 /// all earned awards and confirm none remain only in RAM.

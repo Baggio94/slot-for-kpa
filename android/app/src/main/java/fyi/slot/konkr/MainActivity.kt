@@ -169,6 +169,7 @@ class MainActivity : Activity() {
     external fun nativeLinkNetworkReady(ipv4: String)
     external fun nativeLinkNetworkError(reason: String)
     external fun nativeLinkNeedsMulticast(): Boolean
+    external fun nativeLinkActive(): Boolean
 
     private var pendingCartLabelUri: String? = null
     private var pendingCartStudioUri: String? = null
@@ -440,6 +441,35 @@ class MainActivity : Activity() {
         linkMulticastLock = null
         try { if (current?.isHeld == true) current.release() }
         catch (error: RuntimeException) { Log.w(TAG, "Link multicast release failed", error) }
+        releaseLinkLowLatency()
+    }
+
+    private var linkLowLatencyLock: WifiManager.WifiLock? = null
+
+    /** Wi-Fi power save holds packets for the next beacon (~100 ms), which
+     *  stalls a lockstep link and pushes its input delay up. Keep the radio
+     *  awake only while a Link session plays. */
+    private fun holdLinkLowLatency(active: Boolean) {
+        if (!active) { releaseLinkLowLatency(); return }
+        if (linkLowLatencyLock != null) return
+        try {
+            val manager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            val lock = manager.createWifiLock(
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "slot-konkr-link")
+            lock.setReferenceCounted(false)
+            lock.acquire()
+            linkLowLatencyLock = lock
+            Log.i(TAG, "Link Wi-Fi low latency on")
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Link Wi-Fi low latency unavailable", error)
+        }
+    }
+
+    private fun releaseLinkLowLatency() {
+        val current = linkLowLatencyLock ?: return
+        linkLowLatencyLock = null
+        try { if (current.isHeld) current.release() }
+        catch (error: RuntimeException) { Log.w(TAG, "Link Wi-Fi lock release failed", error) }
     }
 
     /** The peer has proven possession of an installation-bound Ed25519 key
@@ -646,6 +676,7 @@ class MainActivity : Activity() {
             if (linkMulticastLock != null && !nativeLinkNeedsMulticast()) {
                 releaseLinkMulticast()
             }
+            if (resumed) holdLinkLowLatency(nativeLinkActive())
             val nowPerf = android.os.SystemClock.uptimeMillis()
             if (resumed && nowPerf - lastEmulationReportPollAt >= 1_000L) {
                 lastEmulationReportPollAt = nowPerf
