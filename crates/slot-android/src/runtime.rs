@@ -2305,12 +2305,22 @@ impl Engine {
                     // A durable checkpoint was verified BEFORE taking/drop-
                     // ping the session. Never report a false success from a
                     // battery error masked by an unrelated RTC/state write.
-                    if eject_saved && !session.is_link_sandbox() {
+                    let previously_linked = session.is_link_sandbox();
+                    if eject_saved && !previously_linked {
                         if let Some(uri) = self.requested_uri.as_deref() {
                             let core = session.core_kind().as_str();
                             let event = serde_json::json!({"uri": uri, "core": core}).to_string();
                             SAVE_SYNC.lock().unwrap_or_else(|e| e.into_inner()).push_back(event);
                         }
+                    }
+                    if previously_linked {
+                        crate::game::log_launch_timing(
+                            "Eject failed-Link sandbox: starting native core teardown");
+                    }
+                    drop(session);
+                    if previously_linked {
+                        crate::game::log_launch_timing(
+                            "Eject failed-Link sandbox: native core teardown completed");
                     }
                 }
                 PLAYING.store(false, Ordering::Release);
