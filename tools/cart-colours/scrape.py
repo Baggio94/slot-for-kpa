@@ -149,6 +149,8 @@ def measure(path):
         "fleck_rate": round(float(flecks.sum() / band.sum()), 5),
         "alpha_mean": round(float(alpha[mask].mean()), 1),
         "aspect": round(float(h / w), 3),
+        # A coarse 12x12 colour grid, enough to tell a template from a photo when reviewing.
+        "grid": np.asarray(img.convert("RGB").resize((12, 12), Image.BOX)).reshape(-1, 3).tolist(),
     }
 
 
@@ -159,6 +161,7 @@ def main():
     ap.add_argument("--budget-min", type=float, default=320)
     ap.add_argument("--limit", type=int, default=0, help="max new ROMs per system (0 = all)")
     ap.add_argument("--pause", type=float, default=1.2)
+    ap.add_argument("--only", default="", help="regex of ROM names to re-check, printing their media")
     args = ap.parse_args()
     cache, out = Path(args.cache), Path(args.out)
     (cache / "img").mkdir(parents=True, exist_ok=True)
@@ -180,6 +183,9 @@ def main():
             roms = [r for r in parse_dat(body.decode("utf-8", "replace")) if not SKIP.search(r["name"])]
             new = 0
             print(f"{platform}: {len(roms)} ROMs, {sum((platform, r['crc']) in seen for r in roms)} done")
+            if args.only:
+                roms = [r for r in roms if re.search(args.only, r["name"])]
+                seen = {k: v for k, v in seen.items() if not re.search(args.only, v["name"])}
             for rom in roms:
                 if (platform, rom["crc"]) in seen:
                     continue
@@ -201,6 +207,9 @@ def main():
                         row["error"] = "bad json"
                         jeu = None
                     if jeu:
+                        if args.only:
+                            kinds = sorted({f"{m.get('type')}:{m.get('region', '')}" for m in jeu.get("medias") or []})
+                            print("MEDIA", rom["name"], " ".join(kinds))
                         row["game_id"] = jeu.get("id")
                         names = jeu.get("noms") or []
                         row["ss_name"] = next((n.get("text") for n in names if n.get("region") in ("wor", "eu", "us")), names[0].get("text") if names else "")

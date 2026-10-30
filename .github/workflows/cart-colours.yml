@@ -43,7 +43,7 @@ jobs:
           path: cache
           key: cart-colours-${{ github.run_id }}
           restore-keys: cart-colours-
-      - run: python3 tools/cart-colours/scrape.py --limit "$(cat tools/cart-colours/limit.txt)"
+      - run: python3 tools/cart-colours/scrape.py --limit "$(cat tools/cart-colours/limit.txt)" --only "$(cat tools/cart-colours/only.txt 2>/dev/null)"
       - uses: actions/cache/save@v4
         if: always()
         with:
