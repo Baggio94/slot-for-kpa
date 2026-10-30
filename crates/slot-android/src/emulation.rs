@@ -218,17 +218,19 @@ impl EmulationProfile {
             None => default_sun(light_sensor),
         }
     }
-    /// 0, 1 … top, AUTO, then SENSOR when the handheld has a light sensor.
+    /// 0, 1 … top, SENSOR when the handheld has a light sensor, AUTO,
+    /// then round to 0 again: in the menu and with the in-game shortcuts.
     pub fn change_sun(&mut self, light_sensor: bool, top: u8, right: bool) {
+        let sensor = light_sensor as u8;
         let at = match self.sun(light_sensor, top) {
-            SUN_AUTO => top + 1,
-            SUN_SENSOR => top + 2,
+            SUN_SENSOR => top + 1,
+            SUN_AUTO => top + 1 + sensor,
             sun => sun,
         };
-        let next = settings::cycle_u8(at, top + 1 + light_sensor as u8, right);
-        self.sun = Some(match next - next.min(top) {
-            0 => next,
-            1 => SUN_AUTO,
+        let next = settings::cycle_u8(at, top + 1 + sensor, right);
+        self.sun = Some(match next {
+            next if next <= top => next,
+            next if next == top + 1 + sensor => SUN_AUTO,
             _ => SUN_SENSOR,
         });
     }
@@ -297,19 +299,24 @@ mod tests {
         assert_eq!(profile.sun(true, 10), SUN_SENSOR);
         assert_eq!(profile.sun(false, 10), 0, "night, to calibrate in the dark");
         profile.change_sun(true, 10, true);
-        assert_eq!(profile.sun(true, 10), 0, "after SENSOR comes 0");
+        assert_eq!(profile.sun(true, 10), SUN_AUTO, "after SENSOR comes AUTO");
+        profile.change_sun(true, 10, true);
+        assert_eq!(profile.sun(true, 10), 0, "after AUTO comes 0");
         profile.change_sun(false, 10, false);
         assert_eq!(profile.sun(false, 10), SUN_AUTO, "AUTO closes the round");
         profile.change_sun(false, 10, false);
         assert_eq!(profile.sun(false, 10), 10);
         assert_eq!(profile.sun(false, 8), 8, "Boktai 1 stops at 8 bars");
         profile.change_sun(true, 8, true);
-        assert_eq!(profile.sun(true, 8), SUN_AUTO, "AUTO follows 8 in Boktai 1");
+        assert_eq!(profile.sun(true, 8), SUN_SENSOR, "SENSOR follows 8 in Boktai 1");
         profile.change_sun(true, 8, true);
-        assert_eq!(profile.sun(true, 8), SUN_SENSOR, "then SENSOR");
-        profile.sun = Some(SUN_AUTO);
-        profile.change_sun(false, 8, true);
-        assert_eq!(profile.sun(false, 8), 0, "no SENSOR without a light sensor");
+        assert_eq!(profile.sun(true, 8), SUN_AUTO, "then AUTO");
+        profile.change_sun(true, 8, true);
+        assert_eq!(profile.sun(true, 8), 0, "then 0 again");
+        profile.change_sun(true, 8, false);
+        assert_eq!(profile.sun(true, 8), SUN_AUTO, "and back the other way");
+        profile.change_sun(false, 8, false);
+        assert_eq!(profile.sun(false, 8), 8, "no SENSOR without a light sensor");
         assert_eq!(EmulationProfile { sun: Some(SUN_AUTO), ..profile }.sanitize().sun,
             Some(SUN_AUTO));
         profile.sun=Some(SUN_SENSOR);
