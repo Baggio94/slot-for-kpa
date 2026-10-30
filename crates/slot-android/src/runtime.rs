@@ -3778,9 +3778,9 @@ impl Engine {
         profile.change_sun(light_sensor(), self.sun_top(), right);
         self.save_game_sun(profile, &uri, core);
     }
-    /// L3 / R3 in a solar game, as mGBA's own R3 brighten / L3 darken:
-    /// one step within 0..=top, nothing while the light sensor or the
-    /// clock (AUTO) decides.
+    /// L3 / R3 (and SELECT + L2 / R2) in a solar game, as mGBA's own R3
+    /// brighten / L3 darken: one step of the same round as the menu,
+    /// 0 … top, SENSOR, AUTO, 0.
     fn nudge_sun(&mut self, brighter: bool) {
         if self.game.as_ref().is_some_and(|game|game.linked() || game.requires_relaunch()) {
             return;
@@ -3789,21 +3789,14 @@ impl Engine {
         let core = self.selected_emulation_core();
         let mut profile = self.game_emulation
             .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
-        let sun = profile.sun(light_sensor(), self.sun_top());
         let time = self.born.elapsed().as_millis() as u64;
-        if sun == crate::emulation::SUN_SENSOR {
-            self.hud.toast(Toast::SunSensor, time);
-            return;
-        }
-        if sun == crate::emulation::SUN_AUTO {
-            self.hud.toast(Toast::SunAuto, time);
-            return;
-        }
-        let next = if brighter { (sun + 1).min(self.sun_top()) } else { sun.saturating_sub(1) };
+        profile.change_sun(light_sensor(), self.sun_top(), brighter);
         // The same banner as State Saved or a shader change.
-        self.hud.toast(Toast::Sun(next), time);
-        if next == sun { return; }
-        profile.sun = Some(next);
+        self.hud.toast(match profile.sun(light_sensor(), self.sun_top()) {
+            crate::emulation::SUN_SENSOR => Toast::SunSensor,
+            crate::emulation::SUN_AUTO => Toast::SunAuto,
+            sun => Toast::Sun(sun),
+        }, time);
         self.save_game_sun(profile, &uri, core);
     }
     fn save_game_sun(&mut self, profile: EmulationProfile, uri: &str, core: Core) {
