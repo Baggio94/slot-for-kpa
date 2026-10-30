@@ -1,0 +1,24 @@
+name: cart-colours
+
+on:
+  push:
+    branches: [tools/cart-colours]
+    paths: [tools/cart-colours/**, .github/workflows/cart-colours.yml]
+
+concurrency:
+  group: cart-colours
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SS_DEVID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
+      SS_DEVPASSWORD: ${{ secrets.SCREENSCRAPER_DEV_PASSWORD }}
+      SS_SOFTNAME: ${{ secrets.SCREENSCRAPER_SOFTNAME }}
+      SS_USER: ${{ secrets.SCREENSCRAPER_USER }}
+      SS_PASSWORD: ${{ secrets.SCREENSCRAPER_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/cart-colours/check.py
