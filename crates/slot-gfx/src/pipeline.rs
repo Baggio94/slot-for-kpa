@@ -10,24 +10,63 @@ pub const SRC_H: u32 = OUT_H / SCALE;
 
 pub const WHOLE_TEXTURE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
+/// One game program, specialised for a single screen effect.
+struct GameProgram {
+    prog: gl::types::GLuint,
+    u_rect: gl::types::GLint,
+    u_bright: gl::types::GLint,
+    u_uv: gl::types::GLint,
+    u_colour_correct: gl::types::GLint,
+    u_paper_size: gl::types::GLint,
+    u_fbo: gl::types::GLint,
+    u_pic: gl::types::GLint,
+}
+
+impl GameProgram {
+    /// The game shader with its effect fixed: the compiler drops every
+    /// other effect, so a light effect stays light on a small GPU instead
+    /// of paying for the heaviest one's registers.
+    fn new(effect: ScreenEffect) -> Result<Self, GfxError> {
+        let prog = crate::shaders::program(RECT_VERT, &game_frag(effect))?;
+        let at = |name| crate::gl::uniform_location(prog, name);
+        unsafe {
+            gl::UseProgram(prog);
+            gl::Uniform1i(at("u_game"), 0);
+            gl::Uniform2f(at("u_src"), SRC_W as f32, SRC_H as f32);
+            gl::Uniform2f(at("u_target"), out_w() as f32, OUT_H as f32);
+            gl::Uniform1i(at("u_paper"), 1);
+        }
+        Ok(GameProgram {
+            prog,
+            u_rect: at("u_rect"),
+            u_bright: at("u_bright"),
+            u_uv: at("u_uv"),
+            u_colour_correct: at("u_colour_correct"),
+            u_paper_size: at("u_paper_size"),
+            u_fbo: at("u_fbo"),
+            u_pic: at("u_pic"),
+        })
+    }
+}
+
+fn game_frag(effect: ScreenEffect) -> String {
+    GAME_FRAG.replace("uniform float u_mode;",
+        &format!("const float u_mode = {:.1};", effect.mode()))
+}
+
+const EFFECTS: usize = ScreenEffect::SharpBilinear as usize + 1;
+
 pub struct GamePass {
     context_lost: bool,
-    prog: gl::types::GLuint,
+    /// Compiled on first use, one per effect.
+    programs: [Option<GameProgram>; EFFECTS],
     game: gl::types::GLuint,
     // Reuse the Android GLES2-compatible RGBA staging pixels each frame.
     // The old per-frame flat_map().collect() allocated ~150 KiB at 60 Hz.
     #[cfg(target_os = "android")]
     rgba_upload: Vec<u8>,
-    u_rect: gl::types::GLint,
-    u_bright: gl::types::GLint,
-    u_uv: gl::types::GLint,
-    u_mode: gl::types::GLint,
-    u_colour_correct: gl::types::GLint,
     colour_correct: bool,
-    u_paper_size: gl::types::GLint,
-    u_fbo: gl::types::GLint,
     fbo_scale: [f32; 2],
-    u_pic: gl::types::GLint,
     pic: [f32; 4],
     paper: gl::types::GLuint,
     paper_size: f32,
@@ -52,7 +91,7 @@ impl GamePass {
         target.colour_correct = self.colour_correct;
         target.fbo_scale = self.fbo_scale;
         target.pic = self.pic;
-        target.effect = self.effect;
+        target.set_effect(self.effect);
         target.power = self.power;
         target.src = self.src;
         target.area = self.area;
@@ -62,59 +101,29 @@ impl GamePass {
     }
 
     pub fn new() -> Result<Self, GfxError> {
-        let prog = crate::shaders::program(RECT_VERT, GAME_FRAG)?;
         // OpenGL ES 2 only guarantees RGBA, not BGRA texture uploads.
         #[cfg(target_os = "android")]
         let format = gl::RGBA;
         #[cfg(not(target_os = "android"))]
         let format = gl::BGRA;
+        let effect = ScreenEffect::Lcd3x;
+        let mut programs: [Option<GameProgram>; EFFECTS] = Default::default();
+        programs[effect as usize] = Some(GameProgram::new(effect)?);
         let game = crate::gl::texture(SRC_W, SRC_H, gl::NEAREST, gl::CLAMP_TO_EDGE, format, None);
         let paper = crate::gl::texture(1, 1, gl::NEAREST, gl::REPEAT, gl::RGBA, Some(&[255; 4]));
-        let (u_rect, u_bright, u_uv, u_mode, u_paper_size, u_pic, u_fbo, u_colour_correct);
-        unsafe {
-            gl::UseProgram(prog);
-            gl::Uniform1i(crate::gl::uniform_location(prog, "u_game"), 0);
-            gl::Uniform2f(
-                crate::gl::uniform_location(prog, "u_src"),
-                SRC_W as f32,
-                SRC_H as f32,
-            );
-            gl::Uniform2f(
-                crate::gl::uniform_location(prog, "u_target"),
-                out_w() as f32,
-                OUT_H as f32,
-            );
-            u_rect = crate::gl::uniform_location(prog, "u_rect");
-            u_bright = crate::gl::uniform_location(prog, "u_bright");
-            u_uv = crate::gl::uniform_location(prog, "u_uv");
-            gl::Uniform1i(crate::gl::uniform_location(prog, "u_paper"), 1);
-            u_mode = crate::gl::uniform_location(prog, "u_mode");
-            u_colour_correct = crate::gl::uniform_location(prog, "u_colour_correct");
-            u_paper_size = crate::gl::uniform_location(prog, "u_paper_size");
-            u_fbo = crate::gl::uniform_location(prog, "u_fbo");
-            u_pic = crate::gl::uniform_location(prog, "u_pic");
-        }
         Ok(GamePass {
             context_lost: false,
-            prog,
+            programs,
             game,
             #[cfg(target_os = "android")]
             rgba_upload: vec![0; (SRC_W * SRC_H * 4) as usize],
-            u_rect,
-            u_bright,
-            u_uv,
-            u_mode,
-            u_colour_correct,
             colour_correct: false,
-            u_paper_size,
-            u_fbo,
             fbo_scale: [1.0, 1.0],
-            u_pic,
             pic: WHOLE_TEXTURE,
             paper,
             paper_size: 1.0,
             paper_pixels: None,
-            effect: ScreenEffect::Lcd3x,
+            effect,
             power: 1.0,
             src: WHOLE_TEXTURE,
             area: default_area(),
@@ -134,6 +143,14 @@ impl GamePass {
     }
 
     pub fn set_effect(&mut self, effect: ScreenEffect) {
+        let slot = &mut self.programs[effect as usize];
+        if slot.is_none() {
+            match GameProgram::new(effect) {
+                Ok(program) => *slot = Some(program),
+                // Keep the current effect rather than draw nothing.
+                Err(_) => return,
+            }
+        }
         self.effect = effect;
     }
 
@@ -211,21 +228,21 @@ impl GamePass {
     }
 
     fn draw_source(&self, tex: gl::types::GLuint, quad: &Quad, src: [f32; 4]) {
+        let Some(p) = &self.programs[self.effect as usize] else { return };
         let (x, y, w, h) = screen_rect_in(self.area, self.power);
         unsafe {
-            gl::UseProgram(self.prog);
-            gl::Uniform4f(self.u_rect, x, y, w, h);
-            gl::Uniform4f(self.u_uv, src[0], src[1], src[2], src[3]);
-            gl::Uniform1f(self.u_bright, screen_brightness(self.power));
-            gl::Uniform1f(self.u_mode, self.effect.mode());
+            gl::UseProgram(p.prog);
+            gl::Uniform4f(p.u_rect, x, y, w, h);
+            gl::Uniform4f(p.u_uv, src[0], src[1], src[2], src[3]);
+            gl::Uniform1f(p.u_bright, screen_brightness(self.power));
             gl::Uniform1f(
-                self.u_colour_correct,
+                p.u_colour_correct,
                 if self.colour_correct { 1.0 } else { 0.0 },
             );
-            gl::Uniform1f(self.u_paper_size, self.paper_size);
-            gl::Uniform2f(self.u_fbo, self.fbo_scale[0], self.fbo_scale[1]);
+            gl::Uniform1f(p.u_paper_size, self.paper_size);
+            gl::Uniform2f(p.u_fbo, self.fbo_scale[0], self.fbo_scale[1]);
             gl::Uniform4f(
-                self.u_pic,
+                p.u_pic,
                 self.pic[0],
                 self.pic[1],
                 self.pic[2],
@@ -274,7 +291,24 @@ impl Drop for GamePass {
         unsafe {
             gl::DeleteTextures(1, &self.game);
             gl::DeleteTextures(1, &self.paper);
-            gl::DeleteProgram(self.prog);
+            for program in self.programs.iter().flatten() {
+                gl::DeleteProgram(program.prog);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_effect_gets_its_own_constant_mode() {
+        for effect in [ScreenEffect::None, ScreenEffect::ZfastLcd, ScreenEffect::SharpBilinear] {
+            let frag = game_frag(effect);
+            assert!(!frag.contains("uniform float u_mode;"));
+            assert!(frag.contains(&format!("const float u_mode = {:.1};", effect.mode())));
+        }
+        assert_eq!(EFFECTS, 13);
     }
 }
