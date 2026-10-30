@@ -1044,7 +1044,8 @@ impl Engine {
                                "RA CLOCK LAB", "RETROARCH", "NATIVE",
                                "SLOT.", "GAME BOY", "POCKET", "COLOR",
                                "mGBA", "gpSP", "Gambatte", "SENSOR",
-                               "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+                               "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+                               "AUTO"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -3778,7 +3779,8 @@ impl Engine {
         self.save_game_sun(profile, &uri, core);
     }
     /// L3 / R3 in a solar game, as mGBA's own R3 brighten / L3 darken:
-    /// one step within 0..=top, nothing while the light sensor decides.
+    /// one step within 0..=top, nothing while the light sensor or the
+    /// clock (AUTO) decides.
     fn nudge_sun(&mut self, brighter: bool) {
         if self.game.as_ref().is_some_and(|game|game.linked() || game.requires_relaunch()) {
             return;
@@ -3791,6 +3793,10 @@ impl Engine {
         let time = self.born.elapsed().as_millis() as u64;
         if sun == crate::emulation::SUN_SENSOR {
             self.hud.toast(Toast::SunSensor, time);
+            return;
+        }
+        if sun == crate::emulation::SUN_AUTO {
+            self.hud.toast(Toast::SunAuto, time);
             return;
         }
         let next = if brighter { (sun + 1).min(self.sun_top()) } else { sun.saturating_sub(1) };
@@ -4272,8 +4278,11 @@ impl Engine {
             let (tex, width, height) =
                 if key == SUN_KEY {
                     let sun = self.current_emulation().sun(light_sensor(), self.sun_top());
-                    self.setting_values[if sun == crate::emulation::SUN_SENSOR { 53 }
-                        else { 54 + sun as usize }]
+                    self.setting_values[match sun {
+                        crate::emulation::SUN_SENSOR => 53,
+                        crate::emulation::SUN_AUTO => 65,
+                        sun => 54 + sun as usize,
+                    }]
                 } else if key == 16 && matches!(self.settings.wallpaper,
                     crate::settings::WallpaperPick::File(_)) {
                     self.wallpaper_name_face.unwrap_or(self.setting_values[26])

@@ -27,12 +27,40 @@ pub struct EmulationProfile {
     pub turbo_override: Option<bool>, // original KONKR "X/Y Buttons"
     pub rumble_override: Option<bool>,
     pub eject_save_override: Option<bool>,
-    // Boktai's sun: mGBA's level 0..=10, or SUN_SENSOR for the light
-    // sensor. None follows the handheld (sensor if it has one).
+    // Boktai's sun: 0..=10, SUN_AUTO for the time of day, or SUN_SENSOR
+    // for the light sensor. None follows the handheld (sensor if it has
+    // one).
     pub sun: Option<u8>,
 }
 
 pub const SUN_SENSOR: u8 = 11;
+pub const SUN_AUTO: u8 = 12;
+/// Local time of day in minutes, from Android's status clock; u32::MAX
+/// until the first one arrives.
+pub static LOCAL_MINUTES: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(u32::MAX);
+/// "HH:MM" from the status clock, in minutes since midnight.
+pub fn set_local_clock(clock: &str) {
+    let mut parts = clock.split(':').map(|part| part.parse::<u32>().ok());
+    if let (Some(Some(hours)), Some(Some(minutes)), None) =
+        (parts.next(), parts.next(), parts.next()) {
+        if hours < 24 && minutes < 60 {
+            LOCAL_MINUTES.store(hours * 60 + minutes, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+/// AUTO: the sun follows the clock, as the real cartridge follows the
+/// sky. Night until 6:00, full at 13:00, night again from 20:00. Without
+/// a clock yet, half the gauge.
+pub fn auto_sun(minutes: u32, top: u8) -> u8 {
+    const RISE: f32 = 6.0 * 60.0;
+    const SET: f32 = 20.0 * 60.0;
+    if minutes == u32::MAX { return top.div_ceil(2); }
+    let minutes = minutes as f32;
+    if minutes <= RISE || minutes >= SET { return 0; }
+    let day = std::f32::consts::PI * (minutes - RISE) / (SET - RISE);
+    (f32::from(top) * day.sin()).round() as u8
+}
 /// Night, like RetroArch, or the real light when the handheld can
 /// measure it. Each Boktai calibrates its sensor in the dark once and
 /// counts its bars from there: calibrated under a manual sun, its gauge
@@ -56,7 +84,11 @@ pub fn sun_luminance(sun: u8, boktai1: bool) -> Option<u8> {
     const BOKTAI1: [u8; 9] = [22, 27, 33, 40, 49, 64, 84, 131, 205];
     const LATER: [u8; 11] = [22, 27, 33, 45, 56, 68, 80, 96, 114, 137, 183];
     if sun == SUN_SENSOR { return None; }
-    let sun = usize::from(sun.min(sun_top(boktai1)));
+    let top = sun_top(boktai1);
+    let sun = if sun == SUN_AUTO {
+        auto_sun(LOCAL_MINUTES.load(std::sync::atomic::Ordering::Relaxed), top)
+    } else { sun };
+    let sun = usize::from(sun.min(top));
     Some(if boktai1 { BOKTAI1[sun] } else { LATER[sun] })
 }
 /// The brightest light a game accepts: from 254, Boktai 2 reads the
@@ -159,7 +191,7 @@ impl EmulationProfile {
         if !settings::SPEEDS.contains(&self.ff_speed_override.unwrap_or(2)) {
             self.ff_speed_override=None;
         }
-        if self.sun.is_some_and(|sun| sun > SUN_SENSOR) { self.sun = None; }
+        if self.sun.is_some_and(|sun| sun > SUN_AUTO) { self.sun = None; }
         self
     }
     pub fn change(&mut self, key: usize, right: bool) -> bool {
@@ -181,16 +213,24 @@ impl EmulationProfile {
         match self.sun {
             Some(SUN_SENSOR) if !light_sensor => default_sun(false),
             Some(SUN_SENSOR) => SUN_SENSOR,
+            Some(SUN_AUTO) => SUN_AUTO,
             Some(sun) => sun.min(top),
             None => default_sun(light_sensor),
         }
     }
-    /// 0, 1 … top, then SENSOR when the handheld has a light sensor.
+    /// 0, 1 … top, AUTO, then SENSOR when the handheld has a light sensor.
     pub fn change_sun(&mut self, light_sensor: bool, top: u8, right: bool) {
-        let sun = self.sun(light_sensor, top);
-        let at = if sun == SUN_SENSOR { top + 1 } else { sun };
-        let next = settings::cycle_u8(at, top + light_sensor as u8, right);
-        self.sun = Some(if next > top { SUN_SENSOR } else { next });
+        let at = match self.sun(light_sensor, top) {
+            SUN_AUTO => top + 1,
+            SUN_SENSOR => top + 2,
+            sun => sun,
+        };
+        let next = settings::cycle_u8(at, top + 1 + light_sensor as u8, right);
+        self.sun = Some(match next - next.min(top) {
+            0 => next,
+            1 => SUN_AUTO,
+            _ => SUN_SENSOR,
+        });
     }
     fn legacy_path(root: &Path, uri: &str) -> PathBuf {
         root.join("GameEmulation").join(format!("{}.json", core_selection::key(uri)))
@@ -259,10 +299,19 @@ mod tests {
         profile.change_sun(true, 10, true);
         assert_eq!(profile.sun(true, 10), 0, "after SENSOR comes 0");
         profile.change_sun(false, 10, false);
+        assert_eq!(profile.sun(false, 10), SUN_AUTO, "AUTO closes the round");
+        profile.change_sun(false, 10, false);
         assert_eq!(profile.sun(false, 10), 10);
         assert_eq!(profile.sun(false, 8), 8, "Boktai 1 stops at 8 bars");
         profile.change_sun(true, 8, true);
-        assert_eq!(profile.sun(true, 8), SUN_SENSOR, "SENSOR follows 8 in Boktai 1");
+        assert_eq!(profile.sun(true, 8), SUN_AUTO, "AUTO follows 8 in Boktai 1");
+        profile.change_sun(true, 8, true);
+        assert_eq!(profile.sun(true, 8), SUN_SENSOR, "then SENSOR");
+        profile.sun = Some(SUN_AUTO);
+        profile.change_sun(false, 8, true);
+        assert_eq!(profile.sun(false, 8), 0, "no SENSOR without a light sensor");
+        assert_eq!(EmulationProfile { sun: Some(SUN_AUTO), ..profile }.sanitize().sun,
+            Some(SUN_AUTO));
         profile.sun=Some(SUN_SENSOR);
         assert_eq!(profile.sun(false, 10), 0, "no light sensor on this handheld");
         assert_eq!(sun_luminance(SUN_SENSOR, true), None);
@@ -276,6 +325,24 @@ mod tests {
         assert_eq!(lux_luminance(1000.0), 80);
         assert_eq!(lux_luminance(1e9), MAX_LUMINANCE);
         assert_eq!(EmulationProfile { sun: Some(40), ..profile }.sanitize().sun, None);
+    }
+    #[test]
+    fn auto_sun_follows_the_clock() {
+        let at = |h: u32, m: u32| auto_sun(h * 60 + m, 10);
+        assert_eq!(at(3, 0), 0);
+        assert_eq!(at(6, 0), 0);
+        assert_eq!(at(9, 30), 7);
+        assert_eq!(at(13, 0), 10, "full at 13:00");
+        assert_eq!(at(16, 30), 7);
+        assert_eq!(at(20, 0), 0);
+        assert_eq!(auto_sun(13 * 60, 8), 8);
+        assert_eq!(auto_sun(u32::MAX, 10), 5, "half the gauge without a clock");
+        set_local_clock("bad");
+        set_local_clock("25:00");
+        assert_eq!(LOCAL_MINUTES.load(std::sync::atomic::Ordering::Relaxed), u32::MAX);
+        set_local_clock("13:00");
+        assert_eq!(sun_luminance(SUN_AUTO, false), Some(183));
+        assert_eq!(sun_luminance(SUN_AUTO, true), Some(0x16 + 183));
     }
     #[test]
     fn old_per_game_gba_grid_becomes_grid_v2_without_changing_gb() {

@@ -613,6 +613,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSystemStatus(
     let Ok(clock) = env.get_string(&clock) else { return; };
     let clock = clock.to_string_lossy().into_owned();
     if clock.len() > 16 || !clock.chars().all(|c| c.is_ascii_digit() || c == ':') { return; }
+    crate::emulation::set_local_clock(&clock);
     let battery = if (0..=100).contains(&percent) {
         Some(Battery { percent: percent as u8,
             charge: if charging != 0 { Charge::Charging } else { Charge::Discharging } })

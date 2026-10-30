@@ -256,6 +256,8 @@ pub struct GameSession {
     solar: Option<Solar>,
     // The light handed to a solar cart; None while the light sensor decides.
     sun_luminance: Option<u8>,
+    // AUTO: the minute of day the sun was last set for.
+    sun_auto_minutes: Option<u32>,
     palette_live: bool,
     core_kind: Core,
     pending_undo: Option<(Instant, PendingUndo)>,
@@ -784,7 +786,7 @@ impl GameSession {
             last_step_timings: FrameStepTimings::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
-            solar, sun_luminance: None,
+            solar, sun_luminance: None, sun_auto_minutes: None,
             pending_undo: None, last_sram: Instant::now(), battery_writer,
             sample_rate: core_sample_rate(sample_rate),
             fps,
@@ -1488,10 +1490,13 @@ impl GameSession {
     }
 
     /// Boktai's sun, live: mGBA reads it the next time the game samples
-    /// its solar sensor. SENSOR follows the light sensor every frame.
+    /// its solar sensor. SENSOR follows the light sensor every frame,
+    /// AUTO the clock.
     pub fn set_sun(&mut self, sun: u8) {
         let Some(solar) = self.solar else { return };
         let luminance = crate::emulation::sun_luminance(sun, solar == Solar::Boktai1);
+        self.sun_auto_minutes = (sun == crate::emulation::SUN_AUTO).then(||
+            crate::emulation::LOCAL_MINUTES.load(std::sync::atomic::Ordering::Relaxed));
         slot_retro::sensors::set_light_wanted(luminance.is_none());
         self.sun_luminance = luminance;
         self.give_sun(luminance.unwrap_or_else(||
@@ -1506,6 +1511,10 @@ impl GameSession {
     fn follow_light_sensor(&mut self) {
         if self.solar.is_some() && self.sun_luminance.is_none() {
             self.give_sun(crate::emulation::lux_luminance(slot_retro::sensors::illuminance()));
+        }
+        if let Some(minutes) = self.sun_auto_minutes {
+            let now = crate::emulation::LOCAL_MINUTES.load(std::sync::atomic::Ordering::Relaxed);
+            if now != minutes { self.set_sun(crate::emulation::SUN_AUTO); }
         }
     }
 

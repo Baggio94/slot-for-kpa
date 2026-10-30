@@ -38,6 +38,7 @@ pub enum Toast {
     /// Boktai's sun from L3 / R3, 0..=10.
     Sun(u8),
     SunSensor,
+    SunAuto,
 }
 
 const SUN_TEXT: [&str; 11] = [
@@ -46,7 +47,7 @@ const SUN_TEXT: [&str; 11] = [
 ];
 
 impl Toast {
-    const FIXED: [Toast; 26] = [
+    const FIXED: [Toast; 27] = [
         Toast::StateSaved,
         Toast::StateLoaded,
         Toast::NeedsGpsp,
@@ -73,6 +74,7 @@ impl Toast {
         Toast::ScreenRatio,
         Toast::ScreenStretch,
         Toast::SunSensor,
+        Toast::SunAuto,
     ];
 
     pub fn all() -> Vec<Toast> {
@@ -122,6 +124,7 @@ impl Toast {
             Toast::Palette(p) => p.label(),
             Toast::Sun(level) => SUN_TEXT[usize::from(level.min(10))],
             Toast::SunSensor => "Sun: Sensor",
+            Toast::SunAuto => "Sun: Auto",
         }
     }
 }
