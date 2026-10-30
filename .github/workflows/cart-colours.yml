@@ -22,3 +22,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 tools/cart-colours/check.py
+
+  scrape:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      SS_DEVID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
+      SS_DEVPASSWORD: ${{ secrets.SCREENSCRAPER_DEV_PASSWORD }}
+      SS_SOFTNAME: ${{ secrets.SCREENSCRAPER_SOFTNAME }}
+      SS_USER: ${{ secrets.SCREENSCRAPER_USER }}
+      SS_PASSWORD: ${{ secrets.SCREENSCRAPER_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install numpy pillow scipy
+      # ScreenScraper's images stay in the workflow cache, which only this repository's
+      # workflows can read; they are never uploaded as artifacts.
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: cart-colours-${{ github.run_id }}
+          restore-keys: cart-colours-
+      - run: python3 tools/cart-colours/scrape.py --limit "$(cat tools/cart-colours/limit.txt)"
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: cache
+          key: cart-colours-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cart-colours-measures
+          path: out/
+          retention-days: 30
