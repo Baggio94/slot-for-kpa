@@ -136,7 +136,7 @@ index d4de13f..754846e 100644
  	deferredSetup = false;
  }
  
-@@ -1534,6 +1584,388 @@ int16_t cycleturbo(bool a, bool b, bool l, bool r) {
+@@ -1534,6 +1584,382 @@ int16_t cycleturbo(bool a, bool b, bool l, bool r) {
  	return buttons;
  }
  
@@ -346,12 +346,6 @@ index d4de13f..754846e 100644
 +	memset(linkGba, 0, sizeof(linkGba));
 +	linkGba[linkPlayer].core = core;
 +	linkGba[1 - linkPlayer].core = peer;
-+#if defined(__ANDROID__) && defined(M_CORE_GB)
-+	__android_log_print(ANDROID_LOG_INFO, "SlotKONKR",
-+		"mGBA Link peer created: player=%d local=%p/%p peer=%p/%p",
-+		linkPlayer, (void*) core, core ? core->board : NULL,
-+		(void*) peer, peer ? peer->board : NULL);
-+#endif
 +	return true;
 +}
 +
@@ -525,7 +519,7 @@ index d4de13f..754846e 100644
  void retro_run(void) {
  	if (deferredSetup) {
  		_doDeferredSetup();
-@@ -1543,6 +1965,15 @@ void retro_run(void) {
+@@ -1543,6 +1959,15 @@ void retro_run(void) {
  
  	inputPollCallback();
  
@@ -541,7 +535,7 @@ index d4de13f..754846e 100644
  	bool updated = false;
  	if (environCallback(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
  		envVarsUpdated = true;
-@@ -1670,8 +2101,6 @@ void retro_run(void) {
+@@ -1670,8 +2095,6 @@ void retro_run(void) {
     }
  
  	core->runFrame(core);
@@ -550,7 +544,7 @@ index d4de13f..754846e 100644
  
  	/* If using 'Fixed Interval' frameskipping, check
  	 * whether a frame is currently available  */
-@@ -1692,49 +2121,7 @@ void retro_run(void) {
+@@ -1692,49 +2115,7 @@ void retro_run(void) {
  		}
  	}
  
@@ -601,7 +595,7 @@ index d4de13f..754846e 100644
  }
  
  static void _setupMaps(struct mCore* core) {
-@@ -1931,9 +2318,20 @@ static void _setupMaps(struct mCore* core) {
+@@ -1931,9 +2312,20 @@ static void _setupMaps(struct mCore* core) {
  }
  
  void retro_reset(void) {
@@ -622,7 +616,7 @@ index d4de13f..754846e 100644
  }
  
  #ifdef GEKKO
-@@ -1977,6 +2375,7 @@ bool retro_load_game(const struct retro_game_info* game) {
+@@ -1977,6 +2369,7 @@ bool retro_load_game(const struct retro_game_info* game) {
  	if (!game) {
  		return false;
  	}
@@ -630,7 +624,7 @@ index d4de13f..754846e 100644
  
  	if (game->data) {
  		data = anonymousMemoryMap(game->size);
-@@ -2048,7 +2447,9 @@ bool retro_load_game(const struct retro_game_info* game) {
+@@ -2048,7 +2441,9 @@ bool retro_load_game(const struct retro_game_info* game) {
  
  	core->setAVStream(core, &stream);
  	core->setPeripheral(core, mPERIPH_RUMBLE, &rumble);
@@ -641,7 +635,7 @@ index d4de13f..754846e 100644
  
  	savedata = anonymousMemoryMap(GBA_SIZE_FLASH1M);
  	memset(savedata, 0xFF, GBA_SIZE_FLASH1M);
-@@ -2064,7 +2465,9 @@ bool retro_load_game(const struct retro_game_info* game) {
+@@ -2064,7 +2459,9 @@ bool retro_load_game(const struct retro_game_info* game) {
  
  #ifdef M_CORE_GBA
  	if (core->platform(core) == mPLATFORM_GBA) {
@@ -652,7 +646,7 @@ index d4de13f..754846e 100644
  		biosName = "gba_bios.bin";
  
  	}
-@@ -2117,6 +2520,19 @@ bool retro_load_game(const struct retro_game_info* game) {
+@@ -2117,6 +2514,19 @@ bool retro_load_game(const struct retro_game_info* game) {
  	}
  #endif
  
@@ -672,7 +666,7 @@ index d4de13f..754846e 100644
  	return true;
  }
  
-@@ -2124,6 +2540,11 @@ void retro_unload_game(void) {
+@@ -2124,6 +2534,11 @@ void retro_unload_game(void) {
  	if (!core) {
  		return;
  	}
@@ -684,7 +678,7 @@ index d4de13f..754846e 100644
  	mCoreConfigDeinit(&core->config);
  	core->deinit(core);
  	mappedMemoryFree(data, dataSize);
-@@ -2132,12 +2553,157 @@ void retro_unload_game(void) {
+@@ -2132,12 +2547,157 @@ void retro_unload_game(void) {
  	savedata = 0;
  }
  
@@ -844,7 +838,7 @@ index d4de13f..754846e 100644
  	size_t size = vfm->size(vfm);
  	vfm->close(vfm);
  	return size;
-@@ -2147,8 +2713,7 @@ bool retro_serialize(void* data, size_t size) {
+@@ -2147,8 +2707,7 @@ bool retro_serialize(void* data, size_t size) {
  	if (deferredSetup) {
  		_doDeferredSetup();
  	}
@@ -854,7 +848,7 @@ index d4de13f..754846e 100644
  	if ((ssize_t) size > vfm->size(vfm)) {
  		size = vfm->size(vfm);
  	} else if ((ssize_t) size < vfm->size(vfm)) {
-@@ -2165,6 +2730,19 @@ bool retro_unserialize(const void* data, size_t size) {
+@@ -2165,6 +2724,19 @@ bool retro_unserialize(const void* data, size_t size) {
 +#if defined(__ANDROID__) && defined(M_CORE_GB)
 +	if (deferredSetup || linkMode) {
 +		__android_log_print(ANDROID_LOG_INFO, "SlotKONKR",
