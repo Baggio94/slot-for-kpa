@@ -37,15 +37,15 @@
  			int i;
 --- a/src/platform/libretro/libretro.c
 +++ b/src/platform/libretro/libretro.c
-@@ -2035,6 +2035,11 @@
- 	 * The counter renders one frame and then reloads from this, so the peer draws its first frame
- 	 * and none after it. */
- 	((struct GBA*) peer->board)->video.frameskip = INT_MAX;
-+	/* And its sound is never played either. Same argument, smaller: the expensive half of the
-+	 * peer's audio path is already idle because setAVStream is only ever called on the local
-+	 * core, so postAudioFrame and postAudioBuffer have no listener to call. What is left is the
-+	 * write into an output ring nobody drains. */
-+	((struct GBA*) peer->board)->audio.skipOutput = true;
+@@ -2040,5 +2040,11 @@
+ 	if (peer->platform(peer) == mPLATFORM_GBA) {
+ 		((struct GBA*) peer->board)->video.frameskip = INT_MAX;
+ 	}
++	/* GBA-only optimization: GB/GBC use struct GB and must never be
++	 * cast to struct GBA here. The peer's GBA sound is not played:
++	 * avoid writing to its unconsumed output ring. */
++	if (peer->platform(peer) == mPLATFORM_GBA) {
++		((struct GBA*) peer->board)->audio.skipOutput = true;
++	}
  	_linkPlugIn();
  }
- 
