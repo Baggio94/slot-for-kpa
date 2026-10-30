@@ -822,7 +822,8 @@ class MainActivity : Activity() {
         // Device-specific *initial preference* only. Existing persisted
         // global/per-cartridge choices are never rewritten.
         nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir,
-            Build.MODEL.equals("Retroid Pocket Classic", ignoreCase = true))
+            Build.MODEL.contains("Pocket Classic", ignoreCase = true) &&
+                Build.MANUFACTURER.contains("Retroid", ignoreCase = true))
         // The slot. canvas takes the display's shape (3:2 on the KONKR, 16:9,
         // 4:3...) before the renderer builds its first face.
         windowManager.maximumWindowMetrics.bounds.let { panel ->
@@ -1176,8 +1177,9 @@ class MainActivity : Activity() {
             if (event.repeatCount == 0) {
                 EmulationDiagnostics.input(keyCode, true, event, KeyEvent.KEYCODE_BUTTON_MODE)
                 warmedCandidate.set(null)
-                wakeCarouselRender()
+                // Stage the key before waking a dozing shelf: no stale frame.
                 nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, true)
+                wakeCarouselRender()
             }
             return true
         }

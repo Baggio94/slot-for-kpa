@@ -161,8 +161,11 @@ impl Shader {
         Self::ZfastLcd, Self::Lcd1x, Self::SimpletexGba,
         Self::Agb001, Self::Ags001, Self::SharpBilinear, Self::Dot,
     ];
-    // GB/GBC options remain unchanged.
-    pub const GB: [Self; 4] = [Self::Off, Self::Lcd3x, Self::Grid, Self::Simpletex];
+    // GB/GBC: their own four, then the GBA presets without GBA colours.
+    pub const GB: [Self; 9] = [
+        Self::Off, Self::Lcd3x, Self::Grid, Self::Simpletex,
+        Self::ZfastLcd, Self::Lcd1x, Self::LcdGridV2, Self::SharpBilinear, Self::Dot,
+    ];
     pub fn effect(self) -> ScreenEffect {
         match self {
             Self::Off => ScreenEffect::None,
@@ -193,6 +196,19 @@ impl Shader {
         values[if right { (at + 1) % values.len() }
                else { (at + values.len() - 1) % values.len() }]
     }
+}
+
+/// What a fresh install's defaults depend on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Device {
+    /// The KONKR Pocket Advance's 960x640 panel.
+    pub konkr: bool,
+    pub retroid_pocket_classic: bool,
+}
+
+impl Device {
+    pub const KONKR: Device = Device { konkr: true, retroid_pocket_classic: false };
+    pub const RPC: Device = Device { konkr: false, retroid_pocket_classic: true };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,16 +301,23 @@ impl Settings {
             ..Self::default()
         }
     }
-    /// Device-local first-install defaults. All other handhelds keep NATIVE.
-    pub fn first_install_defaults_for_device(retroid_pocket_classic: bool) -> Self {
+    /// Device-local first-install defaults. Off the KONKR the light zfast
+    /// LCD shader; the Retroid Pocket Classic's GPU also keeps up better
+    /// with RESPONSIVE pacing. The KONKR keeps NATIVE and LCD3x.
+    pub fn first_install_defaults_for_device(device: Device) -> Self {
         let mut defaults = Self::first_install_defaults();
-        if retroid_pocket_classic { defaults.responsive_loop = true; }
+        if !device.konkr {
+            defaults.shader_gba = Shader::ZfastLcd;
+            defaults.shader_gbc = Shader::ZfastLcd;
+            defaults.shader_gb = Shader::ZfastLcd;
+        }
+        if device.retroid_pocket_classic { defaults.responsive_loop = true; }
         defaults
     }
     /// Existing Settings.json always wins, including an explicit NATIVE choice.
     /// Only a missing or unreadable first-install configuration gets a
     /// model-specific default; never rewrite the file just to apply a default.
-    pub fn load_for_device(dir: &Path, retroid_pocket_classic: bool) -> Self {
+    pub fn load_for_device(dir: &Path, device: Device) -> Self {
         fs::read(dir.join(NAME)).ok()
             .and_then(|b| {
                 let old_json=serde_json::from_slice::<serde_json::Value>(&b).ok();
@@ -347,10 +370,10 @@ impl Settings {
                     s.status_opt_in_v2 = true;
                 }
                 s
-            }).unwrap_or_else(|| Self::first_install_defaults_for_device(retroid_pocket_classic))
+            }).unwrap_or_else(|| Self::first_install_defaults_for_device(device))
     }
     pub fn load(dir: &Path) -> Self {
-        Self::load_for_device(dir, false)
+        Self::load_for_device(dir, Device::KONKR)
     }
     pub fn save(&self, dir: &Path) -> io::Result<()> {
         fs::create_dir_all(dir)?;
@@ -758,26 +781,38 @@ mod tests {
         assert_eq!(s.run_ahead_frames,0);
     }
     #[test]
+    fn only_the_konkr_keeps_lcd3x_on_a_fresh_install() {
+        let konkr=Settings::first_install_defaults_for_device(Device::KONKR);
+        assert_eq!(konkr, Settings::first_install_defaults());
+        let other=Settings::first_install_defaults_for_device(
+            Device { konkr: false, retroid_pocket_classic: false });
+        for shader in [other.shader_gba, other.shader_gb, other.shader_gbc] {
+            assert_eq!(shader, Shader::ZfastLcd);
+        }
+        assert!(!other.responsive_loop);
+        assert!(Settings::first_install_defaults_for_device(Device::RPC).responsive_loop);
+    }
+    #[test]
     fn rpc_only_defaults_to_responsive_on_fresh_install_preserving_saved_pacing() {
         let root=std::env::temp_dir().join(format!(
             "slot-rpc-responsive-default-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .unwrap().as_nanos()));
         fs::create_dir_all(&root).unwrap();
-        assert!(Settings::load_for_device(&root, true).responsive_loop);
-        assert!(!Settings::load_for_device(&root, false).responsive_loop);
-        assert!(!Settings::first_install_defaults_for_device(false).responsive_loop);
-        assert!(Settings::first_install_defaults_for_device(true).responsive_loop);
+        assert!(Settings::load_for_device(&root, Device::RPC).responsive_loop);
+        assert!(!Settings::load_for_device(&root, Device::KONKR).responsive_loop);
+        assert!(!Settings::first_install_defaults_for_device(Device::KONKR).responsive_loop);
+        assert!(Settings::first_install_defaults_for_device(Device::RPC).responsive_loop);
         assert!(!root.join(NAME).exists(), "defaults must never auto-save");
-        let mut native=Settings::first_install_defaults_for_device(true);
+        let mut native=Settings::first_install_defaults_for_device(Device::RPC);
         native.responsive_loop=false;
         native.save(&root).unwrap();
-        assert!(!Settings::load_for_device(&root, true).responsive_loop,
+        assert!(!Settings::load_for_device(&root, Device::RPC).responsive_loop,
             "a user's explicit persisted NATIVE choice must survive");
         native.responsive_loop=true;
         native.save(&root).unwrap();
-        assert!(Settings::load_for_device(&root, true).responsive_loop);
-        assert!(Settings::load_for_device(&root, false).responsive_loop,
+        assert!(Settings::load_for_device(&root, Device::RPC).responsive_loop);
+        assert!(Settings::load_for_device(&root, Device::KONKR).responsive_loop,
             "a saved RESPONSIVE choice must also survive other models");
         fs::remove_dir_all(&root).unwrap();
     }
@@ -830,7 +865,7 @@ mod tests {
     #[test]
     fn gba_has_ten_unique_serde_roundtripping_presets_plus_off() {
         assert_eq!(Shader::GBA.len(),11);
-        assert_eq!(Shader::GB.len(),4);
+        assert_eq!(Shader::GB.len(),9);
         for shader in Shader::GBA {
             assert_eq!(Shader::GBA.iter().filter(|s| **s == shader).count(),1);
             let json=serde_json::to_string(&shader).unwrap();
@@ -901,7 +936,7 @@ mod tests {
     fn screen_gameplay_original_choices_cycle() {
         let mut s = Settings::default();
         s.change(0, false); assert_eq!(s.shader_gba, Shader::Dot);
-        s.change(1, false); assert_eq!(s.shader_gb, Shader::Simpletex);
+        s.change(1, false); assert_eq!(s.shader_gb, Shader::Dot);
         // 2x wraps left to Off (original Slot 1.8.1), then back to 6x.
         s.change(4, false); assert_eq!(s.ff_speed, 0);
         s.change(4, false); assert_eq!(s.ff_speed, 6);
