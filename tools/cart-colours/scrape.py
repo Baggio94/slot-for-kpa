@@ -89,8 +89,8 @@ def jeu_infos(system_id, rom):
     return get("https://api.screenscraper.fr/api2/jeuInfos.php?" + urllib.parse.urlencode(q))
 
 
-def pick_support(medias, wanted):
-    supports = [m for m in medias if m.get("type") == "support-2D" and m.get("url")]
+def pick_support(medias, wanted, kind):
+    supports = [m for m in medias if m.get("type") == kind and m.get("url")]
     if not supports:
         return None
     by_region = {m.get("region", ""): m for m in supports}
@@ -166,7 +166,7 @@ def main():
     cache, out = Path(args.cache), Path(args.out)
     (cache / "img").mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
-    seen_path = cache / "seen.jsonl"
+    seen_path = cache / "seen-scan.jsonl"
     seen = {}
     if seen_path.exists():
         for line in seen_path.read_text().splitlines():
@@ -213,10 +213,14 @@ def main():
                         row["game_id"] = jeu.get("id")
                         names = jeu.get("noms") or []
                         row["ss_name"] = next((n.get("text") for n in names if n.get("region") in ("wor", "eu", "us")), names[0].get("text") if names else "")
-                        media = pick_support(jeu.get("medias") or [], row["regions"])
+                        medias = jeu.get("medias") or []
+                        row["kinds"] = sorted({m.get("type") for m in medias if str(m.get("type", "")).startswith("support")})
+                        # support-2D is a template with the label pasted on; only real scans
+                        # show the shell's own plastic.
+                        media = pick_support(medias, row["regions"], "support-scan")
                         if media:
                             row["media_region"] = media.get("region", "")
-                            key = media.get("md5") or media.get("crc") or f"{row['game_id']}-{row['media_region']}"
+                            key = media.get("md5") or media.get("crc") or f"{row['game_id']}-scan-{row['media_region']}"
                             img = cache / "img" / f"{key}.{media.get('format', 'png')}"
                             if not img.exists():
                                 st, data = get(media["url"], timeout=120)
@@ -252,7 +256,7 @@ def main():
         m = row.get("measure") or {}
         print("ROW", json.dumps({
             "p": row["platform"], "crc": row["crc"], "serial": row["serial"], "n": row["name"],
-            "r": row.get("media_region"), "e": row.get("error"), "m": m or None,
+            "r": row.get("media_region"), "e": row.get("error"), "k": row.get("kinds"), "m": m or None,
         }, ensure_ascii=False, separators=(",", ":")))
     with_image = sum(1 for r in results if r.get("image"))
     print(f"rows: {len(results)}, with support-2D: {with_image}")
