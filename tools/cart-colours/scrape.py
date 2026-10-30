@@ -238,6 +238,13 @@ def main():
     with (out / "results.jsonl").open("w") as f:
         for row in results:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    # Artifacts can't be fetched from everywhere the table is reviewed; the log can.
+    for row in results:
+        m = row.get("measure") or {}
+        print("ROW", json.dumps({
+            "p": row["platform"], "crc": row["crc"], "serial": row["serial"], "n": row["name"],
+            "r": row.get("media_region"), "e": row.get("error"), "m": m or None,
+        }, ensure_ascii=False, separators=(",", ":")))
     with_image = sum(1 for r in results if r.get("image"))
     print(f"rows: {len(results)}, with support-2D: {with_image}")
     (out / "summary.txt").write_text(f"rows {len(results)}\nwith_support {with_image}\nstopped {stopped}\n")
