@@ -32,7 +32,7 @@ index 754846e..2aa210d 100644
  #endif
  #ifdef M_CORE_GBA
  #include <mgba/core/lockstep.h>
-@@ -164,6 +171,145 @@ static mColor* peerOutputBuffer;
+@@ -164,6 +171,175 @@ static mColor* peerOutputBuffer;
  static void* peerSavedata;
  #endif
  
@@ -74,6 +74,14 @@ index 754846e..2aa210d 100644
 +static uint32_t gbDiagInnerSeq;
 +static uint32_t gbDiagGeneration;
 +static uint32_t gbDiagCompleted;
++/* Diagnostics run code from this dynamically loaded .so. A detached
++ * observer surviving retro_unload_game/dlclose can jump into unmapped
++ * executable memory, causing SIGSEGV on an inherited "GLThread" name.
++ * Give every generation a joinable owner and wake it before teardown. */
++static pthread_t gbDiagWatcher;
++static bool gbDiagWatcherLive;
++static pthread_mutex_t gbDiagMutex = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t gbDiagWake = PTHREAD_COND_INITIALIZER;
 +
 +/* Inner-core trace hook. Events and CPU progress are sampled by the
 + * independent monitor. These atomics are written by only the GL thread,
@@ -114,9 +122,21 @@ index 754846e..2aa210d 100644
 +	uint32_t generation = (uint32_t) (uintptr_t) opaque;
 +	uint32_t lastCompleted = 0;
 +	unsigned stagnant = 0;
-+	const struct timespec quarter = { 0, 250000000 };
 +	while (__atomic_load_n(&gbDiagGeneration, __ATOMIC_ACQUIRE) == generation) {
-+		nanosleep(&quarter, NULL);
++		/* Sleep without polling the core; Stop wakes this wait and
++		 * joins the observer before any libretro code can be unmapped. */
++		struct timespec until;
++		clock_gettime(CLOCK_REALTIME, &until);
++		until.tv_nsec += 250000000;
++		if (until.tv_nsec >= 1000000000) {
++			until.tv_sec++;
++			until.tv_nsec -= 1000000000;
++		}
++		pthread_mutex_lock(&gbDiagMutex);
++		if (__atomic_load_n(&gbDiagGeneration, __ATOMIC_ACQUIRE) == generation) {
++			pthread_cond_timedwait(&gbDiagWake, &gbDiagMutex, &until);
++		}
++		pthread_mutex_unlock(&gbDiagMutex);
 +		if (__atomic_load_n(&gbDiagGeneration, __ATOMIC_ACQUIRE) != generation) {
 +			break;
 +		}
@@ -147,27 +167,37 @@ index 754846e..2aa210d 100644
 +	return NULL;
 +}
 +
++static void _gbDiagStop(void) {
++	/* The generation change revokes access before signalling. Once joined,
++	 * no instruction from the monitor can remain in-flight at dlclose. */
++	__atomic_add_fetch(&gbDiagGeneration, 1, __ATOMIC_ACQ_REL);
++	pthread_mutex_lock(&gbDiagMutex);
++	pthread_cond_broadcast(&gbDiagWake);
++	pthread_mutex_unlock(&gbDiagMutex);
++	if (gbDiagWatcherLive) {
++		pthread_join(gbDiagWatcher, NULL);
++		gbDiagWatcherLive = false;
++	}
++	__atomic_store_n(&gbDiagSnapshot, 0, __ATOMIC_RELEASE);
++}
++
 +static void _gbDiagStart(void) {
++	/* The paired state loader can unplug/replug within one retro_unserialize.
++	 * Never overlap a previous generation with a new one. */
++	_gbDiagStop();
 +	gbDiagCompleted = 0;
 +	gbDiagInnerSeq = 0;
 +	__atomic_store_n(&gbDiagSnapshot, 0, __ATOMIC_RELEASE);
 +	__atomic_store_n(&gbDiagInnerSnapshot, 0, __ATOMIC_RELEASE);
 +	uint32_t generation = __atomic_add_fetch(&gbDiagGeneration, 1, __ATOMIC_ACQ_REL);
-+	pthread_t watcher;
-+	int rc = pthread_create(&watcher, NULL, _gbDiagMonitor,
++	int rc = pthread_create(&gbDiagWatcher, NULL, _gbDiagMonitor,
 +		(void*) (uintptr_t) generation);
-+	if (rc == 0) {
-+		pthread_detach(watcher);
-+	}
++	gbDiagWatcherLive = (rc == 0);
 +	__android_log_print(ANDROID_LOG_INFO, "SlotKONKR",
-+		"GB Link diagnostic monitor: generation=%u thread_result=%d",
++		"GB Link diagnostic monitor: generation=%u thread_result=%d joined_owner=true",
 +		generation, rc);
 +}
 +
-+static void _gbDiagStop(void) {
-+	__atomic_add_fetch(&gbDiagGeneration, 1, __ATOMIC_ACQ_REL);
-+	__atomic_store_n(&gbDiagSnapshot, 0, __ATOMIC_RELEASE);
-+}
 +#else
 +#define _gbDiagMark(stage, player, iter) ((void) 0)
 +#define _gbDiagStart() ((void) 0)
@@ -178,7 +208,7 @@ index 754846e..2aa210d 100644
  static const int keymap[] = {
  	RETRO_DEVICE_ID_JOYPAD_A,
  	RETRO_DEVICE_ID_JOYPAD_B,
-@@ -1634,6 +1780,326 @@ static void _postFrame(bool skipFrame) {
+@@ -1634,6 +1810,326 @@ static void _postFrame(bool skipFrame) {
  #endif
  }
  
@@ -505,7 +535,7 @@ index 754846e..2aa210d 100644
  #ifdef M_CORE_GBA
  static void _linkSleep(struct mLockstepUser* user) {
  	((struct LinkGBA*) user)->asleep = true;
-@@ -1697,6 +2163,12 @@ static void _linkRunToFrameEnd(struct mCore* gbaCore) {
+@@ -1697,6 +2193,12 @@ static void _linkRunToFrameEnd(struct mCore* gbaCore) {
   * the mode to the other, and player 0 waits for player 1 to take it up. */
  static void _linkPlugIn(void) {
  	int i;
@@ -518,7 +548,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		struct mCore* gbaCore = linkGba[i].core;
  		gbaCore->rtc.override = RTC_FAKE_EPOCH;
-@@ -1735,6 +2207,12 @@ static void _linkUnplug(void) {
+@@ -1735,6 +2237,12 @@ static void _linkUnplug(void) {
  		return;
  	}
  	int i;
@@ -531,7 +561,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		linkGba[i].core->setPeripheral(linkGba[i].core, mPERIPH_GBA_LINK_PORT, NULL);
  		GBASIOLockstepCoordinatorDetach(&linkCoordinator, &linkGba[i].driver);
-@@ -1780,6 +2258,11 @@ static bool _linkCreatePeer(const struct retro_game_info* game, const char* bios
+@@ -1780,6 +2288,11 @@ static bool _linkCreatePeer(const struct retro_game_info* game, const char* bios
  	memset(linkGba, 0, sizeof(linkGba));
  	linkGba[linkPlayer].core = core;
  	linkGba[1 - linkPlayer].core = peer;
@@ -543,7 +573,7 @@ index 754846e..2aa210d 100644
  	return true;
  }
  
-@@ -1855,6 +2338,12 @@ static void _linkStep(void) {
+@@ -1855,6 +2368,12 @@ static void _linkStep(void) {
  	uint32_t start[2];
  	bool done[2] = { false, false };
  	int i;
@@ -556,7 +586,7 @@ index 754846e..2aa210d 100644
  	for (i = 0; i < 2; ++i) {
  		struct GBA* gba = linkGba[i].core->board;
  		target[i] = gba->video.frameCounter + 1;
-@@ -2486,7 +2975,11 @@ bool retro_load_game(const struct retro_game_info* game) {
+@@ -2486,7 +3005,11 @@ bool retro_load_game(const struct retro_game_info* game) {
  #endif
  
  #ifdef M_CORE_GBA
