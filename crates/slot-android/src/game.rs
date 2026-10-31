@@ -173,6 +173,46 @@ fn active_state_generation(root: &Path, id: &str, which: Core) -> Result<Option<
     Ok(Some(key))
 }
 
+/// RetroArch's own manual states, staged by Android as <stamp>.rastate and
+/// <stamp>.png, become Polaroids. One that is already a Polaroid (a copy slot.
+/// sent to RetroArch before the two were linked) takes the new stamp rather
+/// than showing twice. A file that cannot be read stays for the next launch.
+fn adopt_retroarch_manual_states(ring: &StateRing, staged: &Path) {
+    let Ok(dir) = std::fs::read_dir(staged) else { return };
+    let mut stamps: Vec<String> = dir.filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str()?.strip_suffix(".rastate").map(str::to_owned))
+        .collect();
+    stamps.sort();
+    for stamp in stamps {
+        let state_path = staged.join(format!("{stamp}.rastate"));
+        let thumb_path = staged.join(format!("{stamp}.png"));
+        let adopted = std::fs::read(&state_path).map_err(|e| e.to_string())
+            .and_then(|bytes| retroarch_state::decode(&bytes))
+            .and_then(|state| {
+                if state.is_empty() { return Err("empty state".into()); }
+                let mut thumb = std::fs::read(&thumb_path).unwrap_or_default();
+                for twin in ring.list().map_err(|e| e.to_string())? {
+                    if std::fs::read(&twin.state).is_ok_and(|b| b == state) {
+                        if thumb.is_empty() {
+                            thumb = std::fs::read(&twin.thumb).unwrap_or_default();
+                        }
+                        ring.remove(&twin.stamp).map_err(|e| e.to_string())?;
+                    }
+                }
+                ring.push(&state, &thumb, &stamp).map_err(|e| e.to_string())
+            });
+        match adopted {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&state_path);
+                let _ = std::fs::remove_file(&thumb_path);
+                log_launch_timing(&format!("RetroArch manual state {stamp} is now a Polaroid"));
+            }
+            Err(error) => log_launch_timing(&format!(
+                "RetroArch manual state {stamp} not adopted: {error}")),
+        }
+    }
+}
+
 fn active_export_filename(root: &Path, id: &str, which: Core) -> Result<String, String> {
     Ok(match active_state_generation(root, id, which)? {
         Some(key) => format!("{key}.retroarch-export.state.auto"),
@@ -470,6 +510,10 @@ impl GameSession {
         let ring = StateRing::new(
             if linked_boot.is_some() { core_root.as_path() } else { storage },
             platform, which, id);
+        if linked_boot.is_none() {
+            adopt_retroarch_manual_states(&ring,
+                &root.join("ManualImports").join(format!("{id}.{}", which.as_str())));
+        }
         // mGBA's libretro core looks for gba_bios.bin / gb_bios.bin /
         // gbc_bios.bin in RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY.
         // Keep the user-selected SAF folder external and read-only: Android
@@ -717,9 +761,12 @@ impl GameSession {
             // RetroArch imports must not silently roll back that timeline.
             let marker = state.with_extension("prefer-solo-after-link.once");
             let prefer_private = marker.is_file();
-            let (chosen, used_private) = if state != root.join(format!("{id}.{}.state", which.as_str())) {
+            let (chosen, used_private) = if state != root.join(format!("{id}.{}.state", which.as_str()))
+                && generation_export_guard.is_file() {
                 // A state deliberately skipped during SharedGBA migration
                 // cannot reappear through an old external RetroArch auto.
+                // Android lifts the guard once that old auto-state is backed
+                // up and the generation's own state has reached RetroArch.
                 (std::fs::read(&state).ok(), false)
             } else if prefer_private {
                 match local() {
@@ -1743,6 +1790,12 @@ impl GameSession {
         ));
         atomic_write(&export, &encoded).map_err(|error|
             format!("Polaroid saved, manual RetroArch export failed: {error}"))?;
+        if !preview.is_empty() {
+            let thumb = PathBuf::from(format!("{}.{}.png", self.manual_export_prefix.display(), stamp));
+            if let Err(error) = atomic_write(&thumb, &preview) {
+                log_launch_timing(&format!("Polaroid picture not staged for RetroArch: {error}"));
+            }
+        }
         Ok(stamp)
     }
 
@@ -1775,7 +1828,8 @@ impl GameSession {
         self.ring.remove(stamp).map_err(|e|e.to_string())
     }
 
-    pub fn undo_manual(&mut self)->Result<(),String> {
+    /// Ok(Some(stamp)) when the undo removed the Polaroid just saved.
+    pub fn undo_manual(&mut self)->Result<Option<String>,String> {
         if self.runahead_rollback_failed { return Err("Run-Ahead state unsafe; restart from disk".into()); }
         if self.in_multiplayer() { return Err("Undo unavailable during Multiplayer".into()); }
         let Some((since,_))=&self.pending_undo else { return Err("Nothing to undo".into())};
@@ -1789,13 +1843,13 @@ impl GameSession {
         self.preempt.clear();
         match pending {
             PendingUndo::Loaded {prior} =>
-                self.core.unserialize(&prior).map_err(|e|e.to_string()),
+                self.core.unserialize(&prior).map(|()| None).map_err(|e|e.to_string()),
             PendingUndo::Saved {stamp,evicted} => {
                 self.ring.remove(&stamp).map_err(|e|e.to_string())?;
                 if let Some((name,state,thumb))=evicted {
                     self.ring.push(&state,&thumb,&name).map_err(|e|e.to_string())?;
                 }
-                Ok(())
+                Ok(Some(stamp))
             }
         }
     }
@@ -1931,6 +1985,32 @@ mod a13r3_generation_rejoin_tests {
                 .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn retroarch_manual_states_become_polaroids_without_twins() {
+        let root = fixture();
+        let ring = StateRing::new(&root, Platform::Gba, Core::Mgba, "game");
+        ring.push(b"slot-made", b"slot-png", "2026-10-30_10-00-00").unwrap();
+        let staged = root.join("ManualImports/game.mgba");
+        fs::create_dir_all(&staged).unwrap();
+        // A copy slot. sent before links existed, and RetroArch's own state.
+        fs::write(staged.join("2026-10-30_10-00-03.rastate"),
+            retroarch_state::encode(b"slot-made").unwrap()).unwrap();
+        fs::write(staged.join("2026-10-31_09-00-00.rastate"),
+            retroarch_state::encode(b"retroarch-made").unwrap()).unwrap();
+        fs::write(staged.join("2026-10-31_09-00-00.png"), b"ra-png").unwrap();
+        fs::write(staged.join("2026-10-31_09-30-00.rastate"), b"#RZIPv2#unreadable").unwrap();
+        adopt_retroarch_manual_states(&ring, &staged);
+        let stamps: Vec<_> = ring.list().unwrap().into_iter().map(|e| e.stamp).collect();
+        assert_eq!(stamps, ["2026-10-31_09-00-00", "2026-10-30_10-00-03"]);
+        assert_eq!(ring.read("2026-10-31_09-00-00").unwrap(),
+            (b"retroarch-made".to_vec(), b"ra-png".to_vec()));
+        assert_eq!(ring.read("2026-10-30_10-00-03").unwrap(),
+            (b"slot-made".to_vec(), b"slot-png".to_vec()));
+        assert!(staged.join("2026-10-31_09-30-00.rastate").is_file(), "kept for a later try");
+        assert!(!staged.join("2026-10-31_09-00-00.rastate").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

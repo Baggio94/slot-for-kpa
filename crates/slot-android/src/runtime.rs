@@ -2541,8 +2541,12 @@ impl Engine {
                                 }
                             }
                             99 => { // X: original Slot's 30-second undo.
-                                if let Some(game)=self.game.as_mut() {
-                                    if let Err(err)=game.undo_manual() { set_message(err); }
+                                let undone=self.game.as_mut().map(|game|
+                                    (game.core_kind().as_str(), game.undo_manual()));
+                                match undone {
+                                    Some((core, Ok(Some(stamp)))) => self.forget_polaroid(core, &stamp),
+                                    Some((_, Err(err))) => set_message(err),
+                                    _ => {}
                                 }
                                 self.overlay=ShelfOverlay::None;
                             }
@@ -4716,17 +4720,30 @@ impl Engine {
         }
     }
 
+    /// Android removes the Polaroid's RetroArch copy too.
+    fn forget_polaroid(&self, core: &str, stamp: &str) {
+        if let Some(uri) = self.requested_uri.as_deref() {
+            let event = serde_json::json!({
+                "uri": uri, "core": core, "deleted_stamp": stamp
+            }).to_string();
+            SAVE_SYNC.lock().unwrap_or_else(|e| e.into_inner()).push_back(event);
+        }
+    }
+
     fn delete_selected_polaroid(&mut self) {
+        let mut deleted=None;
         if let (Some(game),Some(p))=(self.game.as_mut(),self.polaroids.as_mut()) {
             if let Some(entry)=p.selected() {
                 if let Err(err)=game.delete_manual(&entry.stamp) {
                     set_error_message("Couldn't delete this save state.", &err);
                     p.keep();
                 } else {
+                    deleted=Some((game.core_kind().as_str(), entry.stamp.clone()));
                     p.remove_selected();
                 }
             }
         }
+        if let Some((core,stamp))=deleted { self.forget_polaroid(core,&stamp); }
         if self.polaroids.as_ref().is_some_and(|p|p.is_empty()) {
             self.overlay=ShelfOverlay::None;
         } else {
