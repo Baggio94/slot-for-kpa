@@ -1,0 +1,37 @@
+name: fc-colours
+
+on:
+  push:
+    branches: [tools/fc-colours]
+    paths: [tools/cart-colours/famicom.py, .github/workflows/fc-colours.yml]
+
+# Shares the cart-colours group so only one job talks to ScreenScraper at a time.
+concurrency:
+  group: cart-colours
+  cancel-in-progress: false
+
+jobs:
+  famicom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      SS_DEVID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
+      SS_DEVPASSWORD: ${{ secrets.SCREENSCRAPER_DEV_PASSWORD }}
+      SS_SOFTNAME: ${{ secrets.SCREENSCRAPER_SOFTNAME }}
+      SS_USER: ${{ secrets.SCREENSCRAPER_USER }}
+      SS_PASSWORD: ${{ secrets.SCREENSCRAPER_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/cart-colours/check.py
+      - run: pip install numpy pillow scipy
+      - uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: fc-colours-${{ github.run_id }}
+          restore-keys: fc-colours-
+      - run: cd tools/cart-colours && python3 -u famicom.py --cache ../../cache --out ../../out
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: cache
+          key: fc-colours-${{ github.run_id }}
