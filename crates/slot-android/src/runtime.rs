@@ -5804,10 +5804,12 @@ impl Engine {
         slot_ui::draw_ground_tinted(active_wallpaper, tint, &mut commands);
         if self.progress == 0.0 {
             if let Some(picker) = self.picker {
-                let t = slot_ui::ease(picker.openness(self.born.elapsed().as_millis() as u64));
+                let openness = picker.openness(self.born.elapsed().as_millis() as u64);
+                let t = slot_ui::ease(openness);
                 let dim = 1.0 + (0.614 - 1.0) * t;
+                let span = Some(picker_span(shelf, openness));
                 let selected = shelf.carts.get(shelf.index).map(|c| c.stem.as_str());
-                shelf.draw_row(selected, 0.0, 0.26 * t, dim, &mut commands);
+                shelf.draw_row_clear_of(selected, 0.0, 0.26 * t, dim, span, &mut commands);
                 slot_ui::draw_empty_slot_with(self.slot_faces, &mut commands);
             } else {
                 // Match upstream Refusal: only the shelf carts shake.
@@ -6261,6 +6263,13 @@ fn advance_cart(progress: f32, inserted: bool, dt: f32) -> f32 {
 fn next_nonempty_shelf(shelves: &[Shelf], current: usize, delta: i32) -> usize {
     let counts: Vec<usize> = shelves.iter().map(|s| s.carts.len()).collect();
     crate::library::next_populated(current, delta, &counts)
+}
+
+/// The screen columns the core picker covers at `progress`.
+fn picker_span(shelf: &Shelf, progress: f32) -> [f32; 2] {
+    let (rest, scale) = shelf.selected_at();
+    let platform = shelf.carts.get(shelf.index).map_or(Platform::Gba, |c| c.platform);
+    slot_ui::picker_span(platform, shelf_cart_for(platform, rest, scale), progress)
 }
 
 #[cfg(test)]

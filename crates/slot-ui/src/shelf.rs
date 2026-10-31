@@ -40,6 +40,8 @@ pub fn foot_y(h: f32) -> f32 {
 }
 const OMEGA: f32 = 16.0;
 const PART: f32 = 130.0;
+/// Least room between a side cart and the open core picker.
+const CLEAR_GAP: f32 = 6.0;
 
 const SLOTS: i32 = 3;
 
@@ -422,6 +424,21 @@ impl Shelf {
         dim: f32,
         out: &mut Vec<Draw>,
     ) {
+        self.draw_row_clear_of(hidden, shake, recede, dim, None, out);
+    }
+
+    /// `draw_row`, with the side carts kept out of the screen columns
+    /// `clear` (the core picker's span). On the KONKR they already are; on
+    /// a narrower screen they are pushed out further as the picker opens.
+    pub fn draw_row_clear_of(
+        &self,
+        hidden: Option<&str>,
+        shake: f32,
+        recede: f32,
+        dim: f32,
+        clear: Option<[f32; 2]>,
+        out: &mut Vec<Draw>,
+    ) {
         let recede = recede.clamp(0.0, 1.0);
         let dim = dim.clamp(0.0, 1.0);
         let target = self.scroll_target();
@@ -440,7 +457,14 @@ impl Shelf {
             let (cw, ch) = cart_box(cart.platform);
             let (w, h) = (cw as f32 * scale, ch as f32 * scale);
             let away = offset.signum() * (1.0 + offset.abs());
-            let x = self.centre(slot) - w / 2.0 + away * PART * recede;
+            let mut x = self.centre(slot) - w / 2.0 + away * PART * recede;
+            if let Some([left, right]) = clear {
+                if offset < 0.0 {
+                    x -= (x + w - (left - CLEAR_GAP)).max(0.0);
+                } else if offset > 0.0 {
+                    x += (right + CLEAR_GAP - x).max(0.0);
+                }
+            }
             if x + w <= 0.0 || x >= out_w() as f32 || alpha <= 0.0 {
                 continue;
             }

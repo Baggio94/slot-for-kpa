@@ -481,6 +481,17 @@ pub fn board_toward(shelf: Placed, rest: Placed, progress: f32) -> Placed {
     lerp(shelf, rest, lift_of(progress))
 }
 
+/// The screen columns the opening picker covers: its lid (tilted) and its
+/// board, from the selected cart on the shelf toward where they rest. The
+/// shelf keeps the other carts out of them on narrow screens.
+pub fn picker_span(platform: Platform, shelf: Placed, progress: f32) -> [f32; 2] {
+    let (lid, turn) = lid_toward(shelf, lid_rest(platform), progress);
+    let half = (lid.w * turn.cos().abs() + lid.h * turn.sin().abs()) / 2.0;
+    let mid = lid.x + lid.w / 2.0;
+    let board = board_toward(shelf, board_layout(platform).rest, progress);
+    [(mid - half).min(board.x), (mid + half).max(board.x + board.w)]
+}
+
 pub fn grown(p: Placed, by: f32) -> Placed {
     Placed {
         x: p.x - by,
