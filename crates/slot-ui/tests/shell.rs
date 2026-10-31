@@ -420,3 +420,23 @@ fn firered_and_leafgreen_are_solid() {
         );
     }
 }
+
+#[test]
+fn the_nes_re_releases_wear_their_console_colours() {
+    let nes = gba_shell_for("FSME");
+    assert!(nes.colour.iter().all(|c| *c > 0xa0), "Classic NES Series is light grey");
+    let mini = gba_shell_for("FSMJ");
+    assert!(mini.colour[0] > 0x90 && mini.colour[1] < 0x40, "Famicom Mini is red");
+    let disk = gba_shell_for("FMRJ");
+    assert!(disk.colour[0] > 0xd0 && disk.colour[2] < 0x40, "Disk System titles are yellow");
+    assert_eq!(gba_shell_for("FMRE"), nes, "Metroid's western release stays grey");
+    assert_eq!(gba_shell_for("BPRE").colour, [0xd8, 0x52, 0x24], "other codes are untouched");
+}
+
+#[test]
+fn donkey_kong_land_and_pinball_are_yellow_abroad() {
+    let dkl = gb_shell(b"DONKEYKONGL", b"\0\0\0\0", 0x00, false);
+    assert!(dkl.colour[0] > 0xd0 && dkl.colour[2] < 0x40, "Donkey Kong Land is yellow");
+    let eu = gb_shell(b"POKEPINBALL", b"VPHP", 0x80, false);
+    assert_eq!(eu, gb_shell(b"POKEPINBALL", b"VPHJ", 0x80, true));
+}

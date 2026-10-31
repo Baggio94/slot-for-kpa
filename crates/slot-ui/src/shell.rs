@@ -46,6 +46,16 @@ const YOSHI: Shell = shell([0x2f, 0x8f, 0x4e], Finish::Solid);
 
 const FAMILY: &[(u8, Shell)] = &[(b'M', shell([0xc6, 0xc6, 0xc9], Finish::Solid))];
 
+/// Classic NES Series: the NES cartridge's light grey.
+const CLASSIC_NES: Shell = shell([0xb9, 0xb9, 0xb6], Finish::Solid);
+/// Famicom Mini 1-20: the Famicom's red.
+const FAMICOM_MINI: Shell = shell([0xa3, 0x1f, 0x2b], Finish::Solid);
+/// Famicom Mini 21-30, the Disk System selection: the disks' yellow.
+const DISK_SYSTEM: Shell = shell([0xf0, 0xc8, 0x1e], Finish::Solid);
+const DISK_SYSTEM_CODES: &[&str] = &[
+    "FM2J", "FNMJ", "FMRJ", "FPTJ", "FLBJ", "FFMJ", "FTKJ", "FTUJ", "FADJ", "FSDJ",
+];
+
 pub const DMG_SHELL: Shell = shell([0x9a, 0x97, 0x8f], Finish::Solid);
 
 pub const DUAL_MODE_SHELL: Shell = shell([0x33, 0x30, 0x31], Finish::Solid);
@@ -63,7 +73,8 @@ const GB_CODES: &[(&str, Shell)] = &[
     ("KKK", KIRBY),
     ("KCE", shell([0x1f, 0x9f, 0xb6], Finish::Translucent)),
     ("VCA", shell([0xf0, 0xa9, 0x5e], Finish::Translucent)),
-    ("VPHJ", shell([0xe2, 0xb4, 0x13], Finish::Solid)),
+    ("VPHJ", PINBALL),
+    ("VPHP", PINBALL),
     ("BMG", DUAL_MODE_SHELL),
 ];
 
@@ -71,7 +82,11 @@ const GB_OVERSEAS_TITLES: &[(&str, Shell)] = &[
     ("POKEMON RED", shell([0xc0, 0x28, 0x2c], Finish::Solid)),
     ("POKEMON BLU", shell([0x2b, 0x3a, 0x88], Finish::Solid)),
     ("POKEMON YEL", shell([0xe9, 0xa8, 0x26], Finish::Solid)),
+    // Donkey Kong Land 1, 2 and III all start "DONKEYKONGLAND".
+    ("DONKEYKONGL", shell([0xf2, 0xc4, 0x1b], Finish::Solid)),
 ];
+
+const PINBALL: Shell = shell([0xe2, 0xb4, 0x13], Finish::Solid);
 
 const CRYSTAL: Shell = shell([0x86, 0xb9, 0xbf], Finish::Glitter);
 const KIRBY: Shell = shell([0xec, 0x94, 0xb4], Finish::Translucent);
@@ -92,7 +107,23 @@ pub fn shell_for(cart: &Cart) -> Shell {
 }
 
 pub fn gba_shell_for(code: &str) -> Shell {
-    lookup(code, EXACT, FAMILY)
+    by_code(code, EXACT)
+        .or_else(|| famicom_shell(code))
+        .unwrap_or_else(|| lookup(code, EXACT, FAMILY))
+}
+
+/// The NES re-releases all have an `F` code: Japan's Famicom Mini, the West's Classic NES Series.
+fn famicom_shell(code: &str) -> Option<Shell> {
+    if code.len() != 4 || !code.starts_with('F') {
+        return None;
+    }
+    Some(if !code.ends_with('J') {
+        CLASSIC_NES
+    } else if DISK_SYSTEM_CODES.contains(&code) {
+        DISK_SYSTEM
+    } else {
+        FAMICOM_MINI
+    })
 }
 
 fn gb_shell_for(rom: &Path) -> Shell {
