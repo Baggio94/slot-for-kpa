@@ -258,6 +258,8 @@ def main():
     # Artifacts can't be fetched from everywhere the table is reviewed; the log can.
     for row in results:
         m = row.get("measure") or {}
+        if not row.get("image"):
+            continue
         print("ROW", json.dumps({
             "p": row["platform"], "crc": row["crc"], "serial": row["serial"], "n": row["name"],
             "r": row.get("media_region"), "e": row.get("error"), "k": row.get("kinds"), "m": m or None,
