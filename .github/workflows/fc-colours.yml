@@ -10,6 +10,9 @@ concurrency:
   group: cart-colours
   cancel-in-progress: false
 
+permissions:
+  contents: write
+
 jobs:
   famicom:
     runs-on: ubuntu-latest
@@ -35,3 +38,12 @@ jobs:
         with:
           path: cache
           key: fc-colours-${{ github.run_id }}
+      # The measured numbers only (no images) go to their own branch, readable without the log.
+      - name: publish measures
+        run: |
+          mkdir -p /tmp/data && cp out/famicom.jsonl /tmp/data/
+          cd /tmp/data
+          git init -q -b tools/fc-colours-data
+          git -c user.name=Baggio94 -c user.email=sahbito@gmail.com add famicom.jsonl
+          git -c user.name=Baggio94 -c user.email=sahbito@gmail.com commit -q -m "Famicom shell measures"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" tools/fc-colours-data
