@@ -69,12 +69,16 @@ def regions_of(name):
 
 
 def get(url, timeout=60):
+    # Media URLs can carry spaces, e.g. "support-scan(us)(rumble cartridge)".
+    url = urllib.parse.quote(url, safe=":/?&=%()+,;@*!~'$")
     req = urllib.request.Request(url, headers={"User-Agent": "slot-cart-colours"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
+    except (OSError, ValueError) as e:  # timeouts, resets: skip this one, keep going
+        return 0, str(e).encode()
 
 
 def jeu_infos(system_id, rom):
