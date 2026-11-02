@@ -7,7 +7,7 @@ pub struct Focus { pub rack: usize, pub uri: String }
 pub fn load(root: &Path) -> Option<Focus> {
     std::fs::read(root.join(FILE)).ok()
         .and_then(|bytes|serde_json::from_slice::<Focus>(&bytes).ok())
-        .filter(|focus|focus.rack<=4 && !focus.uri.is_empty())
+        .filter(|focus|focus.rack<slot_store::Platform::ALL.len()+2 && !focus.uri.is_empty())
 }
 pub fn store(root: &Path, focus: &Focus) -> std::io::Result<()> {
     std::fs::create_dir_all(root)?;
@@ -27,9 +27,11 @@ mod tests {
         let dir=std::env::temp_dir().join(format!("slot-focus-u2-{}",std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(load(&dir),None);
-        let focus=Focus { rack: 4,uri:"content://roms/emerald".into() };
+        let focus=Focus { rack: 7,uri:"content://roms/emerald".into() };
         store(&dir,&focus).unwrap();
         assert_eq!(load(&dir),Some(focus));
+        store(&dir, &Focus { rack: 8, uri: "content://roms/bad".into() }).unwrap();
+        assert_eq!(load(&dir), None, "out-of-range rack must not restore");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
