@@ -31,6 +31,9 @@ internal object RaDiagnostics {
         val missingIconMetadata: Int? = null,
         val libraryGb: Int? = null, val indexedGb: Int? = null, val cachedGb: Int? = null,
         val libraryGbc: Int? = null, val indexedGbc: Int? = null, val cachedGbc: Int? = null,
+        val indexedNes: Int? = null, val cachedNes: Int? = null,
+        val indexedSnes: Int? = null, val cachedSnes: Int? = null,
+        val indexedMd: Int? = null, val cachedMd: Int? = null,
     )
 
     private data class PatchEntry(
@@ -119,9 +122,9 @@ internal object RaDiagnostics {
             }
         }
 
-        val totalByConsole = hashMapOf(4 to 0, 5 to 0, 6 to 0)
-        val indexedByConsole = hashMapOf(4 to 0, 5 to 0, 6 to 0)
-        val cachedByConsole = hashMapOf(4 to 0, 5 to 0, 6 to 0)
+        val totalByConsole = hashMapOf(4 to 0, 5 to 0, 6 to 0, 7 to 0, 3 to 0, 1 to 0)
+        val indexedByConsole = hashMapOf(4 to 0, 5 to 0, 6 to 0, 7 to 0, 3 to 0, 1 to 0)
+        val cachedByConsole = hashMapOf(4 to 0, 5 to 0, 6 to 0, 7 to 0, 3 to 0, 1 to 0)
         val discovered = HashMap<String, Int>()
         if (games != null) {
             for (i in 0 until games.length().coerceAtMost(5000)) {
@@ -130,6 +133,9 @@ internal object RaDiagnostics {
                     "GB" -> 4
                     "GBA" -> 5
                     "GBC" -> 6
+                    Systems.NES -> 7
+                    Systems.SNES -> 3
+                    Systems.MD -> 1
                     else -> continue
                 }
                 totalByConsole[console] = totalByConsole.getValue(console) + 1
@@ -223,6 +229,12 @@ internal object RaDiagnostics {
             libraryGbc = if (games != null) totalByConsole.getValue(6) else null,
             indexedGbc = if (games != null) indexedByConsole.getValue(6) else null,
             cachedGbc = if (games != null) cachedByConsole.getValue(6) else null,
+            indexedNes = if (games != null) indexedByConsole.getValue(7) else null,
+            cachedNes = if (games != null) cachedByConsole.getValue(7) else null,
+            indexedSnes = if (games != null) indexedByConsole.getValue(3) else null,
+            cachedSnes = if (games != null) cachedByConsole.getValue(3) else null,
+            indexedMd = if (games != null) indexedByConsole.getValue(1) else null,
+            cachedMd = if (games != null) cachedByConsole.getValue(1) else null,
             pendingAwards = pending,
             recordedAwards = recorded,
             warning = warning,
@@ -291,6 +303,12 @@ internal object RaDiagnostics {
             libraryGbc = if (games != null) totalByConsole.getValue(6) else null,
             indexedGbc = if (games != null) indexedByConsole.getValue(6) else null,
             cachedGbc = if (games != null) cachedByConsole.getValue(6) else null,
+            indexedNes = if (games != null) indexedByConsole.getValue(7) else null,
+            cachedNes = if (games != null) cachedByConsole.getValue(7) else null,
+            indexedSnes = if (games != null) indexedByConsole.getValue(3) else null,
+            cachedSnes = if (games != null) cachedByConsole.getValue(3) else null,
+            indexedMd = if (games != null) indexedByConsole.getValue(1) else null,
+            cachedMd = if (games != null) cachedByConsole.getValue(1) else null,
             pendingAwards = pending,
             recordedAwards = recorded,
             warning = warning,

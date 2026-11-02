@@ -96,7 +96,39 @@ pub fn video_mode_for(root: &Path, stem: &str, platform: Platform) -> VideoMode 
     ini::value(root, VIDEO_MODE_FILE, stem)
         .as_deref()
         .and_then(VideoMode::parse)
+        .unwrap_or_else(|| system_mode(root, platform))
+}
+
+/// Settings > Systems' Screen Size: the size a system's games start at
+/// until one is given its own with L1/R1 or the pause menu. Kept in the
+/// same file as the games', under a key no ROM name starts with.
+fn system_key(platform: Platform) -> String {
+    format!("*{}", platform.dir_name().to_ascii_lowercase())
+}
+
+pub fn system_mode(root: &Path, platform: Platform) -> VideoMode {
+    ini::value(root, VIDEO_MODE_FILE, &system_key(platform))
+        .as_deref()
+        .and_then(VideoMode::parse)
         .unwrap_or_else(|| default_mode(platform))
+}
+
+pub fn write_system_mode(root: &Path, platform: Platform, mode: VideoMode) -> std::io::Result<()> {
+    ini::write(root, VIDEO_MODE_FILE, &system_key(platform), mode.as_str())
+}
+
+/// Whether the panel already has this system's shape (within 1%): the
+/// picture then fills it and neither Screen Size nor a bezel is offered,
+/// as GBA on the KONKR's 3:2 screen.
+pub fn screen_fits(platform: Platform, panel: (u32, u32)) -> bool {
+    let shape = if platform.handheld() {
+        let (w, h) = platform.picture();
+        w as f32 / h as f32
+    } else {
+        4.0 / 3.0
+    };
+    let panel = panel.0.max(1) as f32 / panel.1.max(1) as f32;
+    (panel / shape - 1.0).abs() < 0.01
 }
 
 /// RetroArch's default for the home consoles: the core's aspect ratio,

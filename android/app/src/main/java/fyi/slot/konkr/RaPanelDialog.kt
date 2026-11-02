@@ -227,6 +227,9 @@ internal class RaPanelDialog(
         row("Game Boy Advance", ready(snapshot.cachedGba, snapshot.indexedGba))
         row("Game Boy Color", ready(snapshot.cachedGbc, snapshot.indexedGbc))
         row("Game Boy", ready(snapshot.cachedGb, snapshot.indexedGb))
+        row("NES", ready(snapshot.cachedNes, snapshot.indexedNes))
+        row("Super Nintendo", ready(snapshot.cachedSnes, snapshot.indexedSnes))
+        row("Mega Drive", ready(snapshot.cachedMd, snapshot.indexedMd))
         row("With achievements", snapshot.recognizedGames?.toString() ?: "Checking…")
         section("BADGES")
         val badgesDownloaded = snapshot.badgesDownloaded

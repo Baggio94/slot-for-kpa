@@ -445,6 +445,10 @@ impl GameSession {
             (linked_boot.is_some() != linked_resume.is_some()) {
             return Err("Invalid isolated Multiplayer boot configuration".into());
         }
+        // The pinned bsnes exposes no game memory, so no achievement can ever
+        // trigger: it runs without RetroAchievements and shows none of its
+        // notices, as RetroArch with that core (Snes9x keeps them).
+        let achievements = achievements.filter(|_| which != Core::Bsnes);
         if peer_rom.is_some() && (linked_boot.is_none() || which != Core::Mgba) {
             return Err("A remote cartridge is only valid inside mGBA Cable Link".into());
         }

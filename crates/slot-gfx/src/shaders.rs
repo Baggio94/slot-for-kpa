@@ -163,6 +163,9 @@ void main() {
     bool inside = all(greaterThanEqual(uv, u_pic.xy)) && all(lessThan(uv, u_pic.zw));
 
     if (!inside) {
+        // Outside the picture (a home console's side bands at Integer or
+        // Original Ratio): black, as RetroArch, never the edge texel smeared.
+        c = vec3(0.0);
     } else if (u_mode > 11.5) {
         // Themaister sharp-bilinear: automatic prescale from the shown rows.
         vec2 texel=uv*u_src;

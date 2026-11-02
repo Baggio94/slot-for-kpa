@@ -752,6 +752,8 @@ struct Engine {
     setting_values: Vec<(slot_gfx::TexId, u32, u32)>,
     // Settings > Systems default cores, by Platform order.
     default_cores: [Core; Platform::ALL.len()],
+    /// Settings > Systems' Screen Size, per system.
+    system_video_modes: [VideoMode; Platform::ALL.len()],
     // The live Palette row shows the palette's own name, one face per palette.
     palette_values: Vec<(slot_gfx::TexId, u32, u32)>,
     setting_carets: [(slot_gfx::TexId, u32, u32); 2],
@@ -1345,6 +1347,7 @@ impl Engine {
             custom_wallpaper_present,
             setting_values,
             default_cores: Platform::ALL.map(Core::default_for),
+            system_video_modes: Platform::ALL.map(video_mode::default_mode),
             palette_values,
             setting_carets,
             settings_hints,
@@ -3803,24 +3806,38 @@ impl Engine {
             Platform::Nes|Platform::Snes|Platform::Md=>&[SCREEN_SIZE_KEY],
         }
     }
-    // Settings > Systems opens with the system's default core, then the
-    // screen rows a paused game of that system also shows.
+    // Settings > Systems opens with the system's default core, then its
+    // Screen Size, then the screen rows a paused game of that system also
+    // shows. A system whose shape the panel already has (GBA on the KONKR)
+    // offers neither Screen Size nor a bezel (Siham 2026-11-02).
     fn system_rows(platform: Platform)-> &'static [usize] {
-        match platform {
-            Platform::Gba=>&[118,34,29],
-            Platform::Gbc=>&[118,88,29,90],
-            Platform::Gb=>&[118,89,29,36,90],
-            Platform::Nes|Platform::Snes|Platform::Md=>&[118],
+        let fits=video_mode::screen_fits(platform,panel_size());
+        match (platform,fits) {
+            (Platform::Gba,true)=>&[118,34,29],
+            (Platform::Gba,false)=>&[118,120,34,29],
+            (Platform::Gbc,true)=>&[118,88,29],
+            (Platform::Gbc,false)=>&[118,120,88,29,90],
+            (Platform::Gb,true)=>&[118,89,29,36],
+            (Platform::Gb,false)=>&[118,120,89,29,36,90],
+            (Platform::Nes|Platform::Snes|Platform::Md,true)=>&[118],
+            (Platform::Nes|Platform::Snes|Platform::Md,false)=>&[118,120],
         }
     }
     fn system_keys(platform:Platform)-> &'static [usize] {
-        match platform {
-            Platform::Gba=>&[29,0,22],
-            Platform::Gbc=>&[30,21,23,26],
-            Platform::Gb=>&[31,1,24,3,27],
-            Platform::Nes=>&[41],
-            Platform::Snes=>&[42],
-            Platform::Md=>&[43],
+        let fits=video_mode::screen_fits(platform,panel_size());
+        match (platform,fits) {
+            (Platform::Gba,true)=>&[29,0,22],
+            (Platform::Gba,false)=>&[29,SCREEN_SIZE_KEY,0,22],
+            (Platform::Gbc,true)=>&[30,21,23],
+            (Platform::Gbc,false)=>&[30,SCREEN_SIZE_KEY,21,23,26],
+            (Platform::Gb,true)=>&[31,1,24,3],
+            (Platform::Gb,false)=>&[31,SCREEN_SIZE_KEY,1,24,3,27],
+            (Platform::Nes,true)=>&[41],
+            (Platform::Nes,false)=>&[41,SCREEN_SIZE_KEY],
+            (Platform::Snes,true)=>&[42],
+            (Platform::Snes,false)=>&[42,SCREEN_SIZE_KEY],
+            (Platform::Md,true)=>&[43],
+            (Platform::Md,false)=>&[43,SCREEN_SIZE_KEY],
         }
     }
     fn core_key_platform(key:usize)->Option<Platform> {
@@ -3834,6 +3851,20 @@ impl Engine {
         let paths=PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some((storage,_))=paths {
             self.default_cores=Platform::ALL.map(|platform| core_selection::default(&storage,platform));
+            self.system_video_modes=Platform::ALL.map(|platform| video_mode::system_mode(&storage,platform));
+        }
+    }
+    /// Settings > Systems' Screen Size: Integer, Original Ratio, Stretch.
+    fn cycle_system_video_mode(&mut self, platform: Platform, right: bool) {
+        let at=platform as usize;
+        let now=self.system_video_modes[at];
+        let mode=if right { now.bigger() } else { now.smaller() };
+        if mode==now { return; }
+        let paths=PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some((root,_))=paths else { return };
+        match video_mode::write_system_mode(&root,platform,mode) {
+            Ok(()) => self.system_video_modes[at]=mode,
+            Err(err) => set_error_message("Couldn't save the screen size.", &err),
         }
     }
     /// The Default Core row swaps between the system's two cores.
@@ -4471,6 +4502,12 @@ impl Engine {
     }
 
     fn change_setting(&mut self, key: usize, right: bool) {
+        if key == SCREEN_SIZE_KEY {
+            if let ShelfOverlay::ScreenSystemSettings { platform, .. } = self.overlay {
+                self.cycle_system_video_mode(platform, right);
+            }
+            return;
+        }
         if let Some(platform)=Self::core_key_platform(key) {
             self.cycle_default_core(platform);
             return;
@@ -4568,7 +4605,11 @@ impl Engine {
             23 => if scoped.colour_correction_gbc {4}else{5},
             24 => if scoped.colour_correction_gb {4}else{5},
             25 => if scoped.bezel_gba==crate::settings::Bezel::None {5}else{4},
-            SCREEN_SIZE_KEY => SCREEN_SIZE_VALUE + match self.video_mode {
+            SCREEN_SIZE_KEY => SCREEN_SIZE_VALUE + match match self.overlay {
+                ShelfOverlay::ScreenSystemSettings { platform, .. } =>
+                    self.system_video_modes[platform as usize],
+                _ => self.video_mode,
+            } {
                 VideoMode::Actual => 0, VideoMode::Aspect => 1, VideoMode::Stretch => 2,
             },
             26 => bezel_value(scoped.bezel_gbc),
@@ -4606,7 +4647,9 @@ impl Engine {
     fn draw_setting_values(&self, row: usize, keys: &[usize], out: &mut Vec<Draw>) {
         let top = settings_row_top(keys.len());
         for (index, key) in keys.iter().copied().enumerate() {
-            if key > 31 && key != SUN_KEY { continue; } // Action-only rows have no value.
+            // Action-only rows have no value; Screen Size and the home
+            // consoles' Default Core rows (40-43) do.
+            if key > 31 && key != SUN_KEY && !(SCREEN_SIZE_KEY..=43).contains(&key) { continue; }
             let (tex, width, height) =
                 if key == SUN_KEY {
                     let sun = self.current_emulation().sun(light_sensor(), self.sun_top());
