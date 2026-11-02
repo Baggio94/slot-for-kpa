@@ -102,6 +102,8 @@ pub trait RetroCore: Send {
     fn run_frame_linked(&mut self, p1: ButtonMask, _p2: ButtonMask) {
         self.run_frame(p1);
     }
+    /// Reject incomplete native GB/GBC lockstep frames before advancing netplay.
+    fn link_step_fault(&self) -> bool { false }
     fn set_option(&mut self, _key: &str, _value: &str) {}
     /// A solar cartridge's light, 0..=255 (mGBA's own levels stop at 205).
     fn set_sun(&mut self, _luminance: u8) {}
