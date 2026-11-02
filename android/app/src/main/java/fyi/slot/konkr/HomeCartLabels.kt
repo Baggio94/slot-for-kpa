@@ -22,7 +22,7 @@ import java.util.zip.CRC32
  * from ScreenScraper (jeuInfos.php by CRC, then name and size), with slot.'s
  * own developer credentials: the label scan ("support-texture") of the
  * region the shell is drawn in, else the label cut out of the cart's
- * front render ("support-2D"). One request at a time, a few carts per pass,
+ * front render ("support-2D"). One request at a time, a batch of carts per pass,
  * nothing during gameplay; a cart ScreenScraper doesn't know is not asked
  * again until its file changes. Manual and Studio labels always win.
  */
@@ -34,8 +34,10 @@ internal object HomeCartLabels {
     private const val MAX_LIBRARY_BYTES = 8L * 1024 * 1024
     private const val MAX_JSON = 2 * 1024 * 1024
     private const val MAX_IMAGE = 6 * 1024 * 1024
-    private const val MAX_SAVED = 6
-    private const val MAX_ATTEMPTS = 10
+    // One request at a time, but enough carts per pass that a library fills
+    // in minutes, not hours (each pass waits for the next shelf idle).
+    private const val MAX_SAVED = 24
+    private const val MAX_ATTEMPTS = 40
     private const val LABEL_MAX = 640
 
     private val retry = AutoLabelRetryPolicy()
@@ -236,7 +238,7 @@ internal object HomeCartLabels {
     private fun get(url: String, limit: Int, shouldContinue: () -> Boolean): Http {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 9_000
-            readTimeout = 20_000
+            readTimeout = 12_000
             instanceFollowRedirects = true
             setRequestProperty("User-Agent", "slot. for Android")
         }
@@ -323,11 +325,15 @@ internal object HomeCartLabels {
         val now = android.os.SystemClock.elapsedRealtime()
         if (now < closedUntil || !shouldContinue()) return false
         val state = state(context)
-        val missing = games(context).filter {
+        val all = games(context)
+        val missing = all.filter {
             !CartLabelPaths.file(context.filesDir, it.uri).exists() && !known(state, it) &&
                 retry.pending(it.uri)
         }
         if (missing.isEmpty()) return false
+        // The shelf's "LABELS n/total" counter, for the home carts' own pass.
+        var checked = all.size - missing.size
+        AutoCartLabelDiagnostics.start(checked, all.size, 0)
         var saved = 0
         var attempts = 0
         var dirty = false
@@ -346,7 +352,7 @@ internal object HomeCartLabels {
                     if (!shouldContinue()) break
                     reply = lookup(rom, crc, creds, shouldContinue)
                     if (reply.code != 404) break
-                    Thread.sleep(400L)
+                    Thread.sleep(150L)
                 }
                 if (!shouldContinue()) { outcome = "INTERRUPTED"; break }
                 val answer = reply ?: continue
@@ -364,7 +370,7 @@ internal object HomeCartLabels {
                 }
                 val json = JSONObject(String(answer.body, Charsets.UTF_8))
                 val media = pick(medias(json), rom) ?: continue
-                Thread.sleep(300L)
+                Thread.sleep(100L)
                 val image = get(media.url, MAX_IMAGE, shouldContinue)
                 if (image.code != 200) { outcome = "NETWORK_ERROR"; continue }
                 val png = labelPng(image.body, media, rom) ?: continue
@@ -399,9 +405,11 @@ internal object HomeCartLabels {
                     }
                     "NETWORK_ERROR" -> retry.transient(rom.uri, android.os.SystemClock.elapsedRealtime())
                 }
+                if (!retry.pending(rom.uri)) checked++
+                AutoCartLabelDiagnostics.result(checked, saved, outcome)
                 Log.i(TAG, "HOME_ART_RESULT $outcome [${rom.platform}] ${rom.title.take(96)}")
             }
-            Thread.sleep(800L)
+            Thread.sleep(250L)
         }
         if (dirty) try { saveState(context, state) } catch (error: Exception) {
             Log.w(TAG, "Could not remember label misses", error)
