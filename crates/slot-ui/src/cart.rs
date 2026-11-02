@@ -225,9 +225,18 @@ fn mask_of(s: &Spec) -> std::borrow::Cow<'static, [u8]> {
     }
 }
 
+/// The cart's own label, at its well's size in texels.
+fn label_art(cart: &Cart, w: u32, h: u32) -> Option<Vec<u8>> {
+    let path = cart.label.as_deref()?;
+    match body_of(cart) {
+        Body::Home(_) => art::fit_label(path, w, h),
+        _ => art::cover(path, w, h),
+    }
+}
+
 pub fn cart_face(cart: &Cart) -> CartFace {
     let (lw, lh) = label_size(cart);
-    let art = cart.label.as_deref().and_then(|p| art::cover(p, px(lw), px(lh)));
+    let art = label_art(cart, px(lw), px(lh));
     cart_face_with(cart, art)
 }
 
@@ -321,7 +330,7 @@ pub fn label_size(cart: &Cart) -> (u32, u32) {
 pub fn cart_face_with_material(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
     let artwork = art.or_else(|| {
         let (w, h) = label_size(cart);
-        cart.label.as_deref().and_then(|path| crate::art::cover(path, px(w), px(h)))
+        label_art(cart, px(w), px(h))
     });
     let plastic = cart_face_with(cart, artwork);
     if !is_clear(cart) {

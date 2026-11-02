@@ -413,7 +413,7 @@ pub fn shelf_cart_for(platform: Platform, x: f32, scale: f32) -> Placed {
 pub fn shelf_cart_body(body: Body, x: f32, scale: f32) -> Placed {
     let (cw, ch) = body_box(body);
     let (w, h) = (cw as f32 * scale, ch as f32 * scale);
-    Placed { x, y: foot_y(ch as f32) - h, w, h }
+    Placed { x, y: crate::shelf::body_foot_y(body) - h, w, h }
 }
 
 /// Where the lid is held above the board. A GB/GBC lid keeps its aspect and

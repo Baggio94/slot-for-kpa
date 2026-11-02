@@ -10,6 +10,23 @@ pub fn cover_bytes(bytes: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
     cover_rgba(&src, sw, sh, w, h)
 }
 
+/// A NES / Super Nintendo / Mega Drive label for its well: the label is
+/// printed at the well's shape and scans differ only by their margins, so a
+/// scan close to that shape is shown whole, stretched the little it needs,
+/// instead of losing its sides or top. A very different picture is covered.
+pub fn fit_label(path: &Path, w: u32, h: u32) -> Option<Vec<u8>> {
+    let (src, sw, sh) = decode(path)?;
+    if sw == 0 || sh == 0 || w == 0 || h == 0 {
+        return None;
+    }
+    let ratio = (sw as f32 / sh as f32) / (w as f32 / h as f32);
+    if (0.8..=1.25).contains(&ratio) {
+        Some(crate::native_assets::resample(&src, sw, sh, w, h))
+    } else {
+        cover_rgba(&src, sw, sh, w, h)
+    }
+}
+
 fn cover_rgba(src: &[u8], sw: u32, sh: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if sw == 0 || sh == 0 {
         return None;

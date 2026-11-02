@@ -37,6 +37,9 @@ struct WorkQueue {
     closing: bool,
 }
 
+/// Every shelf a face can be asked for: each system's, then Recents and Favorites.
+const RACKS: usize = slot_store::Platform::ALL.len() + 2;
+
 pub(crate) struct CartRender {
     // A short-held priority queue lets rapid D-pad / L1-R1 changes discard
     // outdated *queued* artwork rather than processing obsolete FIFO jobs.
@@ -45,7 +48,7 @@ pub(crate) struct CartRender {
     pending: HashSet<WorkKey>,
     wanted: Vec<Key>,
     // Recents/Favorites can reuse the same index for a different ROM.
-    epochs: [u64; 5],
+    epochs: [u64; RACKS],
 }
 
 impl CartRender {
@@ -128,7 +131,7 @@ impl CartRender {
                 .map_err(|e| format!("Cannot start cartridge renderer: {e}"))?;
         }
         Ok(Self {
-            work, finished, pending: HashSet::new(), wanted: Vec::new(), epochs: [0; 5],
+            work, finished, pending: HashSet::new(), wanted: Vec::new(), epochs: [0; RACKS],
         })
     }
 
@@ -225,7 +228,7 @@ mod tests {
         let work=Arc::new((Mutex::new(WorkQueue::default()),Condvar::new()));
         let (completed, finished) = mpsc::channel();
         let mut renderer = CartRender {
-            work:work.clone(), finished, pending: HashSet::new(), wanted: Vec::new(), epochs: [0; 5],
+            work:work.clone(), finished, pending: HashSet::new(), wanted: Vec::new(), epochs: [0; RACKS],
         };
         // A fresh fifth rack must schedule work, rather than leaving
         // fallback label-colour rectangles visible forever.
@@ -261,7 +264,7 @@ mod tests {
         let (_complete,finished)=mpsc::channel::<ResultFace>();
         let mut renderer=CartRender {
             work:work.clone(), finished, pending:HashSet::new(),
-            wanted:Vec::new(),epochs:[0;5],
+            wanted:Vec::new(),epochs:[0;RACKS],
         };
         let cart=slot_store::Cart {
             platform:slot_store::Platform::Gba, stem:"Tetris".into(),
@@ -296,7 +299,7 @@ mod tests {
         let work=Arc::new((Mutex::new(WorkQueue::default()),Condvar::new()));
         let (completed, finished) = mpsc::channel();
         let mut renderer = CartRender {
-            work:work.clone(), finished, pending: HashSet::new(), wanted: Vec::new(), epochs: [0; 5],
+            work:work.clone(), finished, pending: HashSet::new(), wanted: Vec::new(), epochs: [0; RACKS],
         };
         renderer.pending.insert(((3, 0), 0));
         renderer.invalidate_shelf(3);

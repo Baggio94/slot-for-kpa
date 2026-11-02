@@ -39,6 +39,18 @@ pub fn rest_y(h: f32) -> f32 {
 pub fn foot_y(h: f32) -> f32 {
     rest_y(h) + h
 }
+
+/// Where a cart of this body stands. A NES / Super Nintendo / Mega Drive cart
+/// stands on its system's own baseline, the foot of that system's usual
+/// shell, so a US SNES, a Famicom or an EA cart lines up at the bottom with
+/// the rest of its shelf instead of being centred on its own height.
+pub fn body_foot_y(body: Body) -> f32 {
+    let h = match body {
+        Body::Home(m) => HomeMould::default_of(m.system()).size().1,
+        _ => crate::cart::body_box(body).1,
+    };
+    foot_y(h as f32)
+}
 const OMEGA: f32 = 16.0;
 const PART: f32 = 130.0;
 /// Least room between a side cart and the open core picker.
@@ -478,8 +490,9 @@ impl Shelf {
                 continue;
             }
             let x = x + shake;
-            let y = foot_y(ch as f32) - h;
-            let backing = match self.shells.get(i).copied().unwrap_or_else(|| body_of(cart)) {
+            let body = self.shells.get(i).copied().unwrap_or_else(|| body_of(cart));
+            let y = body_foot_y(body) - h;
+            let backing = match body {
                 Body::Gba => self.shadow,
                 Body::Gb(GbShell::Notched) => self.gb_shadow,
                 Body::Gb(GbShell::Rounded) => self.gbc_shadow,
