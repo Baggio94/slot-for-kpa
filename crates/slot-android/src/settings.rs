@@ -10,6 +10,9 @@ use slot_store::GbPalette;
 pub enum WallpaperPick {
     None,
     Random,
+    /// Upstream Slot v1.13: Wallpapers/GBA.png, GB.png, GBC.png,
+    /// Recents.png or Favorites.png follow the shelf on screen.
+    Shelf,
     #[default]
     Default,
     Blur,
@@ -17,13 +20,13 @@ pub enum WallpaperPick {
 }
 impl WallpaperPick {
     pub fn choices(root: &Path) -> Vec<Self> {
-        let mut choices=vec![Self::None, Self::Random, Self::Default, Self::Blur];
+        let mut choices=vec![Self::None, Self::Random, Self::Shelf, Self::Default, Self::Blur];
         choices.extend(crate::wallpaper::list(root).into_iter().map(Self::File));
         choices
     }
     pub fn step(&self, root: &Path, right: bool) -> Self {
         let choices=Self::choices(root);
-        let at=choices.iter().position(|v| v==self).unwrap_or(2);
+        let at=choices.iter().position(|v| v==self).unwrap_or(3);
         let n=choices.len();
         choices[if right {(at+1)%n}else{(at+n-1)%n}].clone()
     }
@@ -31,6 +34,7 @@ impl WallpaperPick {
         match self {
             Self::None=>"None".into(),
             Self::Random=>"Random".into(),
+            Self::Shelf=>"Shelf".into(),
             Self::Default=>"Default".into(),
             Self::Blur=>"DEFAULT BLUR".into(),
             Self::File(name)=>name.rsplit_once('.').map(|(a,_)|a).unwrap_or(name).into()
@@ -598,10 +602,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("user.png"), b"placeholder").unwrap();
         std::fs::write(dir.join("another.png"), b"placeholder").unwrap();
+        std::fs::write(dir.join("GBA.png"), b"placeholder").unwrap();
         let choices=WallpaperPick::choices(&root);
-        assert_eq!(choices, vec![None,Random,Default,Blur,
+        assert_eq!(choices, vec![None,Random,Shelf,Default,Blur,
             File("another.png".into()),File("user.png".into())]);
         assert_eq!(None.step(&root,true), Random);
+        assert_eq!(Random.step(&root,true), Shelf);
+        assert_eq!(Shelf.step(&root,true), Default);
         assert_eq!(None.step(&root,false), File("user.png".into()));
         assert_eq!(Default.step(&root,true), Blur);
         assert_eq!(Blur.step(&root,true), File("another.png".into()));
@@ -626,6 +633,11 @@ mod tests {
         assert_eq!(restored.appearance,Appearance::Light);
         assert_eq!(restored.run_ahead_frames,2);
         assert!(restored.show_wifi && restored.status_opt_in_v2);
+        settings.wallpaper=WallpaperPick::Shelf;
+        let saved=serde_json::to_string(&settings).unwrap();
+        assert!(saved.contains(r#""wallpaper":"shelf""#), "{saved}");
+        let restored:Settings=serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.wallpaper,WallpaperPick::Shelf);
     }
 
     #[test]

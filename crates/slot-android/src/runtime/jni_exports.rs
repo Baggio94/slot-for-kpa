@@ -140,6 +140,15 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePollCartLabelUri(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeWallpaperTarget(
+    env: JNIEnv<'_>, _this: JObject<'_>,
+) -> jstring {
+    let target = WALLPAPER_TARGET.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    target.and_then(|s| env.new_string(s).ok())
+        .map_or(std::ptr::null_mut(), |s| s.into_raw())
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeReloadCartLabel(
     mut env: JNIEnv<'_>, _this: JObject<'_>, uri: JString<'_>,
 ) {

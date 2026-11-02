@@ -118,6 +118,9 @@ static REQUEST: Mutex<Option<String>> = Mutex::new(None);
 // names the save folder from it before the ROM is opened.
 static LAUNCH_CORE: Mutex<Option<(String, Core)>> = Mutex::new(None);
 static LABEL_PICK_REQUEST: Mutex<Option<String>> = Mutex::new(None);
+/// File name in Wallpapers/ that Import / Delete Wallpaper acts on: user.png,
+/// or the current shelf's <shelf>.png while the Shelf wallpaper is picked.
+pub(crate) static WALLPAPER_TARGET: Mutex<Option<String>> = Mutex::new(None);
 static UI_ACTION: Mutex<VecDeque<i32>> = Mutex::new(VecDeque::new());
 static SAVE_SYNC: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static SHARE_SAVES_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -671,6 +674,10 @@ struct Engine {
     video_mode: VideoMode,
     wallpaper_texture: Option<slot_gfx::TexId>,
     wallpaper_personal: bool,
+    /// Shelf wallpaper: one texture per shelf, decoded off the GL thread.
+    shelf_wallpaper_texs: Vec<Option<slot_gfx::TexId>>,
+    shelf_wallpaper_ready: Vec<bool>,
+    shelf_wallpaper_rx: Option<std::sync::mpsc::Receiver<(usize, Vec<u8>)>>,
     wallpaper_name_face: Option<(slot_gfx::TexId, u32, u32)>,
     /// Live rear/front v1.7.0 slot textures. Always draw in proper depth order.
     slot_faces: Option<(slot_gfx::TexId, slot_gfx::TexId)>,
@@ -782,6 +789,8 @@ fn wallpaper_pixels(root: Option<&Path>, selection: &crate::settings::WallpaperP
         (WallpaperPick::Default, _) => return (default(), false),
         (WallpaperPick::Blur, _) =>
             return (slot_ui::blur_background_native().map(|v|v.to_vec()), false),
+        // Shelves without their own file show the bundled default.
+        (WallpaperPick::Shelf, _) => return (default(), false),
         (WallpaperPick::File(name), Some(root)) => {
             if crate::wallpaper::list(root).contains(name) {
                 Some(root.join("Wallpapers").join(name))
@@ -1044,7 +1053,8 @@ impl Engine {
                                "RA CLOCK LAB", "RETROARCH", "NATIVE",
                                "SLOT.", "GAME BOY", "POCKET", "COLOR",
                                "mGBA", "gpSP", "Gambatte", "SENSOR",
-                               "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+                               "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+                               "Shelf"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -1217,6 +1227,9 @@ impl Engine {
             video_mode: VideoMode::Actual,
             wallpaper_texture,
             wallpaper_personal,
+            shelf_wallpaper_texs: Vec::new(),
+            shelf_wallpaper_ready: Vec::new(),
+            shelf_wallpaper_rx: None,
             wallpaper_name_face,
             slot_faces,
             slot_dark_faces,
@@ -1298,7 +1311,72 @@ impl Engine {
             selected_title_name: String::new(),
             selected_title_face: Printed::default(),
             selected_title_texture: None,
-        })
+        }.with_shelf_wallpapers(visuals_root.as_deref()))
+    }
+
+    fn with_shelf_wallpapers(mut self, root: Option<&Path>) -> Self {
+        self.reload_shelf_wallpapers(root);
+        self
+    }
+
+    /// Upstream Slot v1.13 decodes shelf wallpapers on a worker after boot so
+    /// L1/R1 never waits on a PNG. The current shelf is decoded first.
+    fn reload_shelf_wallpapers(&mut self, root: Option<&Path>) {
+        let count = self.shelves.len();
+        self.shelf_wallpaper_texs.resize(count, None);
+        self.shelf_wallpaper_ready = vec![false; count];
+        self.shelf_wallpaper_rx = None;
+        let (crate::settings::WallpaperPick::Shelf, Some(root)) = (&self.settings.wallpaper, root)
+            else { return };
+        let mut order: Vec<usize> = (0..count).collect();
+        order.sort_by_key(|i| *i != self.active);
+        let files: Vec<(usize, PathBuf)> = order.into_iter()
+            .filter_map(|i| crate::wallpaper::for_shelf(root, i)
+                .map(|name| (i, root.join("Wallpapers").join(name))))
+            .collect();
+        if files.is_empty() { return; }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new().name("slot-wallpaper".into()).spawn(move || {
+            for (index, path) in files {
+                if let Some(rgba) = slot_ui::wallpaper_face_native(&path) {
+                    if tx.send((index, rgba)).is_err() { return; }
+                }
+            }
+        });
+        match spawned {
+            Ok(_) => self.shelf_wallpaper_rx = Some(rx),
+            Err(error) => eprintln!("slot-konkr: shelf wallpaper worker failed: {error}"),
+        }
+    }
+
+    /// Upload at most one decoded shelf wallpaper per frame.
+    fn poll_shelf_wallpapers(&mut self) {
+        let Some(rx) = self.shelf_wallpaper_rx.as_ref() else { return };
+        let Ok((index, rgba)) = rx.try_recv() else { return };
+        let Some(slot) = self.shelf_wallpaper_texs.get_mut(index) else { return };
+        *slot = Some(if let Some(tex) = *slot {
+            self.gpu.update_texture(tex, slot_ui::NATIVE_W, slot_ui::NATIVE_H, &rgba);
+            tex
+        } else {
+            self.gpu.create_texture(slot_ui::NATIVE_W, slot_ui::NATIVE_H, &rgba)
+        });
+        self.shelf_wallpaper_ready[index] = true;
+    }
+
+    /// Whether Delete Wallpaper has a file to remove: the current shelf's own
+    /// wallpaper while Shelf is picked, user.png otherwise.
+    fn removable_wallpaper(&self) -> bool {
+        if self.settings.wallpaper == crate::settings::WallpaperPick::Shelf {
+            Self::recents_root().is_some_and(|root|
+                crate::wallpaper::for_shelf(&root, self.active).is_some())
+        } else { self.custom_wallpaper_present }
+    }
+
+    fn set_wallpaper_target(&self) {
+        let target = if self.settings.wallpaper == crate::settings::WallpaperPick::Shelf {
+            crate::wallpaper::shelf_target(self.active)
+        } else { None };
+        *WALLPAPER_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = target;
     }
 
     fn shelf_footer_ink(&self) -> [u8; 3] {
@@ -3866,6 +3944,7 @@ impl Engine {
         }
         // None deliberately leaves the texture allocated for quick reactivation
         // but never draws it, avoiding repeated GL allocations on toggling.
+        self.reload_shelf_wallpapers(root);
     }
 
     fn refresh_wallpaper_name(&mut self) {
@@ -4016,7 +4095,7 @@ impl Engine {
         let mut rows=vec![83]; // Wallpaper
         if self.show_general_tint(){rows.push(84);}
         rows.extend_from_slice(&[85,86,87,43]);
-        if self.custom_wallpaper_present {rows.push(45);}
+        if self.removable_wallpaper() {rows.push(45);}
         rows
     }
     fn cycle_general_row(&mut self, row: usize, right: bool, confirm: bool) {
@@ -4035,10 +4114,16 @@ impl Engine {
                 self.selected_title_name.clear();
                 self.persist_settings();
             }
-            43 if confirm => UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(8),
+            43 if confirm => {
+                self.set_wallpaper_target();
+                UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(8);
+            }
             45 if confirm => {
+                self.set_wallpaper_target();
                 UI_ACTION.lock().unwrap_or_else(|e|e.into_inner()).push_back(10);
-                self.custom_wallpaper_present=false;
+                if self.settings.wallpaper != crate::settings::WallpaperPick::Shelf {
+                    self.custom_wallpaper_present=false;
+                }
                 self.overlay=ShelfOverlay::GeneralSettings {
                     row: row.saturating_sub(1),
                 };
@@ -4117,7 +4202,8 @@ impl Engine {
     }
 
     fn show_general_tint(&self) -> bool {
-        self.wallpaper_personal
+        self.wallpaper_personal ||
+            self.settings.wallpaper == crate::settings::WallpaperPick::Shelf
     }
 
     fn cycle_wallpaper_tint(&mut self, right: bool) {
@@ -4215,6 +4301,7 @@ impl Engine {
             16 => match &self.settings.wallpaper {
                 crate::settings::WallpaperPick::None => 17,
                 crate::settings::WallpaperPick::Random => 18,
+                crate::settings::WallpaperPick::Shelf => 65,
                 crate::settings::WallpaperPick::Default => 19,
                 crate::settings::WallpaperPick::Blur => 20,
                 crate::settings::WallpaperPick::File(_) => 26,
@@ -4833,6 +4920,7 @@ impl Engine {
         let phase_native_started = Instant::now();
         self.tick_menu_repeat();
         self.refresh_system_status();
+        self.poll_shelf_wallpapers();
         // Poll the already-running achievement evaluator without blocking GL.
         // Only Android's foreground UI displays notices; the worker never
         // touches JNI, an Activity, the renderer or the filesystem here.
@@ -5649,10 +5737,14 @@ impl Engine {
         }];
         // Slot v1.7 carousel ground: None has no wallpaper; personal images
         // receive only the selected Wallpaper Tint (never a fixed scrim).
+        let shelf_wallpaper = (self.settings.wallpaper == crate::settings::WallpaperPick::Shelf)
+            .then(|| self.shelf_wallpaper_ready.get(self.active).copied().unwrap_or(false)
+                .then(|| self.shelf_wallpaper_texs.get(self.active).copied().flatten()).flatten())
+            .flatten();
         let active_wallpaper = if self.settings.wallpaper ==
             crate::settings::WallpaperPick::None { None }
-            else { self.wallpaper_texture };
-        let tint = if self.wallpaper_personal {
+            else { shelf_wallpaper.or(self.wallpaper_texture) };
+        let tint = if self.wallpaper_personal || shelf_wallpaper.is_some() {
             self.settings.wallpaper_tint.alpha()
         } else { 0.0 };
         slot_ui::draw_ground_tinted(active_wallpaper, tint, &mut commands);

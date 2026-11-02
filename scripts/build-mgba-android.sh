@@ -63,9 +63,11 @@ done
 # DMG palette must follow a live option change and savestate restoration.
 # MBC2 games (Kirby's Pinball Land) must get a valid SRAM bank pointer
 # instead of freezing on their first save RAM read (upstream 543a19758).
+# The first Game Boy frame after the LCD turns back on stays blank instead of
+# flashing stray tiles and sprites (Pokémon Pinball, upstream Slot #169).
 # Apply strictly: never continue on a mismatched or half-patched checkout.
 for patch in flash-bank-survives-mask.patch gb-dmg-palette-follows-option.patch \
-  543a19758-mbc2-sram-bank.patch; do
+  543a19758-mbc2-sram-bank.patch gb-blank-frame-after-lcd-on.patch; do
   patch_file="$ROOT/cores/mgba/$patch"
   if git -C "$SRC" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
     echo "Already applied: $patch"
