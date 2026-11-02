@@ -8,7 +8,6 @@ use crate::cart::{cart_box_for, label_colour, label_text, seated_box_for, SEATED
 use crate::footer::Printed;
 use crate::icon::icon_box;
 use crate::plate::HINT_H;
-use crate::shelf::foot_y;
 
 pub const ALERT_PX: f32 = 44.0;
 
@@ -107,6 +106,89 @@ pub struct SlotChrome<'a> {
     pub slot_faces: Option<(TexId, TexId)>,
 }
 
+/// What closes a home console's slot hole (fente/maquette.py, validated v3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloserKind {
+    /// Famicom: an open slot; the cart pops up as it ejects.
+    Open,
+    /// NES: one flap hinged at the back, tipped down by the cart.
+    Flap,
+    /// Super Nintendo: two flaps meeting in the middle, pushed apart; the
+    /// cart pops up as it ejects.
+    Flaps,
+    /// Mega Drive: two doors sliding apart.
+    Doors,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SlotCloser {
+    pub kind: CloserKind,
+    /// Flap: [flap, -]; Flaps: [top, bottom]; Doors: [left, right].
+    pub tex: [Option<TexId>; 2],
+}
+
+impl SlotCloser {
+    /// The hole it closes, in the 720 px band (slots.py HOLE).
+    fn hole(self) -> (f32, f32, f32, f32) {
+        match self.kind {
+            CloserKind::Flaps => (238.0, 2.0, 482.0, 28.0),
+            _ => (236.0, 2.0, 484.0, 28.0),
+        }
+    }
+
+    fn pops(self) -> bool {
+        matches!(self.kind, CloserKind::Open | CloserKind::Flaps)
+    }
+
+    /// Closed at 0, out of the way at 1. The band's centre keeps its pixels
+    /// on every screen width (native_assets::refit_band).
+    fn draw(self, opening: f32, alpha: f32, out: &mut Vec<Draw>) {
+        let s = 1.0 - opening.clamp(0.0, 1.0);
+        if s <= 0.01 || alpha <= 0.0 {
+            return;
+        }
+        let (hx0, hy0, hx1, hy1) = self.hole();
+        let (x, y) = (out_w() as f32 / 2.0 + hx0 - 360.0, BAND_Y + hy0);
+        let (w, h) = (hx1 - hx0, hy1 - hy0);
+        let mut tex = |i: usize, x: f32, y: f32, w: f32, h: f32| {
+            if let Some(tex) = self.tex[i] {
+                out.push(Draw::Tex { x, y, w, h, tex, alpha });
+            }
+        };
+        match self.kind {
+            CloserKind::Open => {}
+            CloserKind::Flap => tex(0, x, y, w, h * s),
+            CloserKind::Flaps => {
+                let half = h / 2.0 * s;
+                tex(0, x, y, w, half);
+                tex(1, x, y + h - half, w, half);
+            }
+            CloserKind::Doors => {
+                let half = w / 2.0 * s;
+                tex(0, x, y, half, h);
+                tex(1, x + w - half, y, half, h);
+            }
+        }
+    }
+}
+
+/// How far the cart's foot opens the closer: shut until the cart touches
+/// the band, fully open 16 px further down.
+fn closer_opening(foot: f32) -> f32 {
+    ((foot - (BAND_Y + 2.0)) / 16.0).clamp(0.0, 1.0)
+}
+
+/// A Super Nintendo or Famicom cart kicked up by the eject spring at the
+/// start of its way out: `seat` runs 1 -> 0 while ejecting.
+fn eject_pop(seat: f32) -> f32 {
+    let u = 1.0 - seat;
+    if u < 0.25 {
+        12.0 * (std::f32::consts::PI * u / 0.25).sin()
+    } else {
+        0.0
+    }
+}
+
 impl SlotChrome<'_> {
     pub fn draw(&self, out: &mut Vec<Draw>) {
         self.draw_with_material(out,[None,None],None)
@@ -118,6 +200,16 @@ impl SlotChrome<'_> {
     pub fn draw_with_material(
         &self, out: &mut Vec<Draw>,
         behind: [Option<TexId>; 2], transparent_front: Option<TexId>,
+    ) {
+        self.draw_with_closer(out, behind, transparent_front, None, false)
+    }
+
+    /// draw_with_material with a home console's slot closer, which the cart
+    /// opens as it goes in and lets shut as it comes out.
+    pub fn draw_with_closer(
+        &self, out: &mut Vec<Draw>,
+        behind: [Option<TexId>; 2], transparent_front: Option<TexId>,
+        closer: Option<SlotCloser>, ejecting: bool,
     ) {
         let seat = self.seat.clamp(0.0, 1.0);
         let dim = self.dim.clamp(0.0, 1.0);
@@ -146,14 +238,20 @@ impl SlotChrome<'_> {
         let (w0, h0) = (cw * scale, ch * scale);
         let (sw, sh) = seated_box_for(self.cart);
         let (sw, sh) = (sw as f32, sh as f32);
-        let (foot0, seated_foot) = (foot_y(ch), SEATED_Y + sh);
+        let (foot0, seated_foot) = (crate::shelf::body_foot_y(crate::cart::body_of(self.cart)), SEATED_Y + sh);
         let catch = catch_at(foot0, seated_foot);
         let travel = travel(seat, catch);
         let k = (travel / catch).min(1.0);
         let (cw, ch) = (w0 + (sw - w0) * k, h0 + (sh - h0) * k);
         let centre = self.rest + w0 / 2.0;
         let x = centre + (cx() - centre) * k - cw / 2.0;
-        let y = foot0 + (seated_foot - foot0) * travel - ch;
+        let mut y = foot0 + (seated_foot - foot0) * travel - ch;
+        if let Some(closer) = closer {
+            if ejecting && closer.pops() {
+                y -= eject_pop(seat);
+            }
+            closer.draw(closer_opening(y + ch), slot_alpha, out);
+        }
         let cart_alpha = if seat >= 1.0 && !held { chrome } else { 1.0 };
         for tex in behind.into_iter().flatten() {
             out.push(Draw::Tex { x, y, w: cw, h: ch, tex, alpha: cart_alpha });
@@ -349,7 +447,15 @@ pub fn draw_empty_slot(out: &mut Vec<Draw>) {
 }
 
 pub fn draw_empty_slot_with(faces: Option<(TexId, TexId)>, out: &mut Vec<Draw>) {
+    draw_empty_slot_closed(faces, None, out);
+}
+
+/// The empty slot with its closer shut.
+pub fn draw_empty_slot_closed(faces: Option<(TexId, TexId)>, closer: Option<SlotCloser>, out: &mut Vec<Draw>) {
     draw_slot_back_with(faces.map(|pair| pair.0), 1.0, out);
+    if let Some(closer) = closer {
+        closer.draw(0.0, 1.0, out);
+    }
     draw_slot_front_with(faces.map(|pair| pair.1), 1.0, out);
 }
 

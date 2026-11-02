@@ -247,6 +247,24 @@ pub fn home_slot(family: usize) -> (&'static [u8], &'static [u8]) {
     (load(BACK[i], SLOT_W, SLOT_H, &B[i]), load(FRONT[i], SLOT_W, SLOT_H, &F[i]))
 }
 
+/// What closes a home slot's hole, at its logical size: the NES flap
+/// (family 1), the Super Nintendo's two flaps (2), the Mega Drive's two
+/// doors (3). The Famicom's slot (0) is open.
+pub fn home_closer(family: usize) -> Vec<(&'static [u8], u32, u32)> {
+    const NES: &[u8] = include_bytes!("../../../assets/home/closer_nes.png");
+    const SNES_TOP: &[u8] = include_bytes!("../../../assets/home/closer_snes_top.png");
+    const SNES_BOTTOM: &[u8] = include_bytes!("../../../assets/home/closer_snes_bottom.png");
+    const MD_LEFT: &[u8] = include_bytes!("../../../assets/home/closer_md_left.png");
+    const MD_RIGHT: &[u8] = include_bytes!("../../../assets/home/closer_md_right.png");
+    static C: [OnceLock<Vec<u8>>; 5] = [const { OnceLock::new() }; 5];
+    match family {
+        1 => vec![(load(NES, 248, 26, &C[0]), 248, 26)],
+        2 => vec![(load(SNES_TOP, 244, 13, &C[1]), 244, 13), (load(SNES_BOTTOM, 244, 13, &C[2]), 244, 13)],
+        3 => vec![(load(MD_LEFT, 124, 26, &C[3]), 124, 26), (load(MD_RIGHT, 124, 26, &C[4]), 124, 26)],
+        _ => Vec::new(),
+    }
+}
+
 /// Which home slot bar a cart goes into, None for the GBA / Game Boy bar.
 pub fn home_slot_family(cart: &slot_store::Cart) -> Option<usize> {
     use crate::home::HomeMould as M;

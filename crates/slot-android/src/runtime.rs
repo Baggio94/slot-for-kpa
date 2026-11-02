@@ -739,6 +739,8 @@ struct Engine {
     slot_dark_faces: (slot_gfx::TexId, slot_gfx::TexId),
     /// The Famicom, NES, Super Nintendo and Mega Drive slot bars.
     home_slot_faces: [(slot_gfx::TexId, slot_gfx::TexId); 4],
+    /// What closes those slots' holes (none for the Famicom's open slot).
+    home_closers: [Option<slot_ui::SlotCloser>; 4],
     slot_light_faces: (slot_gfx::TexId, slot_gfx::TexId),
     gb_bezel_tex: slot_gfx::TexId,
     gbc_bezel_tex: slot_gfx::TexId,
@@ -941,6 +943,20 @@ impl Engine {
                 gpu.create_texture(wide, h, &slot_ui::refit_band(&rgba, w, h, wide))
             };
             (band(back), band(front))
+        });
+        let home_closers=[0usize, 1, 2, 3].map(|family| {
+            let kind = match family {
+                1 => slot_ui::CloserKind::Flap,
+                2 => slot_ui::CloserKind::Flaps,
+                3 => slot_ui::CloserKind::Doors,
+                _ => slot_ui::CloserKind::Open,
+            };
+            let mut tex = [None, None];
+            for (i, (rgba, w, h)) in slot_ui::bitmaps::home_closer(family).into_iter().enumerate().take(2) {
+                let (rgba, w, h) = slot_ui::native_rgba(rgba, w, h);
+                tex[i] = Some(gpu.create_texture(w, h, &rgba));
+            }
+            Some(slot_ui::SlotCloser { kind, tex })
         });
         let slot_faces = if custom_colours { None }
             else if settings.appearance == crate::settings::Appearance::Light {
@@ -1331,6 +1347,7 @@ impl Engine {
             slot_faces,
             slot_dark_faces,
             home_slot_faces,
+            home_closers,
             slot_light_faces,
             gb_bezel_tex,
             gbc_bezel_tex,
@@ -4405,7 +4422,9 @@ impl Engine {
                     seat: self.progress, alert: None, dim: 0.0,
                     screen: self.screen_power, game: true, over: false,
                     slot_faces: pick_slot_faces(self.slot_faces, self.home_slot_faces, Some(cart)),
-                }.draw_with_material(commands,self.clear_layers().0,self.clear_layers().1);
+                }.draw_with_closer(commands,self.clear_layers().0,self.clear_layers().1,
+                    pick_closer(self.slot_faces, self.home_closers, Some(cart)),
+                    !self.inserted && self.progress > 0.0);
             } else {
                 commands.push(Draw::Game);
             }
@@ -5868,7 +5887,9 @@ impl Engine {
                         seat: self.progress, alert: None, dim: 0.0,
                         screen: self.screen_power, game: true, over: false,
                         slot_faces: pick_slot_faces(self.slot_faces, self.home_slot_faces, Some(cart)),
-                    }.draw_with_material(&mut commands, transition_back, transition_front);
+                    }.draw_with_closer(&mut commands, transition_back, transition_front,
+                    pick_closer(self.slot_faces, self.home_closers, Some(cart)),
+                    !self.inserted && self.progress > 0.0);
                 } else {
                     commands.push(Draw::Game);
                 }
@@ -6013,15 +6034,17 @@ impl Engine {
                 let span = Some(picker_span(shelf, openness));
                 let selected = shelf.carts.get(shelf.index).map(|c| c.stem.as_str());
                 shelf.draw_row_clear_of(selected, 0.0, 0.26 * t, dim, span, &mut commands);
-                slot_ui::draw_empty_slot_with(
-                    pick_slot_faces(self.slot_faces, self.home_slot_faces, shelf.carts.get(shelf.index)), &mut commands);
+                slot_ui::draw_empty_slot_closed(
+                    pick_slot_faces(self.slot_faces, self.home_slot_faces, shelf.carts.get(shelf.index)),
+                    pick_closer(self.slot_faces, self.home_closers, shelf.carts.get(shelf.index)), &mut commands);
             } else {
                 // Match upstream Refusal: only the shelf carts shake.
                 // The physical slot stays fixed; no input delay or layout changes.
                 let shake = self.refusal.map_or(0.0, |r| r.offset(ms));
                 shelf.draw_row(None, shake, 0.0, 1.0, &mut commands);
-                slot_ui::draw_empty_slot_with(
-                    pick_slot_faces(self.slot_faces, self.home_slot_faces, shelf.carts.get(shelf.index)), &mut commands);
+                slot_ui::draw_empty_slot_closed(
+                    pick_slot_faces(self.slot_faces, self.home_slot_faces, shelf.carts.get(shelf.index)),
+                    pick_closer(self.slot_faces, self.home_closers, shelf.carts.get(shelf.index)), &mut commands);
                 // Official v1.7.0 shelf: system (L1/R1) or letter
                 // (D-pad Up/Down) uses a 200/1200/800 ms full-opacity name.
                 // Game Titles crossfade back in during the last 800ms, and
@@ -6080,7 +6103,9 @@ impl Engine {
                 over: true,
                 slot_faces: pick_slot_faces(self.slot_faces, self.home_slot_faces, Some(cart)),
             }
-            .draw_with_material(&mut commands,selected_clear_back,selected_clear_front);
+            .draw_with_closer(&mut commands,selected_clear_back,selected_clear_front,
+                pick_closer(self.slot_faces, self.home_closers, Some(cart)),
+                !self.inserted && self.progress > 0.0);
         }
         // The onboarding keycap belongs to Slot's own rendering lifecycle,
         // never the Android overlay. No hint is drawn behind an open menu.
@@ -6483,6 +6508,18 @@ fn pick_slot_faces(
         Some(family) => home[family],
         None => faces,
     })
+}
+
+/// What closes the slot a cart goes into: the NES flap, the Super Nintendo's
+/// flaps, the Mega Drive's doors, the Famicom's open slot. None for the GBA /
+/// Game Boy bar and for custom theme colours.
+fn pick_closer(
+    faces: Option<(slot_gfx::TexId, slot_gfx::TexId)>,
+    closers: [Option<slot_ui::SlotCloser>; 4],
+    cart: Option<&slot_store::Cart>,
+) -> Option<slot_ui::SlotCloser> {
+    faces?;
+    closers[cart.and_then(slot_ui::bitmaps::home_slot_family)?]
 }
 
 /// The screen columns the core picker covers at `progress`.
