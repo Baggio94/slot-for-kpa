@@ -197,6 +197,41 @@ mod tests {
         assert_eq!(grouped[2].len(), 1);
     }
     #[test]
+    fn all_six_platforms_are_available_to_recents_and_favorites() {
+        let entry = |platform: &str, slug: &str| RomEntry {
+            platform: platform.into(), title: slug.into(),
+            uri: format!("content://roms/{slug}"), code: String::new(),
+            color_only: false, shell_override: None,
+            gb_title: String::new(), gb_code: String::new(),
+            gb_japan: false, gb_cgb_flag: None,
+            home_title: String::new(), home_region: String::new(), home_battery: false,
+        };
+        let grouped = carts_by_platform(&[
+            entry("GBA", "gba"), entry("GB", "gb"), entry("GBC", "gbc"),
+            entry("NES", "nes"), entry("SNES", "snes"), entry("MD", "md"),
+        ]);
+        assert_eq!(grouped.len(), slot_store::Platform::ALL.len());
+        assert!(grouped.iter().all(|shelf| shelf.len() == 1));
+        let sources: Vec<&[Cart]> = grouped.iter().map(|shelf| shelf.as_slice()).collect();
+        let recent = crate::recents::carts(&[
+            "content://roms/nes".into(), "content://roms/snes".into(),
+            "content://roms/md".into(),
+        ], &sources);
+        assert_eq!(recent.iter().map(|c| c.stem.as_str()).collect::<Vec<_>>(),
+            ["nes", "snes", "md"]);
+        let favorites = crate::favorites::carts(&[
+            "content://roms/nes".into(), "content://roms/snes".into(),
+            "content://roms/md".into(),
+        ], &sources);
+        assert_eq!(favorites.len(), 3);
+        assert!(favorites.iter().any(|c| c.platform == Platform::Nes));
+        assert!(favorites.iter().any(|c| c.platform == Platform::Snes));
+        assert!(favorites.iter().any(|c| c.platform == Platform::Md));
+        assert!(grouped.iter().all(|shelf| shelf.len() == 1),
+            "special-rack materialization must not overwrite a system shelf");
+    }
+
+    #[test]
     fn gb_carts_use_studio_header_colours_and_preserve_overrides() {
         let entry = |platform: &str, name: &str, title: &str, code: &str, flag: i32| {
             RomEntry {
