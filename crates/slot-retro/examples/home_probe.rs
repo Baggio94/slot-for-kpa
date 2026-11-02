@@ -58,6 +58,25 @@ fn run() -> Result<(), Box<dyn Error>> {
     println!("frame {:?} aspect {:.4} audio {:.1} frames/video-frame", c.video_size(), c.display_aspect(),
         samples as f64 / f64::from(frames));
     println!("battery {:?}", c.save_ram().map(|r| r.len()));
+    let console = match rom.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "nes" => 7, "sfc" | "smc" => 3, _ => 1,
+    };
+    let (mut ram, mut cover) = (vec![0u8; 0x58000], vec![0u8; 0x40000]);
+    let valid = c.achievement_memory_for_console(&mut ram, &mut cover, console);
+    let mapped: Vec<(usize, usize)> = {
+        let mut spans = Vec::new();
+        let mut i = 0;
+        while i < cover.len() {
+            if cover[i] == 1 {
+                let s = i;
+                while i < cover.len() && cover[i] == 1 { i += 1; }
+                spans.push((s, i));
+            } else { i += 1; }
+        }
+        spans
+    };
+    println!("achievements console {console}: valid {valid:?} spans {:x?} ram[0..4] {:02x?}",
+        mapped, &ram[..4]);
     let state = c.serialize()?;
     let mut hashes = Vec::new();
     for _ in 0..2 {

@@ -1,6 +1,6 @@
 //! Background library preparation. A fingerprint avoids re-reading unchanged ROMs at boot.
 use std::collections::{BTreeMap, VecDeque};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -110,6 +110,20 @@ pub(crate) fn content_hash(path: &Path) -> Result<String, String> {
     let mut file = std::fs::File::open(path).map_err(|_| "Cannot open ROM")?;
     let mut buffer = [0; 64 * 1024];
     let mut md5 = md5::Context::new();
+    // RetroAchievements hashes NES carts without their iNES/FDS header and
+    // SNES carts without a 512-byte copier header (rcheevos rc_hash).
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let skip = match ext.as_str() {
+        "nes" | "fc" | "unf" | "unif" => {
+            let mut head = [0u8; 4];
+            let read = file.read(&mut head).map_err(|_| "Cannot read ROM")?;
+            file.seek(SeekFrom::Start(0)).map_err(|_| "Cannot read ROM")?;
+            if read == 4 && (&head == b"NES\x1a" || &head == b"FDS\x1a") { 16 } else { 0 }
+        }
+        "sfc" | "smc" if size % 0x2000 == 512 => 512,
+        _ => 0,
+    };
+    file.seek(SeekFrom::Start(skip)).map_err(|_| "Cannot read ROM")?;
     loop {
         let n = file.read(&mut buffer).map_err(|_| "Cannot read ROM")?;
         if n == 0 {

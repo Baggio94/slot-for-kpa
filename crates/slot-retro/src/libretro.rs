@@ -938,6 +938,75 @@ fn copy_gb_achievement_map(
     filled
 }
 
+/// Where RetroAchievements reads the home consoles (rcheevos console maps):
+/// the work RAM from 0 and the cart's battery RAM after it. NES: 2 KiB RAM
+/// mirrored up to 0x2000, cart RAM at 0x6000. SNES: 128 KiB WRAM, cart RAM
+/// at 0x20000. Mega Drive: 64 KiB 68000 RAM, cart RAM at 0x10000.
+struct HomeMap {
+    ram: usize,
+    mirror_to: usize,
+    save_at: usize,
+    save_max: usize,
+    /// The work RAM's address on the console bus, for cores that only
+    /// describe it through a memory map.
+    bus: usize,
+}
+
+fn home_map(console: u32) -> Option<HomeMap> {
+    match console {
+        7 => Some(HomeMap { ram: 0x800, mirror_to: 0x2000, save_at: 0x6000, save_max: 0x2000, bus: 0 }),
+        3 => Some(HomeMap { ram: 0x20000, mirror_to: 0x20000, save_at: 0x20000, save_max: 0x20000, bus: 0x7e0000 }),
+        1 => Some(HomeMap { ram: 0x10000, mirror_to: 0x10000, save_at: 0x10000, save_max: 0x10000, bus: 0xff0000 }),
+        _ => None,
+    }
+}
+
+/// Copy `len` bytes to `at`, marking them as mapped. Returns newly covered bytes.
+fn cover(src: *const u8, len: usize, at: usize, ram: &mut [u8], coverage: &mut [u8]) -> usize {
+    let end = (at + len).min(ram.len()).min(coverage.len());
+    if src.is_null() || end <= at { return 0; }
+    unsafe { std::ptr::copy_nonoverlapping(src, ram[at..end].as_mut_ptr(), end - at); }
+    let mut filled = 0;
+    for flag in &mut coverage[at..end] {
+        if *flag == 0 { filled += 1; }
+        *flag = 1;
+    }
+    filled
+}
+
+impl LibretroCore {
+    fn copy_home_achievement_map(&self, map: &HomeMap, ram: &mut [u8], coverage: &mut [u8]) -> usize {
+        let limit = map.save_at + map.save_max;
+        if ram.len() < limit || coverage.len() < limit { return 0; }
+        coverage[..limit].fill(0);
+        let mut source = unsafe { (self.api.get_memory_data)(MEMORY_SYSTEM_RAM) } as *const u8;
+        let mut size = unsafe { (self.api.get_memory_size)(MEMORY_SYSTEM_RAM) };
+        if source.is_null() || size == 0 {
+            // bsnes and others may only describe the work RAM in a memory map.
+            if let Some(desc) = self.host.memory.iter().find(|d| {
+                !d.ptr.is_null() && d.start == map.bus && d.len >= map.ram
+            }) {
+                source = unsafe { (desc.ptr as *const u8).add(desc.offset) };
+                size = map.ram;
+            }
+        }
+        if source.is_null() || size == 0 { return 0; }
+        let size = size.min(map.ram);
+        let mut filled = 0;
+        let mut at = 0;
+        while at < map.mirror_to {
+            filled += cover(source, size, at, ram, coverage);
+            at += map.ram;
+        }
+        let save = unsafe { (self.api.get_memory_data)(MEMORY_SAVE_RAM) } as *const u8;
+        let save_size = unsafe { (self.api.get_memory_size)(MEMORY_SAVE_RAM) }.min(map.save_max);
+        if save_size > 0 {
+            filled += cover(save, save_size, map.save_at, ram, coverage);
+        }
+        filled
+    }
+}
+
 impl RetroCore for LibretroCore {
     fn achievement_memory_for_console(
         &self, ram: &mut [u8], coverage: &mut [u8], console: u32
@@ -947,6 +1016,11 @@ impl RetroCore for LibretroCore {
             let filled = copy_gb_achievement_map(&self.host.memory, ram, coverage);
             // An actual mapped WRAM window is required, not merely ROM/VRAM.
             return [if filled > 0 && coverage.get(0xc000) == Some(&1) { filled } else { 0 }, 0, 0];
+        }
+        if let Some(map) = home_map(console) {
+            // Valid only with the work RAM itself mapped at address 0.
+            let filled = self.copy_home_achievement_map(&map, ram, coverage);
+            return [if coverage.first() == Some(&1) { filled } else { 0 }, 0, 0];
         }
         self.achievement_memory(ram)
     }

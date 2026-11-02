@@ -4,7 +4,7 @@ use std::sync::{mpsc, Arc};
 
 use slot_retro::{AvInfo, ButtonMask, CoreError, Link, RetroCore, Rumble};
 
-use crate::{network, wake_evaluator, Control, Frame, Service, QUEUE_SIZE, RAM_SIZE, GB_COVERAGE_SIZE};
+use crate::{network, wake_evaluator, Control, Frame, Service, QUEUE_SIZE, RAM_SIZE, COVERAGE_SIZE};
 
 static NEXT_GAME: AtomicU64 = AtomicU64::new(1);
 
@@ -53,7 +53,7 @@ impl Tracked {
             Ok(ram) => ram,
             Err(_) if self.allocated < QUEUE_SIZE + 1 => {
                 self.allocated += 1;
-                vec![0; RAM_SIZE + GB_COVERAGE_SIZE]
+                vec![0; RAM_SIZE + COVERAGE_SIZE]
             }
             Err(_) => return,
         };
