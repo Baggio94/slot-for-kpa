@@ -403,6 +403,16 @@ impl LinkPlay {
                 self.waiting_for_input_since = None;
                 let core_started = Instant::now();
                 core.run_frame_linked(p0, p1);
+                // Do not advance remote input counters after the native GB
+                // serial scheduler aborted a partially completed paired frame.
+                if core.link_step_fault() {
+                    let detail = "mGBA GB/GBC Link: incomplete native frame; ending unsafe lockstep session";
+                    #[cfg(target_os = "android")]
+                    crate::game::log_launch_timing(detail);
+                    #[cfg(not(target_os = "android"))]
+                    eprintln!("SlotKONKR: {detail}");
+                    return self.fail(LinkError::InvalidState);
+                }
                 let us = core_started.elapsed().as_micros().min(u64::MAX as u128) as u64;
                 self.pacing.core_calls += 1;
                 self.pacing.core_total_us = self.pacing.core_total_us.saturating_add(us);
