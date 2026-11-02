@@ -1,3 +1,5 @@
+import java.util.Base64 as JavaBase64
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -20,7 +22,7 @@ android {
         // slot.'s ScreenScraper developer credentials for the NES, Super
         // Nintendo and Mega Drive labels, from GitHub secrets at build time
         // (base64, never committed). Without them those labels stay off.
-        fun secret(name: String): String = java.util.Base64.getEncoder()
+        fun secret(name: String): String = JavaBase64.getEncoder()
             .encodeToString((System.getenv(name) ?: "").toByteArray(Charsets.UTF_8))
         buildConfigField("String", "SCREENSCRAPER_DEV_ID", "\"${secret("SCREENSCRAPER_DEV_ID")}\"")
         buildConfigField("String", "SCREENSCRAPER_DEV_PASSWORD", "\"${secret("SCREENSCRAPER_DEV_PASSWORD")}\"")
