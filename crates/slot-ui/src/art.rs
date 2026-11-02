@@ -12,19 +12,36 @@ pub fn cover_bytes(bytes: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
 
 /// A NES / Super Nintendo / Mega Drive label for its well: the label is
 /// printed at the well's shape and scans differ only by their margins, so a
-/// scan close to that shape is shown whole, stretched the little it needs,
-/// instead of losing its sides or top. A very different picture is covered.
+/// scan is shown whole, squeezed up to LABEL_SQUEEZE one way to fit, instead
+/// of losing its sides or top (US Super Nintendo scans such as Equinox are
+/// wider than slot.'s well). Only what is left beyond that is cut, evenly.
 pub fn fit_label(path: &Path, w: u32, h: u32) -> Option<Vec<u8>> {
     let (src, sw, sh) = decode(path)?;
+    fit_label_rgba(&src, sw, sh, w, h)
+}
+
+const LABEL_SQUEEZE: f32 = 1.45;
+
+pub(crate) fn fit_label_rgba(src: &[u8], sw: u32, sh: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if sw == 0 || sh == 0 || w == 0 || h == 0 {
         return None;
     }
     let ratio = (sw as f32 / sh as f32) / (w as f32 / h as f32);
-    if (0.8..=1.25).contains(&ratio) {
-        Some(crate::native_assets::resample(&src, sw, sh, w, h))
+    let keep = ratio.clamp(1.0 / LABEL_SQUEEZE, LABEL_SQUEEZE);
+    // The part of the scan shown: centred, of aspect well * keep.
+    let aspect = w as f32 / h as f32 * keep;
+    let (cw, ch) = if sw as f32 / sh as f32 > aspect {
+        (((sh as f32 * aspect).round() as u32).clamp(1, sw), sh)
     } else {
-        cover_rgba(&src, sw, sh, w, h)
+        (sw, ((sw as f32 / aspect).round() as u32).clamp(1, sh))
+    };
+    let (ox, oy) = ((sw - cw) / 2, (sh - ch) / 2);
+    let mut part = Vec::with_capacity((cw * ch * 4) as usize);
+    for y in oy..oy + ch {
+        let row = ((y * sw + ox) * 4) as usize;
+        part.extend_from_slice(&src[row..row + (cw * 4) as usize]);
     }
+    Some(crate::native_assets::resample(&part, cw, ch, w, h))
 }
 
 fn cover_rgba(src: &[u8], sw: u32, sh: u32, w: u32, h: u32) -> Option<Vec<u8>> {
@@ -221,6 +238,31 @@ fn unpremultiply(rgba: &mut [u8]) {
         for c in &mut px[..3] {
             *c = ((*c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
         }
+    }
+}
+
+#[cfg(test)]
+mod fit_label_tests {
+    use super::fit_label_rgba;
+
+    /// A scan 1.4x wider than the well keeps its sides (squeezed, not cut).
+    #[test]
+    fn a_wide_scan_keeps_its_sides() {
+        let (sw, sh) = (280u32, 100u32);
+        let mut src = vec![255u8; (sw * sh * 4) as usize];
+        for y in 0..sh { for x in [0u32, sw - 1] {
+            let i = ((y * sw + x) * 4) as usize; src[i..i + 3].copy_from_slice(&[0, 0, 0]);
+        } }
+        let out = fit_label_rgba(&src, sw, sh, 200, 100).unwrap();
+        let px = |x: u32| out[((50 * 200 + x) * 4) as usize];
+        assert!(px(0) < 200 && px(199) < 200, "edges kept: {} {}", px(0), px(199));
+    }
+
+    /// Far wider than LABEL_SQUEEZE, only the excess is cut, evenly.
+    #[test]
+    fn a_very_wide_scan_is_cut_evenly() {
+        let out = fit_label_rgba(&vec![128u8; 600 * 100 * 4], 600, 100, 200, 100).unwrap();
+        assert_eq!(out.len(), 200 * 100 * 4);
     }
 }
 
