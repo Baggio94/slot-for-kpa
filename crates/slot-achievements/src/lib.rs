@@ -665,7 +665,14 @@ fn evaluate(
             if !game.warned_gap {
                 let _ = notices.send(Notice::status(
                     game.generation,
-                    "Core does not expose achievement RAM",
+                    if frame.console == 3 {
+                        // Pinned bsnes exposes neither system RAM nor libretro
+                        // memory maps; achievements are impossible on that core.
+                        // Snes9x is the compatible SNES alternative.
+                        "SNES core has no achievement RAM; use Snes9x"
+                    } else {
+                        "Core does not expose achievement RAM"
+                    },
                 ));
                 game.warned_gap = true;
             }
