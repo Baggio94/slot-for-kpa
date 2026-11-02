@@ -1,6 +1,6 @@
 --- a/src/platform/libretro/libretro.c
 +++ b/src/platform/libretro/libretro.c
-@@ -2018,6 +2018,23 @@
+@@ -2018,6 +2018,29 @@
  	if (!peer->loadSave(peer, save)) {
  		save->close(save);
  	}
@@ -20,7 +20,13 @@
 +	 *
 +	 * The counter renders one frame and then reloads from this, so the peer draws its first frame
 +	 * and none after it. */
-+	((struct GBA*) peer->board)->video.frameskip = INT_MAX;
++	/* This deferred setup is shared with GB/GBC. Their board is struct GB,
++	 * not struct GBA; the old unconditional write corrupted adjacent/unmapped
++	 * memory and SIGSEGV'd on repeated GB Link startup (PR #94 KPA log).
++	 * Never apply a GBA video optimization to the GB board. */
++	if (peer->platform(peer) == mPLATFORM_GBA) {
++		((struct GBA*) peer->board)->video.frameskip = INT_MAX;
++	}
  	_linkPlugIn();
  }
  
