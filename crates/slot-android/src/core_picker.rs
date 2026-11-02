@@ -46,6 +46,7 @@ struct Close {
 #[derive(Copy, Clone)]
 pub struct CorePicker {
     seat: Core,
+    left: Core,
     right: Core,
     opened: Millis,
     started: Option<Millis>,
@@ -60,10 +61,17 @@ impl CorePicker {
     }
 
     /// The right-hand socket holds the cart's other core: gpSP on a GBA
-    /// board, Gambatte on a GB/GBC board. mGBA always sits on the left.
+    /// board, Gambatte on a GB/GBC board. mGBA sits on the left.
     pub fn open_with(seat: Core, right: Core, now: Millis) -> Self {
+        Self::open_between(seat, Core::Mgba, right, now)
+    }
+
+    /// A board's two sockets: the system's first core on the left (FCEUmm,
+    /// Snes9x, Genesis Plus GX on the home consoles), its other one right.
+    pub fn open_between(seat: Core, left: Core, right: Core, now: Millis) -> Self {
         CorePicker {
             seat,
+            left,
             right,
             opened: now,
             started: None,
@@ -87,6 +95,10 @@ impl CorePicker {
 
     pub fn seat(&self) -> Core {
         self.seat
+    }
+
+    pub fn left(&self) -> Core {
+        self.left
     }
 
     pub fn right(&self) -> Core {
@@ -124,7 +136,7 @@ impl CorePicker {
                 self.begin_close(now);
                 return Outcome::Nothing;
             }
-            Press::Left => Core::Mgba,
+            Press::Left => self.left,
             Press::Right => self.right,
         };
         if self.waiting() {

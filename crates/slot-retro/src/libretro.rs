@@ -14,6 +14,9 @@ use crate::rumble::Rumble;
 use crate::sensors;
 
 const VIDEO_BYTES: usize = (GBA_W * GBA_H * 4) as usize;
+/// Largest frame a home console core hands over (SNES hi-res interlaced,
+/// PAL Mega Drive interlaced): 512x512 is ample.
+const NATIVE_MAX: u32 = 512;
 
 static LIVE: AtomicBool = AtomicBool::new(false);
 // Run-Ahead "second instance": one private prediction copy of the core,
@@ -28,6 +31,14 @@ enum PixelFormat {
 
 struct Host {
     video: Vec<u8>,
+    /// false: frames are centred in the 240x160 Game Boy Advance canvas.
+    /// true: each frame keeps the size the core gave it (home consoles).
+    native: bool,
+    frame: (u32, u32),
+    /// The core's display aspect, from its geometry (0: not reported).
+    aspect: f32,
+    /// Timing the core changed with SET_SYSTEM_AV_INFO, not yet read.
+    timing: Option<(f64, f64)>,
     format: PixelFormat,
     audio: Vec<i16>,
     inputs: [u16; 2],
@@ -140,6 +151,23 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
                 true
             })
             .unwrap_or(false)
+        }
+        SET_GEOMETRY => {
+            if data.is_null() {
+                return false;
+            }
+            let geometry = &*(data as *const GameGeometry);
+            with_host(|h| h.aspect = display_aspect(geometry)).is_some()
+        }
+        SET_SYSTEM_AV_INFO => {
+            if data.is_null() {
+                return false;
+            }
+            let av = &*(data as *const SystemAvInfo);
+            with_host(|h| {
+                h.aspect = display_aspect(&av.geometry);
+                h.timing = Some((av.timing.fps, av.timing.sample_rate));
+            }).is_some()
         }
         GET_VARIABLE => {
             if data.is_null() {
@@ -374,6 +402,10 @@ unsafe extern "C" fn video_refresh(
         return;
     }
     with_host(|h| {
+        if h.native {
+            copy_native_frame(h, data, width, height, pitch);
+            return;
+        }
         let cols = width.min(GBA_W) as usize;
         let rows = height.min(GBA_H) as usize;
         let ox = (GBA_W as usize - cols) / 2;
@@ -404,6 +436,52 @@ unsafe extern "C" fn video_refresh(
             }
         }
     });
+}
+
+/// libretro's aspect_ratio, or the frame's own shape when it gives none.
+fn display_aspect(geometry: &GameGeometry) -> f32 {
+    if geometry.aspect_ratio > 0.0 {
+        geometry.aspect_ratio
+    } else if geometry.base_height > 0 {
+        geometry.base_width as f32 / geometry.base_height as f32
+    } else {
+        0.0
+    }
+}
+
+/// A home console frame at its own size, packed as XRGB8888 rows.
+unsafe fn copy_native_frame(h: &mut Host, data: *const c_void, width: c_uint, height: c_uint,
+    pitch: usize)
+{
+    let cols = width.min(NATIVE_MAX) as usize;
+    let rows = height.min(NATIVE_MAX) as usize;
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    h.frame = (cols as u32, rows as u32);
+    h.video.resize(cols * rows * 4, 0);
+    for y in 0..rows {
+        let src = (data as *const u8).add(y * pitch);
+        let row = y * cols * 4;
+        match h.format {
+            PixelFormat::Xrgb8888 => {
+                ptr::copy_nonoverlapping(src, h.video.as_mut_ptr().add(row), cols * 4);
+            }
+            PixelFormat::Rgb565 => {
+                let out = &mut h.video[row..row + cols * 4];
+                for (x, o) in out.chunks_exact_mut(4).enumerate() {
+                    let p = ptr::read_unaligned((src as *const u16).add(x));
+                    let r = ((p >> 11) & 0x1f) as u8;
+                    let g = ((p >> 5) & 0x3f) as u8;
+                    let b = (p & 0x1f) as u8;
+                    o[0] = (b << 3) | (b >> 2);
+                    o[1] = (g << 2) | (g >> 4);
+                    o[2] = (r << 3) | (r >> 2);
+                    o[3] = 0;
+                }
+            }
+        }
+    }
 }
 
 // F9: return the last committed PCM Vec to libretro for the next frame.
@@ -562,6 +640,20 @@ impl LibretroCore {
         });
     }
 
+    /// Keep each frame at the size the core produced, instead of centring
+    /// it in the Game Boy Advance canvas. Set before the game loads.
+    pub fn set_native_video(&mut self, native: bool) {
+        self.host.native = native;
+        if !native {
+            self.host.frame = (GBA_W, GBA_H);
+            self.host.video = vec![0; VIDEO_BYTES];
+        }
+    }
+
+    pub fn native_video(&self) -> bool {
+        self.host.native
+    }
+
     pub fn reported_system_dir(&self) -> String {
         self.host.system_dir.to_string_lossy().into_owned()
     }
@@ -669,6 +761,10 @@ impl LibretroCore {
         }
         let mut host = Box::new(Host {
             video: vec![0; VIDEO_BYTES],
+            native: false,
+            frame: (GBA_W, GBA_H),
+            aspect: 0.0,
+            timing: None,
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
             inputs: [0; 2],
@@ -913,6 +1009,13 @@ impl RetroCore for LibretroCore {
             fps: av.timing.fps,
             sample_rate: av.timing.sample_rate,
         };
+        self.host.aspect = display_aspect(&av.geometry);
+        self.host.timing = None;
+        if self.host.native && av.geometry.base_width > 0 && av.geometry.base_height > 0 {
+            let (w, h) = (av.geometry.base_width.min(NATIVE_MAX), av.geometry.base_height.min(NATIVE_MAX));
+            self.host.frame = (w, h);
+            self.host.video = vec![0; (w * h * 4) as usize];
+        }
         unsafe { (self.api.set_controller_port_device)(0, DEVICE_JOYPAD) };
         Ok(())
     }
@@ -971,6 +1074,14 @@ impl RetroCore for LibretroCore {
 
     fn video_xrgb8888(&self) -> &[u8] {
         &self.host.video
+    }
+
+    fn video_size(&self) -> (u32, u32) {
+        self.host.frame
+    }
+
+    fn display_aspect(&self) -> f32 {
+        if self.host.native { self.host.aspect } else { 0.0 }
     }
 
     fn take_audio(&mut self) -> Vec<i16> {
@@ -1177,7 +1288,10 @@ impl RetroCore for LibretroCore {
     }
 
     fn av_info(&self) -> AvInfo {
-        self.av
+        match self.host.timing {
+            Some((fps, sample_rate)) if fps > 0.0 && sample_rate > 0.0 => AvInfo { fps, sample_rate },
+            _ => self.av,
+        }
     }
 
     fn rumble(&self) -> Rumble {
@@ -1223,6 +1337,10 @@ mod tests {
     fn host_with(options: HashMap<String, CString>, options_dirty: bool) -> Box<Host> {
         Box::new(Host {
             video: vec![0; VIDEO_BYTES],
+            native: false,
+            frame: (GBA_W, GBA_H),
+            aspect: 0.0,
+            timing: None,
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
             inputs: [0; 2],

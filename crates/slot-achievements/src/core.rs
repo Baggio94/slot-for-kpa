@@ -120,6 +120,12 @@ impl RetroCore for Tracked {
     fn video_xrgb8888(&self) -> &[u8] {
         self.core.video_xrgb8888()
     }
+    fn video_size(&self) -> (u32, u32) {
+        self.core.video_size()
+    }
+    fn display_aspect(&self) -> f32 {
+        self.core.display_aspect()
+    }
     fn take_audio(&mut self) -> Vec<i16> {
         self.core.take_audio()
     }

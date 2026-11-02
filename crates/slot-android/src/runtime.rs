@@ -408,7 +408,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 120] = [
+const MENU_TEXT: [&str; 124] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -529,7 +529,28 @@ const MENU_TEXT: [&str; 120] = [
     "SYSTEMS",                           // 117
     "Default Core",                      // 118
     "Sun",                               // 119, Boktai's solar sensor
+    "NES",                               // 120
+    "Super Nintendo",                    // 121
+    "Mega Drive",                        // 122
+    "Screen Size",                       // 123, home consoles' pause Screen
 ];
+
+/// Settings > Systems, top to bottom.
+const SYSTEM_ORDER: [Platform; 6] = [
+    Platform::Gba, Platform::Gbc, Platform::Gb,
+    Platform::Nes, Platform::Snes, Platform::Md,
+];
+const SYSTEM_TITLES: [usize; 6] = [91, 92, 93, 120, 121, 122];
+/// A home console's pause Screen row: Integer / Original Ratio / Stretch.
+const SCREEN_SIZE_KEY: usize = 43;
+
+/// A core's name among the setting values.
+fn core_value(core: Core) -> usize {
+    match core {
+        Core::Mgba => 50, Core::Gpsp => 51, Core::Gambatte => 52,
+        other => 65 + other.index() - Core::Fceumm.index(),
+    }
+}
 
 /// Pause Emulation's Sun row, drawn with the sun values, not a Settings key.
 const SUN_KEY: usize = 100;
@@ -667,7 +688,7 @@ struct Engine {
     overlay: ShelfOverlay,
     settings: Settings,
     game_emulation: Option<EmulationProfile>,
-    emulation_core_labels: [(slot_gfx::TexId, u32, u32); 3],
+    emulation_core_labels: [(slot_gfx::TexId, u32, u32); Core::ALL.len()],
     video_mode: VideoMode,
     wallpaper_texture: Option<slot_gfx::TexId>,
     wallpaper_personal: bool,
@@ -683,7 +704,7 @@ struct Engine {
     custom_wallpaper_present: bool,
     setting_values: Vec<(slot_gfx::TexId, u32, u32)>,
     // Settings > Systems default cores, by Platform order.
-    default_cores: [Core; 3],
+    default_cores: [Core; Platform::ALL.len()],
     // The live Palette row shows the palette's own name, one face per palette.
     palette_values: Vec<(slot_gfx::TexId, u32, u32)>,
     setting_carets: [(slot_gfx::TexId, u32, u32); 2],
@@ -716,10 +737,10 @@ struct Engine {
     link_failed_hints: [(slot_gfx::TexId, u32); 1],
     board_texture: Option<slot_gfx::TexId>,
     picker: Option<CorePicker>,
-    socket_textures: [slot_gfx::TexId; 3],
-    chip_textures: [slot_gfx::TexId; 3],
+    socket_textures: [slot_gfx::TexId; Core::ALL.len()],
+    chip_textures: [slot_gfx::TexId; Core::ALL.len()],
     chip_blank: slot_gfx::TexId,
-    pak_chip_textures: [slot_gfx::TexId; 3],
+    pak_chip_textures: [slot_gfx::TexId; Core::ALL.len()],
     pak_chip_blank: slot_gfx::TexId,
     chip_shadow: slot_gfx::TexId,
     core_legend_faces: [(slot_gfx::TexId, u32); 3],
@@ -747,7 +768,7 @@ struct Engine {
     letter_face: Printed,
     letter_shown_at: Option<Instant>,
     // Unmodified upstream system names: 200ms in, 1200ms hold, 800ms out.
-    platform_faces: [Printed; 3],
+    platform_faces: [Printed; Platform::ALL.len()],
     recents_platform_face: Printed,
     favorites_platform_face: Printed,
     focus_seen: Option<(usize, String)>,
@@ -1044,7 +1065,10 @@ impl Engine {
                                "RA CLOCK LAB", "RETROARCH", "NATIVE",
                                "SLOT.", "GAME BOY", "POCKET", "COLOR",
                                "mGBA", "gpSP", "Gambatte", "SENSOR",
-                               "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+                               "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+                               "FCEUmm", "Nestopia", "Snes9x", "bsnes",
+                               "Genesis Plus GX", "PicoDrive",
+                               "INTEGER", "ORIGINAL RATIO", "STRETCH"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -1226,7 +1250,7 @@ impl Engine {
             overlay_texs,
             custom_wallpaper_present,
             setting_values,
-            default_cores: [Core::Mgba; 3],
+            default_cores: Platform::ALL.map(Core::default_for),
             palette_values,
             setting_carets,
             settings_hints,
@@ -1433,7 +1457,8 @@ impl Engine {
                     // Global shortcut should toggle the selected platform,
                     // not the old GBA-only compatibility setting.
                     let key=match platform {
-                        Platform::Gba=>22, Platform::Gbc=>23, Platform::Gb=>24
+                        Platform::Gba=>22, Platform::Gbc=>23, Platform::Gb=>24,
+                        _=>return true,
                     };
                     self.change_setting(key,true);
                 }
@@ -1652,6 +1677,7 @@ impl Engine {
             Core::Mgba => crate::multiplayer::Backend::MgbaSlotCable,
             Core::Gpsp => crate::multiplayer::Backend::GpspNetpacket,
             Core::Gambatte => crate::multiplayer::Backend::GambatteGameLink,
+            other => return Err(format!("{} has no Multiplayer", other.text())),
         };
         Ok(crate::multiplayer::LinkConfig {
             game: identity.code.clone(),
@@ -1816,7 +1842,7 @@ impl Engine {
             Core::Gpsp => GameSession::open_gpsp_solo_unresumed(
                 &rom, &dylib, &storage, &stem,
                 self.settings.colour_correction, self.ra_service.as_ref(), serial),
-            Core::Gambatte => Err("Gambatte never links".into()),
+            other => Err(format!("{} never links", other.text())),
         }?;
         solo.restore_local_after_link(&rejoin)?;
         let backup = solo.commit_rejoined_solo(&rejoin)?;
@@ -2750,7 +2776,10 @@ impl Engine {
                     // (Integer, Original Ratio, Stretch).
                     // On GBA the shoulder buttons remain owned by the core.
                     // SELECT+shoulder save/load is handled below and takes priority.
-                    if self.current_cart_platform() != Platform::Gba && self.buttons & ButtonMask::SELECT == 0
+                    // SNES and Mega Drive games use L/R themselves.
+                    if !matches!(self.current_cart_platform(),
+                            Platform::Gba | Platform::Snes | Platform::Md)
+                        && self.buttons & ButtonMask::SELECT == 0
                         && (code == 102 || code == 103) {
                         if pressed {
                             let mode = if code == 102 {
@@ -2892,7 +2921,7 @@ impl Engine {
                             },
                             ShelfOverlay::ScreenSettings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::ScreenSettings {
-                                    row: move_menu_row(row, code, 3),
+                                    row: move_menu_row(row, code, SYSTEM_ORDER.len()),
                                 },
                                 96 => {
                                     self.load_default_cores();
@@ -2912,7 +2941,7 @@ impl Engine {
                                     self.change_setting(key,code!=21);
                                 },
                                 97 => self.overlay=ShelfOverlay::ScreenSettings {
-                                    row:match platform{Platform::Gba=>0,Platform::Gbc=>1,Platform::Gb=>2},
+                                    row:SYSTEM_ORDER.iter().position(|p| *p==platform).unwrap_or(0),
                                 },
                                 108 => self.overlay=ShelfOverlay::None,
                                 _=>{}
@@ -3039,8 +3068,9 @@ impl Engine {
                                 .as_ref()
                                 .map(|(storage, _)| core_selection::selected_for(
                                     storage, &selected.rom.to_string_lossy(), selected.platform))
-                                .unwrap_or(Core::Mgba);
-                            let mut picker = CorePicker::open_with(current_core,
+                                .unwrap_or_else(|| Core::default_for(selected.platform));
+                            let mut picker = CorePicker::open_between(current_core,
+                                Core::primary_for(selected.platform),
                                 Core::alternate_for(selected.platform), now);
                             picker.start(now);
                             self.picker = Some(picker);
@@ -3402,6 +3432,15 @@ impl Engine {
 
     fn apply_video_geometry(&mut self) {
         let platform = self.current_cart_platform();
+        if !platform.handheld() {
+            let aspect = self.game.as_ref().map_or(4.0 / 3.0, GameSession::display_aspect);
+            self.gpu.set_picture(slot_gfx::WHOLE_TEXTURE);
+            self.gpu.set_game_source_rect(slot_gfx::WHOLE_TEXTURE);
+            self.gpu.set_game_fit(video_mode::home_fit(self.video_mode, aspect));
+            self.gpu.set_screen_effect(self.game_effect());
+            return;
+        }
+        self.gpu.set_game_fit(slot_gfx::Fit::Canvas);
         let (w, h) = platform.picture();
         let x = (slot_gfx::SRC_W - w) as f32 / (2 * slot_gfx::SRC_W) as f32;
         let y = (slot_gfx::SRC_H - h) as f32 / (2 * slot_gfx::SRC_H) as f32;
@@ -3475,7 +3514,7 @@ impl Engine {
         let bezel=self.game_settings().bezel_for(self.current_cart_platform());
         if !video_mode::bezel_fits(bezel,self.video_mode) {return None;}
         match (bezel,self.current_cart_platform()) {
-            (Bezel::None,_) | (_,Platform::Gba)=>None,
+            (Bezel::None,_) | (_,Platform::Gba|Platform::Nes|Platform::Snes|Platform::Md)=>None,
             (Bezel::Default,Platform::Gb)=>Some(self.gb_bezel_tex),
             (Bezel::Default,Platform::Gbc)=>Some(self.gbc_bezel_tex),
             (Bezel::Gb,_)=>Some(self.overlay_texs[0]),
@@ -3491,6 +3530,7 @@ impl Engine {
             Platform::Gba=>&[34,29],
             Platform::Gbc=>&[88,29,90],
             Platform::Gb=>&[89,29,36,90],
+            Platform::Nes|Platform::Snes|Platform::Md=>&[123],
         }
     }
     fn screen_keys(platform:Platform)-> &'static [usize] {
@@ -3498,6 +3538,7 @@ impl Engine {
             Platform::Gba=>&[0,22],
             Platform::Gbc=>&[21,23,26],
             Platform::Gb=>&[1,24,3,27],
+            Platform::Nes|Platform::Snes|Platform::Md=>&[SCREEN_SIZE_KEY],
         }
     }
     // Settings > Systems opens with the system's default core, then the
@@ -3507,6 +3548,7 @@ impl Engine {
             Platform::Gba=>&[118,34,29],
             Platform::Gbc=>&[118,88,29,90],
             Platform::Gb=>&[118,89,29,36,90],
+            Platform::Nes|Platform::Snes|Platform::Md=>&[118],
         }
     }
     fn system_keys(platform:Platform)-> &'static [usize] {
@@ -3514,10 +3556,17 @@ impl Engine {
             Platform::Gba=>&[29,0,22],
             Platform::Gbc=>&[30,21,23,26],
             Platform::Gb=>&[31,1,24,3,27],
+            Platform::Nes=>&[40],
+            Platform::Snes=>&[41],
+            Platform::Md=>&[42],
         }
     }
     fn core_key_platform(key:usize)->Option<Platform> {
-        match key { 29=>Some(Platform::Gba), 30=>Some(Platform::Gbc), 31=>Some(Platform::Gb), _=>None }
+        match key {
+            29=>Some(Platform::Gba), 30=>Some(Platform::Gbc), 31=>Some(Platform::Gb),
+            40=>Some(Platform::Nes), 41=>Some(Platform::Snes), 42=>Some(Platform::Md),
+            _=>None,
+        }
     }
     fn load_default_cores(&mut self) {
         let paths=PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -3525,13 +3574,14 @@ impl Engine {
             self.default_cores=Platform::ALL.map(|platform| core_selection::default(&storage,platform));
         }
     }
-    /// The Default Core row swaps between mGBA and the system's other core.
+    /// The Default Core row swaps between the system's two cores.
     fn cycle_default_core(&mut self, platform: Platform) {
         let Some((storage,library))=PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone()
             else { return };
         let at=platform as usize;
-        let core=if self.default_cores[at]==Core::Mgba { Core::alternate_for(platform) }
-            else { Core::Mgba };
+        let core=if self.default_cores[at]==Core::primary_for(platform) {
+            Core::alternate_for(platform)
+        } else { Core::primary_for(platform) };
         if !library.join(format!("lib{}_libretro.so", core.as_str())).is_file() {
             set_message(format!("{} isn't installed.", core.text()));
             return;
@@ -3544,12 +3594,11 @@ impl Engine {
     fn screen_title(platform:Platform)->usize {
         match platform {
             Platform::Gba=>91, Platform::Gbc=>92,Platform::Gb=>93,
+            Platform::Nes=>120, Platform::Snes=>121, Platform::Md=>122,
         }
     }
     fn screen_submenu_platform(row:usize)->Platform {
-        match row {
-            0=>Platform::Gba,1=>Platform::Gbc,_=>Platform::Gb,
-        }
+        SYSTEM_ORDER.get(row).copied().unwrap_or(Platform::Gb)
     }
 
     fn pause_screen_rows(&self) -> &'static [usize] {
@@ -3629,10 +3678,10 @@ impl Engine {
         // A running game names its own core (MBC7 carts run on mGBA).
         if let Some(game) = self.game.as_ref() { return game.core_kind(); }
         let platform = self.current_cart_platform();
-        let Some(uri) = self.selected_rom_uri() else { return Core::Mgba; };
+        let Some(uri) = self.selected_rom_uri() else { return Core::default_for(platform); };
         PATHS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
             .map(|(root, _)| core_selection::selected_for(root, &uri, platform))
-            .unwrap_or(Core::Mgba)
+            .unwrap_or_else(|| Core::default_for(platform))
     }
     fn selected_rom_uri(&self) -> Option<String> {
         self.shelves.get(self.active)?.carts
@@ -3648,6 +3697,14 @@ impl Engine {
         });
     }
     fn change_game_screen_or_gameplay(&mut self, key: usize, right: bool) {
+        if key == SCREEN_SIZE_KEY {
+            // Integer, Original Ratio, Stretch, round the ring.
+            let ring = [VideoMode::Actual, VideoMode::Aspect, VideoMode::Stretch];
+            let at = ring.iter().position(|m| *m == self.video_mode).unwrap_or(1);
+            let next = ring[if right { (at + 1) % 3 } else { (at + 2) % 3 }];
+            self.set_video_mode(next);
+            return;
+        }
         let Some(uri)=self.selected_rom_uri() else { return };
         let core=self.selected_emulation_core();
         let platform=self.current_cart_platform();
@@ -4235,9 +4292,10 @@ impl Engine {
             27 => bezel_value(scoped.bezel_gb),
             28 => if self.settings.time_format==crate::settings::TimeFormat::TwelveHour
                 {35}else{36},
-            29..=31 => match Self::core_key_platform(key)
-                .map_or(Core::Mgba, |platform| self.default_cores[platform as usize]) {
-                Core::Mgba => 50, Core::Gpsp => 51, Core::Gambatte => 52,
+            29..=31 | 40..=42 => core_value(Self::core_key_platform(key)
+                .map_or(Core::Mgba, |platform| self.default_cores[platform as usize])),
+            SCREEN_SIZE_KEY => match self.video_mode {
+                VideoMode::Actual => 71, VideoMode::Aspect => 72, VideoMode::Stretch => 73,
             },
             _ => 5,
         }
@@ -4508,7 +4566,7 @@ impl Engine {
                 self.draw_setting_values(row, keys, out);
             }
             ShelfOverlay::ScreenSettings { row } => {
-                self.draw_original_style_menu(117, &[91,92,93], row, out);
+                self.draw_original_style_menu(117, &SYSTEM_TITLES, row, out);
             }
             ShelfOverlay::ScreenSystemSettings {platform,row} => {
                 self.draw_original_style_menu(Self::screen_title(platform),
@@ -4634,7 +4692,7 @@ impl Engine {
                 tex, alpha: 1.0,
             });
         }
-        for (i, core) in [Core::Mgba, picker.right()].into_iter().enumerate() {
+        for (i, core) in [picker.left(), picker.right()].into_iter().enumerate() {
             if !layout.sockets { break; }
             let tex = self.socket_textures[core.index()];
             let (x, y) = layout.at(board, layout.socket_u[i], layout.socket_v);
@@ -4963,7 +5021,7 @@ impl Engine {
             ShelfOverlay::EmulationSettings { row } => (8u8, row, 3usize),
             ShelfOverlay::PauseEmulationSettings { row } =>
                 (9u8, row, self.pause_emulation_rows().len()),
-            ShelfOverlay::ScreenSettings { row } => (5u8, row, 3usize),
+            ShelfOverlay::ScreenSettings { row } => (5u8, row, SYSTEM_ORDER.len()),
             ShelfOverlay::ScreenSystemSettings { platform,row } =>
                 (16u8,row,Self::system_rows(platform).len()),
             ShelfOverlay::GameplaySettings { row } => (6u8, row, GAMEPLAY_KEYS.len()),
@@ -5077,9 +5135,10 @@ impl Engine {
                     let name = self.shelves[self.active].carts
                         .get(self.shelves[self.active].index)
                         .map_or("", |cart| cart.stem.as_str());
+                    let platform = self.current_cart_platform();
                     self.video_mode = PATHS.lock().unwrap_or_else(|e| e.into_inner())
-                        .as_ref().map_or(VideoMode::Actual,
-                            |(root, _)| video_mode::video_mode_for(root, name));
+                        .as_ref().map_or(video_mode::default_mode(platform),
+                            |(root, _)| video_mode::video_mode_for(root, name, platform));
                     self.apply_video_geometry();
                     self.screen_power = 0.0;
                     self.exiting_screen = false;
@@ -5472,7 +5531,16 @@ impl Engine {
                     if self.select_tap_frames == 0 { self.buttons &= !ButtonMask::SELECT; }
                 }
                 let upload_started = Instant::now();
-                self.gpu.upload_game(session.frame());
+                if session.frame_size() == (slot_retro::GBA_W, slot_retro::GBA_H)
+                    && session.display_aspect() <= 0.0 {
+                    self.gpu.upload_game(session.frame());
+                } else {
+                    // Home consoles: the frame at its own size, fitted at
+                    // the aspect the core reports (it may change mid-game).
+                    self.gpu.upload_game_sized(session.frame(), session.frame_size());
+                    self.gpu.set_game_fit(video_mode::home_fit(self.video_mode,
+                        session.display_aspect()));
+                }
                 frame_phases.gpu_upload_us = upload_started.elapsed().as_micros() as u64;
                 RUMBLE_STRENGTH.store(
                     if live.rumble && !self.rewind_held {

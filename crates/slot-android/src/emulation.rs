@@ -122,7 +122,8 @@ impl EmulationProfile {
             (Platform::Gbc,2)=>23,
             (Platform::Gb,2)=>24,
             (_,25..=27)=>match platform {
-                Platform::Gba=>25,Platform::Gbc=>26,Platform::Gb=>27
+                Platform::Gba=>25,Platform::Gbc=>26,Platform::Gb=>27,
+                _=>return false,
             },
             _=>key,
         };

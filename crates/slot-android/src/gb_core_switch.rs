@@ -42,13 +42,16 @@ pub fn gambatte_palette(mgba: &str) -> Option<&'static str> {
     })
 }
 
+/// The other core whose battery file is the same raw SRAM: mGBA and
+/// Gambatte for GB/GBC, FCEUmm and Nestopia for NES, Snes9x and bsnes for
+/// SNES. Genesis Plus GX and PicoDrive keep Mega Drive SRAM in different
+/// layouts, so a Mega Drive cart's saves stay with their own core.
 fn other_core(which: Core, platform: Platform) -> Option<Core> {
-    if platform == Platform::Gba { return None; }
-    match which {
-        Core::Mgba => Some(Core::Gambatte),
-        Core::Gambatte => Some(Core::Mgba),
-        Core::Gpsp => None,
+    if matches!(platform, Platform::Gba | Platform::Md) || !which.runs(platform) {
+        return None;
     }
+    let first = Core::primary_for(platform);
+    Some(if which == first { Core::alternate_for(platform) } else { first })
 }
 
 /// Before `which` boots a GB/GBC cart, copy the other core's battery over

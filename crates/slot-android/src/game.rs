@@ -234,6 +234,8 @@ pub struct GameSession {
     frame_count: u32,
     // Presentation-only pixels from speculative frames; save/RA keep the real state.
     runahead_video: Vec<u8>,
+    /// Width and height of `runahead_video`.
+    runahead_size: (u32, u32),
     // Preserve the libretro state allocation across speculative frames.
     runahead_state: Vec<u8>,
     runahead_unavailable: bool,
@@ -258,6 +260,8 @@ pub struct GameSession {
     sun_luminance: Option<u8>,
     palette_live: bool,
     core_kind: Core,
+    /// SNES / Mega Drive: every face button goes to the core as is.
+    full_pad: bool,
     pending_undo: Option<(Instant, PendingUndo)>,
     last_sram: Instant,
     // F7: owns at most one immutable periodic SRAM/RTC write per solo session.
@@ -287,6 +291,26 @@ fn xy_buttons(buttons: ButtonMask, turbo: bool, frame: u32) -> ButtonMask {
     if buttons.0 & ButtonMask::Y != 0 { mapped |= ButtonMask::A; }
     if buttons.0 & ButtonMask::X != 0 { mapped |= ButtonMask::B; }
     ButtonMask(mapped)
+}
+
+/// The cached cart under its game name, for a core that names its own
+/// battery file after the ROM (bsnes). A hard link, or a copy.
+fn named_rom_alias(storage: &Path, rom: &Path, rom_stem: &str) -> Result<PathBuf, String> {
+    let dir = storage.join("RomNames");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot prepare ROM name: {e}"))?;
+    let ext = rom.extension().and_then(|e| e.to_str()).unwrap_or("sfc");
+    let alias = dir.join(format!("{rom_stem}.{ext}"));
+    let _ = std::fs::remove_file(&alias);
+    std::fs::hard_link(rom, &alias)
+        .or_else(|_| std::fs::copy(rom, &alias).map(|_| ()))
+        .map_err(|e| format!("Cannot prepare ROM name: {e}"))?;
+    Ok(alias)
+}
+
+/// SNES and Mega Drive pads use X and Y (and L/R) as real buttons; the
+/// X/Y Buttons setting (turbo or a second A/B) is for the two-button ones.
+fn pad_buttons(full_pad: bool, buttons: ButtonMask, turbo: bool, frame: u32) -> ButtonMask {
+    if full_pad { buttons } else { xy_buttons(buttons, turbo, frame) }
 }
 
 impl GameSession {
@@ -484,6 +508,9 @@ impl GameSession {
         };
         let mut core = LibretroCore::open_with_options(core_file, &bios, &core_root, &init_options)
             .map_err(|e| e.to_string())?;
+        // Home consoles hand over frames of varying size (SNES hi-res, MD
+        // H32/H40): keep each as it is instead of the GBA canvas.
+        core.set_native_video(!platform.handheld());
         // Exact upstream Slot libretro options for colour and Game Boy palettes.
         // Read only the 336-byte header: never read the entire cached ROM.
         let dmg_only = platform != Platform::Gba && which != Core::Gpsp
@@ -559,12 +586,21 @@ impl GameSession {
                 core.set_option("gambatte_gbc_color_correction",
                     if colour_correction { "GBC only" } else { "disabled" });
             }
+            // The home console cores run on their own defaults, exactly as
+            // RetroArch starts them: region, palette and pads automatic.
+            Core::Fceumm | Core::Nestopia | Core::Snes9x | Core::Bsnes => {}
+            Core::GenesisPlusGx => {
+                // Sega CD and the lock-on adapters are not carts slot. shows.
+                core.set_option("genesis_plus_gx_lock_on", "disabled");
+            }
+            Core::Picodrive => {}
         }
         // rcheevos shares ONE evaluator, protected against cross-console
         // memory reads. GB=4 / GBA=5 / GBC=6 use their own libretro maps.
         // Speculative frames never reach it (including GB/GBC Run-Ahead).
         let console = match platform {
             Platform::Gb => 4, Platform::Gba => 5, Platform::Gbc => 6,
+            Platform::Nes => 7, Platform::Snes => 3, Platform::Md => 1,
         };
         // Second-instance Run-Ahead boots its copy from these, solo only.
         let runahead_secondary_spec = linked_boot.is_none().then(|| crate::runahead_secondary::Spec {
@@ -574,12 +610,20 @@ impl GameSession {
             rom: rom.to_path_buf(),
             options: core.options(),
             primary_id: core.instance_id(),
+            native_video: !platform.handheld(),
         });
         let mut core: Box<dyn RetroCore> = match achievements {
             Some(service) => service.wrap_for_console(Box::new(core), console),
             None => Box::new(core),
         };
-        core.load(rom).map_err(|e| e.to_string())?;
+        // bsnes keeps its battery itself, named after the ROM file and
+        // written to the save directory when the game unloads, as in
+        // RetroArch. Hand it the cart under its own name, so the file is
+        // Saves/bsnes/<game>.srm like every other core's.
+        let named_rom = if which == Core::Bsnes && linked_boot.is_none() {
+            Some(named_rom_alias(storage, rom, rom_stem)?)
+        } else { None };
+        core.load(named_rom.as_deref().unwrap_or(rom)).map_err(|e| e.to_string())?;
         let load_ms = opening_at.elapsed().as_millis();
         let restore_started = Instant::now();
         // A GB/GBC cart switched between mGBA and Gambatte brings its newer
@@ -773,8 +817,11 @@ impl GameSession {
             save, rtc, manual_export_prefix, state, retroarch_export, ring,
             rewind: RewindThread::spawn(REWIND_BYTES), rewind_frames: 0,
             frame_count: 0, palette_live, core_kind: which,
-            runahead_video: Vec::new(), runahead_state: Vec::new(),
-            runahead_unavailable: false,
+            full_pad: matches!(platform, Platform::Snes | Platform::Md),
+            runahead_video: Vec::new(), runahead_size: (0, 0), runahead_state: Vec::new(),
+            // bsnes shows the frame before an unserialize on the first run
+            // after it, so a predicted picture would be stale: no Run-Ahead.
+            runahead_unavailable: which == Core::Bsnes,
             runahead_rollback_failed: false,
             runahead_discard_confirm: false,
             runahead_probe: RunaheadProbe::default(),
@@ -811,7 +858,7 @@ impl GameSession {
         self.follow_light_sensor();
         if self.link.is_none() && !self.preempt_before_frame(buttons, turbo) { return false; }
         let pressed = ButtonMask(buttons);
-        let mapped = xy_buttons(pressed, turbo, self.frame_count);
+        let mapped = pad_buttons(self.full_pad, pressed, turbo, self.frame_count);
         let core_started = Instant::now();
         let advanced = if let Some(link) = self.link.as_mut() {
             matches!(link.frame(self.core.as_mut(), mapped), LinkFrame::Advanced)
@@ -883,7 +930,7 @@ impl GameSession {
                     return Err("gpSP did not register GBA serial/RFU netpacket callbacks".into());
                 }
             }
-            Core::Gambatte => return Err("Gambatte has no Slot Link support".into()),
+            other => return Err(format!("{} has no Slot Link support", other.text())),
         }
         let link = LinkPlay::begin(self.core.as_mut(), role, mode, transport)?;
         self.link = Some(link);
@@ -1229,13 +1276,14 @@ impl GameSession {
         // sample its own future phase; reusing one mask for all offsets
         // predicts incorrect key presses across a three-frame boundary.
         for future in 0..frames {
-            let mapped = xy_buttons(pressed, turbo,
+            let mapped = pad_buttons(self.full_pad, pressed, turbo,
                 self.frame_count.wrapping_add(u32::from(future)));
             self.core.run_speculative_frame(mapped);
             // Discard predicted audio without reallocating libretro's buffer.
             self.core.discard_audio();
         }
         self.runahead_video.extend_from_slice(self.core.video_xrgb8888());
+        self.runahead_size = self.core.video_size();
         let speculative_us = predicted.elapsed().as_micros() as u64;
         let restore_started = Instant::now();
         let restored = self.core.restore_speculative_state(&self.runahead_state)
@@ -1308,13 +1356,16 @@ impl GameSession {
         // its own future phase, exactly like the single-instance path.
         let mut inputs = [ButtonMask::default(); 2];
         for future in 0..usize::from(frames) {
-            inputs[future] = xy_buttons(pressed, turbo,
+            inputs[future] = pad_buttons(self.full_pad, pressed, turbo,
                 self.frame_count.wrapping_add(future as u32));
         }
         let copy = self.runahead_secondary.as_deref_mut().expect("booted above");
         match crate::runahead_secondary::predict(copy, &self.runahead_state,
             &inputs[..usize::from(frames)]) {
-            Ok(video) => self.runahead_video.extend_from_slice(video),
+            Ok((video, size)) => {
+                self.runahead_video.extend_from_slice(video);
+                self.runahead_size = size;
+            }
             Err(error) => {
                 // Only the copy is affected: drop it and keep playing.
                 self.runahead_probe.failures += 1;
@@ -1372,7 +1423,7 @@ impl GameSession {
                 if k > 0 { replayed = self.core.serialize_into(self.preempt.state_mut(k)); }
                 if replayed.is_err() { break; }
                 self.core.run_speculative_frame(
-                    xy_buttons(pressed, turbo, first.wrapping_add(k as u32)));
+                    pad_buttons(self.full_pad, pressed, turbo, first.wrapping_add(k as u32)));
                 self.core.discard_audio();
             }
             let elapsed_us = started.elapsed().as_micros() as u64;
@@ -1476,6 +1527,8 @@ impl GameSession {
                 if enabled { "enabled" } else { "disabled" }),
             Core::Gambatte => ("gambatte_gbc_color_correction",
                 if enabled { "GBC only" } else { "disabled" }),
+            // A TV console's colours need no LCD correction.
+            _ => return,
         };
         self.set_core_option(key, value);
     }
@@ -1520,6 +1573,17 @@ impl GameSession {
     pub fn frame(&self) -> &[u8] {
         if !self.runahead_video.is_empty() { &self.runahead_video }
         else { self.core.video_xrgb8888() }
+    }
+
+    /// Width and height of [`Self::frame`].
+    pub fn frame_size(&self) -> (u32, u32) {
+        if !self.runahead_video.is_empty() { self.runahead_size }
+        else { self.core.video_size() }
+    }
+
+    /// The core's display aspect (0 when it reports none).
+    pub fn display_aspect(&self) -> f32 {
+        self.core.display_aspect()
     }
 
     pub fn take_audio(&mut self) -> Vec<i16> {
@@ -1718,7 +1782,8 @@ impl GameSession {
         if self.runahead_rollback_failed { return Err("Unsafe Run-Ahead state; manual save blocked".into()); }
         if self.in_multiplayer() { return Err("Save States unavailable for Multiplayer sessions".into()); }
         let state = self.core.serialize().map_err(|e|e.to_string())?;
-        let preview = thumb::png(self.core.video_xrgb8888()).unwrap_or_default();
+        let preview = thumb::png_fit(self.core.video_xrgb8888(), self.core.video_size(),
+            self.core.display_aspect()).unwrap_or_default();
         let entries = self.ring.list().map_err(|e|e.to_string())?;
         let mut seconds = slot_store::parse_stamp(&stamp_now()).ok_or("Invalid system clock")?;
         let mut stamp = format_stamp(seconds);

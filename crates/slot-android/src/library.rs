@@ -56,20 +56,16 @@ pub fn next_populated(current: usize, direction: i32, count: &[usize]) -> usize 
     current
 }
 
-pub fn carts_by_platform(entries: &[RomEntry]) -> [Vec<Cart>; 3] {
-    let mut groups: [Vec<Cart>; 3] = std::array::from_fn(|_| Vec::new());
+pub fn carts_by_platform(entries: &[RomEntry]) -> [Vec<Cart>; Platform::ALL.len()] {
+    let mut groups: [Vec<Cart>; Platform::ALL.len()] = std::array::from_fn(|_| Vec::new());
     for entry in entries.iter().take(MAX_ROMS) {
         if entry.title.trim().is_empty() || !entry.uri.starts_with("content://") {
             continue;
         }
-        let (platform, group) = match entry.platform.as_str() {
-            "GBA" => (Platform::Gba, 0),
-            "GB" => (Platform::Gb, 1),
-            "GBC" => (Platform::Gbc, 2),
-            _ => continue,
-        };
+        let Some(platform) = Platform::parse(&entry.platform) else { continue };
+        let group = platform as usize;
         let shell = match platform {
-            Platform::Gba => None,
+            Platform::Gba | Platform::Nes | Platform::Snes | Platform::Md => None,
             Platform::Gb | Platform::Gbc => {
                 // Cart Studio and the shelf must resolve the same automatic
                 // per-game shell, even for SAF content URIs and zipped ROMs.

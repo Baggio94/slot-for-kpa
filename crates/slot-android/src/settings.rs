@@ -352,6 +352,9 @@ impl Settings {
             slot_store::Platform::Gba=>self.shader_gba,
             slot_store::Platform::Gbc=>self.shader_gbc,
             slot_store::Platform::Gb=>self.shader_gb,
+            // The home consoles have no LCD to imitate: RetroArch's default,
+            // no shader (sharp-bilinear when the picture isn't integer).
+            _=>Shader::Off,
         }
     }
     pub fn set_shader_for(&mut self,platform:slot_store::Platform,shader:Shader) {
@@ -359,6 +362,7 @@ impl Settings {
             slot_store::Platform::Gba=>self.shader_gba=shader,
             slot_store::Platform::Gbc=>self.shader_gbc=shader,
             slot_store::Platform::Gb=>self.shader_gb=shader,
+            _=>{}
         }
     }
     pub fn colour_for(&self,platform:slot_store::Platform)->bool {
@@ -366,6 +370,7 @@ impl Settings {
             slot_store::Platform::Gba=>self.colour_correction_gba,
             slot_store::Platform::Gbc=>self.colour_correction_gbc,
             slot_store::Platform::Gb=>self.colour_correction_gb,
+            _=>false,
         }
     }
     pub fn set_colour_for(&mut self,platform:slot_store::Platform,value:bool) {
@@ -376,6 +381,7 @@ impl Settings {
             },
             slot_store::Platform::Gbc=>self.colour_correction_gbc=value,
             slot_store::Platform::Gb=>self.colour_correction_gb=value,
+            _=>{}
         }
     }
     pub fn bezel_for(&self,platform:slot_store::Platform)->Bezel {
@@ -383,6 +389,7 @@ impl Settings {
             slot_store::Platform::Gba=>self.bezel_gba,
             slot_store::Platform::Gbc=>self.bezel_gbc,
             slot_store::Platform::Gb=>self.bezel_gb,
+            _=>Bezel::None,
         }
     }
     pub fn set_bezel_for(&mut self,platform:slot_store::Platform,value:Bezel) {
@@ -390,6 +397,7 @@ impl Settings {
             slot_store::Platform::Gba=>self.bezel_gba=value,
             slot_store::Platform::Gbc=>self.bezel_gbc=value,
             slot_store::Platform::Gb=>self.bezel_gb=value,
+            _=>{}
         }
     }
     // Screen: 0 GBA shader, 1 GB shader, 2 legacy GBA correction, 3 palettes.
