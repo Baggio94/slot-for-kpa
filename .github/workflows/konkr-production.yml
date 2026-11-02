@@ -128,6 +128,8 @@ jobs:
           # Isolate the pinned upstream Cargo project from our parent workspace.
           # This edit affects the ephemeral CI copy only; vendored sources stay exact.
           printf '\n[workspace]\n' >> studio-upstream/slot-cart-studio/Cargo.toml
+          # NES, Super Nintendo and Mega Drive carts, by checked replacements.
+          python3 scripts/stage-konkr-cart-studio.py --studio studio-upstream/slot-cart-studio
           test "$(tr -d '\r\n' < studio-upstream/slot-cart-studio/slot.ref)" = \
                "$(git -C studio-upstream/slot rev-parse HEAD)"
           node --test studio-upstream/slot-cart-studio/web/*.test.mjs
@@ -142,6 +144,7 @@ jobs:
       - name: Build and package genuine Cart Studio HTML/JS/WASM in APK assets
         run: |
           set -euo pipefail
+          (cd studio-upstream/slot-cart-studio && cargo test --lib konkr_home)
           (cd studio-upstream/slot-cart-studio && \
             wasm-pack build --release --target web --no-typescript --out-dir web/pkg)
           python3 scripts/package-konkr-cart-studio.py \

@@ -14,6 +14,7 @@ pub mod density;
 mod draw;
 mod footer;
 mod home;
+mod home_art;
 mod hud;
 mod icon;
 mod link_art;

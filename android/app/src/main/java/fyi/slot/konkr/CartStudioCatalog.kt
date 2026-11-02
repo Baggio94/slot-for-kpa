@@ -24,6 +24,9 @@ internal object CartStudioCatalog {
     private const val MAX_LIBRARY_BYTES = 8L * 1024 * 1024
     private const val HEAD_BYTES = 0x150
 
+    /** GB/GBA, and the NES, Super Nintendo and Mega Drive carts. */
+    val STUDIO_PLATFORMS = setOf(Systems.GBA, Systems.GB, Systems.GBC) + Systems.HOME_PLATFORMS
+
     internal data class Rom(
         val uri: String,
         val platform: String,
@@ -53,7 +56,7 @@ internal object CartStudioCatalog {
             val row = entries.optJSONObject(i) ?: continue
             val uri = row.optString("uri")
             val platform = row.optString("platform")
-            if (!uri.startsWith("content://") || platform !in setOf("GBA", "GB", "GBC")) continue
+            if (!uri.startsWith("content://") || platform !in STUDIO_PLATFORMS) continue
             result.add(Rom(uri, platform, row.optString("title"),
                 row.optLong("size", -1), row.optLong("modified", -1),
                 row.optString("filename")))
@@ -79,9 +82,15 @@ internal object CartStudioCatalog {
      * Official Cart Studio matching starts with CRC32 of uncompressed ROM bytes,
      * and reads 0x150 bytes for the original cart shell detection. Both are
      * computed in one streaming pass, without loading a 32 MiB ROM into RAM.
+     * No-Intro lists Super Nintendo carts without a copier's 512-byte header,
+     * so `copierHeader` also checksums from byte 512 and keeps that one when
+     * the file carries such a header. NES carts are listed with their iNES
+     * header (and Mega Drive carts are plain), so their whole file counts.
      */
-    fun fingerprintStream(input: InputStream): Fingerprint {
+    fun fingerprintStream(input: InputStream, copierHeader: Boolean = false): Fingerprint {
         val crc = CRC32()
+        val after512 = CRC32()
+        var total = 0L
         val head = ByteArray(HEAD_BYTES)
         var got = 0
         val buffer = ByteArray(32768)
@@ -91,6 +100,11 @@ internal object CartStudioCatalog {
                 if (n < 0) break
                 if (n == 0) continue
                 crc.update(buffer, 0, n)
+                if (copierHeader) {
+                    val start = (512 - total).coerceIn(0, n.toLong()).toInt()
+                    if (start < n) after512.update(buffer, start, n - start)
+                }
+                total += n
                 if (got < HEAD_BYTES) {
                     val take = minOf(n, HEAD_BYTES - got)
                     System.arraycopy(buffer, 0, head, got, take)
@@ -98,7 +112,8 @@ internal object CartStudioCatalog {
                 }
             }
         }
-        return Fingerprint(crc.value, head.copyOf(got))
+        val value = if (copierHeader && total % 0x2000 == 512L) after512.value else crc.value
+        return Fingerprint(value, head.copyOf(got))
     }
 
     // A full Studio catalog can contain hundreds of carts. The old adapter
@@ -179,9 +194,10 @@ internal object CartStudioCatalog {
             require(when (rom.platform) {
                 "GBA" -> embeddedExt == "gba"
                 "GB", "GBC" -> embeddedExt in setOf("gb", "gbc")
+                in Systems.HOME_PLATFORMS -> Systems.platformFor(embeddedExt) == rom.platform
                 else -> false
             }) { "Unexpected cartridge platform in ZIP" }
-            fingerprintStream(input)
+            fingerprintStream(input, copierHeader = rom.platform == Systems.SNES)
         }
         if (rom.size > 0 && rom.modified > 0 && fingerprint.head.size == HEAD_BYTES) {
             entries.put(rom.uri, JSONObject()

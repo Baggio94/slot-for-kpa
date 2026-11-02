@@ -82,7 +82,8 @@ internal class CartStudioBridge(
         }
 
         private fun validShell(value: String): Boolean =
-            Regex("(auto|notched|rounded) [0-9a-fA-F]{6} (solid|clear|glitter)")
+            Regex("(auto|notched|rounded|nes|famicom|famicom-namco|famicom-konami|snes|snes-us|" +
+                "megadrive|megadrive-jp|megadrive-ea) [0-9a-fA-F]{6} (solid|clear|glitter)")
                 .matches(value)
 
         private fun atomicWrite(file: File, bytes: ByteArray) {

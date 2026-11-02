@@ -11,7 +11,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /** Libretro's original No-Intro DAT text, cached locally for the Android WebView.
- * Only three hardcoded official URLs can be fetched. No arbitrary GitHub proxy. */
+ * Only six hardcoded official URLs can be fetched. No arbitrary GitHub proxy. */
 internal class CartStudioDatProxy(context: Context) {
     companion object {
         private const val TAG = "SlotStudioDat"
@@ -22,7 +22,10 @@ internal class CartStudioDatProxy(context: Context) {
         private val names = mapOf(
             "GBA" to "Nintendo%20-%20Game%20Boy%20Advance.dat",
             "GBC" to "Nintendo%20-%20Game%20Boy%20Color.dat",
-            "GB" to "Nintendo%20-%20Game%20Boy.dat"
+            "GB" to "Nintendo%20-%20Game%20Boy.dat",
+            "NES" to "Nintendo%20-%20Nintendo%20Entertainment%20System.dat",
+            "SNES" to "Nintendo%20-%20Super%20Nintendo%20Entertainment%20System.dat",
+            "MD" to "Sega%20-%20Mega%20Drive%20-%20Genesis.dat"
         )
     }
     private val dir = File(context.cacheDir, "slot-studio-dat").apply { mkdirs() }
