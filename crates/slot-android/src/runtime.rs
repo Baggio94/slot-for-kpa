@@ -488,7 +488,7 @@ const MENU_TEXT: [&str; 120] = [
     "",                                 // 76 retired: no middle-page helper text
     "",                                 // 77 retired: upstream shows A OK
     "Eject to play solo",               // 78
-    "Share Saves (mGBA/gpSP)",          // 79
+    "Share Core Saves",                 // 79
     "",                                  // 80 retired: value rendered at right
     "General",                            // 81, official Slot v1.7 menu
     "GENERAL",                            // 82
