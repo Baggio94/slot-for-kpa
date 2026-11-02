@@ -56,7 +56,38 @@ internal class CartStudioArtProxy(private val context: Context) {
             }, mapOf("Cache-Control" to "no-store"),
             ByteArrayInputStream(bytes))
 
+    /** The scanned NES / Super Nintendo / Mega Drive labels slot. keeps
+     *  (HomeCartLabels), offered to Cart Studio as those carts' "Real label":
+     *  the art set itself only holds Game Boy and GBA carts. */
+    private val homeDir = File(context.filesDir, HomeCartLabels.REAL_DIR)
+    private val homeName = Regex("[0-9A-F]{8}\\.png")
+
     fun intercept(path: String): WebResourceResponse {
+        val official = interceptOfficial(path)
+        if (path != "index.json" || official.statusCode != 200) return official
+        val names = homeDir.list { _, name -> homeName.matches(name) }.orEmpty()
+        if (names.isEmpty()) return official
+        val bytes = official.data.use { it.readBytes() }
+        if (bytes.isEmpty() || bytes[0] != '{'.code.toByte()) return response(200, "application/json", bytes)
+        // Spliced in front, so an entry the art set has for the same checksum
+        // (read later by JSON.parse) still wins.
+        val extra = names.joinToString(",") { name ->
+            val key = name.removeSuffix(".png")
+            "\"$key\":{\"support-texture\":\"konkr-home/$name\"}"
+        }
+        val rest = String(bytes, 1, bytes.size - 1, Charsets.UTF_8).trimStart()
+        val merged = "{" + extra + (if (rest.startsWith("}")) "" else ",") + rest
+        return response(200, "application/json", merged.toByteArray(Charsets.UTF_8))
+    }
+
+    private fun interceptOfficial(path: String): WebResourceResponse {
+        if (path.startsWith("konkr-home/")) {
+            val name = path.removePrefix("konkr-home/")
+            val file = File(homeDir, name)
+            return if (homeName.matches(name) && file.isFile && file.length() in 8L..MAX_IMAGE_BYTES.toLong())
+                response(200, "image/png", file.readBytes())
+            else response(404, "text/plain", "Not found".toByteArray())
+        }
         val allowed = safePath.matches(path) &&
             !path.startsWith("/") &&
             !path.split('/').contains("..") &&

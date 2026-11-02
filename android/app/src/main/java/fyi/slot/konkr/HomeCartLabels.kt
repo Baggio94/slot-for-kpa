@@ -30,6 +30,10 @@ internal object HomeCartLabels {
     private const val TAG = "SlotHomeLabels"
     private const val LIBRARY = "rom-library-cache-v1.json"
     private const val STATE = "home-labels-v1.json"
+    /** The scanned label kept for Cart Studio's "Real label", by checksum
+     *  (the cart's own label file is the one a Studio choice replaces). */
+    internal const val REAL_DIR = "home-real-labels"
+    private const val REAL_DONE = "home-real-labels/done.json"
     private const val API = "https://api.screenscraper.fr/api2/jeuInfos.php"
     private const val MAX_LIBRARY_BYTES = 8L * 1024 * 1024
     private const val MAX_JSON = 2 * 1024 * 1024
@@ -226,6 +230,23 @@ internal object HomeCartLabels {
         }
     }
 
+    private fun realDone(context: Context): JSONObject =
+        try { JSONObject(File(context.filesDir, REAL_DONE).readText(Charsets.UTF_8)) }
+        catch (_: Exception) { JSONObject() }
+
+    private fun writeAtomic(file: File, bytes: ByteArray) {
+        file.parentFile?.mkdirs()
+        val atomic = AtomicFile(file)
+        val out = atomic.startWrite()
+        try {
+            out.write(bytes)
+            atomic.finishWrite(out)
+        } catch (error: Exception) {
+            atomic.failWrite(out)
+            throw error
+        }
+    }
+
     private fun known(state: JSONObject, rom: Rom): Boolean {
         val old = state.optJSONObject(rom.uri) ?: return false
         return old.optLong("size") == rom.size && old.optLong("modified") == rom.modified
@@ -325,10 +346,13 @@ internal object HomeCartLabels {
         val now = android.os.SystemClock.elapsedRealtime()
         if (now < closedUntil || !shouldContinue()) return false
         val state = state(context)
+        val real = realDone(context)
         val all = games(context)
+        // A cart is missing its label, or (scraped before Studio offered it)
+        // the copy Cart Studio shows as its real label.
         val missing = all.filter {
-            !CartLabelPaths.file(context.filesDir, it.uri).exists() && !known(state, it) &&
-                retry.pending(it.uri)
+            (!CartLabelPaths.file(context.filesDir, it.uri).exists() || !real.has(it.uri)) &&
+                !known(state, it) && retry.pending(it.uri)
         }
         if (missing.isEmpty()) return false
         // The shelf's "LABELS n/total" counter, for the home carts' own pass.
@@ -374,8 +398,11 @@ internal object HomeCartLabels {
                 val image = get(media.url, MAX_IMAGE, shouldContinue)
                 if (image.code != 200) { outcome = "NETWORK_ERROR"; continue }
                 val png = labelPng(image.body, media, rom) ?: continue
+                for (crc in listOfNotNull(whole, bare).distinct()) writeAtomic(File(File(context.filesDir, REAL_DIR), "$crc.png"), png)
+                real.put(rom.uri, true)
+                dirty = true
                 val target = CartLabelPaths.file(context.filesDir, rom.uri)
-                if (target.exists()) { outcome = "EXISTS"; continue }
+                if (target.exists()) { outcome = "EXISTS"; saved++; continue }
                 target.parentFile?.mkdirs()
                 val atomic = AtomicFile(target)
                 val out = atomic.startWrite()
@@ -411,7 +438,10 @@ internal object HomeCartLabels {
             }
             Thread.sleep(250L)
         }
-        if (dirty) try { saveState(context, state) } catch (error: Exception) {
+        if (dirty) try {
+            saveState(context, state)
+            writeAtomic(File(context.filesDir, REAL_DONE), real.toString().toByteArray(Charsets.UTF_8))
+        } catch (error: Exception) {
             Log.w(TAG, "Could not remember label misses", error)
         }
         val left = missing.any { retry.pending(it.uri) }
