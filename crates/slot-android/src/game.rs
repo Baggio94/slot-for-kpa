@@ -1816,6 +1816,13 @@ impl GameSession {
     /// rewrites a corrupt battery over a known-good file. An absent battery
     /// on a ROM that does not implement SRAM is not an I/O failure.
     pub fn save_for_eject(&mut self, with_state: bool) -> Result<bool, String> {
+        // A failed Link's private pair is not a valid solo timeline.
+        // Preserve the immutable pre-Link solo checkpoint rather than
+        // replacing good SRAM/RTC/auto-state with a damaged sandbox.
+        if self.requires_relaunch() {
+            log_launch_timing("Eject after failed Link: discarding private sandbox without native save");
+            return Ok(false);
+        }
         if self.runahead_rollback_failed {
             return Err("Run-Ahead rollback failed; exit without saving instead".into());
         }
