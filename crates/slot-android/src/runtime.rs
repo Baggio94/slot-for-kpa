@@ -738,7 +738,9 @@ struct Engine {
     slot_faces: Option<(slot_gfx::TexId, slot_gfx::TexId)>,
     slot_dark_faces: (slot_gfx::TexId, slot_gfx::TexId),
     /// The Famicom, NES, Super Nintendo and Mega Drive slot bars.
-    home_slot_faces: [(slot_gfx::TexId, slot_gfx::TexId); 4],
+    home_slot_faces: [(slot_gfx::TexId, slot_gfx::TexId); slot_ui::bitmaps::CONSOLE_SLOTS],
+    /// Whether the footer's clock and percent textures are inked black.
+    footer_inked_dark: bool,
     /// What closes those slots' holes (none for the Famicom's open slot).
     home_closers: [Option<slot_ui::SlotCloser>; 4],
     slot_light_faces: (slot_gfx::TexId, slot_gfx::TexId),
@@ -935,7 +937,8 @@ impl Engine {
         // textures on the GL thread or shift the original Slot animation.
         let slot_dark_faces=make_slot(false);
         let slot_light_faces=make_slot(true);
-        let home_slot_faces=[0usize, 1, 2, 3].map(|family| {
+        let footer_inked_dark_at_start = settings.appearance == crate::settings::Appearance::Light;
+        let home_slot_faces=[0usize, 1, 2, 3, 4, 5, 6].map(|family| {
             let (back, front) = slot_ui::bitmaps::home_slot(family);
             let mut band = |rgba: &[u8]| {
                 let (rgba, w, h) = slot_ui::native_rgba(
@@ -1338,6 +1341,7 @@ impl Engine {
             slot_faces,
             slot_dark_faces,
             home_slot_faces,
+            footer_inked_dark: footer_inked_dark_at_start,
             home_closers,
             slot_light_faces,
             gb_bezel_tex,
@@ -1490,12 +1494,24 @@ impl Engine {
         *WALLPAPER_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = target;
     }
 
+    /// Black or white footer ink: the console bar's own (its colours never
+    /// change with the theme), or the theme's over a custom-coloured bar or
+    /// with no cart selected.
+    fn footer_dark_ink(&self) -> bool {
+        let shelf = &self.shelves[self.active];
+        match (self.slot_faces, shelf.carts.get(shelf.index)) {
+            (Some(_), Some(cart)) => slot_ui::bitmaps::console_slot_takes_dark_ink(
+                slot_ui::bitmaps::console_slot_family(cart)),
+            _ => self.settings.appearance == crate::settings::Appearance::Light,
+        }
+    }
+
     fn shelf_footer_ink(&self) -> [u8; 3] {
-        slot_ui::footer_ink(
-            self.settings.appearance == crate::settings::Appearance::Light)
+        slot_ui::footer_ink(self.footer_dark_ink())
     }
 
     fn recolour_footer_text(&mut self) {
+        self.footer_inked_dark = self.footer_dark_ink();
         let ink = self.shelf_footer_ink();
         if let Some(tex) = self.clock_texture {
             let face = slot_ui::word_ink(&self.clock_text, ink);
@@ -6215,8 +6231,11 @@ impl Engine {
             if self.settings.show_integrations { indicator_flags |= 8; }
             let light=self.settings.appearance==crate::settings::Appearance::Light;
             if light { indicator_flags |= 16; } // theme ink for Android Wi-Fi/task glyphs
+            // The footer sits on the console bar: its ink follows the bar.
+            let dark_ink=self.footer_dark_ink();
+            if dark_ink != self.footer_inked_dark { self.recolour_footer_text(); }
             slot_ui::draw_footer_with_ink(self.battery,self.battery_face,
-                Some(if light {self.bolt_light_texture} else {self.bolt_texture}),
+                Some(if dark_ink {self.bolt_light_texture} else {self.bolt_texture}),
                 self.clock_face,self.shelf_footer_ink(),&mut commands);
         }
         SHELF_INDICATOR_FLAGS.store(indicator_flags, Ordering::Release);
@@ -6532,11 +6551,11 @@ fn next_nonempty_shelf(shelves: &[Shelf], current: usize, delta: i32) -> usize {
 /// for every system.
 fn pick_slot_faces(
     faces: Option<(slot_gfx::TexId, slot_gfx::TexId)>,
-    home: [(slot_gfx::TexId, slot_gfx::TexId); 4],
+    home: [(slot_gfx::TexId, slot_gfx::TexId); slot_ui::bitmaps::CONSOLE_SLOTS],
     cart: Option<&slot_store::Cart>,
 ) -> Option<(slot_gfx::TexId, slot_gfx::TexId)> {
     let faces = faces?;
-    Some(match cart.and_then(slot_ui::bitmaps::home_slot_family) {
+    Some(match cart.map(slot_ui::bitmaps::console_slot_family) {
         Some(family) => home[family],
         None => faces,
     })

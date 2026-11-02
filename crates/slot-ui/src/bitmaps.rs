@@ -225,26 +225,52 @@ pub fn slot_front_light() -> &'static [u8] {
     load(SLOT_FRONT_LIGHT_PNG, SLOT_W, SLOT_H, &P)
 }
 
-/// The NES, Famicom, Super Nintendo and Mega Drive slot bars, in the same
-/// 720x58 band as slot.'s own: each console's housing and opening, with no
-/// buttons or lights. Index: 0 Famicom, 1 NES, 2 Super Nintendo, 3 Mega Drive.
+/// Each console's slot bar, in the same 720x58 band as slot.'s own: its
+/// housing and opening in the console's own colours, with no buttons, screw
+/// or lights. Index: 0 Famicom, 1 NES, 2 Super Nintendo, 3 Mega Drive,
+/// 4 Game Boy, 5 Game Boy Color, 6 Game Boy Advance (Siham 2026-11-02).
 pub fn home_slot(family: usize) -> (&'static [u8], &'static [u8]) {
-    const BACK: [&[u8]; 4] = [
+    const BACK: [&[u8]; CONSOLE_SLOTS] = [
         include_bytes!("../../../assets/home/slot_back_fc.png"),
         include_bytes!("../../../assets/home/slot_back_nes.png"),
         include_bytes!("../../../assets/home/slot_back_snes.png"),
         include_bytes!("../../../assets/home/slot_back_md.png"),
+        include_bytes!("../../../assets/slot_back_gb.png"),
+        include_bytes!("../../../assets/slot_back_gbc.png"),
+        include_bytes!("../../../assets/slot_back_gba.png"),
     ];
-    const FRONT: [&[u8]; 4] = [
+    const FRONT: [&[u8]; CONSOLE_SLOTS] = [
         include_bytes!("../../../assets/home/slot_front_fc.png"),
         include_bytes!("../../../assets/home/slot_front_nes.png"),
         include_bytes!("../../../assets/home/slot_front_snes.png"),
         include_bytes!("../../../assets/home/slot_front_md.png"),
+        include_bytes!("../../../assets/slot_front_gb.png"),
+        include_bytes!("../../../assets/slot_front_gbc.png"),
+        include_bytes!("../../../assets/slot_front_gba.png"),
     ];
-    static B: [OnceLock<Vec<u8>>; 4] = [const { OnceLock::new() }; 4];
-    static F: [OnceLock<Vec<u8>>; 4] = [const { OnceLock::new() }; 4];
-    let i = family.min(3);
+    static B: [OnceLock<Vec<u8>>; CONSOLE_SLOTS] = [const { OnceLock::new() }; CONSOLE_SLOTS];
+    static F: [OnceLock<Vec<u8>>; CONSOLE_SLOTS] = [const { OnceLock::new() }; CONSOLE_SLOTS];
+    let i = family.min(CONSOLE_SLOTS - 1);
     (load(BACK[i], SLOT_W, SLOT_H, &B[i]), load(FRONT[i], SLOT_W, SLOT_H, &F[i]))
+}
+
+/// How many console slot bars `home_slot` draws.
+pub const CONSOLE_SLOTS: usize = 7;
+
+/// Which console bar a cart goes into (see `home_slot`).
+pub fn console_slot_family(cart: &slot_store::Cart) -> usize {
+    home_slot_family(cart).unwrap_or(match cart.platform {
+        slot_store::Platform::Gb => 4,
+        slot_store::Platform::Gbc => 5,
+        _ => 6,
+    })
+}
+
+/// Whether the clock and battery printed on a console's bar are black (its
+/// plastic is light) or white (GBA indigo, Mega Drive black): the bars keep
+/// the consoles' own colours in both themes (Siham 2026-11-02).
+pub fn console_slot_takes_dark_ink(family: usize) -> bool {
+    !matches!(family, 3 | 6)
 }
 
 /// What closes a home slot's hole, at its logical size: the NES flap
