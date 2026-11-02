@@ -55,6 +55,7 @@ pub struct SensorInterface {
 pub const RUMBLE_STRONG: c_uint = 0;
 pub const RUMBLE_WEAK: c_uint = 1;
 
+pub const PIXEL_FORMAT_0RGB1555: c_uint = 0;
 pub const PIXEL_FORMAT_XRGB8888: c_uint = 1;
 pub const PIXEL_FORMAT_RGB565: c_uint = 2;
 pub const DEVICE_JOYPAD: c_uint = 1;
