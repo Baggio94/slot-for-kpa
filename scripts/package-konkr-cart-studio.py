@@ -344,7 +344,8 @@ const facePlatform = (c) => KONKR_HOME.has(c.platform)
         "(c.shell || home_auto_shell(c.platform, c.stem, c.head ?? new Uint8Array(0)) || auto_shell(c.platform, c.code, c.head))")
     js = checked_replace(js,
         "const PLATFORM_NAMES = { GBA: 'Game Boy Advance', GB: 'Game Boy', GBC: 'Game Boy Color' };",
-        "const PLATFORM_NAMES = { GBA: 'Game Boy Advance', GB: 'Game Boy', GBC: 'Game Boy Color', NES: 'NES / Famicom', SNES: 'Super Nintendo', MD: 'Mega Drive' };")
+        # Short tab names so six tabs fit on one row (Siham 2026-11-02).
+        "const PLATFORM_NAMES = { GBA: 'GBA', GBC: 'GBC', GB: 'GB', NES: 'NES', SNES: 'SNES', MD: 'MEGADRIVE' };")
 
     js = js.replace("'Write to card'", "'Save to slot.'")
     jsfile.write_text(js, encoding="utf-8")
