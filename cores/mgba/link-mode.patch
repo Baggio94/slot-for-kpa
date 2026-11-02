@@ -649,7 +649,7 @@ index d4de13f..754846e 100644
  	mCoreConfigDeinit(&core->config);
  	core->deinit(core);
  	mappedMemoryFree(data, dataSize);
-@@ -2132,12 +2518,125 @@ void retro_unload_game(void) {
+@@ -2132,12 +2518,157 @@ void retro_unload_game(void) {
  	savedata = 0;
  }
  
@@ -692,6 +692,13 @@ index d4de13f..754846e 100644
 + * game, a newer savestate version) puts both GBAs back where they were, saves included, on a
 + * fresh cable. */
 +static bool _linkLoadState(const void* state, size_t size) {
++	/* GB state restore is the sole first-connection SIGSEGV on KPA2.
++	 * Bracket each native load stage so a crash can be assigned to reset,
++	 * unserialize, cable attach or teardown without collecting new data. */
++#ifdef __ANDROID__
++	__android_log_print(ANDROID_LOG_INFO, "SlotKONKR",
++		"mGBA paired-state restore: begin size=%zu", size);
++#endif
 +	const uint8_t* bytes = state;
 +	const uint8_t* parts[2];
 +	uint32_t lengths[2];
@@ -724,7 +731,16 @@ index d4de13f..754846e 100644
 +		before[i] = _linkSaveGBA(i);
 +	}
 +
++#ifdef __ANDROID__
++	__android_log_print(ANDROID_LOG_INFO, "SlotKONKR",
++		"mGBA paired-state restore: validated chunks=%u/%u; detach cable",
++		lengths[0], lengths[1]);
++#endif
 +	_linkUnplug();
++#ifdef __ANDROID__
++	__android_log_print(ANDROID_LOG_INFO, "SlotKONKR",
++		"mGBA paired-state restore: cable detached; reset cores");
++#endif
 +	/* Both GBAs are reset before they are loaded, so that a restore is a function of the link state
 +	 * and nothing else. A savestate does not carry everything a GBA holds: RCNT's SC, SD, SI and SO
 +	 * bits come back through GBASIOWriteRCNT, which keeps them from whatever the core held before;
@@ -739,9 +755,17 @@ index d4de13f..754846e 100644
 +	}
 +	bool success = true;
 +	for (i = 0; i < 2 && success; ++i) {
++#ifdef __ANDROID__
++		__android_log_print(ANDROID_LOG_INFO, "SlotKONKR",
++			"mGBA paired-state restore: loading player=%d length=%u", i, lengths[i]);
++#endif
 +		struct VFile* vf = VFileFromConstMemory(parts[i], lengths[i]);
 +		success = mCoreLoadStateNamed(linkGba[i].core, vf, SAVESTATE_SAVEDATA);
 +		vf->close(vf);
++#ifdef __ANDROID__
++		__android_log_print(ANDROID_LOG_INFO, "SlotKONKR",
++			"mGBA paired-state restore: player=%d load_success=%d", i, success);
++#endif
 +	}
 +	if (!success) {
 +		for (i = 0; i < 2; ++i) {
@@ -751,7 +775,15 @@ index d4de13f..754846e 100644
 +	for (i = 0; i < 2; ++i) {
 +		before[i]->close(before[i]);
 +	}
++#ifdef __ANDROID__
++	__android_log_print(ANDROID_LOG_INFO, "SlotKONKR",
++		"mGBA paired-state restore: attaching cable success=%d", success);
++#endif
 +	_linkPlugIn();
++#ifdef __ANDROID__
++	__android_log_print(ANDROID_LOG_INFO, "SlotKONKR",
++		"mGBA paired-state restore: completed success=%d", success);
++#endif
 +	return success;
 +}
 +#endif
@@ -777,7 +809,7 @@ index d4de13f..754846e 100644
  	size_t size = vfm->size(vfm);
  	vfm->close(vfm);
  	return size;
-@@ -2147,8 +2646,7 @@ bool retro_serialize(void* data, size_t size) {
+@@ -2147,8 +2678,7 @@ bool retro_serialize(void* data, size_t size) {
  	if (deferredSetup) {
  		_doDeferredSetup();
  	}
@@ -787,7 +819,7 @@ index d4de13f..754846e 100644
  	if ((ssize_t) size > vfm->size(vfm)) {
  		size = vfm->size(vfm);
  	} else if ((ssize_t) size < vfm->size(vfm)) {
-@@ -2165,6 +2663,11 @@ bool retro_unserialize(const void* data, size_t size) {
+@@ -2165,6 +2695,11 @@ bool retro_unserialize(const void* data, size_t size) {
  	if (deferredSetup) {
  		_doDeferredSetup();
  	}
