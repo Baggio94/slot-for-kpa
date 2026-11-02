@@ -108,6 +108,12 @@ jobs:
         run: |
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
           bash scripts/build-gambatte-android.sh
+      - name: Build NES, SNES and Mega Drive arm64 libretro cores
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
+          for core in fceumm nestopia snes9x bsnes genesis_plus_gx picodrive; do
+            bash scripts/build-home-core-android.sh "$core"
+          done
       - name: Checkout official Slot revision required by Cart Studio
         uses: actions/checkout@v4
         with:
@@ -189,7 +195,7 @@ jobs:
           grep -F "package: name='fyi.slot.konkr.diag' versionCode='$VERSION_CODE'" "$RUNNER_TEMP/mac-lab-badging.txt"
           grep -F "versionName='$VERSION_NAME-mac-lab'" "$RUNNER_TEMP/mac-lab-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify "$APK"
-          for core in slot_android mgba_libretro gpsp_libretro gambatte_libretro; do
+          for core in slot_android mgba_libretro gpsp_libretro gambatte_libretro fceumm_libretro nestopia_libretro snes9x_libretro bsnes_libretro genesis_plus_gx_libretro picodrive_libretro; do
             unzip -Z -1 "$APK" | grep -Fx "lib/arm64-v8a/lib${core}.so"
           done
           unzip -Z -1 "$APK" | grep -Fx 'assets/studio/pkg/slot_cart_studio_bg.wasm'
@@ -215,7 +221,7 @@ jobs:
           grep -F "versionName='$VERSION_NAME'" "$RUNNER_TEMP/konkr-badging.txt"
           "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" |
             grep -Fi '4f42b8f0ac98f6a0102804ab51020ea0e7e2de7685c6ce09400a744de0b0fa2f'
-          for core in slot_android mgba_libretro gpsp_libretro gambatte_libretro; do
+          for core in slot_android mgba_libretro gpsp_libretro gambatte_libretro fceumm_libretro nestopia_libretro snes9x_libretro bsnes_libretro genesis_plus_gx_libretro picodrive_libretro; do
             unzip -Z -1 "$APK" | grep -Fx "lib/arm64-v8a/lib${core}.so"
           done
           if unzip -Z -1 "$APK" | grep -Eq '^lib/(x86_64|x86|armeabi-v7a)/'; then
@@ -233,6 +239,18 @@ jobs:
           assert mgba["revision"] == "7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6"
           assert gpsp["revision"] == "5819380c2ffb0900219d700a382ee68c464ebb99"
           assert gambatte["revision"] == "d9d6cd06382d1ced30de34d56d3609452323dab1"
+          home = {
+              "fceumm": "ac0d00a7fc01166f84c7bac01d1084ebfd2b865e",
+              "nestopia": "f1e02d12664834536edbf7352995a3d0cd1caef4",
+              "snes9x": "fae2fea08f74180759ef540ee94259213f503480",
+              "bsnes": "63ee22f7af8f5d1ada295c2c98fd7bf261fa62a7",
+              "genesis_plus_gx": "f27655b592ef43f317272d79883bcaa10d3ac8ad",
+              "picodrive": "1890c2932234c9d30f4cd3851d02228baae8f09e",
+          }
+          for name, revision in home.items():
+              with zipfile.ZipFile(sys.argv[1]) as archive:
+                  built = json.loads(archive.read(f"assets/core-build-{name}.json"))
+              assert built["revision"] == revision, name
           assert {"flash-bank-survives-mask.patch",
                   "gb-dmg-palette-follows-option.patch",
                   "543a19758-mbc2-sram-bank.patch"} <= set(mgba["patches"])
