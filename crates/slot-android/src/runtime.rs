@@ -1054,7 +1054,7 @@ impl Engine {
                                "SLOT.", "GAME BOY", "POCKET", "COLOR",
                                "mGBA", "gpSP", "Gambatte", "SENSOR",
                                "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
-                               "Shelf"]
+                               "Shelf", "AUTO"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -3859,8 +3859,9 @@ impl Engine {
         profile.change_sun(light_sensor(), self.sun_top(), right);
         self.save_game_sun(profile, &uri, core);
     }
-    /// L3 / R3 in a solar game, as mGBA's own R3 brighten / L3 darken:
-    /// one step within 0..=top, nothing while the light sensor decides.
+    /// L3 / R3 (and SELECT + L2 / R2) in a solar game, as mGBA's own R3
+    /// brighten / L3 darken: one step of the same round as the menu,
+    /// 0 … top, SENSOR, AUTO, 0.
     fn nudge_sun(&mut self, brighter: bool) {
         if self.game.as_ref().is_some_and(|game|game.linked() || game.requires_relaunch()) {
             return;
@@ -3869,17 +3870,14 @@ impl Engine {
         let core = self.selected_emulation_core();
         let mut profile = self.game_emulation
             .unwrap_or_else(|| EmulationProfile::from_settings(&self.settings));
-        let sun = profile.sun(light_sensor(), self.sun_top());
         let time = self.born.elapsed().as_millis() as u64;
-        if sun == crate::emulation::SUN_SENSOR {
-            self.hud.toast(Toast::SunSensor, time);
-            return;
-        }
-        let next = if brighter { (sun + 1).min(self.sun_top()) } else { sun.saturating_sub(1) };
+        profile.change_sun(light_sensor(), self.sun_top(), brighter);
         // The same banner as State Saved or a shader change.
-        self.hud.toast(Toast::Sun(next), time);
-        if next == sun { return; }
-        profile.sun = Some(next);
+        self.hud.toast(match profile.sun(light_sensor(), self.sun_top()) {
+            crate::emulation::SUN_SENSOR => Toast::SunSensor,
+            crate::emulation::SUN_AUTO => Toast::SunAuto,
+            sun => Toast::Sun(sun),
+        }, time);
         self.save_game_sun(profile, &uri, core);
     }
     fn save_game_sun(&mut self, profile: EmulationProfile, uri: &str, core: Core) {
@@ -4363,8 +4361,11 @@ impl Engine {
             let (tex, width, height) =
                 if key == SUN_KEY {
                     let sun = self.current_emulation().sun(light_sensor(), self.sun_top());
-                    self.setting_values[if sun == crate::emulation::SUN_SENSOR { 53 }
-                        else { 54 + sun as usize }]
+                    self.setting_values[match sun {
+                        crate::emulation::SUN_SENSOR => 53,
+                        crate::emulation::SUN_AUTO => 66,
+                        sun => 54 + sun as usize,
+                    }]
                 } else if key == 16 && matches!(self.settings.wallpaper,
                     crate::settings::WallpaperPick::File(_)) {
                     self.wallpaper_name_face.unwrap_or(self.setting_values[26])
