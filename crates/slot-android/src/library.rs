@@ -30,6 +30,14 @@ pub struct RomEntry {
     pub gb_japan: bool,
     #[serde(default)]
     pub gb_cgb_flag: Option<i32>,
+    // NES / SNES / Mega Drive header facts from the same scan: the
+    // internal title, region (J, U, E or empty) and battery-backed save.
+    #[serde(default)]
+    pub home_title: String,
+    #[serde(default)]
+    pub home_region: String,
+    #[serde(default)]
+    pub home_battery: bool,
 }
 
 pub struct LibraryState {
@@ -173,7 +181,8 @@ mod tests {
             platform: platform.into(), title: title.into(), uri: uri.into(),
             code: String::new(), color_only: false, shell_override: None,
             gb_title: String::new(), gb_code: String::new(),
-            gb_japan: false, gb_cgb_flag: None
+            gb_japan: false, gb_cgb_flag: None,
+            home_title: String::new(), home_region: String::new(), home_battery: false,
         };
         let grouped = carts_by_platform(&[
             example("GBA", "Zelda", "content://roms/z"),
@@ -196,6 +205,7 @@ mod tests {
                 color_only: flag == 0xc0, shell_override: None,
                 gb_title: title.into(), gb_code: code.into(),
                 gb_japan: false, gb_cgb_flag: Some(flag),
+                home_title: String::new(), home_region: String::new(), home_battery: false,
             }
         };
         let mut manual = entry("GB", "Manual", "POKEMON RED", "", 0);

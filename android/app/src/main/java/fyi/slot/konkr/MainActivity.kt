@@ -752,11 +752,7 @@ class MainActivity : Activity() {
             try {
                 val payload = JSONObject(completed)
                 val uri = payload.getString("uri")
-                val core = when (payload.getString("core")) {
-                    "gpsp" -> "gpSP"
-                    "gambatte" -> "Gambatte"
-                    else -> "mGBA"
-                }
+                val core = Systems.folderForKey(payload.getString("core"))
                 val target = activeTargets[uri]
                 if (target != null && target.core == core) {
                     gameLoader.execute {
@@ -1366,7 +1362,7 @@ class MainActivity : Activity() {
                         RomSource.inspect(input, name).extension
                     } ?: error("Cannot inspect cartridge ZIP")
                 } else name.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
-                require(ext in setOf("gba", "gbc", "gb")) { "Unsupported ROM type" }
+                require(ext in Systems.ROM_EXTENSIONS) { "Unsupported ROM type" }
                 val digest = MessageDigest.getInstance("SHA-256")
                     .digest(rawUri.toByteArray(Charsets.UTF_8))
                     .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
@@ -1400,11 +1396,8 @@ class MainActivity : Activity() {
                 }
                 val romReadyAt = SystemClock.elapsedRealtime()
                 val savedCore = nativeCoreForUri(rawUri)
-                val core = when {
-                    savedCore == "gpsp" && ext == "gba" -> "gpSP"
-                    savedCore == "gambatte" && ext != "gba" -> "Gambatte"
-                    else -> "mGBA"
-                }
+                // The native pick when it runs this system, else its default core.
+                val core = Systems.coreFolder(savedCore, ext)
                 val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
                 val storage = SlotBuildBehavior.storagePolicy(
                     packageName,
