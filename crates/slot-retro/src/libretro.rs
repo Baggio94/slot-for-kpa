@@ -23,8 +23,12 @@ static LIVE: AtomicBool = AtomicBool::new(false);
 // loaded from a separate file so it owns its own globals.
 static SECONDARY_LIVE: AtomicBool = AtomicBool::new(false);
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+// Libretro's implicit pixel format is 0RGB1555, not XRGB8888.
+// Pinned bsnes emits this 16-bit format without SET_PIXEL_FORMAT.
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
 enum PixelFormat {
+    #[default]
+    Rgb1555,
     Xrgb8888,
     Rgb565,
 }
@@ -131,6 +135,7 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
                 return false;
             }
             let want = match *(data as *const c_uint) {
+                PIXEL_FORMAT_0RGB1555 => PixelFormat::Rgb1555,
                 PIXEL_FORMAT_XRGB8888 => PixelFormat::Xrgb8888,
                 PIXEL_FORMAT_RGB565 => PixelFormat::Rgb565,
                 _ => return false,
@@ -392,6 +397,21 @@ unsafe fn report_audio_status(skip: bool) {
     status(true, if skip { 0 } else { 100 }, skip);
 }
 
+// Copy libretro's default 16-bit 0RGB1555 pixels into Slot's
+// blue/green/red/unused 32-bit framebuffer, preserving the row pitch.
+unsafe fn copy_rgb1555(src: *const u8, dst: &mut [u8]) {
+    for (x, out) in dst.chunks_exact_mut(4).enumerate() {
+        let pixel = unsafe { ptr::read_unaligned((src as *const u16).add(x)) };
+        let red = ((pixel >> 10) & 31) as u8;
+        let green = ((pixel >> 5) & 31) as u8;
+        let blue = (pixel & 31) as u8;
+        out[0] = (blue << 3) | (blue >> 2);
+        out[1] = (green << 3) | (green >> 2);
+        out[2] = (red << 3) | (red >> 2);
+        out[3] = 0;
+    }
+}
+
 unsafe extern "C" fn video_refresh(
     data: *const c_void,
     width: c_uint,
@@ -417,6 +437,9 @@ unsafe extern "C" fn video_refresh(
             let src = (data as *const u8).add(y * pitch);
             let row = ((y + oy) * GBA_W as usize + ox) * 4;
             match h.format {
+                PixelFormat::Rgb1555 => {
+                    copy_rgb1555(src, &mut h.video[row..row + cols * 4]);
+                }
                 PixelFormat::Xrgb8888 => {
                     ptr::copy_nonoverlapping(src, h.video.as_mut_ptr().add(row), cols * 4);
                 }
@@ -464,6 +487,9 @@ unsafe fn copy_native_frame(h: &mut Host, data: *const c_void, width: c_uint, he
         let src = (data as *const u8).add(y * pitch);
         let row = y * cols * 4;
         match h.format {
+            PixelFormat::Rgb1555 => {
+                copy_rgb1555(src, &mut h.video[row..row + cols * 4]);
+            }
             PixelFormat::Xrgb8888 => {
                 ptr::copy_nonoverlapping(src, h.video.as_mut_ptr().add(row), cols * 4);
             }
@@ -771,7 +797,7 @@ impl LibretroCore {
             frame: (GBA_W, GBA_H),
             aspect: 0.0,
             timing: None,
-            format: PixelFormat::Xrgb8888,
+            format: PixelFormat::default(),
             audio: Vec::new(),
             inputs: [0; 2],
             memory: Vec::new(),
@@ -2670,4 +2696,58 @@ mod tests {
             "the picture was blanked or moved where a duplicate should have kept it"
         );
     }
+    #[test]
+    fn libretro_default_and_explicit_0rgb1555_are_supported() {
+        assert!(matches!(PixelFormat::default(), PixelFormat::Rgb1555));
+        let mut host = host_with(HashMap::new(), false);
+        let _active = Active::bind(&mut host);
+        let mut format = PIXEL_FORMAT_0RGB1555;
+        assert!(unsafe {
+            environment(SET_PIXEL_FORMAT, &mut format as *mut _ as *mut c_void)
+        });
+        assert!(matches!(host.format, PixelFormat::Rgb1555));
+    }
+
+    #[test]
+    fn bsnes_rgb1555_native_video_copies_complete_rows_and_correct_colours() {
+        let mut host = host_with(HashMap::new(), false);
+        host.native = true;
+        host.format = PixelFormat::Rgb1555;
+        // 3 pixels, one padding pixel per row. The padding cannot become
+        // part of either rendered row even when pitch > width * 2.
+        let frame: [u16; 8] = [
+            0x7c00, 0x03e0, 0x001f, 0x1111,
+            0x7fff, 0x0000, 0x4210, 0x2222,
+        ];
+        {
+            let _active = Active::bind(&mut host);
+            unsafe { video_refresh(frame.as_ptr().cast(), 3, 2, 8); }
+        }
+        assert_eq!(host.frame, (3, 2));
+        assert_eq!(host.video.len(), 3 * 2 * 4);
+        assert_eq!(&host.video[0..4], &[0, 0, 255, 0]); // red
+        assert_eq!(&host.video[4..8], &[0, 255, 0, 0]); // green
+        assert_eq!(&host.video[8..12], &[255, 0, 0, 0]); // blue
+        assert_eq!(&host.video[12..16], &[255, 255, 255, 0]); // second row white
+        assert_eq!(&host.video[16..20], &[0, 0, 0, 0]);
+        assert_eq!(&host.video[20..24], &[132, 132, 132, 0]); // 0x4210
+    }
+
+    #[test]
+    fn rgb1555_handheld_canvas_keeps_centered_pixels_and_black_margins() {
+        let mut host = host_with(HashMap::new(), false);
+        host.format = PixelFormat::Rgb1555;
+        let frame = [0x7c00u16, 0x001fu16];
+        {
+            let _active = Active::bind(&mut host);
+            unsafe { video_refresh(frame.as_ptr().cast(), 2, 1, 4); }
+        }
+        let x = (GBA_W as usize - 2) / 2;
+        let y = (GBA_H as usize - 1) / 2;
+        let offset = (y * GBA_W as usize + x) * 4;
+        assert_eq!(&host.video[offset..offset + 4], &[0, 0, 255, 0]);
+        assert_eq!(&host.video[offset + 4..offset + 8], &[255, 0, 0, 0]);
+        assert_eq!(&host.video[0..4], &[0, 0, 0, 0]);
+    }
+
 }
