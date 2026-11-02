@@ -160,6 +160,12 @@ internal object RetroArchStorage {
                     stage(target.rtcLocal, bytes)
                 }
         }
+        // RetroArch's manual slots, whatever happens to its auto-state.
+        try {
+            importManualStates(context, target)
+        } catch (error: Exception) {
+            Log.w(TAG, "RetroArch manual states not brought into the Polaroids", error)
+        }
         // When Share Saves chooses cartridge SRAM over an older same-core
         // Save State, preserve the original imported RetroArch state byte for
         // byte. Rust will resume/write only a fresh generation and the export
@@ -171,9 +177,18 @@ internal object RetroArchStorage {
             "${target.romIdentity}.$coreLower.skip-resume.once").isFile
         val stateProtected = File(guardRoot,
             "${target.romIdentity}.$coreLower.state-export-protected").isFile
-        if (skipped || stateProtected) {
+        if (skipped || (stateProtected && !retroArchAutoIsNewer(context, target))) {
             Log.i(TAG, "Deferred stale RetroArch state import; SRAM / existing states preserved")
             return
+        }
+        if (stateProtected) {
+            // RetroArch played this game after slot.'s protected state: its
+            // auto-state is the newest progress, so resume and sync it again.
+            // slot.'s own state stays in its private generation.
+            check(File(guardRoot, "${target.romIdentity}.$coreLower.state-export-protected").delete()) {
+                "Cannot lift the RetroArch auto-state guard"
+            }
+            Log.i(TAG, "RetroArch auto-state is newer than the protected one; syncing it again")
         }
         val savesAt = SystemClock.elapsedRealtime()
         val incoming = if (target.statesTree != null) {
@@ -235,15 +250,19 @@ internal object RetroArchStorage {
         }
         // A core switch that chose shared SRAM intentionally did NOT
         // consume the previous core-specific auto-state. Its successor is
-        // written to a separate private generation by Rust. Publishing it
-        // over the original RetroArch .state.auto would silently destroy the
-        // ignored state (F-Zero regression). Wait for explicit user consent.
+        // written to a separate private generation by Rust. Before that
+        // successor first replaces RetroArch's .state.auto, the old one is
+        // kept in Saves/RetroArchBackups (F-Zero regression); from then on the
+        // two sync as usual, like RetroArch itself.
         val lower = coreLower(target.core)
-        val guarded = File(context.filesDir,
-            "Saves/${target.romIdentity}.$lower.state-export-protected").isFile
-        if (!guarded && target.stateExportLocal.isFile) {
+        val guard = File(context.filesDir,
+            "Saves/${target.romIdentity}.$lower.state-export-protected")
+        val guarded = guard.isFile
+        val export = activeExport(context, target)
+        if (export.isFile) {
             try {
-                val bytes = target.stateExportLocal.readBytes()
+                if (guarded) backUpAutoState(context, target)
+                val bytes = export.readBytes()
                 require(bytes.size in 16..MAX_STATE && bytes.startsWithRASTATE()) {
                     "Invalid uncompressed RASTATE export"
                 }
@@ -259,16 +278,50 @@ internal object RetroArchStorage {
                         "Default state verification failed"
                     }
                 }
+                if (guarded && !guard.delete()) Log.w(TAG, "RetroArch auto-state guard not lifted yet")
             } catch (e: Exception) {
                 Log.e(TAG, "RetroArch state export failed for ${target.core}/${target.stem}", e)
                 failures.add("State sync skipped (${target.core}): " + (e.message ?: "unsupported format"))
             }
         }
-        if (guarded) {
-            Log.i(TAG, "Preserved previous RetroArch auto-state; " +
-                "new cross-core state is stored in a private generation")
-        }
         return failures
+    }
+
+    /** The state slot. last wrote for RetroArch: its protected generation's
+     *  export after a core switch, else the plain one. */
+    private fun activeExport(context: Context, target: Target): File {
+        val lower = coreLower(target.core)
+        val saves = File(context.filesDir, "Saves")
+        val key = File(saves, "${target.romIdentity}.$lower.state-generation.active")
+            .takeIf(File::isFile)?.readText()
+            ?.takeIf { it.startsWith("${target.romIdentity}.$lower.gen-") &&
+                it.matches(Regex("[a-zA-Z0-9.-]{1,180}")) }
+        return key?.let { File(saves, "$it.retroarch-export.state.auto") } ?: target.stateExportLocal
+    }
+
+    /** Keep RetroArch's current .state.auto in Saves/RetroArchBackups before
+     *  slot. writes over the auto-state a core switch set aside. */
+    private fun backUpAutoState(context: Context, target: Target) {
+        val name = target.stem + ".state.auto"
+        val old = stateDir(context, target).read(name) ?: return
+        val lower = coreLower(target.core)
+        stage(File(context.filesDir, "Saves/RetroArchBackups/" +
+            "${target.romIdentity}.$lower.${System.currentTimeMillis()}.state.auto"), old)
+    }
+
+    /** True when RetroArch saved this game's .state.auto after slot.'s
+     *  protected state, i.e. the player went on in RetroArch since. */
+    private fun retroArchAutoIsNewer(context: Context, target: Target): Boolean = try {
+        val lower = coreLower(target.core)
+        val saves = File(context.filesDir, "Saves")
+        val retroArch = stateDir(context, target).list()[target.stem + ".state.auto"]
+        val export = activeExport(context, target)
+        val own = File(saves, export.name.removeSuffix(".retroarch-export.state.auto") + ".state")
+        retroArch != null && retroArch.modified > 0 &&
+            (export == target.stateExportLocal || !own.isFile || retroArch.modified > own.lastModified())
+    } catch (error: Exception) {
+        Log.w(TAG, "Cannot compare RetroArch and slot. auto-states", error)
+        false
     }
 
     /** Shared GBA battery RAM only. Save states and RTC remain core-specific.
@@ -659,10 +712,125 @@ internal object RetroArchStorage {
         loadedFile.delete()
     }
 
-    /** Export each new Slot Polaroid to the first EMPTY RetroArch manual slot.
-     * Never replace the user's existing .state/.state1..state9 files.
-     * The private 10-entry Polaroid ring remains independent.
-     */
+    /** One core's RetroArch states folder: the user's SAF tree, or slot.'s
+     *  private default when no RetroArch folder was chosen. */
+    private interface StateDir {
+        /** The slot files present, by name, with their time and size. */
+        fun list(): Map<String, ManualStateLinks.Seen>
+        fun read(name: String): ByteArray?
+        fun write(name: String, bytes: ByteArray)
+        fun delete(name: String)
+    }
+
+    private class SafStateDir(val context: Context, val root: Uri, val core: String) : StateDir {
+        private var found: Map<String, Uri> = emptyMap()
+        override fun list(): Map<String, ManualStateLinks.Seen> {
+            val folder = coreFolder(context, root, core, create = false) ?: return emptyMap()
+            val uri = DocumentsContract.buildChildDocumentsUriUsingTree(root,
+                DocumentsContract.getDocumentId(folder))
+            val columns = arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                DocumentsContract.Document.COLUMN_SIZE
+            )
+            val seen = mutableMapOf<String, ManualStateLinks.Seen>()
+            val uris = mutableMapOf<String, Uri>()
+            context.contentResolver.query(uri, columns, null, null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getString(0) ?: continue
+                    val name = c.getString(1) ?: continue
+                    seen[name] = ManualStateLinks.Seen(
+                        if (c.isNull(2)) 0L else c.getLong(2),
+                        if (c.isNull(3)) -1L else c.getLong(3))
+                    uris[name] = DocumentsContract.buildDocumentUriUsingTree(root, id)
+                }
+            } ?: error("Cannot enumerate selected RetroArch folder")
+            found = uris
+            return seen
+        }
+        override fun read(name: String): ByteArray? = (found[name] ?: find(context, root, core, name))
+            ?.let { RetroArchStorage.read(context, it, MAX_STATE) }
+        override fun write(name: String, bytes: ByteArray) =
+            RetroArchStorage.writeSaf(context, root, core, name, bytes, isState = false, backup = false)
+        override fun delete(name: String) {
+            val uri = found[name] ?: find(context, root, core, name) ?: return
+            check(DocumentsContract.deleteDocument(context.contentResolver, uri)) {
+                "Cannot delete RetroArch $name"
+            }
+        }
+    }
+
+    private class LocalStateDir(val dir: File) : StateDir {
+        override fun list(): Map<String, ManualStateLinks.Seen> =
+            (dir.listFiles() ?: emptyArray()).filter(File::isFile)
+                .associate { it.name to ManualStateLinks.Seen(it.lastModified(), it.length()) }
+        override fun read(name: String): ByteArray? =
+            File(dir, name).takeIf(File::isFile)?.readBytes()
+        override fun write(name: String, bytes: ByteArray) = stage(File(dir, name), bytes)
+        override fun delete(name: String) {
+            val file = File(dir, name)
+            check(!file.exists() || file.delete()) { "Cannot delete $file" }
+        }
+    }
+
+    private fun stateDir(context: Context, target: Target): StateDir =
+        target.statesTree?.let { SafStateDir(context, it, target.core) }
+            ?: LocalStateDir(requireNotNull(target.stateDefaultLocal.parentFile))
+
+    private fun linksFile(context: Context, target: Target) = File(context.filesDir,
+        "Saves/ManualLinks/${target.romIdentity}.${coreLower(target.core)}.links")
+
+    private fun readLinks(context: Context, target: Target) = linksFile(context, target)
+        .takeIf(File::isFile)?.let { ManualStateLinks.parse(it.readText()) } ?: emptyMap()
+
+    private fun writeLinks(context: Context, target: Target, links: Map<String, ManualStateLinks.Link>) =
+        stage(linksFile(context, target), ManualStateLinks.format(links).toByteArray())
+
+    /** Where slot. finds RetroArch's manual states for the next launch:
+     *  <stamp>.rastate (uncompressed) and <stamp>.png, made into Polaroids. */
+    private fun manualImports(context: Context, target: Target) = File(context.filesDir,
+        "Saves/ManualImports/${target.romIdentity}.${coreLower(target.core)}")
+
+    /** Bring every manual state RetroArch wrote since the last sync into the
+     *  Polaroids. A state RetroArch deleted leaves its Polaroid alone. */
+    private fun importManualStates(context: Context, target: Target) {
+        val dir = stateDir(context, target)
+        val listed = dir.list()
+        val seen = ManualStateLinks.SUFFIXES
+            .mapNotNull { s -> listed[target.stem + s]?.let { s to it } }.toMap()
+        val links = readLinks(context, target).filterKeys { it in seen }.toMutableMap()
+        val unchanged = ManualStateLinks.unchanged(links, seen)
+        val staging = manualImports(context, target)
+        val taken = links.values.map { it.stamp }.toMutableSet()
+        staging.list()?.forEach { taken.add(it.substringBefore('.')) }
+        for ((suffix, file) in seen) {
+            if (suffix in unchanged) continue
+            val name = target.stem + suffix
+            try {
+                val bytes = dir.read(name) ?: continue
+                val hash = ManualStateLinks.hash(bytes)
+                val link = links[suffix]
+                if (link != null && link.hash == hash) {
+                    // Same bytes, new time: a sync service touched it.
+                    links[suffix] = link.copy(modified = file.modified, size = file.size)
+                    continue
+                }
+                val state = RetroArchCompression.decode(bytes)
+                val stamp = ManualStateLinks.stampFor(file.modified, taken)
+                taken.add(stamp)
+                dir.read("$name.png")?.let { stage(File(staging, "$stamp.png"), it) }
+                stage(File(staging, "$stamp.rastate"), state)
+                links[suffix] = ManualStateLinks.Link(hash, stamp, file.modified, file.size)
+            } catch (e: Exception) {
+                Log.w(TAG, "RetroArch $name not brought into the Polaroids", e)
+            }
+        }
+        writeLinks(context, target, links)
+    }
+
+    /** Copy a new Polaroid to RetroArch: the first empty manual slot, else
+     *  the slot of the oldest Polaroid that RetroArch has not changed since. */
     fun exportManualState(context: Context, target: Target, stamp: String): List<String> {
         val failures = mutableListOf<String>()
         try {
@@ -670,30 +838,55 @@ internal object RetroArchStorage {
                 "Invalid Slot state timestamp"
             }
             val staged = File(target.manualExportPrefix.absolutePath + "." + stamp + ".rastate")
+            val thumb = File(target.manualExportPrefix.absolutePath + "." + stamp + ".png")
             val bytes = staged.readBytes()
             RetroArchCompression.requireSupportedContainer(bytes)
             val compressed = RetroArchCompression.encode(bytes)
-            for (slot in 0..9) {
-                val name = target.stem + if (slot == 0) ".state" else ".state$slot"
-                if (target.statesTree != null) {
-                    if (find(context, target.statesTree, target.core, name) != null) continue
-                    writeSaf(context, target.statesTree, target.core,
-                        name, compressed, isState = true, createOnly = true)
-                } else {
-                    val local = File(target.stateDefaultLocal.parentFile, name)
-                    if (local.exists()) continue
-                    stage(local, compressed)
-                    check(local.readBytes().contentEquals(compressed)) {
-                        "Private numbered state verification failed"
-                    }
-                }
-                if (!staged.delete()) Log.w(TAG, "Manual staging cleanup deferred: $staged")
-                return failures
-            }
-            error("Manual slots 0-9 are occupied; Polaroid remains saved inside Slot")
+            val dir = stateDir(context, target)
+            val listed = dir.list()
+            val present = ManualStateLinks.SUFFIXES.filter { target.stem + it in listed }.toSet()
+            val links = readLinks(context, target).filterKeys { it in present }.toMutableMap()
+            val suffix = ManualStateLinks.slotFor(links, present) { s ->
+                dir.read(target.stem + s)?.let { ManualStateLinks.hash(it) } == links[s]?.hash
+            } ?: error("RetroArch's 10 manual slots hold states slot. did not make; Polaroid kept in slot.")
+            val name = target.stem + suffix
+            dir.write(name, compressed)
+            // RetroArch shows <state>.png as the slot's picture.
+            if (thumb.isFile) dir.write("$name.png", thumb.readBytes()) else dir.delete("$name.png")
+            val written = dir.list()[name] ?: ManualStateLinks.Seen(0L, compressed.size.toLong())
+            links[suffix] = ManualStateLinks.Link(ManualStateLinks.hash(compressed), stamp,
+                written.modified, written.size)
+            writeLinks(context, target, links)
+            if (!staged.delete()) Log.w(TAG, "Manual staging cleanup deferred: $staged")
+            thumb.delete()
         } catch (e: Exception) {
             Log.e(TAG, "RetroArch manual state export skipped", e)
             failures.add("Manual state sync skipped: " + (e.message ?: "unsupported format"))
+        }
+        return failures
+    }
+
+    /** A Polaroid deleted in slot. leaves RetroArch too, unless RetroArch has
+     *  written over its slot since. */
+    fun deleteManualState(context: Context, target: Target, stamp: String): List<String> {
+        val failures = mutableListOf<String>()
+        try {
+            File(target.manualExportPrefix.absolutePath + "." + stamp + ".rastate").delete()
+            File(target.manualExportPrefix.absolutePath + "." + stamp + ".png").delete()
+            val links = readLinks(context, target).toMutableMap()
+            val suffix = links.entries.firstOrNull { it.value.stamp == stamp }?.key ?: return failures
+            val name = target.stem + suffix
+            val dir = stateDir(context, target)
+            val link = links.getValue(suffix)
+            if (dir.read(name)?.let { ManualStateLinks.hash(it) } == link.hash) {
+                dir.delete(name)
+                dir.delete("$name.png")
+            }
+            links.remove(suffix)
+            writeLinks(context, target, links)
+        } catch (e: Exception) {
+            Log.e(TAG, "RetroArch manual state delete skipped", e)
+            failures.add("Manual state delete skipped: " + (e.message ?: "access denied"))
         }
         return failures
     }
@@ -872,7 +1065,7 @@ internal object RetroArchStorage {
 
     private fun writeSaf(context: Context, root: Uri, core: String,
                          name: String, bytes: ByteArray, isState: Boolean,
-                         createOnly: Boolean = false) {
+                         createOnly: Boolean = false, backup: Boolean = true) {
         val resolver = context.contentResolver
         val folder = coreFolder(context, root, core, create = true)
             ?: error("Cannot access RetroArch core folder")
@@ -893,7 +1086,7 @@ internal object RetroArchStorage {
             // retained in a dedicated subdirectory of the same core folder.
             val backupName = name + ".before-slot"
             val backups = children(context, root, dirId)
-            if (backups.none { it.first == backupName }) {
+            if (backup && backups.none { it.first == backupName }) {
                 val backup = DocumentsContract.createDocument(resolver, folder,
                     "application/octet-stream", backupName)
                     ?: error("Cannot back up existing RetroArch file")

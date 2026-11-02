@@ -761,8 +761,11 @@ class MainActivity : Activity() {
                 if (target != null && target.core == core) {
                     gameLoader.execute {
                         val stamp = payload.optString("manual_stamp", "")
+                        val deleted = payload.optString("deleted_stamp", "")
                         val failures = if (stamp.isNotEmpty()) {
                             RetroArchStorage.exportManualState(this@MainActivity, target, stamp)
+                        } else if (deleted.isNotEmpty()) {
+                            RetroArchStorage.deleteManualState(this@MainActivity, target, deleted)
                         } else {
                             RetroArchStorage.exportAfterSave(this@MainActivity, target)
                         }
