@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 
 /// Upstream Slot v1.13 Shelf wallpaper names, in this port's shelf order:
-/// the three platform shelves (Platform::ALL), then Recents and Favorites.
-pub const SHELF_KEYS: [&str; 5] = ["GBA", "GB", "GBC", "Recents", "Favorites"];
+/// the six platform shelves (Platform::ALL), then Recents and Favorites.
+pub const SHELF_KEYS: [&str; slot_store::Platform::ALL.len() + 2] = [
+    "GBA", "GB", "GBC", "NES", "SNES", "MD", "Recents", "Favorites",
+];
 
 /// Shelf wallpapers are picked by shelf, never offered as a single wallpaper
 /// nor dealt by Random.
@@ -136,18 +138,23 @@ mod tests {
             "slot-shelf-wallpaper-test-{}", std::process::id()));
         let dir = root.join("Wallpapers");
         std::fs::create_dir_all(&dir).unwrap();
-        for name in ["gba.PNG", "GBC.png", "Favorites.png", "user.png"] {
+        for name in ["gba.PNG", "GBC.png", "NES.png", "SNES.png", "MD.png", "Favorites.png", "user.png"] {
             std::fs::write(dir.join(name), b"png").unwrap();
         }
         assert_eq!(for_shelf(&root, 0).as_deref(), Some("gba.PNG"));
         assert_eq!(for_shelf(&root, 1), None);
         assert_eq!(for_shelf(&root, 2).as_deref(), Some("GBC.png"));
-        assert_eq!(for_shelf(&root, 3), None);
-        assert_eq!(for_shelf(&root, 4).as_deref(), Some("Favorites.png"));
-        assert_eq!(for_shelf(&root, 5), None);
+        assert_eq!(for_shelf(&root, 3).as_deref(), Some("NES.png"));
+        assert_eq!(for_shelf(&root, 4).as_deref(), Some("SNES.png"));
+        assert_eq!(for_shelf(&root, 5).as_deref(), Some("MD.png"));
+        assert_eq!(for_shelf(&root, 6), None);
+        assert_eq!(for_shelf(&root, 7).as_deref(), Some("Favorites.png"));
+        assert_eq!(for_shelf(&root, 8), None);
         assert_eq!(list(&root), vec!["user.png".to_string()]);
         assert_eq!(shelf_target(1).as_deref(), Some("GB.png"));
-        assert_eq!(shelf_target(3).as_deref(), Some("Recents.png"));
+        assert_eq!(shelf_target(3).as_deref(), Some("NES.png"));
+        assert_eq!(shelf_target(6).as_deref(), Some("Recents.png"));
+        assert_eq!(shelf_target(7).as_deref(), Some("Favorites.png"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }
