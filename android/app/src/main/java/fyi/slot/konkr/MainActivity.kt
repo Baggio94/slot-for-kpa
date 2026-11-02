@@ -435,16 +435,41 @@ class MainActivity : Activity() {
         val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return null
         for (network in cm.allNetworks) {
             val capabilities = cm.getNetworkCapabilities(network) ?: continue
-            if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+            if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
             val links = cm.getLinkProperties(network) ?: continue
+            val interfaceName = links.interfaceName ?: continue
+            val iface = try {
+                java.net.NetworkInterface.getByName(interfaceName)
+            } catch (error: java.net.SocketException) {
+                Log.w(TAG, "Link Wi-Fi could not inspect interface $interfaceName", error)
+                null
+            } ?: continue
+            val addresses = try {
+                if (!iface.isUp) continue
+                val values = mutableSetOf<String>()
+                val registered = iface.inetAddresses
+                while (registered.hasMoreElements()) {
+                    val address = registered.nextElement()
+                    if (address is Inet4Address) values.add(address.hostAddress)
+                }
+                values
+            } catch (error: java.net.SocketException) {
+                Log.w(TAG, "Link Wi-Fi interface $interfaceName unavailable", error)
+                continue
+            }
             for (address in links.linkAddresses) {
                 val ip = address.address
                 if (ip is Inet4Address && !ip.isLoopbackAddress &&
-                    !ip.isLinkLocalAddress && !ip.isMulticastAddress && !ip.isAnyLocalAddress) {
+                    !ip.isLinkLocalAddress && !ip.isMulticastAddress &&
+                    !ip.isAnyLocalAddress && addresses.contains(ip.hostAddress)) {
+                    Log.i(TAG, "Link Wi-Fi selected: interface=$interfaceName ipv4=${ip.hostAddress}")
                     return ip.hostAddress
                 }
             }
+            Log.w(TAG, "Link Wi-Fi skipped stale address on interface=$interfaceName")
         }
+        Log.w(TAG, "Link Wi-Fi could not find a live interface with a matching IPv4 address")
         return null
     }
 
