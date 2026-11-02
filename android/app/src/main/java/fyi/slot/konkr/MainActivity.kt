@@ -1,6 +1,7 @@
 package fyi.slot.konkr
 
 import android.app.Activity
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -8,6 +9,7 @@ import android.media.AudioTimestamp
 import android.media.PlaybackParams
 import android.os.Handler
 import android.os.Looper
+import android.os.Build
 import android.os.SystemClock
 import android.os.BatteryManager
 import android.os.VibrationEffect
@@ -63,6 +65,12 @@ import javax.microedition.khronos.opengles.GL10
 
 /** Android owns EGL, lifecycle and physical input; Rust owns Slot rendering. */
 class MainActivity : Activity() {
+    // dp/sp follow the screen height so Android screens keep the KONKR's look.
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(newBase)
+        SlotUi.panelDensityOverride(newBase)?.let(::applyOverrideConfiguration)
+    }
+
     companion object {
         init { System.loadLibrary("slot_android") }
         private const val TAG = "SlotKonkr"
@@ -104,6 +112,7 @@ class MainActivity : Activity() {
 
     external fun nativeSurfaceCreated(): Boolean
     external fun nativeSurfaceChanged(width: Int, height: Int)
+    external fun nativeSetPanelSize(width: Int, height: Int)
     external fun nativeDrawFrame(vsyncFrameNs: Long)
     // Beta9 optional actual display present timestamp via EGL. Read-only.
     external fun nativeEglPresentationReset()
@@ -117,7 +126,8 @@ class MainActivity : Activity() {
     external fun nativeShelfIndicatorFlags(): Int
     external fun nativeSetShelfStatus(code: Int)
     external fun nativeSetLibrary(json: String): Int
-    external fun nativeConfigure(dataDir: String, libraryDir: String)
+    external fun nativeConfigure(dataDir: String, libraryDir: String,
+        isRetroidPocketClassic: Boolean)
     external fun nativePollLaunchUri(): String?
     external fun nativeGameReady(uri: String, path: String)
     external fun nativeGameError(uri: String, message: String)
@@ -845,7 +855,17 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         // A staged sign-out must finish before any native HTTP worker is started.
         val cleanSignOut = RaAccount.finishPendingSignOut(filesDir)
-        nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir)
+        // Device-specific *initial preference* only. Existing persisted
+        // global/per-cartridge choices are never rewritten.
+        nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir,
+            Build.MODEL.contains("Pocket Classic", ignoreCase = true) &&
+                Build.MANUFACTURER.contains("Retroid", ignoreCase = true))
+        // The slot. canvas takes the display's shape (3:2 on the KONKR, 16:9,
+        // 4:3...) before the renderer builds its first face.
+        windowManager.maximumWindowMetrics.bounds.let { panel ->
+            Log.i(TAG, "Panel ${panel.width()}x${panel.height()}")
+            nativeSetPanelSize(panel.width(), panel.height())
+        }
         // App-private A12 A/B marker; no save or ROM folders are touched.
         val a12Recovery = !File(filesDir, "a12-mgba-legacy-pacing.flag").exists()
         nativeSetMgbaLinkRecoveryEnabled(a12Recovery)
@@ -1187,6 +1207,18 @@ class MainActivity : Activity() {
             }
             return true
         }
+        if (isRetroidSlotKey(keyCode, event)) {
+            // The Retroid's round centre key sends BACK: there it is the
+            // slot. button, with the KONKR top key's exact behaviour.
+            if (event.repeatCount == 0) {
+                EmulationDiagnostics.input(keyCode, true, event, KeyEvent.KEYCODE_BUTTON_MODE)
+                warmedCandidate.set(null)
+                // Stage the key before waking a dozing shelf: no stale frame.
+                nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, true)
+                wakeCarouselRender()
+            }
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             onBackPressed()
             return true
@@ -1283,6 +1315,13 @@ class MainActivity : Activity() {
             nativeKey(button, false)
             return true
         }
+        if (isRetroidSlotKey(keyCode, event)) {
+            EmulationDiagnostics.input(keyCode, false, event, KeyEvent.KEYCODE_BUTTON_MODE)
+            warmedCandidate.set(null)
+            wakeCarouselRender()
+            nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, false)
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) return true
         if (keyCode == KeyEvent.KEYCODE_BUTTON_MODE) {
             Log.i(TAG, "KONKR MENU BTN_MODE up: Android code=" + keyCode)
@@ -1293,6 +1332,13 @@ class MainActivity : Activity() {
         wakeCarouselRender()
         nativeKey(keyCode, false)
         return true
+    }
+
+    /** BACK from a Retroid's built-in controller, not the navigation bar. */
+    private fun isRetroidSlotKey(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode != KeyEvent.KEYCODE_BACK) return false
+        val device = event.device ?: return false
+        return !device.isVirtual && device.name.contains("Retroid", ignoreCase = true)
     }
 
     @Deprecated("Android 12 back key")
@@ -2360,8 +2406,8 @@ class MainActivity : Activity() {
         }
         nativeSetShareSaves(enabled)
         SlotToast.makeText(this,
-            if (enabled) "mGBA and gpSP now share the same saves."
-            else "mGBA and gpSP now keep separate saves.",
+            if (enabled) "mGBA, gpSP and Gambatte now share the same saves."
+            else "Each core now keeps its own saves.",
             Toast.LENGTH_LONG).show()
     }
 

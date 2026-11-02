@@ -16,7 +16,7 @@ import android.widget.LinearLayout
  */
 internal class SlotShelfTaskIndicators(context: Context, frame: FrameLayout) {
     private val scale =
-        (context.resources.displayMetrics.widthPixels / 720f).coerceIn(1f, 2f)
+        SlotUi.canvasScale(context).coerceIn(1f, 4f)
     private fun dim(value: Int) = (value * scale + .5f).toInt()
     private val rail = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL

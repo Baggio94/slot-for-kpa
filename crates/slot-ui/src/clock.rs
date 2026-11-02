@@ -1,4 +1,4 @@
-use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
+use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_store::{
     civil_from_days, days_from_civil, days_in_month, parse_stamp, UTC_OFFSET_MAX, UTC_OFFSET_MIN,
 };
@@ -234,12 +234,12 @@ impl ClockPicker {
         out.push(Draw::Rect {
             x: 0.0,
             y: 0.0,
-            w: OUT_W as f32,
+            w: out_w() as f32,
             h: OUT_H as f32,
             colour: BACKDROP,
         });
         let w = picker_w() as f32;
-        let x = (OUT_W as f32 - w) / 2.0;
+        let x = (out_w() as f32 - w) / 2.0;
         let y = (OUT_H as f32 - PICKER_H as f32) / 2.0 - HINT_DROP / 2.0;
         if let Some(tex) = line {
             out.push(Draw::Tex {
@@ -269,7 +269,7 @@ impl ClockPicker {
         let (Some(back), Some(tex)) = (back, hint) else {
             if let Some(tex) = hint {
                 out.push(Draw::Tex {
-                    x: (OUT_W as f32 - hw as f32) / 2.0,
+                    x: (out_w() as f32 - hw as f32) / 2.0,
                     y: hint_y,
                     w: hw as f32,
                     h: HINT_H as f32,

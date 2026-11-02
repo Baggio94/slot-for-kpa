@@ -21,7 +21,7 @@ use crate::link_kind::{self, LinkKind};
 use crate::app::{GameMenu as LinkMenu, LinkRow, LinkFail, LinkStep};
 use crate::link_screen::{self, LinkSprites, Sprite};
 
-use slot_gfx::{Compositor, GfxError, Surface, OUT_H, OUT_W};
+use slot_gfx::{Compositor, GfxError, Surface, OUT_H, out_w};
 use slot_store::{Platform, Core, stamp_now};
 use slot_power::{Battery, Charge};
 use crate::library::{carts_by_platform, RomEntry, LIBRARY};
@@ -124,6 +124,33 @@ pub(crate) static WALLPAPER_TARGET: Mutex<Option<String>> = Mutex::new(None);
 static UI_ACTION: Mutex<VecDeque<i32>> = Mutex::new(VecDeque::new());
 static SAVE_SYNC: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static SHARE_SAVES_ENABLED: AtomicBool = AtomicBool::new(false);
+/// The display's landscape size in pixels, set by Android before the first
+/// surface. 0 keeps the KONKR's 960x640.
+static PANEL_SIZE: AtomicU64 = AtomicU64::new(0);
+
+/// Paused Screen settings row choosing GBA's size off the 3:2 KONKR.
+const SCREEN_SIZE_KEY: usize = 40;
+/// "INTEGER", "ORIGINAL RATIO", "STRETCH" in the setting value faces.
+const SCREEN_SIZE_VALUE: usize = 67;
+
+/// A canvas fitted to a panel that isn't 3:2: the game uses the real panel.
+fn fitted_canvas() -> bool {
+    slot_gfx::out_w() != slot_gfx::BASE_W
+}
+
+/// Whether the 3:2 game frame is a whole multiple of 240x160 on `panel`.
+fn whole_game_scale(panel: (u32, u32)) -> bool {
+    if fitted_canvas() { return true; }
+    let h = slot_gfx::default_area()[3] * panel.1 as f32 / OUT_H as f32;
+    let k = h / slot_gfx::SRC_H as f32;
+    k >= 1.0 && (k - k.round()).abs() < 0.01
+}
+
+fn panel_size() -> (u32, u32) {
+    let packed = PANEL_SIZE.load(Ordering::Acquire);
+    let (w, h) = ((packed >> 32) as u32, packed as u32);
+    if w == 0 || h == 0 { (960, 640) } else { (w.max(h), w.min(h)) }
+}
 // -1 = preserve ordinary Slot rule, 0 = start from SRAM, 1 = user chose
 // existing destination-core state in the explicit Share Saves dialogue.
 static NEXT_RESUME_MODE: AtomicI32 = AtomicI32::new(-1);
@@ -218,6 +245,9 @@ static RA_SWAP_LOOP: AtomicBool = AtomicBool::new(false);
 // Updated by the GL owner after an entirely settled, fully preloaded shelf frame.
 // Kotlin may switch the idle carousel to requestRender without affecting games.
 static CAROUSEL_QUIET: AtomicBool = AtomicBool::new(false);
+// Android reports the exact device model before the first EGL surface is made.
+// Used only to choose initial settings when no stored settings file exists.
+static RPC_DEFAULT_RESPONSIVE: AtomicBool = AtomicBool::new(false);
 // The GLES owner reports a stable selection, never dereferencing SAF URIs itself.
 static WARM_ROM_URI: Mutex<Option<String>> = Mutex::new(None);
 // Read-only GL-owned library swap gate for Kotlin's background scanner.
@@ -413,7 +443,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 120] = [
+const MENU_TEXT: [&str; 121] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -534,6 +564,7 @@ const MENU_TEXT: [&str; 120] = [
     "SYSTEMS",                           // 117
     "Default Core",                      // 118
     "Sun",                               // 119, Boktai's solar sensor
+    "Screen Size",                        // 120
 ];
 
 /// Pause Emulation's Sun row, drawn with the sun values, not a Settings key.
@@ -689,6 +720,8 @@ struct Engine {
     gbc_bezel_tex: slot_gfx::TexId,
     /// Watomsk GB, Pocket and Color overlays.
     overlay_texs: [slot_gfx::TexId; 3],
+    /// The bezel refitted to a panel that isn't 3:2, and what it was fitted for.
+    fitted_bezel: Option<(slot_gfx::TexId, (crate::settings::Bezel, Platform, (u32, u32)))>,
     custom_wallpaper_present: bool,
     setting_values: Vec<(slot_gfx::TexId, u32, u32)>,
     // Settings > Systems default cores, by Platform order.
@@ -736,6 +769,10 @@ struct Engine {
     home_launch_held: bool,
     fresh_launch: bool,
     mode_down_at: Option<Instant>,
+    /// SELECT is physically down, whatever screen has the input.
+    select_physical: bool,
+    /// SELECT+X / SELECT+START presses whose releases are still to consume.
+    combo_releases: u8,
     eject_sound_armed: bool,
     mode_last_tap: Option<Instant>,
     polaroids: Option<Polaroids>,
@@ -812,14 +849,20 @@ fn wallpaper_pixels(root: Option<&Path>, selection: &crate::settings::WallpaperP
 
 impl Engine {
     fn new(library_version: u64, library: Option<&[RomEntry]>) -> Result<Self, String> {
-        let size = (960, 640);
-        // Text, glyphs and vector art are drawn for the panel, not stretched
-        // from Slot's 720x480 canvas. Set before the first face is built.
-        slot_ui::density::set_scale(size.0 as f32 / OUT_W as f32);
+        let size = panel_size();
+        // The canvas stays 480 high and takes the panel's shape (720 wide on
+        // the KONKR's 3:2). Text, glyphs and vector art are drawn for the
+        // panel, not stretched. Set both before the first face is built.
+        slot_gfx::set_canvas_for_panel(size);
+        slot_ui::density::set_scale(size.1 as f32 / OUT_H as f32);
         let mut gpu = Compositor::new(&AndroidSurface { size }).map_err(|e| e.to_string())?;
+        let device = crate::settings::Device {
+            konkr: size == (960, 640),
+            retroid_pocket_classic: RPC_DEFAULT_RESPONSIVE.load(Ordering::Acquire),
+        };
         let settings = PATHS.lock().unwrap_or_else(|e| e.into_inner())
-            .as_ref().map(|(root, _)| Settings::load(root))
-            .unwrap_or_else(Settings::first_install_defaults);
+            .as_ref().map(|(root, _)| Settings::load_for_device(root, device))
+            .unwrap_or_else(|| Settings::first_install_defaults_for_device(device));
         // Upstream Slot delegates colour correction to libretro core options.
         // Disable the dev13 approximate GPU grade to avoid double correction.
         gpu.enable_context_recovery();
@@ -835,7 +878,7 @@ impl Engine {
         let (wallpaper_pixels, wallpaper_personal) =
             wallpaper_pixels(visuals_root.as_deref(), &settings.wallpaper);
         let wallpaper_texture = wallpaper_pixels.map(|rgba|
-            gpu.create_texture(slot_ui::NATIVE_W, slot_ui::NATIVE_H, &rgba));
+            gpu.create_texture(slot_ui::native_w(), slot_ui::native_h(), &rgba));
         // Preserve existing Config/theme.txt custom colours as an opt-out.
         let custom_colours = visuals_root.as_deref()
             .is_some_and(|root| root.join("Config/theme.txt").exists());
@@ -845,12 +888,17 @@ impl Engine {
             } else {
                 (slot_ui::bitmaps::slot_back(), slot_ui::bitmaps::slot_front())
             };
-            let (back, w, h) = slot_ui::native_rgba(
-                back, slot_ui::bitmaps::SLOT_W, slot_ui::bitmaps::SLOT_H);
-            let rear = gpu.create_texture(w, h, &back);
-            let (front, w, h) = slot_ui::native_rgba(
-                front, slot_ui::bitmaps::SLOT_W, slot_ui::bitmaps::SLOT_H);
-            let front = gpu.create_texture(w, h, &front);
+            // The 720-wide band is refitted to the canvas: same mouth and
+            // ends, longer or shorter housing on either side.
+            let mut band = |rgba: &[u8]| {
+                let (rgba, w, h) = slot_ui::native_rgba(
+                    rgba, slot_ui::bitmaps::SLOT_W, slot_ui::bitmaps::SLOT_H);
+                let wide = (w as f32 * out_w() as f32 / slot_ui::bitmaps::SLOT_W as f32)
+                    .round() as u32;
+                gpu.create_texture(wide, h, &slot_ui::refit_band(&rgba, w, h, wide))
+            };
+            let rear = band(back);
+            let front = band(front);
             (rear, front)
         };
         // Both official themes are cached once. Toggling doesn't allocate
@@ -1056,7 +1104,8 @@ impl Engine {
                                "SLOT.", "GAME BOY", "POCKET", "COLOR",
                                "mGBA", "gpSP", "Gambatte", "SENSOR",
                                "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
-                               "Shelf", "AUTO"]
+                               "Shelf", "AUTO",
+                               "INTEGER", "ORIGINAL RATIO", "STRETCH"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -1239,6 +1288,7 @@ impl Engine {
             gb_bezel_tex,
             gbc_bezel_tex,
             overlay_texs,
+            fitted_bezel: None,
             custom_wallpaper_present,
             setting_values,
             default_cores: [Core::Mgba; 3],
@@ -1283,6 +1333,8 @@ impl Engine {
             home_launch_held: false,
             fresh_launch: false,
             mode_down_at: None,
+            select_physical: false,
+            combo_releases: 0,
             eject_sound_armed: false,
             mode_last_tap: None,
             polaroids: None,
@@ -1461,6 +1513,73 @@ impl Engine {
         RUMBLE_STRENGTH.store(0, Ordering::Release);
     }
 
+
+    /// A short press of the slot. button in game: the game menu, or the
+    /// Polaroids when it follows another press within 360 ms.
+    fn slot_button_tap(&mut self) {
+        if self.game.as_ref().is_some_and(GameSession::requires_relaunch) {
+            self.mode_last_tap = None;
+            self.overlay = ShelfOverlay::GameMenu { row: 0 };
+            set_message("Press A to eject, then reinsert to play solo.".into());
+        } else if self.game.is_some() {
+            let is_double=self.mode_last_tap.take()
+                .is_some_and(|t|t.elapsed().as_millis()<360);
+            self.buttons=0;
+            self.game_accum=0.0;
+            AUDIO.lock().unwrap_or_else(|e|e.into_inner()).clear();
+            self.reset_time_controls();
+            RUMBLE_STRENGTH.store(0, Ordering::Release);
+            if is_double {
+                self.open_polaroids();
+            } else {
+                self.mode_last_tap=Some(Instant::now());
+                self.overlay=match self.overlay {
+                    ShelfOverlay::GameMenu { .. }
+                    | ShelfOverlay::PauseSettings { .. }
+                    | ShelfOverlay::PauseScreenSettings { .. }
+                    | ShelfOverlay::PauseGameplaySettings { .. }
+                    | ShelfOverlay::PauseEmulationSettings { .. }
+                    | ShelfOverlay::States => ShelfOverlay::None,
+                    _=>ShelfOverlay::GameMenu {row:0},
+                };
+            }
+        }
+    }
+
+    /// The slot. button on any handheld, in game: SELECT+X is a short press
+    /// (game menu, twice for the Polaroids) and SELECT+START ejects at once
+    /// (save and eject). Both keys' releases are consumed too.
+    fn select_slot_combo(&mut self, code: i32, pressed: bool) -> bool {
+        let bit = match code { 99 => 1u8, 108 => 2, _ => return false };
+        if !pressed {
+            if self.combo_releases & bit == 0 { return false; }
+            self.combo_releases &= !bit;
+            return true;
+        }
+        if !self.select_physical || self.game.is_none()
+            || !matches!(self.overlay, ShelfOverlay::None | ShelfOverlay::GameMenu { .. }) {
+            return false;
+        }
+        // A+B+START+SELECT is the Game Boy soft reset: leave it to the game.
+        if code == 108 && self.buttons & (ButtonMask::A | ButtonMask::B) != 0 {
+            return false;
+        }
+        self.combo_releases |= bit;
+        // SELECT belongs to the gesture, never to the game.
+        self.select_chorded = true;
+        self.select_forwarded = false;
+        self.select_tap_frames = 0;
+        self.buttons &= !ButtonMask::SELECT;
+        if code == 99 {
+            self.slot_button_tap();
+        } else {
+            self.mode_last_tap = None;
+            self.mode_down_at = None;
+            crate::game::log_launch_timing("Exit requested by SELECT+START");
+            self.handle(Input::Exit);
+        }
+        true
+    }
 
     // Upstream slot-input gestures: SELECT chords have priority over game input.
     // Distinct release bits avoid leaking A/B/shoulder releases into libretro.
@@ -2356,6 +2475,8 @@ impl Engine {
                 }
             }
             Input::Key(code, pressed) => {
+                if code == 109 { self.select_physical = pressed; }
+                if self.select_slot_combo(code, pressed) { return; }
                 if matches!(code, 19 | 20) {
                     if !pressed {
                         if self.menu_held.is_some_and(|(held,_,_)|held==code) {
@@ -2463,32 +2584,8 @@ impl Engine {
                                     self.rewind_held));
                                 self.handle(Input::Exit);
                             }
-                        } else if self.game.as_ref().is_some_and(GameSession::requires_relaunch) {
-                            self.mode_last_tap = None;
-                            self.overlay = ShelfOverlay::GameMenu { row: 0 };
-                            set_message("Press A to eject, then reinsert to play solo.".into());
-                        } else if self.game.is_some() {
-                            let is_double=self.mode_last_tap.take()
-                                .is_some_and(|t|t.elapsed().as_millis()<360);
-                            self.buttons=0;
-                            self.game_accum=0.0;
-                            AUDIO.lock().unwrap_or_else(|e|e.into_inner()).clear();
-                            self.reset_time_controls();
-                            RUMBLE_STRENGTH.store(0, Ordering::Release);
-                            if is_double {
-                                self.open_polaroids();
-                            } else {
-                                self.mode_last_tap=Some(Instant::now());
-                                self.overlay=match self.overlay {
-                                    ShelfOverlay::GameMenu { .. }
-                                    | ShelfOverlay::PauseSettings { .. }
-                                    | ShelfOverlay::PauseScreenSettings { .. }
-                                    | ShelfOverlay::PauseGameplaySettings { .. }
-                                    | ShelfOverlay::PauseEmulationSettings { .. }
-                                    | ShelfOverlay::States => ShelfOverlay::None,
-                                    _=>ShelfOverlay::GameMenu {row:0},
-                                };
-                            }
+                        } else {
+                            self.slot_button_tap();
                         }
                         // START remains the ONLY menu key on the carousel.
                     }
@@ -3492,12 +3589,24 @@ impl Engine {
         let x2 = 1.0 - x;
         let y2 = 1.0 - y;
         self.gpu.set_picture([x, y, x2, y2]);
-        self.gpu.set_game_source_rect(video_mode::source_rect(platform, self.video_mode));
+        if fitted_canvas() {
+            // Off the 3:2 KONKR each size is laid out on the real panel.
+            let panel = panel_size();
+            let [px, py, pw, ph] = video_mode::picture_rect(platform, self.video_mode, panel);
+            let (sx, sy) = (slot_gfx::out_w() as f32 / panel.0 as f32,
+                OUT_H as f32 / panel.1 as f32);
+            self.gpu.set_game_area([px * sx, py * sy, pw * sx, ph * sy]);
+            self.gpu.set_game_source_rect(video_mode::picture_source(platform));
+        } else {
+            self.gpu.set_game_area(slot_gfx::default_area());
+            self.gpu.set_game_source_rect(video_mode::source_rect(platform, self.video_mode));
+        }
         self.gpu.set_screen_effect(self.game_effect());
     }
 
     fn set_video_mode(&mut self, mode: VideoMode) {
-        if self.video_mode == mode || self.current_cart_platform() == Platform::Gba {
+        if self.video_mode == mode
+            || (self.current_cart_platform() == Platform::Gba && !fitted_canvas()) {
             return;
         }
         self.video_mode = mode;
@@ -3528,8 +3637,17 @@ impl Engine {
         self.game_settings().shader_for(self.current_cart_platform())
     }
     fn game_effect(&self) -> slot_gfx::ScreenEffect {
-        video_mode::screen_effect(self.game_shader(), self.current_cart_platform(),
-            self.video_mode)
+        let effect = video_mode::screen_effect(self.game_shader(),
+            self.current_cart_platform(), self.video_mode);
+        // Off the KONKR Original Ratio is rarely a whole multiple of the
+        // picture: keep every pixel the same size, as on the KONKR.
+        let platform = self.current_cart_platform();
+        let uneven = fitted_canvas() && self.video_mode != VideoMode::Stretch
+            && !video_mode::whole_scale(platform,
+                video_mode::picture_rect(platform, self.video_mode, panel_size()));
+        if effect == slot_gfx::ScreenEffect::None && (uneven || !whole_game_scale(panel_size())) {
+            slot_gfx::ScreenEffect::SharpBilinear
+        } else { effect }
     }
 
     /// The top banner naming the new screen size.
@@ -3553,19 +3671,49 @@ impl Engine {
     /// Native 3:2 KONKR: GBA fills the panel and has no forced letterbox bezel.
     /// GB/GBC preserve the official 720×480 transparent overlays and offer
     /// Watomsk's; a bezel that can't frame the screen size is hidden, and
-    /// the setting is kept for later.
-    fn game_bezel(&self) -> Option<slot_gfx::TexId> {
+    /// the setting is kept for later. Elsewhere the bezel is refitted to the
+    /// panel around the picture, or hidden when the panel leaves no room.
+    /// Returns the texture and the canvas rect it covers.
+    fn game_bezel(&mut self) -> Option<(slot_gfx::TexId, [f32; 4])> {
         use crate::settings::Bezel;
-        let bezel=self.game_settings().bezel_for(self.current_cart_platform());
+        let platform=self.current_cart_platform();
+        let bezel=self.game_settings().bezel_for(platform);
         if !video_mode::bezel_fits(bezel,self.video_mode) {return None;}
-        match (bezel,self.current_cart_platform()) {
-            (Bezel::None,_) | (_,Platform::Gba)=>None,
-            (Bezel::Default,Platform::Gb)=>Some(self.gb_bezel_tex),
-            (Bezel::Default,Platform::Gbc)=>Some(self.gbc_bezel_tex),
-            (Bezel::Gb,_)=>Some(self.overlay_texs[0]),
-            (Bezel::Pocket,_)=>Some(self.overlay_texs[1]),
-            (Bezel::Color,_)=>Some(self.overlay_texs[2]),
+        if bezel==Bezel::None || platform==Platform::Gba {return None;}
+        if !fitted_canvas() {
+            let tex=match (bezel,platform) {
+                (Bezel::Default,Platform::Gb)=>self.gb_bezel_tex,
+                (Bezel::Default,_)=>self.gbc_bezel_tex,
+                (Bezel::Gb,_)=>self.overlay_texs[0],
+                (Bezel::Pocket,_)=>self.overlay_texs[1],
+                _=>self.overlay_texs[2],
+            };
+            // Bezels frame the 3:2 game frame, wherever it sits.
+            return Some((tex,slot_gfx::default_area()));
         }
+        let panel=panel_size();
+        if !video_mode::bezel_has_room(bezel,platform,panel) {return None;}
+        let whole=[0.0,0.0,slot_gfx::out_w() as f32,OUT_H as f32];
+        let key=(bezel,platform,panel);
+        if let Some((tex,fitted))=self.fitted_bezel {
+            if fitted==key {return Some((tex,whole));}
+        }
+        use slot_ui::bitmaps;
+        use slot_ui::fit_overlay::{fit_overlay, slot_bezel, watomsk};
+        let art=match (bezel,platform) {
+            (Bezel::Default,Platform::Gb)=>slot_bezel(bitmaps::bezel_gb()),
+            (Bezel::Default,_)=>slot_bezel(bitmaps::bezel_gbc()),
+            (Bezel::Gb,_)=>watomsk(bitmaps::overlay_gb()),
+            (Bezel::Pocket,_)=>watomsk(bitmaps::overlay_pocket()),
+            _=>watomsk(bitmaps::overlay_color()),
+        };
+        let rgba=fit_overlay(&art,panel,video_mode::bezel_window(bezel,platform,panel));
+        let tex=match self.fitted_bezel {
+            Some((tex,_)) => { self.gpu.update_texture(tex,panel.0,panel.1,&rgba); tex }
+            None => self.gpu.create_texture(panel.0,panel.1,&rgba),
+        };
+        self.fitted_bezel=Some((tex,key));
+        Some((tex,whole))
     }
 
     fn screen_rows(platform: Platform)-> &'static [usize] {
@@ -3637,6 +3785,10 @@ impl Engine {
     }
 
     fn pause_screen_rows(&self) -> &'static [usize] {
+        // GB/GBC resize with L1/R1; GBA's shoulders belong to the game.
+        if self.current_cart_platform()==Platform::Gba && fitted_canvas() {
+            return &[34,29,120];
+        }
         if self.current_cart_platform()==Platform::Gb &&
             !self.game.as_ref().is_some_and(GameSession::can_change_gb_palette) {
             &[89,29,90]
@@ -3645,6 +3797,9 @@ impl Engine {
         }
     }
     fn pause_screen_key(&self,row:usize)->Option<usize> {
+        if self.current_cart_platform()==Platform::Gba && fitted_canvas() {
+            return [0,22,SCREEN_SIZE_KEY].get(row).copied();
+        }
         if self.current_cart_platform()==Platform::Gb &&
             !self.game.as_ref().is_some_and(GameSession::can_change_gb_palette) {
             [1,24,27].get(row).copied()
@@ -3732,6 +3887,14 @@ impl Engine {
         });
     }
     fn change_game_screen_or_gameplay(&mut self, key: usize, right: bool) {
+        if key == SCREEN_SIZE_KEY {
+            let mode = if right { self.video_mode.bigger() } else { self.video_mode.smaller() };
+            if mode != self.video_mode {
+                self.set_video_mode(mode);
+                self.hud.toast(self.video_mode_toast(), self.born.elapsed().as_millis() as u64);
+            }
+            return;
+        }
         let Some(uri)=self.selected_rom_uri() else { return };
         let core=self.selected_emulation_core();
         let platform=self.current_cart_platform();
@@ -3936,10 +4099,10 @@ impl Engine {
         self.wallpaper_personal = personal;
         if let Some(rgba) = image {
             self.wallpaper_texture = Some(if let Some(tex) = self.wallpaper_texture {
-                self.gpu.update_texture(tex, slot_ui::NATIVE_W, slot_ui::NATIVE_H, &rgba);
+                self.gpu.update_texture(tex, slot_ui::native_w(), slot_ui::native_h(), &rgba);
                 tex
             } else {
-                self.gpu.create_texture(slot_ui::NATIVE_W, slot_ui::NATIVE_H, &rgba)
+                self.gpu.create_texture(slot_ui::native_w(), slot_ui::native_h(), &rgba)
             });
         }
         // None deliberately leaves the texture allocated for quick reactivation
@@ -4153,7 +4316,7 @@ impl Engine {
     /// The CRT-off / black-hold picture: dark slot, seated cartridge.
     fn push_hold_scene(&self, commands: &mut Vec<Draw>) {
         commands.push(Draw::Rect {
-            x: 0.0, y: 0.0, w: OUT_W as f32, h: OUT_H as f32,
+            x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32,
             colour: [0.085, 0.085, 0.093, 1.0],
         });
         if let Some(shelf) = self.shelves.get(self.active) {
@@ -4322,6 +4485,9 @@ impl Engine {
             23 => if scoped.colour_correction_gbc {4}else{5},
             24 => if scoped.colour_correction_gb {4}else{5},
             25 => if scoped.bezel_gba==crate::settings::Bezel::None {5}else{4},
+            SCREEN_SIZE_KEY => SCREEN_SIZE_VALUE + match self.video_mode {
+                VideoMode::Actual => 0, VideoMode::Aspect => 1, VideoMode::Stretch => 2,
+            },
             26 => bezel_value(scoped.bezel_gbc),
             27 => bezel_value(scoped.bezel_gb),
             28 => if self.settings.time_format==crate::settings::TimeFormat::TwelveHour
@@ -4341,7 +4507,7 @@ impl Engine {
         let y = settings_row_top(6) + 4.0 * QUICK_PITCH + 8.0;
         let scale = 0.79f32;
         let w = width as f32 * scale;
-        let right = OUT_W as f32 - 34.0;
+        let right = out_w() as f32 - 34.0;
         let selected = row == 4;
         let x = right - w - if selected { 22.0 } else { 0.0 };
         out.push(Draw::Tex { x, y, w, h: height as f32 * scale, tex,
@@ -4379,7 +4545,7 @@ impl Engine {
             let y = top + index as f32 * QUICK_PITCH + 8.0;
             let scale = 0.79;
             let w = width as f32 * scale;
-            let right = OUT_W as f32 - 34.0;
+            let right = out_w() as f32 - 34.0;
             let chosen = row == index;
             let x = right - w - if chosen { 22.0 } else { 0.0 };
             out.push(Draw::Tex {
@@ -4401,7 +4567,7 @@ impl Engine {
         }
         // The original Back / Change physical keycap legend.
         out.push(Draw::Rect {
-            x: 0.0, y: 420.0, w: OUT_W as f32, h: 60.0,
+            x: 0.0, y: 420.0, w: out_w() as f32, h: 60.0,
             colour: opening(),
         });
         for (tex, w, x) in centred_hints(&self.settings_hints, LEGEND_GAP) {
@@ -4418,7 +4584,7 @@ impl Engine {
         // full-width selected bar, 52px pitch, and centred physical keycaps.
         // Reuse those exact primitives for Android's library settings.
         out.push(Draw::Rect {
-            x: 0.0, y: 0.0, w: OUT_W as f32, h: OUT_H as f32,
+            x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32,
             colour: opening(),
         });
         let top = settings_row_top(items.len());
@@ -4427,16 +4593,16 @@ impl Engine {
         let intro = (self.menu_opened.elapsed().as_secs_f32() / 0.16).clamp(0.0, 1.0);
         let fade = slot_ui::ease(intro);
         out.push(Draw::Rect {
-            x: 0.0, y: cursor + 4.0, w: OUT_W as f32,
+            x: 0.0, y: cursor + 4.0, w: out_w() as f32,
             h: QUICK_PITCH - 8.0,
             colour: { let mut c = edge(); c[3] *= fade; c },
         });
-        self.text_fit(heading, 32.0, 33.0, 650.0, 0.68 * fade, out);
+        self.text_fit(heading, 32.0, 33.0, out_w() as f32 - 70.0, 0.68 * fade, out);
         for (i, index) in items.iter().copied().enumerate() {
             let x = 37.0;
             let y = top + i as f32 * QUICK_PITCH + 8.0
                 + (1.0 - fade) * 8.0;
-            self.text_fit(index, x, y, 650.0, fade, out);
+            self.text_fit(index, x, y, out_w() as f32 - 70.0, fade, out);
         }
         // All menus use the original Slot keycap generator. The paused game
         // screen additionally advertises its active SAVE / LOAD shortcuts.
@@ -4471,7 +4637,7 @@ impl Engine {
     /// are identical to original and fork, as are progress/failure messages.
     fn draw_multiplayer(&self, out: &mut Vec<Draw>) {
         out.push(Draw::Rect {
-            x: 0.0, y: 0.0, w: OUT_W as f32, h: OUT_H as f32,
+            x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32,
             colour: opening(),
         });
         link_screen::draw_link_art(self.link_phase, self.link_mode,
@@ -4589,7 +4755,7 @@ impl Engine {
                 let fade = slot_ui::ease(
                     (self.menu_opened.elapsed().as_secs_f32() / 0.16).clamp(0.0, 1.0));
                 out.push(Draw::Tex {
-                    x: OUT_W as f32 - 32.0 - w as f32 * scale, y: 33.0,
+                    x: out_w() as f32 - 32.0 - w as f32 * scale, y: 33.0,
                     w: w as f32 * scale, h: h as f32 * scale,
                     tex, alpha: 0.68 * fade,
                 });
@@ -4617,12 +4783,12 @@ impl Engine {
                 // The native KONKR sticker stays intact, shifted up to make room
                 // for two transparent menu rows and a non-focusable status line.
                 out.push(Draw::Rect {
-                    x: 0.0, y: 0.0, w: OUT_W as f32, h: OUT_H as f32,
+                    x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32,
                     colour: opening(),
                 });
                 if let Some(tex) = self.about_texture {
                     out.push(Draw::Tex {
-                        x: (OUT_W - STICKER_W) as f32 / 2.0,
+                        x: (out_w() - STICKER_W) as f32 / 2.0,
                         y: 30.0, w: STICKER_W as f32, h: STICKER_H as f32,
                         tex, alpha: 1.0,
                     });
@@ -4634,7 +4800,7 @@ impl Engine {
                     self.menu_cursor_y
                 } else { top + row as f32 * QUICK_PITCH };
                 out.push(Draw::Rect {
-                    x: 0.0, y: cursor + 4.0, w: OUT_W as f32,
+                    x: 0.0, y: cursor + 4.0, w: out_w() as f32,
                     h: QUICK_PITCH - 8.0,
                     colour: { let mut c = edge(); c[3] *= fade; c },
                 });
@@ -5619,11 +5785,8 @@ impl Engine {
             } else {
                 commands.push(Draw::Game);
             }
-            if let Some(tex)=bezel {
-                commands.push(Draw::Tex {
-                    x:0.0,y:0.0,w:OUT_W as f32,h:OUT_H as f32,
-                    tex,alpha:1.0
-                });
+            if let Some((tex,[x,y,w,h]))=bezel {
+                commands.push(Draw::Tex { x,y,w,h,tex,alpha:1.0 });
             }
             self.hud.draw(self.born.elapsed().as_millis() as u64, &mut commands);
             frame_phases.submit_build_us = build_started.elapsed().as_micros() as u64;
@@ -5735,7 +5898,7 @@ impl Engine {
         let mut commands = vec![Draw::Rect {
             x: 0.0,
             y: 0.0,
-            w: OUT_W as f32,
+            w: out_w() as f32,
             h: OUT_H as f32,
             colour: [0.085, 0.085, 0.093, 1.0],
         }];
@@ -5754,10 +5917,12 @@ impl Engine {
         slot_ui::draw_ground_tinted(active_wallpaper, tint, &mut commands);
         if self.progress == 0.0 {
             if let Some(picker) = self.picker {
-                let t = slot_ui::ease(picker.openness(self.born.elapsed().as_millis() as u64));
+                let openness = picker.openness(self.born.elapsed().as_millis() as u64);
+                let t = slot_ui::ease(openness);
                 let dim = 1.0 + (0.614 - 1.0) * t;
+                let span = Some(picker_span(shelf, openness));
                 let selected = shelf.carts.get(shelf.index).map(|c| c.stem.as_str());
-                shelf.draw_row(selected, 0.0, 0.26 * t, dim, &mut commands);
+                shelf.draw_row_clear_of(selected, 0.0, 0.26 * t, dim, span, &mut commands);
                 slot_ui::draw_empty_slot_with(self.slot_faces, &mut commands);
             } else {
                 // Match upstream Refusal: only the shelf carts shake.
@@ -5831,7 +5996,7 @@ impl Engine {
             if self.shelf_status > 0 {
                 let (tex, w, h) = self.shelf_status_faces[usize::from(self.shelf_status)];
                 commands.push(Draw::Tex {
-                    x: (OUT_W as f32 - w as f32) / 2.0,
+                    x: (out_w() as f32 - w as f32) / 2.0,
                     // Keep status text below the Android corner indicators.
                     y: 74.0,
                     w: w as f32, h: h as f32,
@@ -5846,7 +6011,7 @@ impl Engine {
                         self.shelf_status_start
                     };
                     commands.push(Draw::Tex {
-                        x: (OUT_W as f32 - w as f32) / 2.0,
+                        x: (out_w() as f32 - w as f32) / 2.0,
                         y: 110.0,
                         w: w as f32, h: HINT_H as f32,
                         tex, alpha: 1.0,
@@ -5854,7 +6019,7 @@ impl Engine {
                     if self.shelf_status==2 {
                         let (tex,w)=self.onboarding_note;
                         commands.push(Draw::Tex {
-                            x: (OUT_W as f32 - w as f32) / 2.0,
+                            x: (out_w() as f32 - w as f32) / 2.0,
                             y: 140.0,
                             w: w as f32, h: HINT_H as f32,
                             tex, alpha: 0.76,
@@ -5864,7 +6029,7 @@ impl Engine {
             } else if self.shelves.iter().all(|s| s.carts.is_empty()) {
                 let (tex, w) = self.first_run_hint;
                 commands.push(Draw::Tex {
-                    x: (OUT_W as f32 - w as f32) / 2.0,
+                    x: (out_w() as f32 - w as f32) / 2.0,
                     y: 34.0,
                     w: w as f32,
                     h: HINT_H as f32,
@@ -5872,7 +6037,7 @@ impl Engine {
                 });
                 let (tex,w)=self.onboarding_note;
                 commands.push(Draw::Tex {
-                    x: (OUT_W as f32 - w as f32) / 2.0,
+                    x: (out_w() as f32 - w as f32) / 2.0,
                     y: 64.0,
                     w: w as f32, h: HINT_H as f32,
                     tex, alpha: 0.76,
@@ -5976,13 +6141,13 @@ const LINK_LEGEND_Y: f32 = 422.0;
 const LINK_LEGEND_GAP: f32 = 40.0;
 
 fn link_heading_x(width: u32) -> f32 {
-    ((OUT_W as f32 - width as f32) / 2.0).round()
+    ((out_w() as f32 - width as f32) / 2.0).round()
 }
 
 fn link_legend_start(hints: &[(slot_gfx::TexId, u32)]) -> f32 {
     let total = hints.iter().map(|(_, w)| w.saturating_sub(HINT_EDGE) as f32)
         .sum::<f32>() + LINK_LEGEND_GAP * hints.len().saturating_sub(1) as f32;
-    ((OUT_W as f32 - total) / 2.0).round()
+    ((out_w() as f32 - total) / 2.0).round()
 }
 
 /// Original Slot / fork draw_game_menu() picks exactly these groups of
@@ -6211,6 +6376,13 @@ fn advance_cart(progress: f32, inserted: bool, dt: f32) -> f32 {
 fn next_nonempty_shelf(shelves: &[Shelf], current: usize, delta: i32) -> usize {
     let counts: Vec<usize> = shelves.iter().map(|s| s.carts.len()).collect();
     crate::library::next_populated(current, delta, &counts)
+}
+
+/// The screen columns the core picker covers at `progress`.
+fn picker_span(shelf: &Shelf, progress: f32) -> [f32; 2] {
+    let (rest, scale) = shelf.selected_at();
+    let platform = shelf.carts.get(shelf.index).map_or(Platform::Gba, |c| c.platform);
+    slot_ui::picker_span(platform, shelf_cart_for(platform, rest, scale), progress)
 }
 
 #[cfg(test)]

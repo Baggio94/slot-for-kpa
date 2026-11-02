@@ -210,7 +210,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
                     ).collect::<Vec<_>>(),
                 ));
             // Destruct old GL resources on the GL thread before recreating them.
-            let size = holder.borrow().as_ref().map(|engine| engine.size).unwrap_or((960, 640));
+            let size = holder.borrow().as_ref().map(|engine| engine.size).unwrap_or_else(panel_size);
             *holder.borrow_mut() = None;
             match Engine::new(version, snapshot.as_deref()) {
                 Ok(mut engine) => {
@@ -506,6 +506,16 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetShareSaves(
     _env: *mut c_void, _this: *mut c_void, enabled: jboolean,
 ) {
     SHARE_SAVES_ENABLED.store(enabled != 0, Ordering::Release);
+    crate::gb_core_switch::set_sharing(enabled != 0);
+}
+
+/// The display size, before the first surface: the canvas follows its shape.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetPanelSize(
+    _env: *mut c_void, _this: *mut c_void, width: jint, height: jint,
+) {
+    let (w, h) = (width.max(0) as u64, height.max(0) as u64);
+    PANEL_SIZE.store(w << 32 | h, Ordering::Release);
 }
 
 /// Set only after Android's destination-core Save State dialogue has been
@@ -644,7 +654,9 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSystemStatus(
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeConfigure(
     mut env: JNIEnv<'_>, _this: JObject<'_>, root: JString<'_>, libraries: JString<'_>,
+    is_retroid_pocket_classic: jboolean,
 ) {
+    RPC_DEFAULT_RESPONSIVE.store(is_retroid_pocket_classic != 0, Ordering::Release);
     if let (Ok(root), Ok(libraries)) = (env.get_string(&root), env.get_string(&libraries)) {
         *PATHS.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((PathBuf::from(root.to_string_lossy().as_ref()), PathBuf::from(libraries.to_string_lossy().as_ref())));

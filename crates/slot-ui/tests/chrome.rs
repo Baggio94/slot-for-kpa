@@ -2,13 +2,13 @@ use slot_store::{Cart, Platform};
 use slot_ui::{
     cart_box, draw_empty_slot, edge, foot_y, housing, icon_box, opening, recess, seated_box, Draw,
     Shelf, SlotChrome, TexId, ALERT_PX, CART_H, CART_W, GB_LABEL_H, GB_LABEL_Y, LABEL_H, LABEL_Y,
-    MOUTH_H, OUT_H, OUT_W,
+    MOUTH_H, OUT_H, out_w,
 };
 
-const CENTRED: f32 = (OUT_W - CART_W) as f32 / 2.0;
+const CENTRED: f32 = (slot_gfx::BASE_W - CART_W) as f32 / 2.0;
 
 fn centred(c: &Cart) -> f32 {
-    (OUT_W - cart_box(c.platform).0) as f32 / 2.0
+    (out_w() - cart_box(c.platform).0) as f32 / 2.0
 }
 
 fn cart() -> Cart {
@@ -64,7 +64,7 @@ fn quad(d: &Draw) -> Quad {
         Draw::Game | Draw::Shot { .. } => Quad {
             x: 0.0,
             y: 0.0,
-            w: OUT_W as f32,
+            w: out_w() as f32,
             h: OUT_H as f32,
         },
     }
@@ -73,7 +73,7 @@ fn quad(d: &Draw) -> Quad {
 fn is_cart(d: &Draw) -> bool {
     let cover = matches!(*d, Draw::Rect { colour, .. } if colour == [0.0, 0.0, 0.0, 1.0]);
     !(is_mouth(d) || is_lip(d) || is_housing(d) || tinted(d, recess()) || cover)
-        && quad(d).w < OUT_W as f32
+        && quad(d).w < out_w() as f32
 }
 
 fn is_game_layer(d: &Draw) -> bool {
@@ -199,7 +199,7 @@ fn a_cart_the_row_had_not_finished_moving_slides_across_as_it_goes_in() {
     );
     let seated = at(1.0);
     let sw = seated_box(c.platform).0 as f32;
-    let mid = OUT_W as f32 / 2.0;
+    let mid = out_w() as f32 / 2.0;
     assert!(
         (seated.x + seated.w / 2.0 - mid).abs() < 0.01 && (seated.w - sw).abs() < 0.01,
         "the cart seats at {seated:?} rather than the slot's size in the mouth"
@@ -772,7 +772,7 @@ fn the_slot_has_a_thumb_scoop_across_its_middle() {
         (l, r)
     };
     let (l, r) = span_of(&|_| true);
-    let centre = OUT_W as f32 / 2.0;
+    let centre = out_w() as f32 / 2.0;
     assert!(
         ((l + r) / 2.0 - centre).abs() < 1.0,
         "the scoop runs {l}..{r} and is not centred"

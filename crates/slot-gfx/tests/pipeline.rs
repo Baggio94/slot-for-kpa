@@ -3,7 +3,7 @@
 
 use slot_gfx::{
     blue_light_gain, canvas_size, lcd3x_factors, lcd3x_mask, Compositor, Draw, HeadlessSurface,
-    ScreenEffect, OUT_H, OUT_W, SRC_H, SRC_W,
+    ScreenEffect, OUT_H, out_w, SRC_H, SRC_W,
 };
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -17,7 +17,7 @@ fn compositor() -> Option<(MutexGuard<'static, ()>, HeadlessSurface, Compositor)
 }
 
 fn px(frame: &[u8], x: usize, y: usize) -> [u8; 3] {
-    let o = (y * OUT_W as usize + x) * 4;
+    let o = (y * out_w() as usize + x) * 4;
     [frame[o], frame[o + 1], frame[o + 2]]
 }
 
@@ -57,7 +57,7 @@ fn gb_shaped(inside: impl Fn(usize, usize) -> [u8; 3], margin: [u8; 3]) -> Vec<u
 }
 
 fn stretched(rgb: [u8; 3], x: usize, y: usize) -> [i32; 3] {
-    let fx = ((x as f32 + 0.5) * GB_W as f32 / OUT_W as f32).fract();
+    let fx = ((x as f32 + 0.5) * GB_W as f32 / out_w() as f32).fract();
     let fy = ((y as f32 + 0.5) * GB_H as f32 / OUT_H as f32).fract();
     let cell = lcd3x_factors(fx, fy);
     [0, 1, 2].map(|ch| (rgb[ch] as f32 * cell[ch]).round() as i32)
@@ -94,7 +94,7 @@ fn game_pass_multiplies_every_output_cell_by_the_lcd3x_mask() {
     let mask = lcd3x_mask();
     let mut worst = 0i32;
     for y in 0..OUT_H as usize {
-        for x in 0..OUT_W as usize {
+        for x in 0..out_w() as usize {
             let got = px(&frame, x, y);
             for (ch, gain) in mask[y % 3][x % 3].iter().enumerate() {
                 let want = (128.0 * gain).round() as i32;
@@ -133,7 +133,7 @@ fn the_game_frame_keeps_its_orientation_from_upload_to_readback() {
         "frame is upside down"
     );
     assert_eq!(
-        px(&frame, OUT_W as usize - 1, 0),
+        px(&frame, out_w() as usize - 1, 0),
         [0, 0, 0],
         "frame is mirrored"
     );
@@ -156,7 +156,7 @@ fn the_picture_strikes_as_a_band_at_the_centre_before_it_fills_the_frame() {
     };
 
     let (striking, bright) = peak(&mut c, 0.35);
-    let lit = |frame: &[u8], y: usize| (0..OUT_W as usize).any(|x| px(frame, x, y) != [0, 0, 0]);
+    let lit = |frame: &[u8], y: usize| (0..out_w() as usize).any(|x| px(frame, x, y) != [0, 0, 0]);
     assert!(lit(&striking, OUT_H as usize / 2), "nothing at the centre");
     assert!(!lit(&striking, 1), "the picture already reaches the top");
     assert!(
@@ -184,7 +184,7 @@ fn the_game_marker_draws_the_picture_where_it_sits_in_the_list() {
     let full = |colour: [f32; 4]| Draw::Rect {
         x: 0.0,
         y: 0.0,
-        w: OUT_W as f32,
+        w: out_w() as f32,
         h: OUT_H as f32,
         colour,
     };
@@ -201,7 +201,7 @@ fn the_game_marker_draws_the_picture_where_it_sits_in_the_list() {
     c.draw_list(&[Draw::Game, full([0.0, 0.0, 1.0, 1.0])]);
     let over = c.read_frame();
     assert_eq!(
-        px(&over, OUT_W as usize / 2, OUT_H as usize / 2),
+        px(&over, out_w() as usize / 2, OUT_H as usize / 2),
         [0, 0, 255],
         "the picture was drawn over the item listed after it"
     );
@@ -220,7 +220,7 @@ fn a_saved_shot_is_drawn_through_the_lcd_pass() {
     c.draw_list(&[Draw::Tex {
         x: 0.0,
         y: 0.0,
-        w: OUT_W as f32,
+        w: out_w() as f32,
         h: OUT_H as f32,
         tex,
         alpha: 1.0,
@@ -497,7 +497,7 @@ fn fullscreen_puts_the_pictures_corners_in_the_panels_corners() {
     c.draw_game();
     let full = c.read_frame();
 
-    let last_x = OUT_W as usize - 1;
+    let last_x = out_w() as usize - 1;
     let last_y = OUT_H as usize - 1;
     for (name, (x, y), rgb) in [
         ("top left", (0, 0), [255, 0, 0]),
@@ -516,7 +516,7 @@ fn fullscreen_puts_the_pictures_corners_in_the_panels_corners() {
     }
 
     let strayed = (0..OUT_H as usize).any(|y| {
-        (0..OUT_W as usize).any(|x| {
+        (0..out_w() as usize).any(|x| {
             let p = px(&full, x, y);
             p[1] > 60 && p[2] > 60 && p[0] < 20
         })
@@ -559,7 +559,7 @@ fn the_mask_follows_the_game_pixels_in_both_modes() {
 
     let mut worst = 0i32;
     for y in 0..OUT_H as usize {
-        for x in 0..OUT_W as usize {
+        for x in 0..out_w() as usize {
             let got = px(&full, x, y);
             for (ch, want) in stretched([0x80; 3], x, y).iter().enumerate() {
                 worst = worst.max((want - got[ch] as i32).abs());
@@ -605,8 +605,8 @@ fn the_grid_draws_one_dark_line_per_game_pixel_at_3x() {
     let Some((_g, _s, mut c)) = compositor() else {
         return;
     };
-    let (frame, w, h) = grid_frame(&mut c, (OUT_W, OUT_H));
-    assert_eq!((w, h), (OUT_W as usize, OUT_H as usize));
+    let (frame, w, h) = grid_frame(&mut c, (out_w(), OUT_H));
+    assert_eq!((w, h), (out_w() as usize, OUT_H as usize));
     let (cols, rows) = grid_lines(&frame, w, h);
     assert_eq!(cols.len(), SRC_W as usize, "dark columns: {cols:?}");
     assert_eq!(rows.len(), SRC_H as usize, "dark rows: {rows:?}");
@@ -657,7 +657,7 @@ fn the_grid_marks_every_game_boy_pixel_edge_when_stretched() {
     let Some((_g, _s, mut c)) = compositor() else {
         return;
     };
-    let (frame, w, h) = stretched_gb_grid(&mut c, (OUT_W, OUT_H));
+    let (frame, w, h) = stretched_gb_grid(&mut c, (out_w(), OUT_H));
     let (cols, rows) = grid_lines(&frame, w, h);
     assert_eq!(cols.len(), GB_W, "dark columns: {cols:?}");
     assert_eq!(rows.len(), GB_H, "dark rows: {rows:?}");

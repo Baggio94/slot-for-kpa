@@ -1,6 +1,7 @@
 package fyi.slot.konkr
 
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
@@ -8,6 +9,7 @@ import android.graphics.drawable.GradientDrawable
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.ImageView
@@ -46,6 +48,39 @@ internal object SlotUi {
     fun dp(context: Context, amount: Int): Int =
         (context.resources.displayMetrics.density * amount + 0.5f).toInt()
 
+    /** The KONKR's density, against which every other panel is matched. */
+    const val KONKR_DPI = 240
+    private const val KONKR_SHORT_SIDE = 640
+
+    /** The display's short side in pixels (640 on the KONKR). */
+    fun panelShortSide(context: Context): Int {
+        val bounds = runCatching {
+            context.getSystemService(WindowManager::class.java).maximumWindowMetrics.bounds
+        }.getOrNull()
+        val metrics = context.resources.displayMetrics
+        val (w, h) = bounds?.let { it.width() to it.height() }
+            ?: (metrics.widthPixels to metrics.heightPixels)
+        return minOf(w, h).coerceAtLeast(1)
+    }
+
+    /**
+     * Android-drawn screens keep the KONKR's proportions on any panel: dp and
+     * sp are rescaled so a dp covers the same share of the screen height.
+     * The KONKR itself keeps its system density untouched.
+     */
+    fun panelDensityOverride(base: Context): Configuration? {
+        val short = panelShortSide(base)
+        if (short == KONKR_SHORT_SIDE) return null
+        return Configuration().apply {
+            densityDpi = (KONKR_DPI * short / KONKR_SHORT_SIDE.toFloat() + .5f).toInt()
+                .coerceAtLeast(120)
+        }
+    }
+
+    /** Panel pixels per Slot canvas pixel: the canvas is 480 high (4/3 on the KONKR). */
+    fun canvasScale(context: Context): Float =
+        context.resources.displayMetrics.let { minOf(it.widthPixels, it.heightPixels) } / 480f
+
     fun plate(context: Context, fill: Int = surface, focused: Boolean = false): GradientDrawable =
         GradientDrawable().apply {
             setColor(fill)
@@ -74,7 +109,7 @@ internal object SlotUi {
     const val LEGEND_DENSITY = 4f / 3f
 
     fun menuPixel(context: Context, px: Int): Int =
-        (px * context.resources.displayMetrics.widthPixels / 720f + .5f).toInt()
+        (px * canvasScale(context) + .5f).toInt()
 
     /** Native Slot menu headings start at x=32; entries begin at x=37. */
     fun menuEntryInset(context: Context): Int = menuPixel(context, 5)
@@ -158,8 +193,7 @@ internal object SlotUi {
         val image = runCatching {
             context.assets.open("apps_controls/$assetName").use { BitmapFactory.decodeStream(it) }
         }.getOrNull() ?: return hint(context, key, action)
-        val scale = (context.resources.displayMetrics.widthPixels / 720f)
-            .coerceIn(1f, 2f) / LEGEND_DENSITY
+        val scale = canvasScale(context).coerceIn(1f, 4f) / LEGEND_DENSITY
         // A centered container allows weighted RA footer cells and larger
         // Cart Studio bars without stretching upstream's exact 24px raster.
         return android.widget.FrameLayout(context).apply {

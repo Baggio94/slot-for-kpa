@@ -1,4 +1,4 @@
-use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
+use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_store::{Cart, Platform};
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -40,6 +40,8 @@ pub fn foot_y(h: f32) -> f32 {
 }
 const OMEGA: f32 = 16.0;
 const PART: f32 = 130.0;
+/// Least room between a side cart and the open core picker.
+const CLEAR_GAP: f32 = 6.0;
 
 const SLOTS: i32 = 3;
 
@@ -379,13 +381,13 @@ impl Shelf {
             (self.slot_width(a), self.slot_width(a + 1));
         let (sa, sb) = (shrink(a as f32 - u), shrink((a + 1) as f32 - u));
         let gap_of = if gba_a || gba_b { CART_W as f32 } else { wa };
-        wa * sa / 2.0 + gap_of * (1.0 - (sa + sb) / 2.0) + wb * sb / 2.0
+        fit() * (wa * sa / 2.0 + gap_of * (1.0 - (sa + sb) / 2.0) + wb * sb / 2.0)
     }
 
     fn centre(&self, slot: i32) -> f32 {
         let u = self.scroll - self.scroll_target();
         let a = u.floor() as i32;
-        let mut centre = OUT_W as f32 / 2.0 - (u - a as f32) * self.pitch(a, u);
+        let mut centre = out_w() as f32 / 2.0 - (u - a as f32) * self.pitch(a, u);
         if slot >= a {
             for s in a..slot { centre += self.pitch(s, u); }
         } else {
@@ -396,7 +398,7 @@ impl Shelf {
 
     pub fn selected_at(&self) -> (f32, f32) {
         let (w, _) = self.slot_width(0);
-        let scale = shrink(self.scroll_target() - self.scroll);
+        let scale = fit() * shrink(self.scroll_target() - self.scroll);
         (self.centre(0) - w * scale / 2.0, scale)
     }
 
@@ -424,6 +426,21 @@ impl Shelf {
         dim: f32,
         out: &mut Vec<Draw>,
     ) {
+        self.draw_row_clear_of(hidden, shake, recede, dim, None, out);
+    }
+
+    /// `draw_row`, with the side carts kept out of the screen columns
+    /// `clear` (the core picker's span). On the KONKR they already are; on
+    /// a narrower screen they are pushed out further as the picker opens.
+    pub fn draw_row_clear_of(
+        &self,
+        hidden: Option<&str>,
+        shake: f32,
+        recede: f32,
+        dim: f32,
+        clear: Option<[f32; 2]>,
+        out: &mut Vec<Draw>,
+    ) {
         let recede = recede.clamp(0.0, 1.0);
         let dim = dim.clamp(0.0, 1.0);
         let target = self.scroll_target();
@@ -437,13 +454,20 @@ impl Shelf {
             }
             let offset = target + slot as f32 - self.scroll;
             let t = offset.abs().min(1.0);
-            let scale = shrink(offset);
+            let scale = fit() * shrink(offset);
             let alpha = (1.0 + (SIDE_ALPHA - 1.0) * t) * (1.0 - recede);
             let (cw, ch) = cart_box(cart.platform);
             let (w, h) = (cw as f32 * scale, ch as f32 * scale);
             let away = offset.signum() * (1.0 + offset.abs());
-            let x = self.centre(slot) - w / 2.0 + away * PART * recede;
-            if x + w <= 0.0 || x >= OUT_W as f32 || alpha <= 0.0 {
+            let mut x = self.centre(slot) - w / 2.0 + away * PART * recede;
+            if let Some([left, right]) = clear {
+                if offset < 0.0 {
+                    x -= (x + w - (left - CLEAR_GAP)).max(0.0);
+                } else if offset > 0.0 {
+                    x += (right + CLEAR_GAP - x).max(0.0);
+                }
+            }
+            if x + w <= 0.0 || x >= out_w() as f32 || alpha <= 0.0 {
                 continue;
             }
             let x = x + shake;
@@ -497,6 +521,12 @@ impl Shelf {
             }
         }
     }
+}
+
+/// Narrower screens than the KONKR's 3:2 (4:3, the Retroid Pocket Classic)
+/// show the rack a little smaller, so the side carts keep their room.
+fn fit() -> f32 {
+    (out_w() as f32 / slot_gfx::BASE_W as f32).clamp(0.85, 1.0)
 }
 
 fn shrink(offset: f32) -> f32 {

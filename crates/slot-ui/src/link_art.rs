@@ -59,7 +59,15 @@ pub fn link_art() -> LinkArt {
         mirror(&arcs_right[2]),
     ];
     LinkArt {
-        port: svg_face(PORT_SVG, PORT_W, PORT_H),
+        port: {
+            // The port strip spans the canvas, socket centred, at any width.
+            let w = slot_gfx::out_w();
+            let svg = PORT_SVG
+                .replace("0 0 720 92", &format!("0 0 {w} 92"))
+                .replace("width=\"720\"", &format!("width=\"{w}\""))
+                .replace("translate(360 0)", &format!("translate({} 0)", w / 2));
+            svg_face(&svg, w, PORT_H)
+        },
         plug_host: svg_face(PLUG_HOST_SVG, PLUG_W, PLUG_H),
         plug_join: svg_face(PLUG_JOIN_SVG, PLUG_W, PLUG_H),
         adapter: adapter_face(),

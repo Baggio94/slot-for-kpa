@@ -1,4 +1,4 @@
-use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
+use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_power::Battery;
 use slot_store::{parse_stamp, StateEntry};
 
@@ -176,7 +176,7 @@ impl Polaroids {
     }
 
     fn draw_photo(&self, out: &mut Vec<Draw>) {
-        let (w, h) = (OUT_W as f32, OUT_H as f32);
+        let (w, h) = (out_w() as f32, OUT_H as f32);
         out.push(match self.faces.get(self.index) {
             Some(tex) => Draw::Shot { tex: *tex },
             None => Draw::Rect {
@@ -205,7 +205,7 @@ impl Polaroids {
         out.push(plate(0.0));
         if let Some(tex) = self.title {
             out.push(Draw::Tex {
-                x: (OUT_W as f32 - TITLE_W as f32) / 2.0,
+                x: (out_w() as f32 - TITLE_W as f32) / 2.0,
                 y: (PLATE_H - TITLE_H as f32) / 2.0,
                 w: TITLE_W as f32,
                 h: TITLE_H as f32,
@@ -223,7 +223,7 @@ impl Polaroids {
             out,
         );
         if clock.w > 0 {
-            let x = OUT_W as f32 - MARGIN - clock.w as f32;
+            let x = out_w() as f32 - MARGIN - clock.w as f32;
             draw_printed(x, (PLATE_H - HINT_H as f32) / 2.0, clock, out);
         }
     }
@@ -248,7 +248,7 @@ impl Polaroids {
         let mut x = MARGIN;
         for (i, w) in widths.iter().enumerate() {
             if i == ways_out {
-                x = OUT_W as f32 - MARGIN - tail_w;
+                x = out_w() as f32 - MARGIN - tail_w;
             }
             out.push(hint_quad(x, y, *w, faces.get(i).copied()));
             x += w + HINT_GAP;
@@ -259,7 +259,7 @@ impl Polaroids {
     fn draw_dots(&self, top: f32, out: &mut Vec<Draw>) {
         let n = self.entries.len();
         let row = n as f32 * DOT + (n as f32 - 1.0).max(0.0) * DOT_GAP;
-        let mut x = (OUT_W as f32 - row) / 2.0;
+        let mut x = (out_w() as f32 - row) / 2.0;
         for i in 0..n {
             out.push(Draw::Rect {
                 x,
@@ -295,7 +295,7 @@ fn plate(y: f32) -> Draw {
     Draw::Rect {
         x: 0.0,
         y,
-        w: OUT_W as f32,
+        w: out_w() as f32,
         h: PLATE_H,
         colour: PLATE,
     }

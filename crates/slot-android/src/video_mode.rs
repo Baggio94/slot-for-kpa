@@ -98,6 +98,61 @@ pub fn write_video_mode(root: &Path, stem: &str, mode: VideoMode) -> std::io::Re
     ini::write(root, VIDEO_MODE_FILE, stem, mode.as_str())
 }
 
+/// Where the picture lands on the real panel, in panel pixels: Integer is
+/// the largest whole multiple that fits, Original Ratio the largest size at
+/// the system's own shape, Stretch the whole panel. On the KONKR's 960x640
+/// this is exactly the 3:2 frame's old geometry.
+pub fn picture_rect(platform: Platform, mode: VideoMode, panel: (u32, u32)) -> [f32; 4] {
+    let (pw, ph) = (panel.0.max(1) as f32, panel.1.max(1) as f32);
+    let (w, h) = platform.picture();
+    let (w, h) = (w as f32, h as f32);
+    let fit = (pw / w).min(ph / h);
+    let (dw, dh) = match mode {
+        VideoMode::Actual => {
+            let k = fit.floor().max(1.0);
+            (w * k, h * k)
+        }
+        VideoMode::Aspect => (w * fit, h * fit),
+        VideoMode::Stretch => (pw, ph),
+    };
+    [((pw - dw) / 2.0).floor(), ((ph - dh) / 2.0).floor(), dw, dh]
+}
+
+/// The picture a bezel's window is cut for: the slot. bezel frames the
+/// Integer picture, Watomsk's the full Original Ratio one.
+pub fn bezel_window(bezel: Bezel, platform: Platform, panel: (u32, u32)) -> [f32; 4] {
+    let mode = if bezel == Bezel::Default { VideoMode::Actual } else { VideoMode::Aspect };
+    picture_rect(platform, mode, panel)
+}
+
+/// A bezel needs room around its window: under 8% of the panel's width on
+/// each side (the Retroid Pocket Classic's near-square screen) it would
+/// only cover the picture's edge, so it stays hidden.
+pub fn bezel_has_room(bezel: Bezel, platform: Platform, panel: (u32, u32)) -> bool {
+    let [x, ..] = bezel_window(bezel, platform, panel);
+    x >= 0.08 * panel.0 as f32
+}
+
+/// The game texture's own picture: GB/GBC sit centred in the 240x160 frame.
+pub fn picture_source(platform: Platform) -> [f32; 4] {
+    let (w, h) = platform.picture();
+    let x = SRC_W.saturating_sub(w) / 2;
+    let y = SRC_H.saturating_sub(h) / 2;
+    [
+        x as f32 / SRC_W as f32,
+        y as f32 / SRC_H as f32,
+        w as f32 / SRC_W as f32,
+        h as f32 / SRC_H as f32,
+    ]
+}
+
+/// Whether the picture is a whole multiple of the system's pixels.
+pub fn whole_scale(platform: Platform, rect: [f32; 4]) -> bool {
+    let (w, h) = platform.picture();
+    let (kx, ky) = (rect[2] / w as f32, rect[3] / h as f32);
+    kx >= 1.0 && (kx - kx.round()).abs() < 0.01 && (ky - ky.round()).abs() < 0.01
+}
+
 pub fn source_rect(platform: Platform, mode: VideoMode) -> [f32; 4] {
     let (w, h) = platform.picture();
     if mode == VideoMode::Actual || (w, h) == (SRC_W, SRC_H) {
@@ -127,6 +182,38 @@ pub fn source_rect(platform: Platform, mode: VideoMode) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_konkr_keeps_its_three_sizes() {
+        let kpa = (960, 640);
+        assert_eq!(picture_rect(Platform::Gb, VideoMode::Actual, kpa), [160.0, 32.0, 640.0, 576.0]);
+        let [x, y, w, h] = picture_rect(Platform::Gb, VideoMode::Aspect, kpa);
+        assert_eq!((y, h), (0.0, 640.0));
+        assert!((w - 711.111).abs() < 0.01 && x == 124.0);
+        assert_eq!(picture_rect(Platform::Gb, VideoMode::Stretch, kpa), [0.0, 0.0, 960.0, 640.0]);
+        for mode in [VideoMode::Actual, VideoMode::Aspect, VideoMode::Stretch] {
+            assert_eq!(picture_rect(Platform::Gba, mode, kpa), [0.0, 0.0, 960.0, 640.0]);
+        }
+        for bezel in [Bezel::Default, Bezel::Gb, Bezel::Color] {
+            assert!(bezel_has_room(bezel, Platform::Gb, kpa));
+        }
+    }
+
+    #[test]
+    fn other_panels_use_their_whole_screen() {
+        let rpc = (1240, 1080);
+        assert_eq!(picture_rect(Platform::Gb, VideoMode::Actual, rpc), [60.0, 36.0, 1120.0, 1008.0]);
+        assert_eq!(picture_rect(Platform::Gba, VideoMode::Actual, rpc), [20.0, 140.0, 1200.0, 800.0]);
+        assert!(!bezel_has_room(Bezel::Default, Platform::Gb, rpc));
+        assert!(!bezel_has_room(Bezel::Gb, Platform::Gbc, rpc));
+        let wide = (1920, 1080);
+        assert_eq!(picture_rect(Platform::Gba, VideoMode::Actual, wide), [240.0, 60.0, 1440.0, 960.0]);
+        assert!(bezel_has_room(Bezel::Gb, Platform::Gb, wide));
+        let four_three = (1440, 1080);
+        assert!(bezel_has_room(Bezel::Pocket, Platform::Gb, four_three));
+        assert!(whole_scale(Platform::Gb, picture_rect(Platform::Gb, VideoMode::Actual, four_three)));
+        assert!(!whole_scale(Platform::Gb, picture_rect(Platform::Gb, VideoMode::Aspect, four_three)));
+    }
 
     #[test]
     fn shoulders_step_through_the_three_sizes() {

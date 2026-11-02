@@ -1,4 +1,4 @@
-use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
+use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_power::Battery;
 
 use crate::battery::{draw_gauge_with_ink, GAUGE_H};
@@ -48,7 +48,7 @@ pub fn draw_footer_with_ink(
     let c=[ink[0] as f32/255.0,ink[1] as f32/255.0,
         ink[2] as f32/255.0,1.0];
     draw_gauge_with_ink(FOOTER_MARGIN,y,battery,percent,bolt,c,out);
-    printed(OUT_W as f32 - FOOTER_MARGIN - clock.w as f32,clock,out);
+    printed(out_w() as f32 - FOOTER_MARGIN - clock.w as f32,clock,out);
 }
 
 pub(crate) fn draw_printed(x: f32, y: f32, p: Printed, out: &mut Vec<Draw>) {

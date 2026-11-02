@@ -126,6 +126,7 @@ fn session(root: &Path, failure: Failure) -> (GameSession, Arc<Mutex<Calls>>) {
         manual_export_prefix: root.join("manual"),
         state: root.join("test.state"),
         retroarch_export: root.join("test.export"),
+        gambatte_legacy_export: false,
         ring: StateRing::new(root, Platform::Gba, Core::Mgba, "test"),
         rewind: RewindThread::spawn(REWIND_BYTES),
         rewind_frames: 0,
