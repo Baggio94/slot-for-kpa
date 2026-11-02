@@ -158,6 +158,8 @@ fn portable_core_recipe(backend: Backend) -> [u8; 32] {
         Backend::GambatteGameLink => &[
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/build-gambatte-android.sh")),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/gambatte/netlink-fixes.patch")),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/gambatte/netlink-framing.patch")),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/gambatte/net_serial_io.h")),
         ],
     };
     for bytes in files {
