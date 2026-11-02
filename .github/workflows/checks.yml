@@ -42,6 +42,10 @@ jobs:
           grep -F 'test game::runahead_tests::real_egl_recovery_keeps_runahead_session_and_rollback_quarantine ... ok' "$RUNNER_TEMP/session-tests.log"
           grep -F 'test runtime::ui_feedback_tests::' "$RUNNER_TEMP/session-tests.log"
           grep -F 'test presentation_probe::tests::reports_do_not_rejuvenate_frames_waiting_for_presentation ... ok' "$RUNNER_TEMP/session-tests.log"
+      - name: Test Gambatte Game Link exact two-byte socket framing
+        run: |
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -Icores/gambatte tools/gambatte/test_net_serial_io.cpp -o "$RUNNER_TEMP/gambatte-serial-test"
+          "$RUNNER_TEMP/gambatte-serial-test"
       - name: Test libretro and RetroAchievements contracts
         run: cargo test --locked -p slot-retro -p slot-achievements --lib
       - name: Test capture tools and report parsers
