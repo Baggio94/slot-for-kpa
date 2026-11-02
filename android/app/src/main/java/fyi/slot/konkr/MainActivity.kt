@@ -76,6 +76,7 @@ class MainActivity : Activity() {
         private const val STATE_REQUEST = 4704
         private const val THEME_REQUEST = 4705
         private const val WALLPAPER_REQUEST = 4706
+        private val WALLPAPER_TARGET_NAME = Regex("[A-Za-z]{1,16}\\.png")
         private const val LABEL_REQUEST = 4707
         private const val CART_STUDIO_REQUEST = 4708
         private const val PREFS = "slot_konkr_library"
@@ -152,6 +153,7 @@ class MainActivity : Activity() {
     external fun nativeUpdateStatus(status: Int, installed: String, available: String, automatic: Boolean)
     external fun nativeReloadVisualAssets()
     external fun nativePollCartLabelUri(): String?
+    external fun nativeWallpaperTarget(): String?
     external fun nativeReloadCartLabel(uri: String)
     external fun nativePollCartSfx(): Int
     external fun nativePollRumbleStrength(): Int
@@ -2452,8 +2454,13 @@ class MainActivity : Activity() {
     }
 
     private fun visualFile(kind: Int): File {
-        return if (kind == THEME_REQUEST) File(filesDir, "Config/theme.txt")
-               else File(filesDir, "Wallpapers/user.png")
+        if (kind == THEME_REQUEST) return File(filesDir, "Config/theme.txt")
+        // While the Shelf wallpaper is picked, import/delete acts on the
+        // current shelf's own file (GBA.png, GB.png, GBC.png, Recents.png,
+        // Favorites.png); otherwise on the single custom wallpaper.
+        val target = nativeWallpaperTarget()
+            ?.takeIf { WALLPAPER_TARGET_NAME.matches(it) } ?: "user.png"
+        return File(filesDir, "Wallpapers/$target")
     }
 
     private fun resetVisualFile(kind: Int) {
