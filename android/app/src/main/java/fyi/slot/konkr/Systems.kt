@@ -108,6 +108,50 @@ internal object Systems {
         val title: String, val region: String, val battery: Boolean, val maker: String = ""
     )
 
+    /** A Game Boy / Game Boy Color cart keeps its save on a battery when
+     *  its cartridge type (header 0x147) says RAM+BATTERY (MBC1/2/3/5/7,
+     *  MMM01, HuC1/HuC3, TAMA5, Pocket Camera). */
+    fun gbBattery(header: ByteArray): Boolean {
+        if (header.size <= 0x147) return false
+        return (header[0x147].toInt() and 0xff) in setOf(
+            0x03, 0x06, 0x09, 0x0d, 0x0f, 0x10, 0x13, 0x1b, 0x1e, 0x22, 0xfc, 0xfd, 0xfe, 0xff)
+    }
+
+    /** A Game Boy Advance cart has a battery when it saves to SRAM, or keeps
+     *  a real-time clock (Pokémon Ruby, Sapphire, Emerald...): the save
+     *  library and clock driver leave their names in the ROM. Flash and
+     *  EEPROM carts need none. Reads the whole cart once, from a stream. */
+    fun gbaBattery(input: java.io.InputStream): Boolean {
+        val marks = listOf("SRAM_V", "SRAM_F_V", "SIIRTC_V").map { it.toByteArray(Charsets.US_ASCII) }
+        val keep = marks.maxOf { it.size } - 1
+        val buffer = ByteArray(256 * 1024 + keep)
+        var carried = 0
+        var total = 0L
+        while (true) {
+            if (Thread.currentThread().isInterrupted) return false
+            val n = input.read(buffer, carried, buffer.size - carried)
+            if (n <= 0) break
+            total += n
+            if (total > 64L * 1024 * 1024) return false
+            val end = carried + n
+            for (mark in marks) {
+                var i = 0
+                val last = end - mark.size
+                while (i <= last) {
+                    if (buffer[i] == mark[0]) {
+                        var k = 1
+                        while (k < mark.size && buffer[i + k] == mark[k]) k++
+                        if (k == mark.size) return true
+                    }
+                    i++
+                }
+            }
+            carried = minOf(keep, end)
+            System.arraycopy(buffer, end - carried, buffer, 0, carried)
+        }
+        return false
+    }
+
     fun homeHeader(ext: String, header: ByteArray, filename: String): HomeHeader {
         val fromName = regionFromName(filename)
         return when (platformFor(ext)) {

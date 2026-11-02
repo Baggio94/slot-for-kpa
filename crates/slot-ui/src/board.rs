@@ -17,6 +17,10 @@ const BOARD_SVG: &str = include_str!("../assets/board.svg");
 // The Game Boy pak board and its back shells, drawn in board.svg's style by
 // tools/pak-board/gen.py from the layout of assets/gb_board.png.
 const GB_BOARD_SVG: &str = include_str!("../assets/gb_board.svg");
+// The same boards for a cart that keeps no save on a battery: the cell is
+// gone, its two pads stay bare (Siham 2026-11-02, as the home carts).
+const GB_BOARD_BARE_SVG: &str = include_str!("../assets/gb_board_bare.svg");
+const BOARD_BARE_SVG: &str = include_str!("../assets/board_bare.svg");
 const GB_SHELL_SVG: &str = include_str!("../assets/gb_shell.svg");
 const GBC_SHELL_SVG: &str = include_str!("../assets/gbc_shell.svg");
 const GB_CHIP_SVG: &str = include_str!("../assets/gb_chip.svg");
@@ -115,7 +119,8 @@ pub fn board_face(cart: &Cart) -> CartFace {
         over(&mut face, &pak_board_face(cart), 0, 0);
         return face;
     }
-    let mut face = svg_face(&shaded(BOARD_SVG, shell_for(cart).colour), BOARD_W, BOARD_H);
+    let board = if cart.battery { BOARD_SVG } else { BOARD_BARE_SVG };
+    let mut face = svg_face(&shaded(board, shell_for(cart).colour), BOARD_W, BOARD_H);
     over(&mut face, &rom_marking_face(&cart.stem), ROM_X, ROM_Y);
     face
 }
@@ -226,7 +231,8 @@ pub fn home_chip_face(platform: Platform, core: Option<Core>) -> CartFace {
 /// The pak board with both big-chip footprints empty. Like a GBA board, the
 /// footprints keep the cores' names and the title is printed on a chip.
 fn pak_board_face(cart: &Cart) -> CartFace {
-    let mut face = svg_face(GB_BOARD_SVG, GB_CART_W, GB_CART_H);
+    let board = if cart.battery { GB_BOARD_SVG } else { GB_BOARD_BARE_SVG };
+    let mut face = svg_face(board, GB_CART_W, GB_CART_H);
     for (core, u) in [Core::Mgba, Core::alternate_for(cart.platform)].into_iter().zip(PAK_FOOTPRINTS) {
         over(&mut face, &pak_footprint_face(core), pak_chip_x(u), pak_chip_y());
     }

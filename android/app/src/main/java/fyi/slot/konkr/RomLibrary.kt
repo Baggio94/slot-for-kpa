@@ -161,8 +161,10 @@ internal object RomLibrary {
                         old.optLong("modified", -1), title, size, modified) &&
                         // Old indexes lack the GB header metadata used by
                         // Cart Studio. Read only 0x150 bytes once to migrate.
-                        (old.optString("platform") == "GBA" || old.has("gb_cgb_flag") ||
-                            old.has("home_maker"))
+                        // Older ones also lack whether a GB/GBA cart has a
+                        // battery (2026-11): read once more to learn it.
+                        (old.has("home_battery") && (old.optString("platform") == "GBA" ||
+                            old.has("gb_cgb_flag") || old.has("home_maker")))
                     // ZIP archives remain a single shelf cartridge identified
                     // by the ZIP's SAF URI and filename. Resolve the embedded
                     // ROM header/extension only on cache misses.
@@ -216,6 +218,12 @@ internal object RomLibrary {
                         // A .bin is a Mega Drive cart only with a SEGA header.
                         if (!Systems.acceptsHeader(embeddedExtension, header)) continue
                         if (home) homeHeader = Systems.homeHeader(embeddedExtension, header, name)
+                        else if (!gba) homeHeader = Systems.HomeHeader("", "", Systems.gbBattery(header))
+                        else homeHeader = Systems.HomeHeader("", "", try {
+                            resolver.openInputStream(fileUri)?.use { input ->
+                                RomSource.useRom(input, name) { rom, _ -> Systems.gbaBattery(rom) }
+                            } ?: false
+                        } catch (_: Exception) { false })
                         // Use the exact Nintendo GB header fields read by
                         // Cart Studio's automatic shell selector. Never infer
                         // colours from the ROM filename or download artwork.
@@ -262,7 +270,12 @@ internal object RomLibrary {
                             .put("home_region", homeHeader.region)
                             .put("home_battery", homeHeader.battery)
                             .put("home_maker", homeHeader.maker)
-                    } else if (!gba) {
+                    } else {
+                        // GB/GBC/GBA: the board shows a battery only for a
+                        // cart that keeps its save on one.
+                        game.put("home_battery", homeHeader.battery)
+                    }
+                    if (!home && !gba) {
                         game.put("gb_title", gbTitle)
                             .put("gb_code", gbCode)
                             .put("gb_japan", gbJapan)
