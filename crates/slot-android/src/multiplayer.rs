@@ -182,12 +182,14 @@ impl LinkConfig {
         let game: [u8; 4] = code.as_bytes().try_into()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid game code"))?;
         let bios_sha256 = if self.bios_file.is_file() {
-            sha256_file(&self.bios_file, 1024 * 1024)?
+            sha256_file(&self.bios_file, 1024 * 1024).map_err(|e|
+                io::Error::new(e.kind(), format!("read selected GBA BIOS fingerprint: {e}")))?
         } else { [0u8; 32] };
         // Refuse a missing/empty/unreasonably sized native core. Its ELF
         // digest is deliberately NOT compared across CPU architectures.
         // The pinned source + Slot patches supply a portable identity.
-        let metadata = std::fs::metadata(&self.core_file)?;
+        let metadata = std::fs::metadata(&self.core_file).map_err(|e|
+            io::Error::new(e.kind(), format!("inspect native Link core file: {e}")))?;
         if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 64 * 1024 * 1024 {
             return Err(io::Error::new(io::ErrorKind::InvalidData,
                 "Invalid Multiplayer native core file"));
@@ -201,7 +203,8 @@ impl LinkConfig {
             mode: match self.mode {
                 LinkKind::Cable => 1, LinkKind::Wireless => 2,
             },
-            rom_sha256: sha256_file(&self.rom, 128 * 1024 * 1024)?,
+            rom_sha256: sha256_file(&self.rom, 128 * 1024 * 1024).map_err(|e|
+                io::Error::new(e.kind(), format!("read active ROM fingerprint: {e}")))?,
             core_sha256: portable_core_recipe(self.backend),
             bios_sha256,
         })
@@ -216,7 +219,8 @@ fn connect(role: Role, local: Ipv4Addr, config: &LinkConfig,
         return Err(io::Error::new(io::ErrorKind::AddrNotAvailable,
             "no usable Wi-Fi IPv4 address"));
     }
-    let fingerprint = config.fingerprint()?;
+    let fingerprint = config.fingerprint().map_err(|e|
+        io::Error::new(e.kind(), format!("prepare Link ROM/core/BIOS fingerprint: {e}")))?;
     let mut link = match role {
         Role::Host => {
             // Validate multicast and join the correct interface before announcing.
