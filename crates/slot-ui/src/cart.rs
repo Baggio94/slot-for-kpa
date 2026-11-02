@@ -188,6 +188,27 @@ pub fn cart_box_for(cart: &Cart) -> (u32, u32) {
     body_box(body_of(cart))
 }
 
+/// How much larger than its own box a cart is shown on the shelf and as it
+/// travels to the slot: Super Nintendo and Mega Drive carts are drawn 20%
+/// bigger (Siham 2026-11-02), every other cart at its own size.
+pub fn shelf_grow(body: Body) -> f32 {
+    match body {
+        Body::Home(m) if m.system() != home::HomeSystem::Nes => 1.2,
+        _ => 1.0,
+    }
+}
+
+/// A cart's box as the shelf shows it, in the same units as `body_box`.
+pub fn shelf_box(body: Body) -> (f32, f32) {
+    let (w, h) = body_box(body);
+    let k = shelf_grow(body);
+    (w as f32 * k, h as f32 * k)
+}
+
+pub fn shelf_box_for(cart: &Cart) -> (f32, f32) {
+    shelf_box(body_of(cart))
+}
+
 pub fn seated_box_for(cart: &Cart) -> (u32, u32) {
     body_seated_box(body_of(cart))
 }

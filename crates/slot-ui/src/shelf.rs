@@ -2,7 +2,7 @@ use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_store::{Cart, Platform};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::cart::{body_of, cart_box_for, label_rect, Body, CART_H, CART_W};
+use crate::cart::{body_of, label_rect, shelf_box, shelf_box_for, shelf_grow, Body, CART_H, CART_W};
 use crate::home::HomeMould;
 use crate::hud::Millis;
 use crate::silhouette::GbShell;
@@ -46,10 +46,10 @@ pub fn foot_y(h: f32) -> f32 {
 /// the rest of its shelf instead of being centred on its own height.
 pub fn body_foot_y(body: Body) -> f32 {
     let h = match body {
-        Body::Home(m) => HomeMould::default_of(m.system()).size().1,
-        _ => crate::cart::body_box(body).1,
+        Body::Home(m) => shelf_box(Body::Home(HomeMould::default_of(m.system()))).1,
+        _ => shelf_box(body).1,
     };
-    foot_y(h as f32)
+    foot_y(h)
 }
 const OMEGA: f32 = 16.0;
 const PART: f32 = 130.0;
@@ -390,7 +390,7 @@ impl Shelf {
     // widths. In particular, the GB/GBC shells are not as wide as GBA carts.
     fn slot_width(&self, slot: i32) -> (f32, bool) {
         match self.cart_at_offset(slot).map(|i| &self.carts[i]) {
-            Some(cart) if cart.platform != Platform::Gba => (cart_box_for(cart).0 as f32, false),
+            Some(cart) if cart.platform != Platform::Gba => (shelf_box_for(cart).0, false),
             _ => (CART_W as f32, true),
         }
     }
@@ -475,8 +475,8 @@ impl Shelf {
             let t = offset.abs().min(1.0);
             let scale = fit() * shrink(offset);
             let alpha = (1.0 + (SIDE_ALPHA - 1.0) * t) * (1.0 - recede);
-            let (cw, ch) = cart_box_for(cart);
-            let (w, h) = (cw as f32 * scale, ch as f32 * scale);
+            let (cw, ch) = shelf_box_for(cart);
+            let (w, h) = (cw * scale, ch * scale);
             let away = offset.signum() * (1.0 + offset.abs());
             let mut x = self.centre(slot) - w / 2.0 + away * PART * recede;
             if let Some([left, right]) = clear {
@@ -523,7 +523,8 @@ impl Shelf {
             // Faithful original v1.7 pixel-star with label-relative geometry.
             if let (Some(true), Some((tex, sw, sh))) = (self.starred.get(i), self.star) {
                 let (lx, ly, lw, _) = label_rect(cart);
-                let (lx, ly, lw) = (lx as f32, ly as f32, lw as f32);
+                let k = shelf_grow(body);
+                let (lx, ly, lw) = (lx as f32 * k, ly as f32 * k, lw as f32 * k);
                 out.push(Draw::Tex {
                     x: (x + (lx + lw) * scale - sw - STAR_INSET).round(),
                     y: (y + ly * scale + STAR_INSET).round(),

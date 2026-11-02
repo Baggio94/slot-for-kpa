@@ -411,8 +411,8 @@ pub fn shelf_cart_for(platform: Platform, x: f32, scale: f32) -> Placed {
 }
 
 pub fn shelf_cart_body(body: Body, x: f32, scale: f32) -> Placed {
-    let (cw, ch) = body_box(body);
-    let (w, h) = (cw as f32 * scale, ch as f32 * scale);
+    let (cw, ch) = crate::cart::shelf_box(body);
+    let (w, h) = (cw * scale, ch * scale);
     Placed { x, y: crate::shelf::body_foot_y(body) - h, w, h }
 }
 
