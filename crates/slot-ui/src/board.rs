@@ -439,11 +439,12 @@ fn opens_upward(body: Body) -> bool {
     }
 }
 
-/// Room for a home cart that opens upward: its front above (at most
-/// 160x100, the GBA lid's band) and its board under it.
-const UP_LID: (f32, f32) = (160.0, 100.0);
-const UP_BOARD: (f32, f32) = (372.0, 235.0);
-const UP_BOARD_Y: f32 = 145.0;
+/// Room for a home cart that opens upward: its front above, no taller than
+/// the GBA's lid (81), and its board under it from the GBA board's top, so
+/// the front's shadow falls in the same gap as the GBA's (Siham 2026-11-02).
+const UP_LID: (f32, f32) = (160.0, 81.0);
+const UP_BOARD: (f32, f32) = (372.0, 220.0);
+const UP_BOARD_Y: f32 = BOARD_Y;
 
 fn fit_in((cw, ch): (u32, u32), (w, h): (f32, f32)) -> (f32, f32) {
     let k = (w / cw as f32).min(h / ch as f32);
