@@ -103,6 +103,7 @@ pub fn shell_for(cart: &Cart) -> Shell {
     match cart.platform {
         Platform::Gba => gba_shell_for(&cart.code),
         Platform::Gb | Platform::Gbc => gb_shell_for(&cart.rom),
+        Platform::Nes | Platform::Snes | Platform::Md => DEFAULT_SHELL,
     }
 }
 

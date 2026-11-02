@@ -80,6 +80,11 @@ pub fn bezel_hidden_message(bezel: Bezel, mode: VideoMode) -> Option<&'static st
 /// draw it with RetroArch's sharp-bilinear instead, which keeps every pixel
 /// the same size and the motion regular.
 pub fn screen_effect(shader: Shader, platform: Platform, mode: VideoMode) -> ScreenEffect {
+    // A home console's picture is never a whole multiple of the panel in
+    // both directions once its aspect is applied: always sharp-bilinear.
+    if shader == Shader::Off && !platform.handheld() {
+        return ScreenEffect::SharpBilinear;
+    }
     if shader == Shader::Off && platform != Platform::Gba && mode == VideoMode::Aspect {
         ScreenEffect::SharpBilinear
     } else {
@@ -87,11 +92,26 @@ pub fn screen_effect(shader: Shader, platform: Platform, mode: VideoMode) -> Scr
     }
 }
 
-pub fn video_mode_for(root: &Path, stem: &str) -> VideoMode {
+pub fn video_mode_for(root: &Path, stem: &str, platform: Platform) -> VideoMode {
     ini::value(root, VIDEO_MODE_FILE, stem)
         .as_deref()
         .and_then(VideoMode::parse)
-        .unwrap_or_default()
+        .unwrap_or_else(|| default_mode(platform))
+}
+
+/// RetroArch's default for the home consoles: the core's aspect ratio,
+/// full height, no integer scaling. The Game Boys start at Integer.
+pub fn default_mode(platform: Platform) -> VideoMode {
+    if platform.handheld() { VideoMode::Actual } else { VideoMode::Aspect }
+}
+
+/// How a home console frame fills the screen in `mode`.
+pub fn home_fit(mode: VideoMode, aspect: f32) -> slot_gfx::Fit {
+    match mode {
+        VideoMode::Actual => slot_gfx::Fit::Integer(aspect),
+        VideoMode::Aspect => slot_gfx::Fit::Aspect(aspect),
+        VideoMode::Stretch => slot_gfx::Fit::Stretch,
+    }
 }
 
 pub fn write_video_mode(root: &Path, stem: &str, mode: VideoMode) -> std::io::Result<()> {

@@ -28,10 +28,11 @@ internal object RetroArchStorage {
     class SaveConflict(message: String) : IllegalStateException(message)
     private const val MAX_STATE = 65 * 1024 * 1024
     /** RetroArch's per-core folder names: mGBA and gpSP for GBA, mGBA and
-     *  Gambatte for GB/GBC. */
-    internal val CORES = setOf("mGBA", "gpSP", "Gambatte")
-    /** Slot's private file prefix for a core: mgba, gpsp or gambatte. */
-    internal fun coreLower(core: String) = core.lowercase(Locale.ROOT)
+     *  Gambatte for GB/GBC, then the NES, SNES and Mega Drive pairs. */
+    internal val CORES = Systems.CORE_FOLDERS
+    /** Slot's private file prefix for a core: its libretro key (mgba, gpsp,
+     *  gambatte, genesis_plus_gx...), as the native side writes it. */
+    internal fun coreLower(core: String) = Systems.keyForFolder(core)
 
     data class Target(
         val romUri: String,
@@ -58,8 +59,7 @@ internal object RetroArchStorage {
         // display name. Reuse only that exact URI's name; older caches and
         // direct launches still query ContentResolver as a safe fallback.
         val name = scannedFileName?.takeIf { candidate ->
-            candidate.endsWith(".gba", true) || candidate.endsWith(".gbc", true) ||
-                candidate.endsWith(".gb", true)
+            candidate.substringAfterLast('.', "").lowercase(Locale.ROOT) in Systems.ROM_EXTENSIONS
         } ?: queryRomName(context, Uri.parse(rawUri))
         val stem = name.substringBeforeLast('.', name)
             .trim().take(200)

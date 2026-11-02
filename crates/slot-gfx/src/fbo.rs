@@ -181,6 +181,15 @@ impl Compositor {
         self.game.upload(xrgb8888);
     }
 
+    /// A frame of any size (home consoles); 240x160 is the usual canvas.
+    pub fn upload_game_sized(&mut self, xrgb8888: &[u8], size: (u32, u32)) {
+        self.game.upload_sized(xrgb8888, size);
+    }
+
+    pub fn set_game_fit(&mut self, fit: crate::Fit) {
+        self.game.set_fit(fit);
+    }
+
     pub fn draw_game(&mut self) {
         self.game.draw(&self.quad);
     }

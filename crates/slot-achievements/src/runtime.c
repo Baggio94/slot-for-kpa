@@ -16,9 +16,13 @@ typedef struct {
 /* The runtime's event/validation callbacks have no userdata argument. */
 static _Thread_local slot_frame *current;
 
+/* Matches COVERAGE_SIZE in lib.rs: the largest mapped space (SNES). */
+#define SLOT_COVERAGE 0x40000
+
 static int valid_address(uint32_t address) {
-    if (current->console == 4 || current->console == 6) {
-        return address < 0x17000 && current->coverage != NULL &&
+    /* Every console but the GBA marks the bytes its core actually mapped. */
+    if (current->console != 5) {
+        return address < SLOT_COVERAGE && current->coverage != NULL &&
             current->coverage[address] != 0;
     }
     size_t start;

@@ -354,7 +354,7 @@ fn runtime_evaluates_real_definitions_and_never_awards_missing_memory() {
     assert!(runtime.activate(7, "0xH000000=1"));
     assert!(runtime.activate(8, "0xH048000=1"));
     assert!(!runtime.activate(9, "not a definition"));
-    let mut ram = vec![0; RAM_SIZE + GB_COVERAGE_SIZE];
+    let mut ram = vec![0; RAM_SIZE + COVERAGE_SIZE];
     assert!(runtime.frame(&ram, &[0x8000, 0x40000, 0], 5).is_empty());
     ram[0] = 1;
     ram[0x48000] = 1;
@@ -369,7 +369,7 @@ fn game_boy_wram_is_tracked_but_unmapped_echo_ram_never_awards() {
     // missing memory must never suppress legitimate awards in other sets.
     let mut runtime = runtime::Runtime::new().unwrap();
     assert!(runtime.activate(121, "0xH00C001=7"));
-    let mut ram = vec![0; RAM_SIZE + GB_COVERAGE_SIZE];
+    let mut ram = vec![0; RAM_SIZE + COVERAGE_SIZE];
     ram[RAM_SIZE + 0xc001] = 1;
     assert!(runtime.frame(&ram, &[1, 0, 0], 4).is_empty());
     ram[0xc001] = 7;
@@ -387,7 +387,7 @@ fn game_boy_wram_is_tracked_but_unmapped_echo_ram_never_awards() {
 fn game_boy_color_extended_bank_is_valid_only_when_core_exposes_it() {
     let mut runtime = runtime::Runtime::new().unwrap();
     assert!(runtime.activate(123, "0xH010100=9"));
-    let mut ram = vec![0; RAM_SIZE + GB_COVERAGE_SIZE];
+    let mut ram = vec![0; RAM_SIZE + COVERAGE_SIZE];
     ram[RAM_SIZE + 0x10100] = 1;
     assert!(runtime.frame(&ram, &[1, 0, 0], 6).is_empty());
     ram[0x10100] = 9;
@@ -596,7 +596,7 @@ fn damaged_ledger_is_preserved_and_failed_writes_are_not_acknowledged() {
 }
 
 fn frame(sequence: u64, timeline: u64, value: u8) -> Frame {
-    let mut ram = vec![0; RAM_SIZE + GB_COVERAGE_SIZE];
+    let mut ram = vec![0; RAM_SIZE + COVERAGE_SIZE];
     ram[0] = value;
     let (recycle, _) = mpsc::sync_channel(1);
     Frame {
@@ -799,7 +799,7 @@ fn cache_percentage_counts_unique_badges_and_resumes_from_disk() {
 fn rich_presence_tracks_memory_and_clears_invalid_replacements() {
     let mut runtime = runtime::Runtime::new().unwrap();
     assert!(runtime.activate_presence("Display:\n?0xH000000=1?In the castle\nOn the map"));
-    let mut ram = vec![0; RAM_SIZE + GB_COVERAGE_SIZE];
+    let mut ram = vec![0; RAM_SIZE + COVERAGE_SIZE];
     runtime.frame(&ram, &[0x8000, 0x40000, 0x10000], 5);
     assert_eq!(runtime.presence(), "On the map");
     ram[0] = 1;
@@ -934,4 +934,26 @@ fn verified_save_wrapper_does_not_fallback_on_absent_or_failed_active_sram() {
     let failed = service.wrap(Box::new(ActiveSaveCore { active: 0x42, outcome: 2 }));
     assert!(matches!(failed.save_ram_verified(), Err(CoreError::State(message))
         if message == "active SRAM clone refused"));
+}
+
+#[test]
+fn home_console_hashes_skip_dump_headers_like_rcheevos() {
+    let root = tempfile::tempdir().unwrap();
+    let body: Vec<u8> = (0..0x4000u32).map(|i| (i * 7) as u8).collect();
+    let digest = format!("{:x}", md5::compute(&body));
+    let mut nes = b"NES\x1a".to_vec();
+    nes.resize(16, 0);
+    nes.extend_from_slice(&body);
+    std::fs::write(root.path().join("a.nes"), &nes).unwrap();
+    assert_eq!(library::content_hash(&root.path().join("a.nes")).unwrap(), digest);
+    let mut snes = vec![0u8; 512];
+    snes.extend_from_slice(&body);
+    std::fs::write(root.path().join("a.smc"), &snes).unwrap();
+    assert_eq!(library::content_hash(&root.path().join("a.smc")).unwrap(), digest);
+    // A Mega Drive cart is hashed whole.
+    std::fs::write(root.path().join("a.md"), &snes).unwrap();
+    assert_eq!(library::content_hash(&root.path().join("a.md")).unwrap(),
+        format!("{:x}", md5::compute(&snes)));
+    assert!(supported_console(7) && supported_console(3) && supported_console(1));
+    assert!(!supported_console(2) && !supported_console(8));
 }

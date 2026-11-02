@@ -152,7 +152,7 @@ fn holding_a_letter_jump_never_empties_the_shelf() {
         .collect();
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     let mut s = shelf_of(&refs);
-    let mid = slot_ui::OUT_W as f32 / 2.0;
+    let mid = slot_ui::out_w() as f32 / 2.0;
     for frame in 0..120 {
         if frame % 3 == 0 {
             s.jump_next_letter();

@@ -22,6 +22,8 @@ pub struct Spec {
     pub options: Vec<(String, String)>,
     /// [`LibretroCore::instance_id`] of the real core.
     pub primary_id: usize,
+    /// Home console frames keep their own size, as on the real core.
+    pub native_video: bool,
 }
 
 impl Spec {
@@ -71,6 +73,7 @@ pub fn open(spec: &Spec, battery: Option<&[u8]>) -> Result<Box<dyn RetroCore>, S
     for (key, value) in &spec.options {
         core.set_option(key, value);
     }
+    core.set_native_video(spec.native_video);
     core.load(&spec.rom).map_err(|e| e.to_string())?;
     if let Some(battery) = battery {
         core.load_save_ram(battery).map_err(|e| e.to_string())?;
@@ -80,16 +83,17 @@ pub fn open(spec: &Spec, battery: Option<&[u8]>) -> Result<Box<dyn RetroCore>, S
 
 /// Copy `state` (the real core, just after its committed frame) into the
 /// prediction copy and run one predicted frame per entry of `inputs`.
-/// Returns the predicted picture; the copy's audio is discarded.
+/// Returns the predicted picture and its size; the copy's audio is discarded.
 pub fn predict<'a>(copy: &'a mut dyn RetroCore, state: &[u8], inputs: &[ButtonMask])
-    -> Result<&'a [u8], String>
+    -> Result<(&'a [u8], (u32, u32)), String>
 {
     copy.unserialize(state).map_err(|e| e.to_string())?;
     for &input in inputs {
         copy.run_speculative_frame(input);
         copy.discard_audio();
     }
-    Ok(copy.video_xrgb8888())
+    let size = copy.video_size();
+    Ok((copy.video_xrgb8888(), size))
 }
 
 #[cfg(test)]
@@ -104,6 +108,7 @@ mod tests {
             rom: PathBuf::from("/files/rom.gba"),
             options: vec![("mgba_color_correction".into(), "OFF".into())],
             primary_id: 1,
+            native_video: false,
         }
     }
 

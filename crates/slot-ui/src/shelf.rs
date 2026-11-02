@@ -502,7 +502,8 @@ impl Shelf {
             // Faithful original v1.7 pixel-star with label-relative geometry.
             if let (Some(true), Some((tex, sw, sh))) = (self.starred.get(i), self.star) {
                 let (lx, ly, lw) = match cart.platform {
-                    slot_store::Platform::Gba => {
+                    slot_store::Platform::Gba | slot_store::Platform::Nes
+                    | slot_store::Platform::Snes | slot_store::Platform::Md => {
                         let (x,y,right,_) = label_panel(cw,ch);
                         (x as f32,y as f32,(right-x) as f32)
                     },

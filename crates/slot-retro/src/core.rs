@@ -107,6 +107,11 @@ pub trait RetroCore: Send {
     fn set_sun(&mut self, _luminance: u8) {}
     fn set_frame_skip(&mut self, _skip: bool) {}
     fn video_xrgb8888(&self) -> &[u8];
+    /// Width and height of `video_xrgb8888`: the 240x160 canvas, or a home
+    /// console frame at the size its core produced.
+    fn video_size(&self) -> (u32, u32) { (GBA_W, GBA_H) }
+    /// The picture's display aspect the core reports (0: none).
+    fn display_aspect(&self) -> f32 { 0.0 }
     fn take_audio(&mut self) -> Vec<i16>;
     /// Drop speculative audio without moving the core's output buffer.
     fn discard_audio(&mut self) { let _ = self.take_audio(); }

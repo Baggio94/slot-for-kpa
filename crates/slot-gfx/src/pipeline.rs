@@ -20,6 +20,7 @@ struct GameProgram {
     u_paper_size: gl::types::GLint,
     u_fbo: gl::types::GLint,
     u_pic: gl::types::GLint,
+    u_src: gl::types::GLint,
 }
 
 impl GameProgram {
@@ -45,6 +46,7 @@ impl GameProgram {
             u_paper_size: at("u_paper_size"),
             u_fbo: at("u_fbo"),
             u_pic: at("u_pic"),
+            u_src: at("u_src"),
         })
     }
 }
@@ -55,6 +57,44 @@ fn game_frag(effect: ScreenEffect) -> String {
 }
 
 const EFFECTS: usize = ScreenEffect::SharpBilinear as usize + 1;
+
+/// How a home console frame (any size) fills the screen. The Game Boy
+/// family keeps its 240x160 canvas and the source/picture rects instead.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub enum Fit {
+    /// The 240x160 canvas drawn over the game area.
+    Canvas,
+    /// Whole-number multiple of the frame height, at the display aspect.
+    Integer(f32),
+    /// The full height (or width) at the display aspect.
+    Aspect(f32),
+    /// The whole screen.
+    Stretch,
+}
+
+/// The texture window that shows a `tex`-sized frame at `fit` on an
+/// `out`-sized screen: outside 0..1 is drawn black by the shader.
+pub fn fit_window(fit: Fit, tex: (u32, u32), out: (f32, f32)) -> [f32; 4] {
+    let (tw, th) = (tex.0.max(1) as f32, tex.1.max(1) as f32);
+    let (ow, oh) = out;
+    let picture = |aspect: f32| if aspect > 0.0 { aspect } else { tw / th };
+    let (pw, ph) = match fit {
+        Fit::Canvas | Fit::Stretch => return WHOLE_TEXTURE,
+        Fit::Aspect(aspect) => {
+            let a = picture(aspect);
+            if oh * a <= ow { (oh * a, oh) } else { (ow, ow / a) }
+        }
+        Fit::Integer(aspect) => {
+            let a = picture(aspect);
+            let mut k = (oh / th).floor().max(1.0);
+            while k > 1.0 && th * k * a > ow { k -= 1.0; }
+            let ph = th * k;
+            ((ph * a).min(ow), ph)
+        }
+    };
+    let (w, h) = (ow / pw, oh / ph);
+    [(1.0 - w) / 2.0, (1.0 - h) / 2.0, w, h]
+}
 
 pub struct GamePass {
     context_lost: bool,
@@ -76,6 +116,9 @@ pub struct GamePass {
     src: [f32; 4],
     /// Canvas rect the whole 240x160 game texture maps to.
     area: [f32; 4],
+    /// The game texture's current size: 240x160, or a home console frame.
+    size: (u32, u32),
+    fit: Fit,
 }
 
 impl GamePass {
@@ -95,6 +138,7 @@ impl GamePass {
         target.power = self.power;
         target.src = self.src;
         target.area = self.area;
+        target.fit = self.fit;
         if let Some((size, rgba)) = &self.paper_pixels {
             target.set_paper(*size, rgba);
         }
@@ -127,6 +171,8 @@ impl GamePass {
             power: 1.0,
             src: WHOLE_TEXTURE,
             area: default_area(),
+            size: (SRC_W, SRC_H),
+            fit: Fit::Canvas,
         })
     }
 
@@ -174,10 +220,37 @@ impl GamePass {
         self.area = area;
     }
 
-    pub fn upload(&mut self, xrgb8888: &[u8]) {
-        if xrgb8888.len() < (SRC_W * SRC_H * 4) as usize {
+    pub fn set_fit(&mut self, fit: Fit) {
+        self.fit = fit;
+    }
+
+    /// Reallocate the game texture when a frame arrives at another size
+    /// (a home console, SNES hi-res, a Mega Drive mode switch).
+    fn resize(&mut self, w: u32, h: u32) {
+        if self.size == (w, h) {
             return;
         }
+        #[cfg(target_os = "android")]
+        let format = gl::RGBA;
+        #[cfg(not(target_os = "android"))]
+        let format = gl::BGRA;
+        let tex = crate::gl::texture(w, h, gl::NEAREST, gl::CLAMP_TO_EDGE, format, None);
+        unsafe { gl::DeleteTextures(1, &self.game) };
+        self.game = tex;
+        self.size = (w, h);
+        #[cfg(target_os = "android")]
+        self.rgba_upload.resize((w * h * 4) as usize, 0);
+    }
+
+    pub fn upload(&mut self, xrgb8888: &[u8]) {
+        self.upload_sized(xrgb8888, (SRC_W, SRC_H));
+    }
+
+    pub fn upload_sized(&mut self, xrgb8888: &[u8], (w, h): (u32, u32)) {
+        if w == 0 || h == 0 || xrgb8888.len() < (w * h * 4) as usize {
+            return;
+        }
+        self.resize(w, h);
         #[cfg(target_os = "android")]
         {
             // ES2 requires RGBA; the libretro frame arrives as XRGB8888
@@ -206,8 +279,8 @@ impl GamePass {
                 0,
                 0,
                 0,
-                SRC_W as i32,
-                SRC_H as i32,
+                w as i32,
+                h as i32,
                 format,
                 gl::UNSIGNED_BYTE,
                 pixels as *const std::ffi::c_void,
@@ -216,22 +289,32 @@ impl GamePass {
     }
 
     pub fn draw(&self, quad: &Quad) {
+        if self.fit != Fit::Canvas {
+            // A home console frame fills the whole canvas through its fit window.
+            let canvas = [0.0, 0.0, out_w() as f32, OUT_H as f32];
+            let out = (canvas[2] * self.fbo_scale[0], canvas[3] * self.fbo_scale[1]);
+            let window = fit_window(self.fit, self.size, out);
+            self.draw_source(self.game, quad, window, self.size, WHOLE_TEXTURE, canvas);
+            return;
+        }
         let src = match self.effect {
             ScreenEffect::Grid => whole_scale_source(self.src, self.area, self.fbo_scale),
             _ => self.src,
         };
-        self.draw_source(self.game, quad, src);
+        self.draw_source(self.game, quad, src, self.size, self.pic, self.area);
     }
 
     pub fn draw_still(&self, tex: gl::types::GLuint, quad: &Quad) {
-        self.draw_source(tex, quad, WHOLE_TEXTURE);
+        self.draw_source(tex, quad, WHOLE_TEXTURE, (SRC_W, SRC_H), self.pic, self.area);
     }
 
-    fn draw_source(&self, tex: gl::types::GLuint, quad: &Quad, src: [f32; 4]) {
+    fn draw_source(&self, tex: gl::types::GLuint, quad: &Quad, src: [f32; 4],
+                   size: (u32, u32), pic: [f32; 4], area: [f32; 4]) {
         let Some(p) = &self.programs[self.effect as usize] else { return };
-        let (x, y, w, h) = screen_rect_in(self.area, self.power);
+        let (x, y, w, h) = screen_rect_in(area, self.power);
         unsafe {
             gl::UseProgram(p.prog);
+            gl::Uniform2f(p.u_src, size.0 as f32, size.1 as f32);
             gl::Uniform4f(p.u_rect, x, y, w, h);
             gl::Uniform4f(p.u_uv, src[0], src[1], src[2], src[3]);
             gl::Uniform1f(p.u_bright, screen_brightness(self.power));
@@ -241,13 +324,7 @@ impl GamePass {
             );
             gl::Uniform1f(p.u_paper_size, self.paper_size);
             gl::Uniform2f(p.u_fbo, self.fbo_scale[0], self.fbo_scale[1]);
-            gl::Uniform4f(
-                p.u_pic,
-                self.pic[0],
-                self.pic[1],
-                self.pic[2],
-                self.pic[3],
-            );
+            gl::Uniform4f(p.u_pic, pic[0], pic[1], pic[2], pic[3]);
             gl::ActiveTexture(gl::TEXTURE1);
             gl::BindTexture(gl::TEXTURE_2D, self.paper);
             gl::ActiveTexture(gl::TEXTURE0);
@@ -310,5 +387,30 @@ mod tests {
             assert!(frag.contains(&format!("const float u_mode = {:.1};", effect.mode())));
         }
         assert_eq!(EFFECTS, 13);
+    }
+
+    #[test]
+    fn original_ratio_pillarboxes_a_4_3_picture_on_3_2() {
+        let [x, y, w, h] = fit_window(Fit::Aspect(4.0 / 3.0), (256, 224), (960.0, 640.0));
+        assert!((h - 1.0).abs() < 1e-6 && y.abs() < 1e-6);
+        // 853.3 of 960 columns show the picture.
+        assert!((w - 960.0 / (640.0 * 4.0 / 3.0)).abs() < 1e-5);
+        assert!((x + w / 2.0 - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn integer_keeps_whole_line_multiples() {
+        // 224 lines on a 640-line panel: twice, 448 lines tall.
+        let [_, _, _, h] = fit_window(Fit::Integer(4.0 / 3.0), (256, 224), (960.0, 640.0));
+        assert!((640.0 / h - 448.0).abs() < 1e-3);
+        // A hi-res interlaced frame keeps the same picture size.
+        let [_, _, _, h2] = fit_window(Fit::Integer(4.0 / 3.0), (512, 448), (960.0, 640.0));
+        assert!((h - h2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn stretch_and_canvas_show_the_whole_texture() {
+        assert_eq!(fit_window(Fit::Stretch, (320, 224), (960.0, 640.0)), WHOLE_TEXTURE);
+        assert_eq!(fit_window(Fit::Canvas, (240, 160), (960.0, 640.0)), WHOLE_TEXTURE);
     }
 }
