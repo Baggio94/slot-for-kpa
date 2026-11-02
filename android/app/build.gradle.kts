@@ -17,7 +17,17 @@ android {
         versionCode = 269
         versionName = "1.3.5-bsnesfix1"
         ndk { abiFilters += listOf("arm64-v8a") }
+        // slot.'s ScreenScraper developer credentials for the NES, Super
+        // Nintendo and Mega Drive labels, from GitHub secrets at build time
+        // (base64, never committed). Without them those labels stay off.
+        fun secret(name: String): String = java.util.Base64.getEncoder()
+            .encodeToString((System.getenv(name) ?: "").toByteArray(Charsets.UTF_8))
+        buildConfigField("String", "SCREENSCRAPER_DEV_ID", "\"${secret("SCREENSCRAPER_DEV_ID")}\"")
+        buildConfigField("String", "SCREENSCRAPER_DEV_PASSWORD", "\"${secret("SCREENSCRAPER_DEV_PASSWORD")}\"")
+        buildConfigField("String", "SCREENSCRAPER_SOFTNAME", "\"${secret("SCREENSCRAPER_SOFTNAME")}\"")
     }
+
+    buildFeatures { buildConfig = true }
 
     // This APK is distributed directly for KONKR Android 12 (not via Google
     // Play). Keep targetSdk 32 to preserve the validated system/input behavior;

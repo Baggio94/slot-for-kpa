@@ -235,12 +235,12 @@ pub fn sticker_face_konkr(f: &StickerFields) -> UndoFace {
         "ADVANCE. ORIGINAL SLOT.",
         "BY BRANDON T. KOWALSKI.",
         "ANDROID PORT BY BAGGIO94.",
-        "EMULATION POWERED BY MGBA",
-        "AND GPSP LIBRETRO CORES.",
+        "EMULATION: LIBRETRO CORES",
+        "(MGBA, GPSP, GAMBATTE ETC.)",
         "ORIGINAL UI & CART ART BY",
-        "BRANDON T. KOWALSKI.",
-        "TYPE: OPEN SANS / NERD",
-        "FONTS. OPEN SOURCE SOFTWARE.",
+        "BRANDON T. KOWALSKI. HOME",
+        "CART ART: SCREENSCRAPER.FR",
+        "TYPE: OPEN SANS, NERD FONTS",
     ];
     sticker_face_custom(
         f, &PORT_CREDITS, &["S/LOT-KONKR", "ANDROID EDITION"],

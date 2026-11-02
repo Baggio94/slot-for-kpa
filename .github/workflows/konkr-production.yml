@@ -156,8 +156,12 @@ jobs:
           SLOT_SIGNING_STORE_PASSWORD: ${{ secrets.SLOT_SIGNING_STORE_PASSWORD }}
           SLOT_SIGNING_KEY_ALIAS: ${{ secrets.SLOT_SIGNING_KEY_ALIAS }}
           SLOT_SIGNING_KEY_PASSWORD: ${{ secrets.SLOT_SIGNING_KEY_PASSWORD }}
+          SCREENSCRAPER_DEV_ID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
+          SCREENSCRAPER_DEV_PASSWORD: ${{ secrets.SCREENSCRAPER_DEV_PASSWORD }}
+          SCREENSCRAPER_SOFTNAME: ${{ secrets.SCREENSCRAPER_SOFTNAME }}
         run: |
           set -euo pipefail
+          test -n "$SCREENSCRAPER_DEV_ID" || echo "::warning::ScreenScraper credentials missing: no NES/SNES/MD labels"
           test -n "$SLOT_KEYSTORE_BASE64" || { echo "::error::Configure permanent signing secrets"; exit 1; }
           export SLOT_SIGNING_STORE_FILE="$RUNNER_TEMP/slot-konkr-signing.jks"
           (umask 077; printf '%s' "$SLOT_KEYSTORE_BASE64" | base64 -d > "$SLOT_SIGNING_STORE_FILE")

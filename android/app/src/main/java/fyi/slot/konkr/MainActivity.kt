@@ -2077,9 +2077,14 @@ class MainActivity : Activity() {
                     // Exactly the production 1.2.0 callback: enqueue a
                     // successful saved label for an idle carousel repaint.
                     // Status/UI snapshots are completely separate.
+                    val keepGoing = { resumed && !isDestroyed && !nativeIsPlaying() && !cartStudioOpening }
                     anotherBatch = AutoCartLabels.fill(applicationContext,
-                        shouldContinue = { resumed && !isDestroyed && !nativeIsPlaying() && !cartStudioOpening },
+                        shouldContinue = keepGoing,
                         onSaved = { uri -> autoLabelUpdates.add(uri) })
+                    // NES, Super Nintendo and Mega Drive labels from ScreenScraper.
+                    anotherBatch = HomeCartLabels.fill(applicationContext,
+                        shouldContinue = keepGoing,
+                        onSaved = { uri -> autoLabelUpdates.add(uri) }) || anotherBatch
                 } catch (error: Exception) {
                     Log.w("SlotAutoLabels", "Automatic artwork deferred", error)
                 } finally {
