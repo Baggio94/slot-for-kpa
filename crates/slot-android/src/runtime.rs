@@ -944,20 +944,9 @@ impl Engine {
             };
             (band(back), band(front))
         });
-        let home_closers=[0usize, 1, 2, 3].map(|family| {
-            let kind = match family {
-                1 => slot_ui::CloserKind::Flap,
-                2 => slot_ui::CloserKind::Flaps,
-                3 => slot_ui::CloserKind::Doors,
-                _ => slot_ui::CloserKind::Open,
-            };
-            let mut tex = [None, None];
-            for (i, (rgba, w, h)) in slot_ui::bitmaps::home_closer(family).into_iter().enumerate().take(2) {
-                let (rgba, w, h) = slot_ui::native_rgba(rgba, w, h);
-                tex[i] = Some(gpu.create_texture(w, h, &rgba));
-            }
-            Some(slot_ui::SlotCloser { kind, tex })
-        });
+        // The home consoles' bars are open recesses like the GB/GBA bar
+        // (Siham 2026-11-02): no flap or doors close them any more.
+        let home_closers: [Option<slot_ui::SlotCloser>; 4] = [None; 4];
         let slot_faces = if custom_colours { None }
             else if settings.appearance == crate::settings::Appearance::Light {
                 Some(slot_light_faces)

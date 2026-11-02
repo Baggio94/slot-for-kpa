@@ -168,8 +168,11 @@ pub fn body_seated_box(body: Body) -> (u32, u32) {
         Body::Gba => (SEATED_W, SEATED_H),
         Body::Gb(_) => (SEATED_W, GB_SEATED_H),
         Body::Home(m) => {
+            // Super Nintendo and Mega Drive carts stay 20% bigger in the
+            // slot too, whose recess is drawn to fit them.
             let (w, h) = m.size();
-            (SEATED_W, (SEATED_W * h + w / 2) / w)
+            let sw = (SEATED_W as f32 * shelf_grow(body)).round() as u32;
+            (sw, (sw * h + w / 2) / w)
         }
     }
 }
