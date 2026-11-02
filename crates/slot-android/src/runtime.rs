@@ -577,6 +577,9 @@ const SYSTEM_ORDER: [Platform; 6] = [
     Platform::Nes, Platform::Snes, Platform::Md,
 ];
 const SYSTEM_TITLES: [usize; 6] = [91, 92, 93, 121, 122, 123];
+// Special racks follow the supported platforms, not hard-coded GB-era indices.
+const RECENTS_RACK: usize = Platform::ALL.len();
+const FAVORITES_RACK: usize = RECENTS_RACK + 1;
 
 /// A core's name among the setting values.
 fn core_value(core: Core) -> usize {
@@ -953,21 +956,23 @@ impl Engine {
             }
             shelves.push(Shelf::new(carts));
         }
-        // Fourth rack mirrors Slot's ten most recently launched ROMs.
-        // Do not modify the three platform shelves or their ROM roots.
+        // The rack following all supported systems mirrors ten recent ROMs.
+        // Do not modify the system shelves or their ROM roots.
         let recent_ids=visuals_root.as_deref().map(crate::recents::load)
             .unwrap_or_default();
-        let recent_carts=crate::recents::carts(&recent_ids,
-            &[&shelves[0].carts, &shelves[1].carts, &shelves[2].carts]);
+        let system_carts: Vec<&[slot_store::Cart]> = shelves.iter()
+            .take(Platform::ALL.len()).map(|shelf| shelf.carts.as_slice()).collect();
+        let recent_carts=crate::recents::carts(&recent_ids, &system_carts);
         shelves.push(Shelf::new(if settings.show_recents {
             recent_carts
         } else { Vec::new() }));
-        // The v1.7 Favorites rack contains real GB/GBC/GBA carts in name order.
+        // The Favorites rack contains cartridges from every supported system.
         // URI identity keeps identical ROM filenames in distinct folders separate.
         let favorite_ids=visuals_root.as_deref().map(crate::favorites::load)
             .unwrap_or_default();
-        let favorite_carts=crate::favorites::carts(&favorite_ids,
-            &[&shelves[0].carts,&shelves[1].carts,&shelves[2].carts]);
+        let system_carts: Vec<&[slot_store::Cart]> = shelves.iter()
+            .take(Platform::ALL.len()).map(|shelf| shelf.carts.as_slice()).collect();
+        let favorite_carts=crate::favorites::carts(&favorite_ids, &system_carts);
         shelves.push(Shelf::new(favorite_carts));
 
         // Original Slot names, not abbreviations: Game Boy Advance,
@@ -4216,26 +4221,27 @@ impl Engine {
     fn rebuild_favorites(&mut self) {
         let Some(root)=Self::recents_root() else {return};
         let ids=crate::favorites::load(&root);
-        let carts=crate::favorites::carts(&ids,
-            &[&self.shelves[0].carts,&self.shelves[1].carts,&self.shelves[2].carts]);
-        let was_favorite=self.active==4;
-        let previous_index=self.shelves[4].index;
-        let previous_uri=self.shelves[4].carts.get(previous_index).map(|c|c.rom.clone());
-        self.cart_render.invalidate_shelf(4);
-        let moves=self.shelves[4].replace_carts_preserving_visuals(carts);
-        self.rekey_rack_visuals(4,&moves);
+        let system_carts: Vec<&[slot_store::Cart]> = self.shelves.iter()
+            .take(Platform::ALL.len()).map(|shelf| shelf.carts.as_slice()).collect();
+        let carts=crate::favorites::carts(&ids, &system_carts);
+        let was_favorite=self.active==FAVORITES_RACK;
+        let previous_index=self.shelves[FAVORITES_RACK].index;
+        let previous_uri=self.shelves[FAVORITES_RACK].carts.get(previous_index).map(|c|c.rom.clone());
+        self.cart_render.invalidate_shelf(FAVORITES_RACK);
+        let moves=self.shelves[FAVORITES_RACK].replace_carts_preserving_visuals(carts);
+        self.rekey_rack_visuals(FAVORITES_RACK,&moves);
         // Unstarring from Favorites selects the next cart, exactly as upstream.
-        if was_favorite && !self.shelves[4].carts.is_empty() &&
+        if was_favorite && !self.shelves[FAVORITES_RACK].carts.is_empty() &&
             previous_uri.as_ref().is_some_and(|uri|
-                !self.shelves[4].carts.iter().any(|cart|&cart.rom==uri)) {
-            let last=self.shelves[4].carts.len()-1;
-            self.shelves[4].select(previous_index.min(last));
+                !self.shelves[FAVORITES_RACK].carts.iter().any(|cart|&cart.rom==uri)) {
+            let last=self.shelves[FAVORITES_RACK].carts.len()-1;
+            self.shelves[FAVORITES_RACK].select(previous_index.min(last));
         }
         for shelf in &mut self.shelves {
             shelf.mark_starred(|cart|ids.iter()
                 .any(|uri|uri==cart.rom.to_string_lossy().as_ref()));
         }
-        if was_favorite && self.shelves[4].carts.is_empty() {
+        if was_favorite && self.shelves[FAVORITES_RACK].carts.is_empty() {
             self.active=next_nonempty_shelf(&self.shelves,0,1);
             self.platform_shown_at=Some(Instant::now());
         }
@@ -4264,20 +4270,21 @@ impl Engine {
     fn rebuild_recents(&mut self) {
         let Some(root)=Self::recents_root() else { return };
         let ids=crate::recents::load(&root);
-        let carts=crate::recents::carts(&ids,
-            &[&self.shelves[0].carts,&self.shelves[1].carts,&self.shelves[2].carts]);
-        let was_recent=self.active==3;
+        let system_carts: Vec<&[slot_store::Cart]> = self.shelves.iter()
+            .take(Platform::ALL.len()).map(|shelf| shelf.carts.as_slice()).collect();
+        let carts=crate::recents::carts(&ids, &system_carts);
+        let was_recent=self.active==RECENTS_RACK;
         // Reject completed worker art from the previous URI->index mapping.
-        self.cart_render.invalidate_shelf(3);
-        let moves=self.shelves[3].replace_carts_preserving_visuals(
+        self.cart_render.invalidate_shelf(RECENTS_RACK);
+        let moves=self.shelves[RECENTS_RACK].replace_carts_preserving_visuals(
             if self.settings.show_recents { carts } else { Vec::new() });
-        self.rekey_rack_visuals(3,&moves);
+        self.rekey_rack_visuals(RECENTS_RACK,&moves);
         // Restocking Recents must not erase Favorite stars: its Shelf rebuild
         // necessarily reconstructs the per-cart starred flags from scratch.
         let favorites=crate::favorites::load(&root);
-        self.shelves[3].mark_starred(|cart|favorites.iter()
+        self.shelves[RECENTS_RACK].mark_starred(|cart|favorites.iter()
             .any(|uri|uri==cart.rom.to_string_lossy().as_ref()));
-        if was_recent && self.shelves[3].carts.is_empty() {
+        if was_recent && self.shelves[RECENTS_RACK].carts.is_empty() {
             self.active=next_nonempty_shelf(&self.shelves,0,1);
         }
     }
@@ -5993,8 +6000,8 @@ impl Engine {
                     let elapsed=since.elapsed().as_millis() as u64;
                     if platform_name_running(elapsed) {
                         let face=match self.active {
-                                3=>self.recents_platform_face,
-                                4=>self.favorites_platform_face,
+                                RECENTS_RACK=>self.recents_platform_face,
+                                FAVORITES_RACK=>self.favorites_platform_face,
                                 index=>self.platform_faces[index],
                             };
                         Some((face,elapsed,true))
@@ -6339,7 +6346,7 @@ fn restore_saved_focus(shelves:&mut [Shelf], focus:&crate::selection::Focus)->Op
         shelves[focus.rack].select(index);
         return Some(focus.rack);
     }
-    for rack in 0..3 {
+    for rack in 0..Platform::ALL.len() {
         if let Some(index)=shelves.get(rack).and_then(|shelf|
             shelf.carts.iter().position(|cart|cart.rom.to_string_lossy()==focus.uri.as_str())) {
             shelves[rack].select(index);
