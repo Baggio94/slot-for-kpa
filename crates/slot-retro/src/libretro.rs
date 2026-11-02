@@ -2700,11 +2700,13 @@ mod tests {
     fn libretro_default_and_explicit_0rgb1555_are_supported() {
         assert!(matches!(PixelFormat::default(), PixelFormat::Rgb1555));
         let mut host = host_with(HashMap::new(), false);
-        let _active = Active::bind(&mut host);
-        let mut format = PIXEL_FORMAT_0RGB1555;
-        assert!(unsafe {
-            environment(SET_PIXEL_FORMAT, &mut format as *mut _ as *mut c_void)
-        });
+        {
+            let _active = Active::bind(&mut host);
+            let mut format = PIXEL_FORMAT_0RGB1555;
+            assert!(unsafe {
+                environment(SET_PIXEL_FORMAT, &mut format as *mut _ as *mut c_void)
+            });
+        }
         assert!(matches!(host.format, PixelFormat::Rgb1555));
     }
 
