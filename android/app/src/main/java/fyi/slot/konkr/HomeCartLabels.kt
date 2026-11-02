@@ -340,6 +340,49 @@ internal object HomeCartLabels {
         }
     }
 
+    /** Games Cart Studio asked for that ScreenScraper doesn't know, this run. */
+    private val studioMisses = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** The label of a home game picked by hand in Cart Studio (not one of the
+     *  library's carts, so not scraped yet): fetched from ScreenScraper when
+     *  Studio shows it and kept with the others, under each of its checksums
+     *  tried in turn (a dump's own, then its headerless one). */
+    fun studioLabel(context: Context, platform: String, name: String, crcs: List<String>): ByteArray? {
+        if (systemId(platform) == null || crcs.isEmpty()) return null
+        val dir = File(context.filesDir, REAL_DIR)
+        crcs.map { File(dir, "$it.png") }.firstOrNull { it.isFile && it.length() in 8L..MAX_IMAGE.toLong() }
+            ?.let { return it.readBytes() }
+        val key = platform + ":" + crcs.joinToString(",")
+        if (key in studioMisses) return null
+        val creds = credentials() ?: return null
+        if (android.os.SystemClock.elapsedRealtime() < closedUntil) return null
+        val rom = Rom("", platform, name, name, -1, -1, "", "")
+        val go = { true }
+        for (crc in crcs) {
+            val reply = lookup(rom, crc, creds, go)
+            when (reply.code) {
+                200 -> {
+                    val media = pick(medias(JSONObject(String(reply.body, Charsets.UTF_8))), rom)
+                        ?: break
+                    val image = get(media.url, MAX_IMAGE, go)
+                    if (image.code != 200) return null
+                    val png = labelPng(image.body, media, rom) ?: break
+                    writeAtomic(File(dir, "$crc.png"), png)
+                    return png
+                }
+                404 -> Thread.sleep(150L)
+                400, 401, 403, 423, 426 -> {
+                    closedUntil = android.os.SystemClock.elapsedRealtime() + 3_600_000L
+                    Log.w(TAG, "ScreenScraper refused the request: HTTP ${reply.code}")
+                    return null
+                }
+                else -> return null
+            }
+        }
+        studioMisses.add(key)
+        return null
+    }
+
     /** Returns true while carts are left for a later pass. */
     fun fill(context: Context, shouldContinue: () -> Boolean, onSaved: (String) -> Unit): Boolean {
         val creds = credentials() ?: return false

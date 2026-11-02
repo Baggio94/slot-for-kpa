@@ -149,7 +149,11 @@ class CartStudioActivity : Activity() {
                 // Native same-origin fetch avoids CORS restrictions from the
                 // official art CDN when the Studio runs under appassets.
                 if (path.startsWith("art/")) {
-                    return officialArt.intercept(path.removePrefix("art/"))
+                    val art = path.removePrefix("art/")
+                    if (art.startsWith("konkr-home/") && art.count { it == '/' } == 2)
+                        return officialArt.interceptChosenHome(art,
+                            url.getQueryParameter("name"), url.getQueryParameter("crcs"))
+                    return officialArt.intercept(art)
                 }
                 if (path.startsWith("dat/") && path.endsWith(".dat")) {
                     return noIntro.intercept(path.removePrefix("dat/").removeSuffix(".dat"))

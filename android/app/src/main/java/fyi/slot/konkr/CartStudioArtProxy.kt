@@ -80,6 +80,27 @@ internal class CartStudioArtProxy(private val context: Context) {
         return response(200, "application/json", merged.toByteArray(Charsets.UTF_8))
     }
 
+    private val chosenPath = Regex("konkr-home/(NES|SNES|MD)/([0-9A-F]{8})\\.png")
+    private val crcText = Regex("[0-9A-F]{8}")
+
+    /** A home game picked by hand in Cart Studio: konkr-home/<platform>/<CRC>.png,
+     *  with its No-Intro name and every checksum it is known by. */
+    fun interceptChosenHome(path: String, name: String?, crcs: String?): WebResourceResponse {
+        val match = chosenPath.matchEntire(path)
+            ?: return response(404, "text/plain", "Not found".toByteArray())
+        val (platform, crc) = match.destructured
+        val all = (listOf(crc) + crcs.orEmpty().split(',').filter { crcText.matches(it) })
+            .distinct().take(8)
+        val png = try {
+            HomeCartLabels.studioLabel(context, platform, name.orEmpty().take(200), all)
+        } catch (error: Exception) {
+            Log.w(TAG, "Chosen home label failed: $platform $crc", error)
+            null
+        }
+        return if (png != null) response(200, "image/png", png)
+        else response(404, "text/plain", "Not found".toByteArray())
+    }
+
     private fun interceptOfficial(path: String): WebResourceResponse {
         if (path.startsWith("konkr-home/")) {
             val name = path.removePrefix("konkr-home/")

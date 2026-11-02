@@ -333,6 +333,19 @@ const KONKR_HOME = new Set(['NES', 'SNES', 'MD']);
 const facePlatform = (c) => KONKR_HOME.has(c.platform)
   ? `${c.platform}:${home_outline(c.platform, c.stem, c.head ?? new Uint8Array(0), c.shell ?? '')}`
   : c.platform;""")
+    # A home game picked by hand has no label in the art set (Game Boy and
+    # GBA only) nor, unless it is in the library, among slot.'s scraped ones:
+    # ask slot. for it, which fetches it from ScreenScraper (Siham 2026-11-02).
+    js = checked_replace(js,
+        "const realPathOf = (c) => {\n  const key = c.rejected ? null : artKey(c);\n  return (key && artIndex?.[key]?.['support-texture']) || null;\n};",
+        """const realPathOf = (c) => {
+  const key = c.rejected ? null : artKey(c);
+  const indexed = (key && artIndex?.[key]?.['support-texture']) || null;
+  if (indexed || c.rejected || !window.AndroidStudio || !KONKR_HOME.has(c.platform) || !c.game) return indexed;
+  const crcs = Array.from(dats.get(c.platform)?.crcs_for(c.game) ?? [], crcHex);
+  if (!crcs.length) return null;
+  return `konkr-home/${c.platform}/${crcs[0]}.png?name=${encodeURIComponent(c.game)}&crcs=${crcs.join(',')}`;
+};""")
     js = checked_replace(js, "    const label = Label.full(bytes, c.platform);",
                          "    const label = Label.full(bytes, facePlatform(c));")
     js = checked_replace(js, "  return withLabel(bytes, deep, c.platform, use, look?.band ?? null);",
