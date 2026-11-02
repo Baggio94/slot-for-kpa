@@ -63,8 +63,6 @@ done
 # DMG palette must follow a live option change and savestate restoration.
 # MBC2 games (Kirby's Pinball Land) must get a valid SRAM bank pointer
 # instead of freezing on their first save RAM read (upstream 543a19758).
-# The first Game Boy frame after the LCD turns back on stays blank instead of
-# flashing stray tiles and sprites (Pokémon Pinball, upstream Slot #169).
 # Apply strictly: never continue on a mismatched or half-patched checkout.
 for patch in flash-bank-survives-mask.patch gb-dmg-palette-follows-option.patch \
   543a19758-mbc2-sram-bank.patch gb-blank-frame-after-lcd-on.patch; do
@@ -86,11 +84,35 @@ python3 "$ROOT/scripts/patch-mgba-speculative-audio.py" "$SRC"
 python3 "$ROOT/scripts/patch-mgba-active-sram.py" "$SRC"
 # Boktai's sunlight, set by slot. on every sample (0..255).
 python3 "$ROOT/scripts/patch-mgba-sun.py" "$SRC"
+# Retain the Game Boy LCD reactivation blank-frame fix from build 266.
+# Native diagnostic monitor is Android-only; the core links Android's liblog
+# to report a stalled GB Link from its separate monitor thread even when the
+# main GL emulation thread never returns from SM83Run().
+# Read-only inner-core probes reveal whether SM83 CPU stepping, GB event timing
+# or Game Boy SIO lockstep owns a deterministic spin. This does not change
+# emulated timing/saves. Do not ship this experimental trace in stable builds.
+python3 "$ROOT/scripts/patch-mgba-gb-inner-trace.py" "$SRC"
+# The pinned libretro version script hides ALL non-retro symbols unless
+# explicitly exported. Keep the new GB/GBC watchdog result observable via dlsym.
+python3 - "$SRC/src/platform/libretro/link.T" <<'PY'
+from pathlib import Path
+import sys
+version_script = Path(sys.argv[1])
+source = version_script.read_text()
+name = "slot_mgba_gb_link_fault;"
+if name not in source:
+    before = "slot_mgba_set_sun;"
+    if source.count(before) != 1:
+        raise SystemExit("mGBA GB Link fault export cannot find audited link.T anchor")
+    version_script.write_text(source.replace(before, before + " " + name, 1))
+assert version_script.read_text().count(name) == 1
+PY
 cmake -S "$SRC" -B "$BUILD" \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--no-as-needed -llog -Wl,--as-needed" \
   -DBUILD_LIBRETRO=ON -DSKIP_LIBRARY=ON \
   -DBUILD_QT=OFF -DBUILD_SDL=OFF -DBUILD_GL=OFF \
   -DBUILD_GLES2=OFF -DBUILD_GLES3=OFF \
@@ -111,7 +133,7 @@ esac
 NM="$NDK/toolchains/llvm/prebuilt/$NDK_HOST/bin/llvm-nm"
 [ -x "$NM" ] || { echo "Android NDK llvm-nm missing: $NM" >&2; exit 1; }
 SYMBOLS="$("$NM" -D --defined-only "$CORE")"
-for symbol in retro_init retro_load_game retro_run retro_serialize retro_unserialize slot_mgba_audio_sidecar slot_mgba_audio_sidecar_size slot_mgba_clone_active_save_ram slot_mgba_set_sun; do
+for symbol in retro_init retro_load_game retro_run retro_serialize retro_unserialize slot_mgba_audio_sidecar slot_mgba_audio_sidecar_size slot_mgba_clone_active_save_ram slot_mgba_set_sun slot_mgba_gb_link_fault; do
   grep -q " $symbol$" <<< "$SYMBOLS" || {
     echo "mGBA ABI symbol missing: $symbol" >&2
     exit 1
@@ -138,6 +160,6 @@ fi
 # F11: machine-readable provenance shipped INSIDE the APK. These fields
 # record the exact pinned source and safety patches used in this binary.
 cat > "$ROOT/android/app/src/main/assets/core-build-mgba.json" <<EOF
-{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py","patch-mgba-sun.py"]}
+{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","gb-blank-frame-after-lcd-on.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py","patch-mgba-sun.py"],"gb_link_diagnostics":"android_spin_monitor_v1_inner_trace_v1"}
 EOF
 echo "mGBA arm64 libretro: $DEST/libmgba_libretro.so"
