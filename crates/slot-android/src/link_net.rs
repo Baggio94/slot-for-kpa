@@ -115,7 +115,8 @@ impl LabGreeting {
             || !crate::link_kind::has_wireless_adapter(
             std::str::from_utf8(&other.game).unwrap_or(""))) { return false; }
         if self.backend!=other.backend || self.mode!=other.mode ||
-            self.core_sha256!=other.core_sha256 || self.bios_sha256!=other.bios_sha256{return false;}
+            self.core_sha256!=other.core_sha256 ||
+            (self.backend!=1 && self.bios_sha256!=other.bios_sha256){return false;}
         let mode=match self.mode{1=>crate::link_kind::LinkKind::Cable,
             2=>crate::link_kind::LinkKind::Wireless,_=>return false};
         if self.backend==2 {
@@ -844,9 +845,8 @@ mod lab_negotiation_tests {
         let mut wrong = expected.clone();
         wrong.core_sha256[0] ^= 1;
         variants.push(wrong);
-        let mut wrong = expected.clone();
-        wrong.bios_sha256[0] ^= 1;
-        variants.push(wrong);
+        // mGBA Cable tolerates different or missing BIOS hashes; strict
+        // ROM identity, backend, mode and core recipe still apply.
         let mut wrong = expected.clone();
         wrong.backend ^= 1;
         variants.push(wrong);
@@ -922,6 +922,25 @@ mod lab_negotiation_tests {
         assert!(!server.peer_paused(),"RESUME must unfreeze the remote GBA");
         assert!(server.try_recv().is_none(),"RESUME must not reach the cartridge");
         server.send_end();
+    }
+    #[test]
+    fn mgba_cable_bios_is_optional_but_other_backends_stay_strict() {
+        let host = identity();
+        let mut guest = host.clone();
+        guest.bios_sha256 = [0; 32];
+        assert!(host.accepts(&guest));
+        guest.backend = 2;
+        assert!(!host.accepts(&guest));
+        let mut gpsp = host.clone();
+        gpsp.backend = 2;
+        let mut other = gpsp.clone();
+        other.bios_sha256 = [0; 32];
+        assert!(!gpsp.accepts(&other));
+        let mut gambatte = host.clone();
+        gambatte.backend = 3;
+        let mut other = gambatte.clone();
+        other.bios_sha256 = [0; 32];
+        assert!(!gambatte.accepts(&other));
     }
     #[test]
     fn cross_game_never_relaxes_unrelated_peer_integrity_checks(){
