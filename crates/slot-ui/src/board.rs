@@ -428,8 +428,34 @@ pub fn lid_rest(platform: Platform) -> Placed {
     lid_rest_body(platform_body(platform))
 }
 
+/// A cart wider than it is tall (GBA, and every home cart but the NES's)
+/// opens like the GBA: its front lifts off upward and the board rests
+/// centred under it (Siham 2026-11-02). Taller carts open like a book.
+fn opens_upward(body: Body) -> bool {
+    match body {
+        Body::Gba => true,
+        Body::Home(m) => { let (w, h) = m.size(); w > h }
+        _ => false,
+    }
+}
+
+/// Room for a home cart that opens upward: its front above (at most
+/// 160x100, the GBA lid's band) and its board under it.
+const UP_LID: (f32, f32) = (160.0, 100.0);
+const UP_BOARD: (f32, f32) = (372.0, 235.0);
+const UP_BOARD_Y: f32 = 145.0;
+
+fn fit_in((cw, ch): (u32, u32), (w, h): (f32, f32)) -> (f32, f32) {
+    let k = (w / cw as f32).min(h / ch as f32);
+    (cw as f32 * k, ch as f32 * k)
+}
+
 pub fn lid_rest_body(body: Body) -> Placed {
     if body == Body::Gba { return lid_rest_gba(); }
+    if opens_upward(body) {
+        let (w, h) = fit_in(body_box(body), UP_LID);
+        return Placed { x: (out_w() as f32 - w) / 2.0, y: 30.0, w, h };
+    }
     // A pak opens like a book: its front rests beside the board.
     let (cw, ch) = body_box(body);
     let w = PAK_LID_W;
@@ -554,8 +580,14 @@ pub fn board_layout_body(body: Body) -> BoardLayout {
     let unit = |px: f32| px / UNIT_PX;
     if let Body::Home(m) = body {
         let [(x0, y0, fw, fh), (x1, _, _, _)] = m.art().footprints;
+        let rest = if opens_upward(body) {
+            let (w, h) = fit_in((cw, ch), UP_BOARD);
+            Placed { x: (out_w() as f32 - w) / 2.0, y: UP_BOARD_Y, w, h }
+        } else {
+            Placed { x, y: (480.0 - 120.0 - h) / 2.0 + 30.0, w, h }
+        };
         return BoardLayout {
-            rest: Placed { x, y: (480.0 - 120.0 - h) / 2.0 + 30.0, w, h },
+            rest,
             native: (cw as f32, ch as f32),
             sockets: false,
             socket_u: [unit(x0), unit(x1)],
