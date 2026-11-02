@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 591 397" width="591" height="397">
+  <defs><linearGradient id="wallShade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity=".6"/><stop offset=".08" stop-color="#000" stop-opacity="0"/></linearGradient></defs>
+  <path d="M18 0 H573 Q591 0 591 18 V379 Q591 397 573 397 H18 Q0 397 0 379 V18 Q0 0 18 0 Z" fill="#ff00ff"/>
+  <path d="M26 14 H565 Q575 14 575 24 V377 Q575 387 565 387 H26 Q16 387 16 377 V24 Q16 14 26 14 Z" fill="#800080"/>
+  <path d="M26 14 H565 Q575 14 575 24 V377 Q575 387 565 387 H26 Q16 387 16 377 V24 Q16 14 26 14 Z" fill="url(#wallShade)"/>
+  <path d="M140 40 H463 Q485 40 485 62 V74 Q485 96 463 96 H140 Q118 96 118 74 V62 Q118 40 140 40 Z" fill="#400040"/>
+  <rect x="22" y="244" width="52" height="134" rx="4" fill="#ff00ff" stroke="#400040" stroke-width="1.24"/>
+  <rect x="517" y="244" width="52" height="134" rx="4" fill="#ff00ff" stroke="#400040" stroke-width="1.24"/>
+  <circle cx="118" cy="187" r="16" fill="#ff00ff" stroke="#400040" stroke-width="1.24"/>
+  <circle cx="118" cy="187" r="6.4" fill="#400040"/>
+  <circle cx="497" cy="187" r="16" fill="#ff00ff" stroke="#400040" stroke-width="1.24"/>
+  <circle cx="497" cy="187" r="6.4" fill="#400040"/>
+</svg>

@@ -27,7 +27,7 @@ internal object RomLibrary {
         val gbTitle: String = "", val gbCode: String = "",
         val gbJapan: Boolean = false, val gbCgbFlag: Int = -1,
         val homeTitle: String = "", val homeRegion: String = "",
-        val homeBattery: Boolean = false
+        val homeBattery: Boolean = false, val homeMaker: String = ""
     )
     internal fun equivalentEntries(left: List<IndexEntry>, right: List<IndexEntry>): Boolean {
         if (left.size != right.size) return false
@@ -47,7 +47,7 @@ internal object RomLibrary {
                 obj.optString("gb_title"), obj.optString("gb_code"),
                 obj.optBoolean("gb_japan"), obj.optInt("gb_cgb_flag", -1),
                 obj.optString("home_title"), obj.optString("home_region"),
-                obj.optBoolean("home_battery"))
+                obj.optBoolean("home_battery"), obj.optString("home_maker"))
         }
     }
     internal fun sameIndex(before: String, after: String): Boolean =
@@ -162,7 +162,7 @@ internal object RomLibrary {
                         // Old indexes lack the GB header metadata used by
                         // Cart Studio. Read only 0x150 bytes once to migrate.
                         (old.optString("platform") == "GBA" || old.has("gb_cgb_flag") ||
-                            old.has("home_battery"))
+                            old.has("home_maker"))
                     // ZIP archives remain a single shelf cartridge identified
                     // by the ZIP's SAF URI and filename. Resolve the embedded
                     // ROM header/extension only on cache misses.
@@ -207,7 +207,8 @@ internal object RomLibrary {
                         gbJapan = old.optBoolean("gb_japan")
                         gbCgbFlag = old.optInt("gb_cgb_flag", -1)
                         homeHeader = Systems.HomeHeader(old.optString("home_title"),
-                            old.optString("home_region"), old.optBoolean("home_battery"))
+                            old.optString("home_region"), old.optBoolean("home_battery"),
+                            old.optString("home_maker"))
                     } else {
                         headersRead++
                         val header = zipHeader?.bytes
@@ -260,6 +261,7 @@ internal object RomLibrary {
                             .put("home_title", homeHeader.title)
                             .put("home_region", homeHeader.region)
                             .put("home_battery", homeHeader.battery)
+                            .put("home_maker", homeHeader.maker)
                     } else if (!gba) {
                         game.put("gb_title", gbTitle)
                             .put("gb_code", gbCode)

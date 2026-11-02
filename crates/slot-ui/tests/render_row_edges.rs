@@ -24,7 +24,7 @@ fn shelf_with(n: usize) -> Shelf {
                 rom: format!("Games/GBA/Game {i}.gba").into(),
                 label: None,
                 code: String::new(),
-                shell: None,
+                shell: None, battery: false,
                 title: format!("GAME {i}"),
             })
             .collect(),

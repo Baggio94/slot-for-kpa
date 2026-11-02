@@ -101,8 +101,12 @@ internal object Systems {
 
     /** What the shelf draws from a home console header: the internal
      *  title, the region (J, U, E or empty when unknown) and whether the
-     *  cart keeps a battery-backed save. */
-    data class HomeHeader(val title: String, val region: String, val battery: Boolean)
+     *  cart keeps a battery-backed save. A Mega Drive cart also gives its
+     *  copyright field ("(C)T-50 1991.JUN" for Electronic Arts), which
+     *  picks the publisher's shell. */
+    data class HomeHeader(
+        val title: String, val region: String, val battery: Boolean, val maker: String = ""
+    )
 
     fun homeHeader(ext: String, header: ByteArray, filename: String): HomeHeader {
         val fromName = regionFromName(filename)
@@ -198,7 +202,8 @@ internal object Systems {
             codes.length == 1 && hexRegion(codes[0], 1) -> "J"
             else -> ""
         }
-        return HomeHeader(title, nameRegion.ifEmpty { region }, battery)
+        val maker = String(header, 0x110, 0x10, Charsets.ISO_8859_1).trim { it <= ' ' }
+        return HomeHeader(title, nameRegion.ifEmpty { region }, battery, maker)
     }
 
     private fun hexRegion(c: Char, bit: Int): Boolean {

@@ -11,7 +11,7 @@ fn shelf(platforms: &[Platform]) -> Shelf {
         rom: format!("Games/Game {i}").into(),
         label: None,
         code: String::new(),
-        shell: None,
+        shell: None, battery: false,
         title: format!("GAME {i}"),
     }).collect())
 }

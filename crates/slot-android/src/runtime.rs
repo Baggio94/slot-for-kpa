@@ -27,8 +27,8 @@ use slot_power::{Battery, Charge};
 use crate::library::{carts_by_platform, RomEntry, LIBRARY};
 use slot_ui::{
     board_face, chip_face, pak_chip_face, chip_shadow_face, socket_face, quick_value_face, cart_face_with_material,
-    cart_shadow, gb_cart_shadow, lift_of, shelf_cart_for,
-    lid_rest, lid_toward, cart_box, board_layout, board_toward,
+    cart_shadow, gb_cart_shadow, lift_of,
+    lid_toward, board_toward,
     grown, Draw, GbShell, Shelf, SlotChrome, SOCKET_W, SOCKET_H,
     TURN_PAD,
     hint_face, arrows_hint_face, title_face, photo_face, Polaroids, Printed, HINT_H, HINT_EDGE, draw_slot_name, draw_platform_name, platform_name_face,
@@ -737,6 +737,8 @@ struct Engine {
     /// Live rear/front v1.7.0 slot textures. Always draw in proper depth order.
     slot_faces: Option<(slot_gfx::TexId, slot_gfx::TexId)>,
     slot_dark_faces: (slot_gfx::TexId, slot_gfx::TexId),
+    /// The Famicom, NES, Super Nintendo and Mega Drive slot bars.
+    home_slot_faces: [(slot_gfx::TexId, slot_gfx::TexId); 4],
     slot_light_faces: (slot_gfx::TexId, slot_gfx::TexId),
     gb_bezel_tex: slot_gfx::TexId,
     gbc_bezel_tex: slot_gfx::TexId,
@@ -785,6 +787,8 @@ struct Engine {
     chip_blank: slot_gfx::TexId,
     pak_chip_textures: [slot_gfx::TexId; Core::ALL.len()],
     pak_chip_blank: slot_gfx::TexId,
+    /// The NES, Super Nintendo and Mega Drive chips with no core name.
+    home_chip_blanks: [slot_gfx::TexId; 3],
     chip_shadow: slot_gfx::TexId,
     core_legend_faces: [(slot_gfx::TexId, u32); 3],
     a_down_at: Option<Instant>,
@@ -927,6 +931,17 @@ impl Engine {
         // textures on the GL thread or shift the original Slot animation.
         let slot_dark_faces=make_slot(false);
         let slot_light_faces=make_slot(true);
+        let home_slot_faces=[0usize, 1, 2, 3].map(|family| {
+            let (back, front) = slot_ui::bitmaps::home_slot(family);
+            let mut band = |rgba: &[u8]| {
+                let (rgba, w, h) = slot_ui::native_rgba(
+                    rgba, slot_ui::bitmaps::SLOT_W, slot_ui::bitmaps::SLOT_H);
+                let wide = (w as f32 * out_w() as f32 / slot_ui::bitmaps::SLOT_W as f32)
+                    .round() as u32;
+                gpu.create_texture(wide, h, &slot_ui::refit_band(&rgba, w, h, wide))
+            };
+            (band(back), band(front))
+        });
         let slot_faces = if custom_colours { None }
             else if settings.appearance == crate::settings::Appearance::Light {
                 Some(slot_light_faces)
@@ -1000,6 +1015,8 @@ impl Engine {
         let gb = gpu.create_face(&shadow);
         let shadow = gb_cart_shadow(GbShell::Rounded);
         let gbc = gpu.create_face(&shadow);
+        let home_shadows = slot_ui::HomeMould::ALL
+            .map(|m| (m, gpu.create_face(&slot_ui::home_cart_shadow(m))));
         // The exact original Slot 9x9 pixel star, bright yellow with dark rim.
         let star=slot_ui::star_face(2, [0xf6,0xc3,0x2c]);
         let star_tex=gpu.create_face(&star);
@@ -1007,6 +1024,7 @@ impl Engine {
             shelf.set_shadow(gba);
             shelf.set_gb_shadow(GbShell::Notched, gb);
             shelf.set_gb_shadow(GbShell::Rounded, gbc);
+            for (m, tex) in home_shadows { shelf.set_home_shadow(m, tex); }
             shelf.set_star(star_tex,star.w,star.h);
             shelf.mark_starred(|cart|favorite_ids.iter()
                 .any(|uri|uri==cart.rom.to_string_lossy().as_ref()));
@@ -1184,6 +1202,8 @@ impl Engine {
         // GB/GBC boards hop their own big pak chip between two footprints.
         let pak_chip_textures = Core::ALL.map(|core| gpu.create_face(&pak_chip_face(Some(core))));
         let pak_chip_blank = gpu.create_face(&pak_chip_face(None));
+        let home_chip_blanks = [Platform::Nes, Platform::Snes, Platform::Md]
+            .map(|p| gpu.create_face(&slot_ui::home_chip_face(p, None)));
         let shadow = chip_shadow_face();
         let chip_shadow = gpu.create_face(&shadow);
         // The actual Slot legend is a set of three compact keycaps, not
@@ -1310,6 +1330,7 @@ impl Engine {
             wallpaper_name_face,
             slot_faces,
             slot_dark_faces,
+            home_slot_faces,
             slot_light_faces,
             gb_bezel_tex,
             gbc_bezel_tex,
@@ -1353,6 +1374,7 @@ impl Engine {
             chip_blank,
             pak_chip_textures,
             pak_chip_blank,
+            home_chip_blanks,
             chip_shadow,
             core_legend_faces,
             a_down_at: None,
@@ -4382,7 +4404,7 @@ impl Engine {
                     cart, face: shelf.face(shelf.index), rest, scale,
                     seat: self.progress, alert: None, dim: 0.0,
                     screen: self.screen_power, game: true, over: false,
-                    slot_faces: self.slot_faces,
+                    slot_faces: pick_slot_faces(self.slot_faces, self.home_slot_faces, Some(cart)),
                 }.draw_with_material(commands,self.clear_layers().0,self.clear_layers().1);
             } else {
                 commands.push(Draw::Game);
@@ -4934,8 +4956,9 @@ impl Engine {
         let shelf = &self.shelves[self.active];
         let (rest, scale) = shelf.selected_at();
         let platform = shelf.carts.get(shelf.index).map_or(Platform::Gba, |c| c.platform);
-        let cart = shelf_cart_for(platform, rest, scale);
-        let layout = board_layout(platform);
+        let shape = shelf.carts.get(shelf.index).map_or(slot_ui::Body::Gba, slot_ui::body_of);
+        let cart = slot_ui::shelf_cart_body(shape, rest, scale);
+        let layout = slot_ui::board_layout_body(shape);
         let board = board_toward(cart, layout.rest, progress);
         let zoom = layout.zoom(board);
 
@@ -4970,7 +4993,13 @@ impl Engine {
         let (chips, blank) = if layout.sockets {
             (&self.chip_textures, self.chip_blank)
         } else {
-            (&self.pak_chip_textures, self.pak_chip_blank)
+            let blank = match platform {
+                Platform::Nes => self.home_chip_blanks[0],
+                Platform::Snes => self.home_chip_blanks[1],
+                Platform::Md => self.home_chip_blanks[2],
+                _ => self.pak_chip_blank,
+            };
+            (&self.pak_chip_textures, blank)
         };
         let tex = chip.seated.map(|core| chips[core.index()]).unwrap_or(blank);
         let (x, y) = layout.at(board, u, layout.chip_v - layout.hop * chip.lift);
@@ -4985,7 +5014,7 @@ impl Engine {
 
         // The original lid slides up first (160ms), lifts and tilts (260ms)
         // and returns smoothly from any partial openness on B/A (320ms).
-        let (lid, turn) = lid_toward(cart, lid_rest(platform), progress);
+        let (lid, turn) = lid_toward(cart, slot_ui::lid_rest_body(shape), progress);
         let k = lid.w / slot_ui::lid_at(1.0).0.w;
         let (w, h) = (168.0 * k, 18.0 * k);
         out.push(Draw::Tex {
@@ -4999,7 +5028,7 @@ impl Engine {
         // The board has left the cart: its lifted front shows only its own
         // plastic and label, not the board a clear shell shows on the shelf.
         if front.is_some() { behind = [None, None]; }
-        let face=grown(lid,TURN_PAD as f32*lid.w/cart_box(platform).0 as f32);
+        let face=grown(lid,TURN_PAD as f32*lid.w/slot_ui::body_box(shape).0 as f32);
         for tex in behind.into_iter().flatten()
             .chain(front.or_else(||shelf.face(shelf.index))) {
             out.push(Draw::Turned {
@@ -5838,7 +5867,7 @@ impl Engine {
                         cart, face: shelf.face(shelf.index), rest, scale,
                         seat: self.progress, alert: None, dim: 0.0,
                         screen: self.screen_power, game: true, over: false,
-                        slot_faces: self.slot_faces,
+                        slot_faces: pick_slot_faces(self.slot_faces, self.home_slot_faces, Some(cart)),
                     }.draw_with_material(&mut commands, transition_back, transition_front);
                 } else {
                     commands.push(Draw::Game);
@@ -5984,13 +6013,15 @@ impl Engine {
                 let span = Some(picker_span(shelf, openness));
                 let selected = shelf.carts.get(shelf.index).map(|c| c.stem.as_str());
                 shelf.draw_row_clear_of(selected, 0.0, 0.26 * t, dim, span, &mut commands);
-                slot_ui::draw_empty_slot_with(self.slot_faces, &mut commands);
+                slot_ui::draw_empty_slot_with(
+                    pick_slot_faces(self.slot_faces, self.home_slot_faces, shelf.carts.get(shelf.index)), &mut commands);
             } else {
                 // Match upstream Refusal: only the shelf carts shake.
                 // The physical slot stays fixed; no input delay or layout changes.
                 let shake = self.refusal.map_or(0.0, |r| r.offset(ms));
                 shelf.draw_row(None, shake, 0.0, 1.0, &mut commands);
-                slot_ui::draw_empty_slot_with(self.slot_faces, &mut commands);
+                slot_ui::draw_empty_slot_with(
+                    pick_slot_faces(self.slot_faces, self.home_slot_faces, shelf.carts.get(shelf.index)), &mut commands);
                 // Official v1.7.0 shelf: system (L1/R1) or letter
                 // (D-pad Up/Down) uses a 200/1200/800 ms full-opacity name.
                 // Game Titles crossfade back in during the last 800ms, and
@@ -6047,7 +6078,7 @@ impl Engine {
                 screen: 0.0,
                 game: false,
                 over: true,
-                slot_faces: self.slot_faces,
+                slot_faces: pick_slot_faces(self.slot_faces, self.home_slot_faces, Some(cart)),
             }
             .draw_with_material(&mut commands,selected_clear_back,selected_clear_front);
         }
@@ -6439,11 +6470,26 @@ fn next_nonempty_shelf(shelves: &[Shelf], current: usize, delta: i32) -> usize {
     crate::library::next_populated(current, delta, &counts)
 }
 
+/// The slot bar a cart goes into: its console's own for NES, Famicom, Super
+/// Nintendo and Mega Drive carts. Custom theme colours keep the drawn bar
+/// for every system.
+fn pick_slot_faces(
+    faces: Option<(slot_gfx::TexId, slot_gfx::TexId)>,
+    home: [(slot_gfx::TexId, slot_gfx::TexId); 4],
+    cart: Option<&slot_store::Cart>,
+) -> Option<(slot_gfx::TexId, slot_gfx::TexId)> {
+    let faces = faces?;
+    Some(match cart.and_then(slot_ui::bitmaps::home_slot_family) {
+        Some(family) => home[family],
+        None => faces,
+    })
+}
+
 /// The screen columns the core picker covers at `progress`.
 fn picker_span(shelf: &Shelf, progress: f32) -> [f32; 2] {
     let (rest, scale) = shelf.selected_at();
-    let platform = shelf.carts.get(shelf.index).map_or(Platform::Gba, |c| c.platform);
-    slot_ui::picker_span(platform, shelf_cart_for(platform, rest, scale), progress)
+    let body = shelf.carts.get(shelf.index).map_or(slot_ui::Body::Gba, slot_ui::body_of);
+    slot_ui::picker_span_body(body, slot_ui::shelf_cart_body(body, rest, scale), progress)
 }
 
 #[cfg(test)]

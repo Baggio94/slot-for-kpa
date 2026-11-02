@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 190 84" width="190" height="84">
+  <rect x="7.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="7.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="20.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="20.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="33.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="33.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="46.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="46.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="59.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="59.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="72.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="72.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="85.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="85.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="98.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="98.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="111.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="111.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="124.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="124.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="137.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="137.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="150.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="150.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="163.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="163.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="176.25" y="0" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="176.25" y="75" width="6.5" height="9" fill="#b3b3b8"/>
+  <rect x="0" y="7" width="190" height="70" rx="1.55" fill="#1a1a1a"/>
+  <path d="M0 36 a6 6 0 0 1 0 12 Z" fill="#333333"/>
+</svg>

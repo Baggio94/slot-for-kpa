@@ -8,6 +8,7 @@ pub enum Mould {
     Gba,
     Notched,
     Rounded,
+    Home(crate::home::HomeMould),
 }
 
 pub const GBA_CART_W: u32 = 360;
@@ -224,6 +225,39 @@ pub fn slot_front_light() -> &'static [u8] {
     load(SLOT_FRONT_LIGHT_PNG, SLOT_W, SLOT_H, &P)
 }
 
+/// The NES, Famicom, Super Nintendo and Mega Drive slot bars, in the same
+/// 720x58 band as slot.'s own: each console's housing and opening, with no
+/// buttons or lights. Index: 0 Famicom, 1 NES, 2 Super Nintendo, 3 Mega Drive.
+pub fn home_slot(family: usize) -> (&'static [u8], &'static [u8]) {
+    const BACK: [&[u8]; 4] = [
+        include_bytes!("../../../assets/home/slot_back_fc.png"),
+        include_bytes!("../../../assets/home/slot_back_nes.png"),
+        include_bytes!("../../../assets/home/slot_back_snes.png"),
+        include_bytes!("../../../assets/home/slot_back_md.png"),
+    ];
+    const FRONT: [&[u8]; 4] = [
+        include_bytes!("../../../assets/home/slot_front_fc.png"),
+        include_bytes!("../../../assets/home/slot_front_nes.png"),
+        include_bytes!("../../../assets/home/slot_front_snes.png"),
+        include_bytes!("../../../assets/home/slot_front_md.png"),
+    ];
+    static B: [OnceLock<Vec<u8>>; 4] = [const { OnceLock::new() }; 4];
+    static F: [OnceLock<Vec<u8>>; 4] = [const { OnceLock::new() }; 4];
+    let i = family.min(3);
+    (load(BACK[i], SLOT_W, SLOT_H, &B[i]), load(FRONT[i], SLOT_W, SLOT_H, &F[i]))
+}
+
+/// Which home slot bar a cart goes into, None for the GBA / Game Boy bar.
+pub fn home_slot_family(cart: &slot_store::Cart) -> Option<usize> {
+    use crate::home::HomeMould as M;
+    Some(match crate::home::home_mould_of(cart)? {
+        M::Famicom | M::FamicomNamco | M::FamicomKonami => 0,
+        M::Nes => 1,
+        M::Snes | M::SnesUs => 2,
+        M::MegaDrive | M::MegaDriveJp | M::MegaDriveEa => 3,
+    })
+}
+
 pub fn link_port() -> &'static [u8] {
     static P: OnceLock<Vec<u8>> = OnceLock::new();
     load(PORT_DARK_PNG, PORT_W, PORT_H, &P)
@@ -279,6 +313,8 @@ pub fn shell_asset(mould: Mould, clear: bool) -> &'static [u8] {
         (Mould::Gba, true) => (GBA_CLEAR_PNG, GBA_CART_W, GBA_CART_H, &GBA_CLEAR),
         (Mould::Notched, true) => (GB_CLEAR_PNG, GB_CART_W, GB_CART_H, &GB_CLEAR),
         (Mould::Rounded, true) => (GBC_CLEAR_PNG, GB_CART_W, GB_CART_H, &GBC_CLEAR),
+        // No clear home shells are drawn: a clear one is the neutral at 80%.
+        (Mould::Home(m), _) => return crate::home::neutral(m),
     };
     load(bytes, w, h, slot)
 }

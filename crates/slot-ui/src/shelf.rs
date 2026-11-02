@@ -2,7 +2,8 @@ use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_store::{Cart, Platform};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::cart::{cart_box, gb_shell_of, label_panel, gb_label_panel, GBC_LABEL_X, GBC_LABEL_Y, GBC_LABEL_W, CART_H, CART_W};
+use crate::cart::{body_of, cart_box_for, label_rect, Body, CART_H, CART_W};
+use crate::home::HomeMould;
 use crate::hud::Millis;
 use crate::silhouette::GbShell;
 use crate::slot_chrome::{draw_empty_slot, MOUTH_H};
@@ -56,7 +57,8 @@ pub struct Shelf {
     shadow: Option<TexId>,
     gb_shadow: Option<TexId>,
     gbc_shadow: Option<TexId>,
-    shells: Vec<Option<GbShell>>,
+    home_shadows: [Option<TexId>; 9],
+    shells: Vec<Body>,
     starred: Vec<bool>,
     star: Option<(TexId, f32, f32)>,
     ride: f32,
@@ -72,7 +74,8 @@ impl Shelf {
         Shelf {
             starred: vec![false; carts.len()],
             star: None,
-            shells: carts.iter().map(gb_shell_of).collect(),
+            shells: carts.iter().map(body_of).collect(),
+            home_shadows: [None; 9],
             faces: vec![None; carts.len()],
             carts,
             index: 0,
@@ -95,7 +98,7 @@ impl Shelf {
         let faces = std::mem::take(&mut self.faces);
         let previously_selected = before.get(self.index).map(|c| c.rom.clone());
         self.faces = vec![None; self.carts.len()];
-        self.shells = self.carts.iter().map(gb_shell_of).collect();
+        self.shells = self.carts.iter().map(body_of).collect();
         self.starred = vec![false; self.carts.len()];
         let mut moves = Vec::new();
         for (old, cart) in before.iter().enumerate() {
@@ -135,6 +138,10 @@ impl Shelf {
             GbShell::Notched => self.gb_shadow = Some(face),
             GbShell::Rounded => self.gbc_shadow = Some(face),
         }
+    }
+
+    pub fn set_home_shadow(&mut self, mould: HomeMould, face: TexId) {
+        self.home_shadows[mould.index()] = Some(face);
     }
 
     pub fn set_faces(&mut self, faces: Vec<TexId>) {
@@ -370,9 +377,9 @@ impl Shelf {
     // Upstream slot. v1.7 positions a mixed GBA/GB/GBC rack by pairwise
     // widths. In particular, the GB/GBC shells are not as wide as GBA carts.
     fn slot_width(&self, slot: i32) -> (f32, bool) {
-        match self.cart_at_offset(slot).map(|i| self.carts[i].platform) {
-            Some(Platform::Gba) | None => (CART_W as f32, true),
-            Some(platform) => (cart_box(platform).0 as f32, false),
+        match self.cart_at_offset(slot).map(|i| &self.carts[i]) {
+            Some(cart) if cart.platform != Platform::Gba => (cart_box_for(cart).0 as f32, false),
+            _ => (CART_W as f32, true),
         }
     }
 
@@ -456,7 +463,7 @@ impl Shelf {
             let t = offset.abs().min(1.0);
             let scale = fit() * shrink(offset);
             let alpha = (1.0 + (SIDE_ALPHA - 1.0) * t) * (1.0 - recede);
-            let (cw, ch) = cart_box(cart.platform);
+            let (cw, ch) = cart_box_for(cart);
             let (w, h) = (cw as f32 * scale, ch as f32 * scale);
             let away = offset.signum() * (1.0 + offset.abs());
             let mut x = self.centre(slot) - w / 2.0 + away * PART * recede;
@@ -472,10 +479,11 @@ impl Shelf {
             }
             let x = x + shake;
             let y = foot_y(ch as f32) - h;
-            let backing = match self.shells.get(i).copied().flatten() {
-                None => self.shadow,
-                Some(GbShell::Notched) => self.gb_shadow,
-                Some(GbShell::Rounded) => self.gbc_shadow,
+            let backing = match self.shells.get(i).copied().unwrap_or_else(|| body_of(cart)) {
+                Body::Gba => self.shadow,
+                Body::Gb(GbShell::Notched) => self.gb_shadow,
+                Body::Gb(GbShell::Rounded) => self.gbc_shadow,
+                Body::Home(m) => self.home_shadows[m.index()],
             };
             if alpha < 1.0 && self.face(i).is_some() {
                 if let Some(tex) = backing {
@@ -501,19 +509,8 @@ impl Shelf {
             });
             // Faithful original v1.7 pixel-star with label-relative geometry.
             if let (Some(true), Some((tex, sw, sh))) = (self.starred.get(i), self.star) {
-                let (lx, ly, lw) = match cart.platform {
-                    slot_store::Platform::Gba | slot_store::Platform::Nes
-                    | slot_store::Platform::Snes | slot_store::Platform::Md => {
-                        let (x,y,right,_) = label_panel(cw,ch);
-                        (x as f32,y as f32,(right-x) as f32)
-                    },
-                    slot_store::Platform::Gb => {
-                        let (x,y,right,_) = gb_label_panel(cw,ch);
-                        (x as f32,y as f32,(right-x) as f32)
-                    },
-                    slot_store::Platform::Gbc =>
-                        (GBC_LABEL_X as f32,GBC_LABEL_Y as f32,GBC_LABEL_W as f32),
-                };
+                let (lx, ly, lw, _) = label_rect(cart);
+                let (lx, ly, lw) = (lx as f32, ly as f32, lw as f32);
                 out.push(Draw::Tex {
                     x: (x + (lx + lw) * scale - sw - STAR_INSET).round(),
                     y: (y + ly * scale + STAR_INSET).round(),
@@ -548,7 +545,7 @@ mod konkr_navigation_tests {
             stem: name.to_string(),
             title: String::new(), code: String::new(),
             rom: std::path::PathBuf::from(format!("{name}.gba")),
-            label: None, shell: None,
+            label: None, shell: None, battery: false,
         }
     }
 

@@ -3,6 +3,7 @@ use slot_store::{Cart, Outline, Platform};
 
 use crate::art;
 use crate::bitmaps::{self, Mould, BOARD_H, BOARD_W};
+use crate::home::{self, home_mould_of, HomeMould};
 use crate::density::{self, px};
 // The KONKR core-picker still uses its own BOARD_W/H, which differ from the
 // official v1.7 visual bitmap 360x212. Cart layers use the bitmap dimensions.
@@ -71,13 +72,16 @@ struct Spec {
     label: (u32, u32, u32, u32),
     mask: &'static [u8],
     mould: Mould,
-    shell: Option<GbShell>,
+    body: Body,
 }
 
-#[derive(Copy, Clone)]
-enum Shape {
+/// A cart's shape: the GBA cart, a Game Boy pak, or one of the NES, Super
+/// Nintendo and Mega Drive moulds.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Body {
     Gba,
     Gb(GbShell),
+    Home(HomeMould),
 }
 
 pub fn gb_shell_of(cart: &Cart) -> Option<GbShell> {
@@ -94,24 +98,46 @@ pub fn gb_shell_of(cart: &Cart) -> Option<GbShell> {
     }
 }
 
-fn shape_of(cart: &Cart) -> Shape {
+pub fn body_of(cart: &Cart) -> Body {
+    if let Some(m) = home_mould_of(cart) {
+        return Body::Home(m);
+    }
     match gb_shell_of(cart) {
-        None => Shape::Gba,
-        Some(shell) => Shape::Gb(shell),
+        None => Body::Gba,
+        Some(shell) => Body::Gb(shell),
     }
 }
 
-fn spec(shape: Shape) -> Spec {
+/// The shape a system's carts take when nothing picks another.
+pub fn platform_body(platform: Platform) -> Body {
+    match platform {
+        Platform::Gba => Body::Gba,
+        Platform::Gb | Platform::Gbc => Body::Gb(GbShell::Notched),
+        Platform::Nes | Platform::Snes | Platform::Md => {
+            Body::Home(HomeMould::default_for(platform).unwrap_or(HomeMould::Nes))
+        }
+    }
+}
+
+fn shape_of(cart: &Cart) -> Body {
+    body_of(cart)
+}
+
+fn spec(shape: Body) -> Spec {
     match shape {
-        Shape::Gba => Spec {
+        Body::Home(m) => {
+            let (w, h) = m.size();
+            Spec { w, h, label: m.art().label, mask: home::mask(m), mould: Mould::Home(m), body: shape }
+        }
+        Body::Gba => Spec {
             w: CART_W,
             h: CART_H,
             label: (LABEL_X, LABEL_Y, LABEL_W, LABEL_H),
             mask: cart_mask(),
             mould: Mould::Gba,
-            shell: None,
+            body: shape,
         },
-        Shape::Gb(shell) => Spec {
+        Body::Gb(shell) => Spec {
             w: GB_CART_W,
             h: GB_CART_H,
             label: match shell {
@@ -123,7 +149,7 @@ fn spec(shape: Shape) -> Spec {
                 GbShell::Notched => Mould::Notched,
                 GbShell::Rounded => Mould::Rounded,
             },
-            shell: Some(shell),
+            body: shape,
         },
     }
 }
@@ -133,26 +159,49 @@ const SEATED_H: u32 = 141;
 const GB_SEATED_H: u32 = 259;
 
 pub fn seated_box(platform: Platform) -> (u32, u32) {
-    match platform {
-        Platform::Gba | Platform::Nes | Platform::Snes | Platform::Md => (SEATED_W, SEATED_H),
-        Platform::Gb | Platform::Gbc => (SEATED_W, GB_SEATED_H),
+    body_seated_box(platform_body(platform))
+}
+
+/// The cart's size once it sits in the slot.
+pub fn body_seated_box(body: Body) -> (u32, u32) {
+    match body {
+        Body::Gba => (SEATED_W, SEATED_H),
+        Body::Gb(_) => (SEATED_W, GB_SEATED_H),
+        Body::Home(m) => {
+            let (w, h) = m.size();
+            (SEATED_W, (SEATED_W * h + w / 2) / w)
+        }
     }
 }
 
 pub fn cart_box(platform: Platform) -> (u32, u32) {
-    let s = spec(match platform {
-        Platform::Gba | Platform::Nes | Platform::Snes | Platform::Md => Shape::Gba,
-        Platform::Gb | Platform::Gbc => Shape::Gb(GbShell::Notched),
-    });
+    body_box(platform_body(platform))
+}
+
+pub fn body_box(body: Body) -> (u32, u32) {
+    let s = spec(body);
     (s.w, s.h)
 }
 
+/// This cart's own size: a home console cart's follows its mould.
+pub fn cart_box_for(cart: &Cart) -> (u32, u32) {
+    body_box(body_of(cart))
+}
+
+pub fn seated_box_for(cart: &Cart) -> (u32, u32) {
+    body_seated_box(body_of(cart))
+}
+
 pub fn cart_shadow() -> CartFace {
-    shadow(spec(Shape::Gba))
+    shadow(spec(Body::Gba))
 }
 
 pub fn gb_cart_shadow(shell: GbShell) -> CartFace {
-    shadow(spec(Shape::Gb(shell)))
+    shadow(spec(Body::Gb(shell)))
+}
+
+pub fn home_cart_shadow(m: HomeMould) -> CartFace {
+    shadow(spec(Body::Home(m)))
 }
 
 fn shadow(s: Spec) -> CartFace {
@@ -166,7 +215,11 @@ fn shadow(s: Spec) -> CartFace {
 /// The outline at the current density.
 fn mask_of(s: &Spec) -> std::borrow::Cow<'static, [u8]> {
     if density::is_dense() {
-        std::borrow::Cow::Owned(dense_mask(s.shell).to_vec())
+        std::borrow::Cow::Owned(match s.body {
+            Body::Home(m) => home::dense_mask(m).to_vec(),
+            Body::Gb(shell) => dense_mask(Some(shell)).to_vec(),
+            Body::Gba => dense_mask(None).to_vec(),
+        })
     } else {
         std::borrow::Cow::Borrowed(s.mask)
     }
@@ -189,13 +242,22 @@ fn dense_layer(face: CartFace) -> CartFace {
 }
 
 pub fn is_clear(cart: &Cart) -> bool {
-    shell_for(cart).finish != Finish::Solid
+    see_through(shell_for(cart).finish, matches!(body_of(cart), Body::Home(_)))
+}
+
+/// A glitter GB/GBA shell is clear plastic with flecks; a home cart's (the
+/// gold Zelda) is opaque.
+fn see_through(finish: Finish, home: bool) -> bool {
+    finish == Finish::Translucent || (finish == Finish::Glitter && !home)
 }
 
 /// The back plastic at 80% opacity. A GBA cart uses `gba_interior.png` with
 /// the game's colour blended onto it by the same overlay as the shells; a pak
 /// gets its drawn back shell, the same one the core picker opens onto.
 pub fn cart_interior(cart: &Cart) -> CartFace {
+    if let Body::Home(_) = body_of(cart) {
+        return crate::board::home_shell_face(cart, CLEAR_ALPHA);
+    }
     if gb_shell_of(cart).is_some() {
         return crate::board::pak_shell_face(cart, CLEAR_ALPHA);
     }
@@ -217,6 +279,9 @@ pub fn cart_interior(cart: &Cart) -> CartFace {
 /// shells: the same drawn board the core picker opens onto, so a clear cart
 /// shows on the shelf what it shows when it opens.
 pub fn cart_backing(cart: &Cart) -> CartFace {
+    if let Body::Home(_) = body_of(cart) {
+        return crate::board::home_shelf_board(cart);
+    }
     match gb_shell_of(cart) {
         Some(_) => crate::board::pak_shelf_board(cart),
         None => crate::board::gba_shelf_board(cart),
@@ -225,10 +290,20 @@ pub fn cart_backing(cart: &Cart) -> CartFace {
 
 /// Cut a face drawn at a pak's size to that pak's outline.
 pub(crate) fn cut_to_shell(face: &mut CartFace, shell: GbShell) {
-    let s = spec(Shape::Gb(shell));
+    cut_to_body(face, Body::Gb(shell));
+}
+
+/// Cut a face drawn at a cart's size to that cart's outline.
+pub(crate) fn cut_to_body(face: &mut CartFace, body: Body) {
+    let s = spec(body);
     for (px, cover) in face.rgba.chunks_exact_mut(4).zip(mask_of(&s).iter()) {
         px[3] = ((px[3] as u32 * *cover as u32 + 127) / 255) as u8;
     }
+}
+
+/// The label well on the cart's face, in its logical pixels: x, y, w, h.
+pub fn label_rect(cart: &Cart) -> (u32, u32, u32, u32) {
+    spec(shape_of(cart)).label
 }
 
 /// Logical label size; artwork for `cart_face_with` is `px()` of it.
@@ -290,8 +365,33 @@ pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
         None => generated_label(&s, &label_text(cart)),
     };
     paste_label(&s, &mut face, &label);
+    if let Body::Home(_) = s.body {
+        shade_label_well(&s, &mut face);
+    }
     clip_to_silhouette(&s, &mut face);
     face
+}
+
+/// A home cart's label sits in a well: the well's top and left edges shade
+/// it, as on the support-2D captures.
+fn shade_label_well(s: &Spec, face: &mut CartFace) {
+    let (lx, ly, lw, lh) = s.label;
+    let k = density::scale();
+    let (x0, y0, x1, y1) = (px(lx), px(ly), px(lx + lw), px(ly + lh));
+    let fw = px(s.w);
+    for y in y0..y1.min(px(s.h)) {
+        for x in x0..x1.min(fw) {
+            let d = ((x - x0).min(y - y0) as f32) / k;
+            let shade = 0.28 * (1.0 - d / 6.0).max(0.0);
+            if shade <= 0.0 {
+                continue;
+            }
+            let i = ((y * fw + x) * 4) as usize;
+            for c in 0..3 {
+                face.rgba[i + c] = (face.rgba[i + c] as f32 * (1.0 - shade)).round() as u8;
+            }
+        }
+    }
 }
 
 fn clip_to_silhouette(s: &Spec, face: &mut CartFace) {
@@ -392,7 +492,7 @@ fn overlay(base: u8, colour: u8) -> u8 {
 }
 
 fn shell_face(s: &Spec, shell: &Shell) -> CartFace {
-    let clear = shell.finish != Finish::Solid;
+    let clear = see_through(shell.finish, matches!(s.mould, Mould::Home(_)));
     let src = bitmaps::shell_asset(s.mould, clear);
     assert_eq!(
         src.len(),
@@ -426,6 +526,11 @@ fn shell_face(s: &Spec, shell: &Shell) -> CartFace {
             } else {
                 own as u8
             };
+        }
+    }
+    if let Mould::Home(m) = s.mould {
+        if let Some(decal) = home::decal(m) {
+            blend_over(&mut rgba, decal);
         }
     }
     if shell.finish == Finish::Glitter {
@@ -479,7 +584,7 @@ fn generated_label(s: &Spec, title: &str) -> Vec<u8> {
     if let Some(font) = text::label_font() {
         let (max_px, max_h) = match s.mould {
             Mould::Gba => (lh as f32 / (MAX_LINES as f32 * 1.36), f32::INFINITY),
-            Mould::Notched | Mould::Rounded => {
+            Mould::Notched | Mould::Rounded | Mould::Home(_) => {
                 let room = (lh - 2 * PAD) as f32;
                 (room / MAX_LINES as f32, room)
             }

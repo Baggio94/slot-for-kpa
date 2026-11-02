@@ -4,7 +4,7 @@ use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_store::Cart;
 use slot_store::Theme;
 
-use crate::cart::{cart_box, label_colour, label_text, seated_box, SEATED_W};
+use crate::cart::{cart_box_for, label_colour, label_text, seated_box_for, SEATED_W};
 use crate::footer::Printed;
 use crate::icon::icon_box;
 use crate::plate::HINT_H;
@@ -139,12 +139,12 @@ impl SlotChrome<'_> {
 
         draw_slot_back_with(self.slot_faces.map(|faces| faces.0), slot_alpha, out);
 
-        let (cw, ch) = cart_box(self.cart.platform);
+        let (cw, ch) = cart_box_for(self.cart);
         let (cw, ch) = (cw as f32, ch as f32);
 
         let scale = self.scale.clamp(0.0, 1.0);
         let (w0, h0) = (cw * scale, ch * scale);
-        let (sw, sh) = seated_box(self.cart.platform);
+        let (sw, sh) = seated_box_for(self.cart);
         let (sw, sh) = (sw as f32, sh as f32);
         let (foot0, seated_foot) = (foot_y(ch), SEATED_Y + sh);
         let catch = catch_at(foot0, seated_foot);

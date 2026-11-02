@@ -234,7 +234,7 @@ mod tests {
             stem: "Tetris".into(),
             title: String::new(), code: String::new(),
             rom: std::path::PathBuf::from("content://roms/tetris.gba"),
-            label: None, shell: None,
+            label: None, shell: None, battery: false,
         };
         renderer.request((4, 0), &favorite, false);
         assert!(renderer.queued((4, 0)));
@@ -267,7 +267,7 @@ mod tests {
             platform:slot_store::Platform::Gba, stem:"Tetris".into(),
             title:String::new(),code:String::new(),
             rom:std::path::PathBuf::from("content://roms/tetris.gba"),
-            label:None,shell:None,
+            label:None,shell:None, battery: false,
         };
         renderer.prioritize(&[(0,0),(0,1),(1,0)]);
         renderer.request((0,0),&cart,false);

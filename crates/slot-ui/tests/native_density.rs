@@ -13,7 +13,7 @@ fn cart(platform: Platform, stem: &str) -> Cart {
         rom: format!("Games/{stem}.gba").into(),
         label: None,
         code: "AGSE".into(),
-        shell: None,
+        shell: None, battery: false,
         title: stem.to_uppercase(),
     }
 }

@@ -38,6 +38,9 @@ pub struct RomEntry {
     pub home_region: String,
     #[serde(default)]
     pub home_battery: bool,
+    /// The Mega Drive header's copyright field: "(C)T-50" is Electronic Arts.
+    #[serde(default)]
+    pub home_maker: String,
 }
 
 pub struct LibraryState {
@@ -73,7 +76,10 @@ pub fn carts_by_platform(entries: &[RomEntry]) -> [Vec<Cart>; Platform::ALL.len(
         let Some(platform) = Platform::parse(&entry.platform) else { continue };
         let group = platform as usize;
         let shell = match platform {
-            Platform::Gba | Platform::Nes | Platform::Snes | Platform::Md => None,
+            Platform::Gba => None,
+            // The region's mould, a publisher's, and the game's colour.
+            Platform::Nes | Platform::Snes | Platform::Md => slot_ui::home_shell(
+                platform, entry.title.trim(), &entry.home_region, &entry.home_maker),
             Platform::Gb | Platform::Gbc => {
                 // Cart Studio and the shelf must resolve the same automatic
                 // per-game shell, even for SAF content URIs and zipped ROMs.
@@ -120,6 +126,17 @@ pub fn carts_by_platform(entries: &[RomEntry]) -> [Vec<Cart>; Platform::ALL.len(
         };
         let shell = entry.shell_override.as_deref()
             .and_then(ShellChoice::parse)
+            .map(|mut chosen| {
+                // A Studio colour on a home cart keeps the automatic mould
+                // unless it names one of that system's own.
+                if let Some(auto) = shell.filter(|_| {
+                    matches!(platform, Platform::Nes | Platform::Snes | Platform::Md)
+                        && chosen.outline.platform() != Some(platform)
+                }) {
+                    chosen.outline = auto.outline;
+                }
+                chosen
+            })
             .or(shell);
         groups[group].push(Cart {
             platform,
@@ -131,6 +148,7 @@ pub fn carts_by_platform(entries: &[RomEntry]) -> [Vec<Cart>; Platform::ALL.len(
             rom: PathBuf::from(&entry.uri),
             label: None,
             shell,
+            battery: entry.home_battery,
         });
     }
     for shelf in &mut groups {
@@ -182,7 +200,7 @@ mod tests {
             code: String::new(), color_only: false, shell_override: None,
             gb_title: String::new(), gb_code: String::new(),
             gb_japan: false, gb_cgb_flag: None,
-            home_title: String::new(), home_region: String::new(), home_battery: false,
+            home_title: String::new(), home_region: String::new(), home_battery: false, home_maker: String::new(),
         };
         let grouped = carts_by_platform(&[
             example("GBA", "Zelda", "content://roms/z"),
@@ -204,7 +222,7 @@ mod tests {
             color_only: false, shell_override: None,
             gb_title: String::new(), gb_code: String::new(),
             gb_japan: false, gb_cgb_flag: None,
-            home_title: String::new(), home_region: String::new(), home_battery: false,
+            home_title: String::new(), home_region: String::new(), home_battery: false, home_maker: String::new(),
         };
         let grouped = carts_by_platform(&[
             entry("GBA", "gba"), entry("GB", "gb"), entry("GBC", "gbc"),
@@ -240,7 +258,7 @@ mod tests {
                 color_only: flag == 0xc0, shell_override: None,
                 gb_title: title.into(), gb_code: code.into(),
                 gb_japan: false, gb_cgb_flag: Some(flag),
-                home_title: String::new(), home_region: String::new(), home_battery: false,
+                home_title: String::new(), home_region: String::new(), home_battery: false, home_maker: String::new(),
             }
         };
         let mut manual = entry("GB", "Manual", "POKEMON RED", "", 0);

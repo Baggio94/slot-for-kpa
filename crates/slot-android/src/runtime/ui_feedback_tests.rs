@@ -453,13 +453,13 @@ fn empty_shelves_are_skipped_in_both_directions() {
     assert_eq!(next_nonempty_shelf(&shelves, 0, 1), 0);
     shelves[0].carts.push(Cart {
         platform: Platform::Gba, stem: "Test".into(), title: "Test".into(),
-        code: String::new(), rom: PathBuf::new(), label: None, shell: None,
+        code: String::new(), rom: PathBuf::new(), label: None, shell: None, battery: false,
     });
     assert_eq!(next_nonempty_shelf(&shelves, 0, 1), 0);
     assert_eq!(next_nonempty_shelf(&shelves, 0, -1), 0);
     shelves[2].carts.push(Cart {
         platform: Platform::Gbc, stem: "Color".into(), title: "Color".into(),
-        code: String::new(), rom: PathBuf::new(), label: None, shell: None,
+        code: String::new(), rom: PathBuf::new(), label: None, shell: None, battery: false,
     });
     assert_eq!(next_nonempty_shelf(&shelves, 0, 1), 2);
     assert_eq!(next_nonempty_shelf(&shelves, 0, -1), 2);

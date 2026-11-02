@@ -13,6 +13,7 @@ mod clock;
 pub mod density;
 mod draw;
 mod footer;
+mod home;
 mod hud;
 mod icon;
 mod link_art;
@@ -35,18 +36,19 @@ pub use backdrop::{bezel_face, blur_background, blur_background_native, default_
 pub use barcode::{code39, CODE39_NARROW, CODE39_WIDE};
 pub use battery::{draw_gauge, BOLT_PX, GAUGE_H, GAUGE_W, WALL};
 pub use board::{
-    board_at, board_face, pak_chip_face, board_layout, board_toward, BoardLayout, board_from, board_zoom, chip_face, chip_shadow_face, grown, lid_at,
+    board_at, board_face, pak_chip_face, home_chip_face, board_layout_body, lid_rest_body, picker_span_body, shelf_cart_body, board_layout, board_toward, BoardLayout, board_from, board_zoom, chip_face, chip_shadow_face, grown, lid_at,
     lid_from, lid_rest, lid_toward, lift_of, on_board, padded, pak_marking_face, picker_span, rom_marking, rom_marking_face, shelf_cart, shelf_cart_at, shelf_cart_for,
     slide_of, socket_face, Placed, BOARD_H, BOARD_W, board_x, BOARD_Y, CHIP_H, CHIP_TIP, CHIP_U,
     CHIP_V, CHIP_W, HOP_LIFT, LID_TURN, ROM_H, ROM_W, ROM_X, ROM_Y, SHADOW_H, SHADOW_W,
     SLIDE_SHARE, SLIDE_UP, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
 };
 pub use cart::{
-    cart_box, cart_face, cart_face_with, cart_face_with_material, cart_interior, cart_backing, is_clear, cart_shadow, clean_label, gb_cart_shadow, gb_label_panel,
-    gb_shell_of, label_colour, label_panel, label_size, label_tags, label_text, seated_box,
+    cart_box, cart_box_for, body_box, body_of, body_seated_box, platform_body, seated_box_for, home_cart_shadow, Body, cart_face, cart_face_with, cart_face_with_material, cart_interior, cart_backing, is_clear, cart_shadow, clean_label, gb_cart_shadow, gb_label_panel,
+    gb_shell_of, label_colour, label_panel, label_rect, label_size, label_tags, label_text, seated_box,
     CartFace, CART_H, CART_W, GB_CART_H, GB_CART_W, GB_LABEL_H, GB_LABEL_W, GB_LABEL_X, GB_LABEL_Y,
     LABEL_H, LABEL_W, LABEL_X, LABEL_Y,
 };
+pub use home::{home_mould_of, home_shell, title_key, HomeMould, HOME_CART_W};
 pub use clock::{clock_label, date_time_text, hhmm, set_clock_hint_face, ClockPicker, Field};
 pub use density::Face;
 pub use draw::{Draw, TexId, OUT_H, out_w};
