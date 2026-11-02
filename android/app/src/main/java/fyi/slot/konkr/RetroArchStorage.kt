@@ -161,11 +161,14 @@ internal object RetroArchStorage {
                 }
         }
         // RetroArch's manual slots, whatever happens to its auto-state.
+        val manualAt = SystemClock.elapsedRealtime()
         try {
             importManualStates(context, target)
         } catch (error: Exception) {
             Log.w(TAG, "RetroArch manual states not brought into the Polaroids", error)
         }
+        Log.i(TAG, "RetroArch manual states: ${SystemClock.elapsedRealtime() - manualAt}ms " +
+            "(saves/RTC ${manualAt - started}ms)")
         // When Share Saves chooses cartridge SRAM over an older same-core
         // Save State, preserve the original imported RetroArch state byte for
         // byte. Rust will resume/write only a fresh generation and the export
@@ -314,7 +317,8 @@ internal object RetroArchStorage {
     private fun retroArchAutoIsNewer(context: Context, target: Target): Boolean = try {
         val lower = coreLower(target.core)
         val saves = File(context.filesDir, "Saves")
-        val retroArch = stateDir(context, target).list()[target.stem + ".state.auto"]
+        val auto = target.stem + ".state.auto"
+        val retroArch = stateDir(context, target).seen(listOf(auto))[auto]
         val export = activeExport(context, target)
         val own = File(saves, export.name.removeSuffix(".retroarch-export.state.auto") + ".state")
         retroArch != null && retroArch.modified > 0 &&
@@ -717,6 +721,10 @@ internal object RetroArchStorage {
     private interface StateDir {
         /** The slot files present, by name, with their time and size. */
         fun list(): Map<String, ManualStateLinks.Seen>
+        /** Only these files, by name: no listing of the whole folder where
+         *  the provider lets slot. open them directly. */
+        fun seen(names: Collection<String>): Map<String, ManualStateLinks.Seen> =
+            list().filterKeys { it in names }
         fun read(name: String): ByteArray?
         fun write(name: String, bytes: ByteArray)
         fun delete(name: String)
@@ -749,8 +757,43 @@ internal object RetroArchStorage {
             found = uris
             return seen
         }
-        override fun read(name: String): ByteArray? = (found[name] ?: find(context, root, core, name))
+        override fun seen(names: Collection<String>): Map<String, ManualStateLinks.Seen> {
+            // A core's RetroArch states folder holds every game's states:
+            // listing it on each launch made games slow to start once it
+            // grew. ExternalStorageProvider opens each slot directly.
+            val direct = names.map { it to directDocument(root, core, it) }
+            if (direct.any { it.second == null }) return list().filterKeys { it in names }
+            val columns = arrayOf(
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                DocumentsContract.Document.COLUMN_SIZE
+            )
+            val seen = mutableMapOf<String, ManualStateLinks.Seen>()
+            val uris = found.toMutableMap()
+            for ((name, uri) in direct) {
+                val doc = uri ?: continue
+                try {
+                    context.contentResolver.query(doc, columns, null, null, null)?.use { c ->
+                        if (c.moveToFirst()) {
+                            seen[name] = ManualStateLinks.Seen(
+                                if (c.isNull(0)) 0L else c.getLong(0),
+                                if (c.isNull(1)) -1L else c.getLong(1))
+                            uris[name] = doc
+                        }
+                    }
+                } catch (error: IllegalArgumentException) {
+                    if (!isMissingDirectDocument(error, DocumentsContract.getDocumentId(doc))) {
+                        return list().filterKeys { it in names }
+                    }
+                } catch (_: FileNotFoundException) {
+                    // An empty manual slot.
+                }
+            }
+            found = uris
+            return seen
+        }
+        override fun read(name: String): ByteArray? = found[name]
             ?.let { RetroArchStorage.read(context, it, MAX_STATE) }
+            ?: readNamed(context, root, core, name, MAX_STATE)
         override fun write(name: String, bytes: ByteArray) =
             RetroArchStorage.writeSaf(context, root, core, name, bytes, isState = false, backup = false)
         override fun delete(name: String) {
@@ -796,7 +839,7 @@ internal object RetroArchStorage {
      *  Polaroids. A state RetroArch deleted leaves its Polaroid alone. */
     private fun importManualStates(context: Context, target: Target) {
         val dir = stateDir(context, target)
-        val listed = dir.list()
+        val listed = dir.seen(ManualStateLinks.SUFFIXES.map { target.stem + it })
         val seen = ManualStateLinks.SUFFIXES
             .mapNotNull { s -> listed[target.stem + s]?.let { s to it } }.toMap()
         val links = readLinks(context, target).filterKeys { it in seen }.toMutableMap()
@@ -843,7 +886,7 @@ internal object RetroArchStorage {
             RetroArchCompression.requireSupportedContainer(bytes)
             val compressed = RetroArchCompression.encode(bytes)
             val dir = stateDir(context, target)
-            val listed = dir.list()
+            val listed = dir.seen(ManualStateLinks.SUFFIXES.map { target.stem + it })
             val present = ManualStateLinks.SUFFIXES.filter { target.stem + it in listed }.toSet()
             val links = readLinks(context, target).filterKeys { it in present }.toMutableMap()
             val suffix = ManualStateLinks.slotFor(links, present) { s ->
@@ -853,7 +896,7 @@ internal object RetroArchStorage {
             dir.write(name, compressed)
             // RetroArch shows <state>.png as the slot's picture.
             if (thumb.isFile) dir.write("$name.png", thumb.readBytes()) else dir.delete("$name.png")
-            val written = dir.list()[name] ?: ManualStateLinks.Seen(0L, compressed.size.toLong())
+            val written = dir.seen(listOf(name))[name] ?: ManualStateLinks.Seen(0L, compressed.size.toLong())
             links[suffix] = ManualStateLinks.Link(ManualStateLinks.hash(compressed), stamp,
                 written.modified, written.size)
             writeLinks(context, target, links)
@@ -957,6 +1000,18 @@ internal object RetroArchStorage {
         if (treeId.any { it == '\\' || it.code < 32 } ||
             treeId.split('/').any { it == "." || it == ".." }) return null
         return "$treeId/$core/$name"
+    }
+
+    /** Whether a directly addressed document exists; null when the
+     *  provider does not say, and the caller lists the folder instead. */
+    private fun directExists(context: Context, uri: Uri): Boolean? = try {
+        context.contentResolver.query(uri,
+            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, null, null)
+            ?.use { if (it.moveToFirst()) true else null }
+    } catch (error: IllegalArgumentException) {
+        if (isMissingDirectDocument(error, DocumentsContract.getDocumentId(uri))) false else null
+    } catch (_: FileNotFoundException) {
+        false
     }
 
     private fun directDocument(root: Uri, core: String, name: String): Uri? {
@@ -1067,10 +1122,31 @@ internal object RetroArchStorage {
                          name: String, bytes: ByteArray, isState: Boolean,
                          createOnly: Boolean = false, backup: Boolean = true) {
         val resolver = context.contentResolver
-        val folder = coreFolder(context, root, core, create = true)
+        // ExternalStorageProvider: open the core folder and the files
+        // directly instead of listing folders that hold every game's saves
+        // (each listing grew with the collection and held up the next launch
+        // behind the eject's export). Other providers list as before.
+        val directFile = directDocument(root, core, name)
+        val directFolder = directFile?.let {
+            DocumentsContract.buildDocumentUriUsingTree(root,
+                DocumentsContract.getDocumentId(it).substringBeforeLast('/'))
+        }
+        val folderDirect = directFolder != null && directExists(context, directFolder) == true
+        val folder = (if (folderDirect) directFolder else coreFolder(context, root, core, create = true))
             ?: error("Cannot access RetroArch core folder")
         val dirId = DocumentsContract.getDocumentId(folder)
-        val existing = children(context, root, dirId).firstOrNull { it.first == name }?.second
+        fun lookup(child: String): Uri? {
+            if (folderDirect) {
+                val uri = directDocument(root, core, child)
+                if (uri != null) when (directExists(context, uri)) {
+                    true -> return uri
+                    false -> return null
+                    null -> {}
+                }
+            }
+            return children(context, root, dirId).firstOrNull { it.first == child }?.second
+        }
+        val existing = lookup(name)
         require(!createOnly || existing == null) {
             "Manual RetroArch slot was occupied during sync; preserved"
         }
@@ -1085,8 +1161,7 @@ internal object RetroArchStorage {
             // Never destroy the pre-Slot save on first sync. A backup is
             // retained in a dedicated subdirectory of the same core folder.
             val backupName = name + ".before-slot"
-            val backups = children(context, root, dirId)
-            if (backup && backups.none { it.first == backupName }) {
+            if (backup && lookup(backupName) == null) {
                 val backup = DocumentsContract.createDocument(resolver, folder,
                     "application/octet-stream", backupName)
                     ?: error("Cannot back up existing RetroArch file")
