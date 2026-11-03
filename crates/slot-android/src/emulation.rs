@@ -153,10 +153,7 @@ impl EmulationProfile {
             (Platform::Gba,2)=>22,
             (Platform::Gbc,2)=>23,
             (Platform::Gb,2)=>24,
-            (_,25..=27)=>match platform {
-                Platform::Gba=>25,Platform::Gbc=>26,Platform::Gb=>27,
-                _=>return false,
-            },
+            (_,25..=27|44..=46)=>Settings::bezel_key(platform),
             _=>key,
         };
         if !view.change(actual_key,right) { return false; }
@@ -166,7 +163,7 @@ impl EmulationProfile {
             1 if platform!=Platform::Gba =>
                 self.screen_shader=Some(view.shader_for(platform)),
             2 => self.colour_correction_override=Some(view.colour_for(platform)),
-            25..=27 => self.screen_bezel=Some(view.bezel_for(platform)),
+            25..=27|44..=46 => self.screen_bezel=Some(view.bezel_for(platform)),
             3 if platform==Platform::Gb =>
                 self.gb_palettes_override=Some(view.gb_palettes),
             4 => self.ff_speed_override=Some(view.ff_speed),

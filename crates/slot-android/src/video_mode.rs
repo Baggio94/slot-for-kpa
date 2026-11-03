@@ -3,6 +3,8 @@ use std::path::Path;
 use slot_gfx::{ScreenEffect, SRC_H, SRC_W, WHOLE_TEXTURE};
 use slot_store::{ini, Platform};
 
+use slot_ui::watomsk::{self, Shape};
+
 use crate::settings::{Bezel, Shader};
 
 pub const VIDEO_MODE_FILE: &str = "Config/video_mode.ini";
@@ -58,7 +60,7 @@ pub fn bezel_fits(bezel: Bezel, mode: VideoMode) -> bool {
     match bezel {
         Bezel::None => true,
         Bezel::Default => mode == VideoMode::Actual,
-        Bezel::Gb | Bezel::Pocket | Bezel::Color => mode != VideoMode::Stretch,
+        _ => mode != VideoMode::Stretch,
     }
 }
 
@@ -185,6 +187,99 @@ pub fn bezel_has_room(bezel: Bezel, platform: Platform, panel: (u32, u32)) -> bo
     x >= 0.08 * panel.0 as f32
 }
 
+/// How a Watomsk overlay sits on this panel.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum WatomskFit {
+    /// His side frame drawn for `Shape`, its window over this rect.
+    Side(Shape, [f32; 4]),
+    /// The picture at the top of the screen (this rect), his logo centred
+    /// in the band under it (GBA and Mega Drive on narrower screens).
+    Band([f32; 4]),
+}
+
+/// Under 4% of the panel on each side (or under it) a frame would only
+/// cover the picture's edge: no overlay there.
+const ROOM: f32 = 0.04;
+
+fn panel_aspect(panel: (u32, u32)) -> f32 {
+    panel.0.max(1) as f32 / panel.1.max(1) as f32
+}
+
+/// A home console picture on `panel`, as slot_gfx::fit_window draws it
+/// (`top`: at the top of the screen instead of centred).
+pub fn home_rect(mode: VideoMode, aspect: f32, frame: (u32, u32), panel: (u32, u32), top: bool)
+    -> [f32; 4]
+{
+    let (ow, oh) = (panel.0.max(1) as f32, panel.1.max(1) as f32);
+    let (tw, th) = (frame.0.max(1) as f32, frame.1.max(1) as f32);
+    let a = if aspect > 0.0 { aspect } else { tw / th };
+    let (pw, ph) = match mode {
+        VideoMode::Aspect => if oh * a <= ow { (oh * a, oh) } else { (ow, ow / a) },
+        VideoMode::Actual => {
+            let mut k = (oh / th).floor().max(1.0);
+            while k > 1.0 && th * k * a > ow { k -= 1.0; }
+            let ph = th * k;
+            ((ph * a).min(ow), ph)
+        }
+        VideoMode::Stretch => (ow, oh),
+    };
+    let y = if top { 0.0 } else { (oh - ph) / 2.0 };
+    [(ow - pw) / 2.0, y, pw, ph]
+}
+
+/// Where `bezel`'s Watomsk overlay goes (Siham's plan, 2026-11-03):
+/// GB/GBC beside the Original Ratio picture (not on near-square screens);
+/// GBA nowhere on 3:2, beside it on wider screens in Original Ratio
+/// (Perfect_GBA's layout), at the bottom otherwise; NES/SNES/Mega Drive
+/// beside the 4:3 picture on wider screens, nothing on 4:3, and on
+/// narrower screens only the Mega Drive, at the bottom. Never in Stretch.
+/// `home` is the console's display aspect and frame size.
+pub fn watomsk_fit(bezel: Bezel, platform: Platform, mode: VideoMode, panel: (u32, u32),
+    home: (f32, (u32, u32))) -> Option<WatomskFit>
+{
+    let (design, _) = bezel.watomsk()?;
+    if !bezel_fits(bezel, mode) || !Bezel::list(platform).contains(&bezel) { return None; }
+    let a = panel_aspect(panel);
+    let (pw, ph) = (panel.0 as f32, panel.1 as f32);
+    let side = |window: [f32; 4]| (window[0] >= ROOM * pw)
+        .then(|| WatomskFit::Side(watomsk::nearest_shape(design, panel), window));
+    let band = |mut pic: [f32; 4]| {
+        pic[1] = 0.0;
+        (ph - pic[3] >= ROOM * ph).then_some(WatomskFit::Band(pic))
+    };
+    match platform {
+        Platform::Gb | Platform::Gbc => side(picture_rect(platform, VideoMode::Aspect, panel)),
+        Platform::Gba => {
+            if screen_fits(platform, panel) { return None; }
+            if a > 1.5 && mode == VideoMode::Aspect {
+                side(picture_rect(platform, VideoMode::Aspect, panel))
+            } else {
+                band(picture_rect(platform, mode, panel))
+            }
+        }
+        Platform::Nes | Platform::Snes | Platform::Md => {
+            if a > 4.0 / 3.0 * 1.01 {
+                side(home_rect(VideoMode::Aspect, 4.0 / 3.0, home.1, panel, false))
+            } else if a < 4.0 / 3.0 * 0.99 && watomsk::has_band(design) {
+                band(home_rect(mode, home.0, home.1, panel, true))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Whether a system's Bezel row means anything on this panel.
+pub fn bezel_offered(platform: Platform, panel: (u32, u32)) -> bool {
+    let a = panel_aspect(panel);
+    match platform {
+        Platform::Gb | Platform::Gbc =>
+            picture_rect(platform, VideoMode::Aspect, panel)[0] >= ROOM * panel.0 as f32,
+        Platform::Gba | Platform::Md => !screen_fits(platform, panel),
+        Platform::Nes | Platform::Snes => a > 4.0 / 3.0 * 1.01,
+    }
+}
+
 /// The game texture's own picture: GB/GBC sit centred in the 240x160 frame.
 pub fn picture_source(platform: Platform) -> [f32; 4] {
     let (w, h) = platform.picture();
@@ -268,6 +363,45 @@ mod tests {
     }
 
     #[test]
+    fn watomsk_overlays_follow_the_plan_on_every_screen() {
+        use WatomskFit::*;
+        use VideoMode::*;
+        let nes = (4.0 / 3.0, (256, 240));
+        let gb = |b, p, m, panel| watomsk_fit(b, p, m, panel, nes);
+        // GB/GBC: beside the picture on 3:2, 4:3, 16:9; not on squares.
+        assert!(matches!(gb(Bezel::Gb, Platform::Gb, Aspect, (960, 640)), Some(Side(Shape::ThreeTwo, _))));
+        assert!(matches!(gb(Bezel::GbGrey, Platform::Gb, Actual, (1024, 768)), Some(Side(Shape::FourThree, _))));
+        assert!(matches!(gb(Bezel::ColorGrey, Platform::Gbc, Aspect, (1920, 1080)), Some(Side(Shape::SixteenNine, _))));
+        assert_eq!(gb(Bezel::Gb, Platform::Gb, Aspect, (720, 720)), None);
+        assert_eq!(gb(Bezel::Gb, Platform::Gb, Aspect, (1240, 1080)), None);
+        assert_eq!(gb(Bezel::Gb, Platform::Gb, Stretch, (960, 640)), None);
+        assert_eq!(gb(Bezel::Color, Platform::Gb, Aspect, (960, 640)), None, "not a GB frame");
+        // GBA: nothing on 3:2, Perfect_GBA's side frame on 16:9 Original,
+        // the band under the picture otherwise.
+        let gba = Bezel::GbaClassic;
+        assert_eq!(gb(gba, Platform::Gba, Actual, (960, 640)), None);
+        assert!(matches!(gb(gba, Platform::Gba, Aspect, (1920, 1080)), Some(Side(Shape::SixteenNine, _))));
+        assert_eq!(gb(gba, Platform::Gba, Actual, (1920, 1080)), Some(Band([240.0, 0.0, 1440.0, 960.0])));
+        assert_eq!(gb(gba, Platform::Gba, Aspect, (1024, 768)), Some(Band([0.0, 0.0, 1024.0, 682.6667])));
+        assert_eq!(gb(gba, Platform::Gba, Actual, (1240, 1080)), Some(Band([20.0, 0.0, 1200.0, 800.0])));
+        assert_eq!(gb(gba, Platform::Gba, Actual, (720, 720)), Some(Band([0.0, 0.0, 720.0, 480.0])));
+        // NES/SNES: beside on 3:2 and 16:9, nothing on 4:3 or squares.
+        assert!(matches!(gb(Bezel::Nes, Platform::Nes, Aspect, (960, 640)),
+            Some(Side(Shape::ThreeTwo, [x, 0.0, _, 640.0])) if (x - 53.33).abs() < 0.1));
+        assert!(matches!(gb(Bezel::SnesAlt, Platform::Snes, Actual, (1920, 1080)), Some(Side(Shape::SixteenNine, _))));
+        assert_eq!(gb(Bezel::Nes, Platform::Nes, Aspect, (1024, 768)), None);
+        assert_eq!(gb(Bezel::Snes, Platform::Snes, Aspect, (1240, 1080)), None);
+        // Mega Drive: and at the bottom of squares.
+        let md = (4.0 / 3.0, (320, 224));
+        assert_eq!(watomsk_fit(Bezel::GenesisClassic, Platform::Md, Aspect, (720, 720), md),
+            Some(Band([0.0, 0.0, 720.0, 540.0])));
+        assert_eq!(watomsk_fit(Bezel::MegaDrive, Platform::Md, Aspect, (1024, 768), md), None);
+        assert!(bezel_offered(Platform::Md, (720, 720)) && !bezel_offered(Platform::Snes, (720, 720)));
+        assert!(!bezel_offered(Platform::Gba, (960, 640)) && bezel_offered(Platform::Nes, (960, 640)));
+        assert!(!bezel_offered(Platform::Gb, (1240, 1080)));
+    }
+
+    #[test]
     fn shoulders_step_through_the_three_sizes() {
         assert_eq!(VideoMode::Actual.bigger(), VideoMode::Aspect);
         assert_eq!(VideoMode::Aspect.bigger(), VideoMode::Stretch);
@@ -321,5 +455,46 @@ mod tests {
         assert_eq!(bezel_hidden_message(Bezel::Default, Stretch), Some("No bezel in Stretch."));
         assert!(bezel_hidden_message(Bezel::Default, Aspect).unwrap().contains("Integer"));
         assert_eq!(bezel_hidden_message(Bezel::Gb, Aspect), None);
+    }
+}
+
+#[cfg(test)]
+mod watomsk_preview {
+    use super::*;
+
+    /// SLOT_OVERLAY_PREVIEW=<dir> cargo test -p slot-android watomsk_preview -- --ignored
+    #[test]
+    #[ignore]
+    fn write_watomsk_previews() {
+        use slot_ui::fit_overlay::{fit_band, fit_overlay};
+        let Ok(dir) = std::env::var("SLOT_OVERLAY_PREVIEW") else { return };
+        let panels = [(960, 640), (1024, 768), (1920, 1080), (720, 720), (1240, 1080), (1280, 800)];
+        let cases = [(Platform::Gb, Bezel::Gb), (Platform::Gbc, Bezel::ColorGrey),
+            (Platform::Gba, Bezel::GbaClassic), (Platform::Nes, Bezel::Nes),
+            (Platform::Snes, Bezel::SnesGrey), (Platform::Md, Bezel::GenesisClassic),
+            (Platform::Md, Bezel::MegaDriveGrey)];
+        for panel in panels {
+            for (platform, bezel) in cases {
+                for mode in [VideoMode::Actual, VideoMode::Aspect] {
+                    let home = (4.0 / 3.0, if platform == Platform::Md { (320, 224) } else { (256, 224) });
+                    let Some(fit) = watomsk_fit(bezel, platform, mode, panel, home) else { continue };
+                    let (design, grey) = bezel.watomsk().unwrap();
+                    let (rgba, pic) = match fit {
+                        WatomskFit::Side(shape, window) => {
+                            let side = slot_ui::watomsk::side(design, grey, shape).unwrap();
+                            (fit_overlay(&side.art(), panel, window), window)
+                        }
+                        WatomskFit::Band(pic) => {
+                            let band = slot_ui::watomsk::band(design, grey).unwrap();
+                            (fit_band(&band.art(), panel, pic), pic)
+                        }
+                    };
+                    let name = format!("{dir}/{:?}-{:?}-{}-{}x{}-pic{}_{}_{}_{}.rgba", platform, bezel,
+                        mode.as_str(), panel.0, panel.1,
+                        pic[0].round(), pic[1].round(), pic[2].round(), pic[3].round());
+                    std::fs::write(name, rgba).unwrap();
+                }
+            }
+        }
     }
 }

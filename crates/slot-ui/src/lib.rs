@@ -1,6 +1,7 @@
 mod art;
 pub mod bitmaps;
 pub mod fit_overlay;
+pub mod watomsk;
 mod native_assets;
 pub use native_assets::{native_rgba, native_w, native_h, refit_band, NATIVE_W, NATIVE_H};
 pub use art::cover;

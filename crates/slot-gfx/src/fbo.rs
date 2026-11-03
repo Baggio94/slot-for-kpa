@@ -190,6 +190,10 @@ impl Compositor {
         self.game.set_fit(fit);
     }
 
+    pub fn set_game_top(&mut self, top: bool) {
+        self.game.set_top(top);
+    }
+
     pub fn draw_game(&mut self) {
         self.game.draw(&self.quad);
     }

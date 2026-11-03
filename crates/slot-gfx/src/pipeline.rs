@@ -119,6 +119,9 @@ pub struct GamePass {
     /// The game texture's current size: 240x160, or a home console frame.
     size: (u32, u32),
     fit: Fit,
+    /// A home console picture at the top of the screen, not centred (a
+    /// Watomsk logo sits in the band under it).
+    top: bool,
 }
 
 impl GamePass {
@@ -173,6 +176,7 @@ impl GamePass {
             area: default_area(),
             size: (SRC_W, SRC_H),
             fit: Fit::Canvas,
+            top: false,
         })
     }
 
@@ -222,6 +226,10 @@ impl GamePass {
 
     pub fn set_fit(&mut self, fit: Fit) {
         self.fit = fit;
+    }
+
+    pub fn set_top(&mut self, top: bool) {
+        self.top = top;
     }
 
     /// Reallocate the game texture when a frame arrives at another size
@@ -293,7 +301,8 @@ impl GamePass {
             // A home console frame fills the whole canvas through its fit window.
             let canvas = [0.0, 0.0, out_w() as f32, OUT_H as f32];
             let out = (canvas[2] * self.fbo_scale[0], canvas[3] * self.fbo_scale[1]);
-            let window = fit_window(self.fit, self.size, out);
+            let mut window = fit_window(self.fit, self.size, out);
+            if self.top { window[1] = 0.0; }
             self.draw_source(self.game, quad, window, self.size, WHOLE_TEXTURE, canvas);
             return;
         }

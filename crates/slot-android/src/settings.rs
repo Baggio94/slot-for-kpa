@@ -113,23 +113,79 @@ pub enum Bezel {
     None,
     #[default]
     Default,
-    // Watomsk's Game Boy, Game Boy Pocket and Game Boy Color overlays
-    // (github.com/Watomsk/Overlays, used with permission), cut for 3:2.
+    // Watomsk's overlays (github.com/Watomsk/Overlays, used with his
+    // permission), recomposed for each screen shape; each also in his
+    // dark grey.
     Gb, Pocket, Color,
+    GbGrey, PocketGrey, ColorGrey,
+    GbaClassic, GbaClassicGrey, Gba, GbaGrey, GbaSp, GbaSpGrey, GbaAlt, GbaAltGrey,
+    Nes, NesGrey, NesGrayLogo, NesGrayLogoGrey,
+    Snes, SnesGrey, SnesAlt, SnesAltGrey, SnesGrayLogo, SnesGrayLogoGrey,
+    SnesGrayLogoAlt, SnesGrayLogoAltGrey,
+    GenesisClassic, GenesisClassicGrey, Genesis, GenesisGrey, MegaDrive, MegaDriveGrey,
 }
 impl Bezel {
-    /// GBA keeps ON/OFF; GB adds Watomsk's Game Boy and Pocket, GBC his Color.
-    pub const GB: [Bezel; 4] = [Bezel::None, Bezel::Default, Bezel::Gb, Bezel::Pocket];
-    pub const GBC: [Bezel; 3] = [Bezel::None, Bezel::Default, Bezel::Color];
-    pub fn step(self)->Self {
-        match self {Self::None=>Self::Default,_=>Self::None}
+    /// GB and GBC also keep the slot. bezel; every system's own Watomsk
+    /// designs follow, the classic one first (Siham, 2026-11-03).
+    pub const GB: [Bezel; 6] = [Bezel::None, Bezel::Default, Bezel::Gb, Bezel::GbGrey,
+        Bezel::Pocket, Bezel::PocketGrey];
+    pub const GBC: [Bezel; 4] = [Bezel::None, Bezel::Default, Bezel::Color, Bezel::ColorGrey];
+    pub const GBA: [Bezel; 9] = [Bezel::None, Bezel::GbaClassic, Bezel::GbaClassicGrey,
+        Bezel::Gba, Bezel::GbaGrey, Bezel::GbaSp, Bezel::GbaSpGrey, Bezel::GbaAlt, Bezel::GbaAltGrey];
+    pub const NES: [Bezel; 5] = [Bezel::None, Bezel::Nes, Bezel::NesGrey,
+        Bezel::NesGrayLogo, Bezel::NesGrayLogoGrey];
+    pub const SNES: [Bezel; 9] = [Bezel::None, Bezel::Snes, Bezel::SnesGrey,
+        Bezel::SnesAlt, Bezel::SnesAltGrey, Bezel::SnesGrayLogo, Bezel::SnesGrayLogoGrey,
+        Bezel::SnesGrayLogoAlt, Bezel::SnesGrayLogoAltGrey];
+    pub const MD: [Bezel; 7] = [Bezel::None, Bezel::GenesisClassic, Bezel::GenesisClassicGrey,
+        Bezel::Genesis, Bezel::GenesisGrey, Bezel::MegaDrive, Bezel::MegaDriveGrey];
+    pub fn list(platform: slot_store::Platform) -> &'static [Bezel] {
+        use slot_store::Platform;
+        match platform {
+            Platform::Gb => &Self::GB,
+            Platform::Gbc => &Self::GBC,
+            Platform::Gba => &Self::GBA,
+            Platform::Nes => &Self::NES,
+            Platform::Snes => &Self::SNES,
+            Platform::Md => &Self::MD,
+        }
     }
     pub fn step_in(self,list:&[Bezel],right:bool)->Self {
         let n=list.len();
-        let at=list.iter().position(|b| *b==self).unwrap_or(1);
+        let at=list.iter().position(|b| *b==self).unwrap_or(0);
         list[if right {(at+1)%n} else {(at+n-1)%n}]
     }
+    /// Which Watomsk design, and whether in his dark grey.
+    pub fn watomsk(self) -> Option<(slot_ui::watomsk::Design, bool)> {
+        use slot_ui::watomsk::Design as D;
+        Some(match self {
+            Bezel::None | Bezel::Default => return None,
+            Bezel::Gb => (D::Gb, false), Bezel::GbGrey => (D::Gb, true),
+            Bezel::Pocket => (D::Pocket, false), Bezel::PocketGrey => (D::Pocket, true),
+            Bezel::Color => (D::Color, false), Bezel::ColorGrey => (D::Color, true),
+            Bezel::GbaClassic => (D::GbaClassic, false), Bezel::GbaClassicGrey => (D::GbaClassic, true),
+            Bezel::Gba => (D::Gba, false), Bezel::GbaGrey => (D::Gba, true),
+            Bezel::GbaSp => (D::GbaSp, false), Bezel::GbaSpGrey => (D::GbaSp, true),
+            Bezel::GbaAlt => (D::GbaAlt, false), Bezel::GbaAltGrey => (D::GbaAlt, true),
+            Bezel::Nes => (D::Nes, false), Bezel::NesGrey => (D::Nes, true),
+            Bezel::NesGrayLogo => (D::NesGrayLogo, false), Bezel::NesGrayLogoGrey => (D::NesGrayLogo, true),
+            Bezel::Snes => (D::Snes, false), Bezel::SnesGrey => (D::Snes, true),
+            Bezel::SnesAlt => (D::SnesAlt, false), Bezel::SnesAltGrey => (D::SnesAlt, true),
+            Bezel::SnesGrayLogo => (D::SnesGrayLogo, false),
+            Bezel::SnesGrayLogoGrey => (D::SnesGrayLogo, true),
+            Bezel::SnesGrayLogoAlt => (D::SnesGrayLogoAlt, false),
+            Bezel::SnesGrayLogoAltGrey => (D::SnesGrayLogoAlt, true),
+            Bezel::GenesisClassic => (D::GenesisClassic, false),
+            Bezel::GenesisClassicGrey => (D::GenesisClassic, true),
+            Bezel::Genesis => (D::Genesis, false), Bezel::GenesisGrey => (D::Genesis, true),
+            Bezel::MegaDrive => (D::MegaDrive, false), Bezel::MegaDriveGrey => (D::MegaDrive, true),
+        })
+    }
 }
+
+fn bezel_nes_default() -> Bezel { Bezel::Nes }
+fn bezel_snes_default() -> Bezel { Bezel::Snes }
+fn bezel_md_default() -> Bezel { Bezel::GenesisClassic }
 
 pub const REWIND_SPEEDS: [u8; 4] = [1, 2, 3, 5];
 
@@ -235,6 +291,12 @@ pub struct Settings {
     pub colour_correction_gb: bool,
     pub colour_correction_gbc: bool,
     pub bezel_gba: Bezel, pub bezel_gbc: Bezel, pub bezel_gb: Bezel,
+    #[serde(default="bezel_nes_default")]
+    pub bezel_nes: Bezel,
+    #[serde(default="bezel_snes_default")]
+    pub bezel_snes: Bezel,
+    #[serde(default="bezel_md_default")]
+    pub bezel_md: Bezel,
     pub gb_palettes: bool, pub gb_palette: u8, pub rewind: bool,
     // Number of historical rewind snapshots restored per 100 ms of game time.
     // Prior Android builds captured 10/s and replayed 10/s (1x). Original
@@ -277,6 +339,7 @@ impl Default for Settings {
             colour_correction_gba: false, colour_correction_gb: false,
             colour_correction_gbc: false,
             bezel_gba: Bezel::None, bezel_gbc: Bezel::Default, bezel_gb: Bezel::Default,
+            bezel_nes: Bezel::Nes, bezel_snes: Bezel::Snes, bezel_md: Bezel::GenesisClassic,
             gb_palettes: false, gb_palette: 1, rewind: true,
             rewind_speed: 2,
             turbo: true, eject_save: true,
@@ -301,6 +364,8 @@ impl Settings {
             shader_gb: Shader::Lcd3x,
             bezel_gbc: Bezel::None,
             bezel_gb: Bezel::None,
+            // Shown only where the GBA picture leaves room (not the KONKR).
+            bezel_gba: Bezel::GbaClassic,
             gb_palettes: true,
             gb_palette: GB_PALETTE_GBC_GREEN,
             ff_speed: 3,
@@ -433,10 +498,15 @@ impl Settings {
     }
     pub fn bezel_for(&self,platform:slot_store::Platform)->Bezel {
         match platform {
-            slot_store::Platform::Gba=>self.bezel_gba,
+            // GBA's old ON is its classic Watomsk frame.
+            slot_store::Platform::Gba=>match self.bezel_gba {
+                Bezel::Default=>Bezel::GbaClassic, bezel=>bezel,
+            },
             slot_store::Platform::Gbc=>self.bezel_gbc,
             slot_store::Platform::Gb=>self.bezel_gb,
-            _=>Bezel::None,
+            slot_store::Platform::Nes=>self.bezel_nes,
+            slot_store::Platform::Snes=>self.bezel_snes,
+            slot_store::Platform::Md=>self.bezel_md,
         }
     }
     pub fn set_bezel_for(&mut self,platform:slot_store::Platform,value:Bezel) {
@@ -444,8 +514,22 @@ impl Settings {
             slot_store::Platform::Gba=>self.bezel_gba=value,
             slot_store::Platform::Gbc=>self.bezel_gbc=value,
             slot_store::Platform::Gb=>self.bezel_gb=value,
-            _=>{}
+            slot_store::Platform::Nes=>self.bezel_nes=value,
+            slot_store::Platform::Snes=>self.bezel_snes=value,
+            slot_store::Platform::Md=>self.bezel_md=value,
         }
+    }
+    /// The Bezel row's settings key for each system.
+    pub fn bezel_key(platform:slot_store::Platform)->usize {
+        match platform {
+            slot_store::Platform::Gba=>25, slot_store::Platform::Gbc=>26,
+            slot_store::Platform::Gb=>27, slot_store::Platform::Nes=>44,
+            slot_store::Platform::Snes=>45, slot_store::Platform::Md=>46,
+        }
+    }
+    fn step_bezel(&mut self,platform:slot_store::Platform,right:bool) {
+        let next=self.bezel_for(platform).step_in(Bezel::list(platform),right);
+        self.set_bezel_for(platform,next);
     }
     // Screen: 0 GBA shader, 1 GB shader, 2 legacy GBA correction, 3 palettes.
     // 21 GBC shader, 22/23/24 independent corrections, 25/26/27 bezels.
@@ -463,9 +547,12 @@ impl Settings {
             24 => self.set_colour_for(slot_store::Platform::Gb,
                 !self.colour_correction_gb),
             21 => self.shader_gbc=self.shader_gbc.step(&Shader::GB,right),
-            25 => self.bezel_gba=self.bezel_gba.step(),
-            26 => self.bezel_gbc=self.bezel_gbc.step_in(&Bezel::GBC,right),
-            27 => self.bezel_gb=self.bezel_gb.step_in(&Bezel::GB,right),
+            25 => self.step_bezel(slot_store::Platform::Gba,right),
+            26 => self.step_bezel(slot_store::Platform::Gbc,right),
+            27 => self.step_bezel(slot_store::Platform::Gb,right),
+            44 => self.step_bezel(slot_store::Platform::Nes,right),
+            45 => self.step_bezel(slot_store::Platform::Snes,right),
+            46 => self.step_bezel(slot_store::Platform::Md,right),
             3 => step_palette(&mut self.gb_palettes, &mut self.gb_palette, right),
             4 => {
                 let at = SPEEDS.iter().position(|x| *x == self.ff_speed).unwrap_or(0);
@@ -791,9 +878,12 @@ mod tests {
             assert_eq!(s.shader_for(platform),Shader::Lcd3x);
             assert!(!s.colour_for(platform));
         }
-        assert_eq!(s.bezel_gba,Bezel::None);
+        // GBA's classic Watomsk frame is shown only off the KONKR.
+        assert_eq!(s.bezel_gba,Bezel::GbaClassic);
         assert_eq!(s.bezel_gbc,Bezel::None);
         assert_eq!(s.bezel_gb,Bezel::None);
+        assert_eq!((s.bezel_nes,s.bezel_snes,s.bezel_md),
+            (Bezel::Nes,Bezel::Snes,Bezel::GenesisClassic));
         assert!(s.gb_palettes);
         assert_eq!(s.palette_label(),"GBC Green");
         // GAMEPLAY: Fast Forward 3x, Rewind 3x, X/Y Buttons A/B.
@@ -1081,19 +1171,40 @@ mod tests {
 
     #[test]
     fn each_bezel_row_offers_only_its_own_watomsk_overlays() {
+        use slot_store::Platform;
         let mut s=Settings::default();
-        for want in [Bezel::Gb,Bezel::Pocket,Bezel::None,Bezel::Default] {
+        for want in [Bezel::Gb,Bezel::GbGrey,Bezel::Pocket,Bezel::PocketGrey,
+            Bezel::None,Bezel::Default] {
             s.change(27,true);
             assert_eq!(s.bezel_gb,want);
         }
-        for want in [Bezel::Color,Bezel::None,Bezel::Default] {
+        for want in [Bezel::Color,Bezel::ColorGrey,Bezel::None,Bezel::Default] {
             s.change(26,true);
             assert_eq!(s.bezel_gbc,want);
         }
         assert_eq!(serde_json::to_string(&Bezel::Pocket).unwrap(),"\"pocket\"");
+        // GBA: OFF, then the classic frame first (an old ON reads as it).
         s.change(25,true);
-        assert_eq!(s.bezel_gba,Bezel::Default);
-        s.change(25,true);
+        assert_eq!(s.bezel_gba,Bezel::GbaClassic);
+        s.change(25,false);
         assert_eq!(s.bezel_gba,Bezel::None);
+        s.bezel_gba=Bezel::Default;
+        assert_eq!(s.bezel_for(Platform::Gba),Bezel::GbaClassic);
+        s.change(25,true);
+        assert_eq!(s.bezel_gba,Bezel::GbaClassicGrey);
+        // The home consoles start on their classic frame.
+        assert_eq!(s.bezel_for(Platform::Md),Bezel::GenesisClassic);
+        s.change(46,true);
+        assert_eq!(s.bezel_md,Bezel::GenesisClassicGrey);
+        s.change(44,false);
+        assert_eq!(s.bezel_nes,Bezel::None);
+        s.change(45,false);
+        assert_eq!(s.bezel_snes,Bezel::None);
+        for bezel in Bezel::list(Platform::Snes).iter().skip(1) {
+            assert!(bezel.watomsk().is_some());
+        }
+        // Old settings files without the new fields keep the defaults.
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.bezel_nes,Bezel::Nes);
     }
 }

@@ -92,6 +92,66 @@ pub fn fit_overlay(art: &OverlayArt, out: (u32, u32), pic: [f32; 4]) -> Vec<u8> 
     rgba
 }
 
+/// A logo for the band under a picture sitting at the top of the screen
+/// (Watomsk's GBA and Mega Drive frames on screens narrower than the
+/// picture). Opaque, on the frame's own colour, drawn at his 1080p scale.
+pub struct BandArt<'a> {
+    pub rgba: &'a [u8],
+    pub size: (u32, u32),
+}
+
+/// Watomsk's inner shadow along the window's edge, in his 1080p pixels.
+const SHADOW: [f32; 13] = [94.0, 94.0, 84.0, 67.0, 53.0, 39.0, 28.0, 19.0, 11.0, 6.0, 2.0, 0.0, 0.0];
+const SHADOW_STEP: f32 = 3.0;
+
+fn shadow(d: f32) -> f32 {
+    let t = (d / SHADOW_STEP).max(0.0);
+    let i = t.floor() as usize;
+    if i + 1 >= SHADOW.len() { return 0.0; }
+    SHADOW[i] + (SHADOW[i + 1] - SHADOW[i]) * (t - i as f32)
+}
+
+/// The frame's colour everywhere, the window cut over the picture `pic`
+/// (x, y, w, h, panel pixels) with the inner shadow, and the logo centred
+/// in the band below it. The logo keeps its size relative to the picture
+/// (Watomsk's GBA window is 1440 wide), a little bigger in a tall band,
+/// never wider than 70% of the screen.
+pub fn fit_band(art: &BandArt, out: (u32, u32), pic: [f32; 4]) -> Vec<u8> {
+    let (ow, oh) = out;
+    let bg = [art.rgba[0], art.rgba[1], art.rgba[2], 255];
+    let base = pic[2] / 1440.0;
+    let bottom = pic[1] + pic[3];
+    let band = (oh as f32 - bottom).max(0.0);
+    let (lw, lh) = (art.size.0 as f32, art.size.1 as f32);
+    let mut s = (band / 120.0).max(base).min(1.5 * base);
+    s = s.min(ow as f32 * 0.7 / lw).max(1e-3);
+    let (cx, cy) = (pic[0] + pic[2] / 2.0, bottom + band / 2.0);
+    let (lx, ly) = (cx - lw * s / 2.0, cy - lh * s / 2.0);
+    let logo = OverlayArt {
+        rgba: art.rgba, size: art.size,
+        window: [0.0, 0.0, 0.0, 0.0], column: [0.0, 0.0], plain: [[0.0, 0.0], [0.0, 0.0]],
+    };
+    let mut rgba = vec![0u8; (ow * oh * 4) as usize];
+    for oy in 0..oh {
+        let y = oy as f32 + 0.5;
+        for ox in 0..ow {
+            let x = ox as f32 + 0.5;
+            let px = if x >= pic[0] && x < pic[0] + pic[2] && y >= pic[1] && y < bottom {
+                let d = (x - pic[0]).min(pic[0] + pic[2] - x)
+                    .min(y - pic[1]).min(bottom - y) - 0.5;
+                [0, 0, 0, shadow(d / base).round() as u8]
+            } else if y >= bottom {
+                let (u, v) = ((x - lx) / s, (y - ly) / s);
+                if u >= 0.0 && u < lw && v >= 0.0 && v < lh {
+                    sample(&logo, u, v)
+                } else { bg }
+            } else { bg };
+            rgba[((oy * ow + ox) * 4) as usize..][..4].copy_from_slice(&px);
+        }
+    }
+    rgba
+}
+
 fn mirror(v: f32, len: f32) -> f32 {
     let t = v.rem_euclid(2.0 * len);
     if t < len { t } else { 2.0 * len - t - 0.001 }

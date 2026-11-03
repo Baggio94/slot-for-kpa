@@ -598,13 +598,23 @@ fn light_sensor() -> bool {
 
 /// GB/GBC Bezel row value: OFF, SLOT., or a Watomsk overlay's name.
 fn bezel_value(bezel: crate::settings::Bezel) -> usize {
-    use crate::settings::Bezel;
+    use crate::settings::Bezel::*;
     match bezel {
-        Bezel::None => 5,
-        Bezel::Default => 46,
-        Bezel::Gb => 47,
-        Bezel::Pocket => 48,
-        Bezel::Color => 49,
+        None => 5,
+        Default => 46,
+        Gb => 47,
+        Pocket => 48,
+        Color => 49,
+        // Watomsk's other designs: setting_values from 77, in this order.
+        GbGrey => 77, PocketGrey => 78, ColorGrey => 79,
+        GbaClassic => 80, GbaClassicGrey => 81, Gba => 82, GbaGrey => 83,
+        GbaSp => 84, GbaSpGrey => 85, GbaAlt => 86, GbaAltGrey => 87,
+        Nes => 88, NesGrey => 89, NesGrayLogo => 90, NesGrayLogoGrey => 91,
+        Snes => 92, SnesGrey => 93, SnesAlt => 94, SnesAltGrey => 95,
+        SnesGrayLogo => 96, SnesGrayLogoGrey => 97,
+        SnesGrayLogoAlt => 98, SnesGrayLogoAltGrey => 99,
+        GenesisClassic => 100, GenesisClassicGrey => 101, Genesis => 102, GenesisGrey => 103,
+        MegaDrive => 104, MegaDriveGrey => 105,
     }
 }
 
@@ -749,10 +759,12 @@ struct Engine {
     slot_light_faces: (slot_gfx::TexId, slot_gfx::TexId),
     gb_bezel_tex: slot_gfx::TexId,
     gbc_bezel_tex: slot_gfx::TexId,
-    /// Watomsk GB, Pocket and Color overlays.
-    overlay_texs: [slot_gfx::TexId; 3],
-    /// The bezel refitted to a panel that isn't 3:2, and what it was fitted for.
-    fitted_bezel: Option<(slot_gfx::TexId, (crate::settings::Bezel, Platform, (u32, u32)))>,
+    /// The bezel fitted to the panel, and what it was fitted for (the
+    /// picture rect it frames, rounded).
+    fitted_bezel: Option<(slot_gfx::TexId, (crate::settings::Bezel, Platform, (u32, u32), [i32; 4]))>,
+    /// The game picture sits at the top of the screen: a Watomsk logo is
+    /// in the band under it.
+    picture_top: bool,
     custom_wallpaper_present: bool,
     setting_values: Vec<(slot_gfx::TexId, u32, u32)>,
     // Settings > Systems default cores, by Platform order.
@@ -965,9 +977,6 @@ impl Engine {
         let gb_bezel_tex=gpu.create_texture(w,h,&gb);
         let (gbc,w,h)=slot_ui::native_rgba(slot_ui::bitmaps::bezel_gbc(),720,480);
         let gbc_bezel_tex=gpu.create_texture(w,h,&gbc);
-        let overlay_texs=[slot_ui::bitmaps::overlay_gb(),slot_ui::bitmaps::overlay_pocket(),
-            slot_ui::bitmaps::overlay_color()].map(|rgba| gpu.create_texture(
-                slot_ui::bitmaps::OVERLAY_W,slot_ui::bitmaps::OVERLAY_H,rgba));
 
         let mut shelves = Vec::new();
 
@@ -1163,7 +1172,16 @@ impl Engine {
                                "Shelf", "AUTO",
                                "INTEGER", "ORIGINAL RATIO", "STRETCH",
                                "FCEUmm", "Nestopia", "Snes9x", "bsnes",
-                               "Genesis Plus GX", "PicoDrive", "Original"]
+                               "Genesis Plus GX", "PicoDrive", "Original",
+                               "GAME BOY GREY", "POCKET GREY", "COLOR GREY",
+                               "GBA CLASSIC", "GBA CLASSIC GREY", "GBA", "GBA GREY",
+                               "GBA SP", "GBA SP GREY", "GBA ALT", "GBA ALT GREY",
+                               "NES", "NES GREY", "NES SILVER", "NES SILVER GREY",
+                               "SNES", "SNES GREY", "SNES ALT", "SNES ALT GREY",
+                               "SNES SILVER", "SNES SILVER GREY",
+                               "SNES SILVER ALT", "SNES SILVER ALT GREY",
+                               "GENESIS CLASSIC", "GENESIS CLASSIC GREY", "GENESIS", "GENESIS GREY",
+                               "MEGA DRIVE", "MEGA DRIVE GREY"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -1351,8 +1369,8 @@ impl Engine {
             slot_light_faces,
             gb_bezel_tex,
             gbc_bezel_tex,
-            overlay_texs,
             fitted_bezel: None,
+            picture_top: false,
             custom_wallpaper_present,
             setting_values,
             default_cores: Platform::ALL.map(Core::default_for),
@@ -3672,6 +3690,7 @@ impl Engine {
             self.gpu.set_picture(slot_gfx::WHOLE_TEXTURE);
             self.gpu.set_game_source_rect(slot_gfx::WHOLE_TEXTURE);
             self.gpu.set_game_fit(video_mode::home_fit(self.video_mode, aspect));
+            self.gpu.set_game_top(self.picture_top);
             self.gpu.set_screen_effect(self.game_effect());
             return;
         }
@@ -3686,6 +3705,7 @@ impl Engine {
             // Off the 3:2 KONKR each size is laid out on the real panel.
             let panel = panel_size();
             let [px, py, pw, ph] = video_mode::picture_rect(platform, self.video_mode, panel);
+            let py = if self.picture_top { 0.0 } else { py };
             let (sx, sy) = (slot_gfx::out_w() as f32 / panel.0 as f32,
                 OUT_H as f32 / panel.1 as f32);
             self.gpu.set_game_area([px * sx, py * sy, pw * sx, ph * sy]);
@@ -3755,76 +3775,124 @@ impl Engine {
     /// A short Android message when the chosen bezel can't frame this size.
     fn tell_hidden_bezel(&self) {
         if self.current_cart_platform() == Platform::Gba {return;}
+        if !video_mode::bezel_offered(self.current_cart_platform(),panel_size()) {return;}
         let bezel=self.game_settings().bezel_for(self.current_cart_platform());
         if let Some(message)=video_mode::bezel_hidden_message(bezel,self.video_mode) {
             set_message(message.into());
         }
     }
 
-    /// Native 3:2 KONKR: GBA fills the panel and has no forced letterbox bezel.
-    /// GB/GBC preserve the official 720×480 transparent overlays and offer
-    /// Watomsk's; a bezel that can't frame the screen size is hidden, and
-    /// the setting is kept for later. Elsewhere the bezel is refitted to the
-    /// panel around the picture, or hidden when the panel leaves no room.
+    /// The home console's display aspect and frame size, for its overlay.
+    fn home_shape(&self) -> (f32, (u32, u32)) {
+        self.game.as_ref().map_or((4.0 / 3.0, (256, 224)),
+            |session| (session.display_aspect(), session.frame_size()))
+    }
+
+    /// Native 3:2 KONKR: GBA fills the panel and has no overlay. GB/GBC
+    /// keep the official 720x480 slot. bezel; every system has Watomsk's
+    /// overlays, placed by video_mode::watomsk_fit for the real panel (the
+    /// picture moves to the top when his logo goes under it). A bezel that
+    /// can't frame the screen size is hidden, and the setting is kept.
     /// Returns the texture and the canvas rect it covers.
     fn game_bezel(&mut self) -> Option<(slot_gfx::TexId, [f32; 4])> {
         use crate::settings::Bezel;
+        use video_mode::WatomskFit;
         let platform=self.current_cart_platform();
         let bezel=self.game_settings().bezel_for(platform);
-        if !video_mode::bezel_fits(bezel,self.video_mode) {return None;}
-        if bezel==Bezel::None || !matches!(platform,Platform::Gb|Platform::Gbc) {return None;}
-        if !fitted_canvas() {
-            let tex=match (bezel,platform) {
-                (Bezel::Default,Platform::Gb)=>self.gb_bezel_tex,
-                (Bezel::Default,_)=>self.gbc_bezel_tex,
-                (Bezel::Gb,_)=>self.overlay_texs[0],
-                (Bezel::Pocket,_)=>self.overlay_texs[1],
-                _=>self.overlay_texs[2],
-            };
-            // Bezels frame the 3:2 game frame, wherever it sits.
-            return Some((tex,slot_gfx::default_area()));
-        }
         let panel=panel_size();
-        if !video_mode::bezel_has_room(bezel,platform,panel) {return None;}
-        let whole=[0.0,0.0,slot_gfx::out_w() as f32,OUT_H as f32];
-        let key=(bezel,platform,panel);
-        if let Some((tex,fitted))=self.fitted_bezel {
-            if fitted==key {return Some((tex,whole));}
+        let fit=video_mode::watomsk_fit(bezel,platform,self.video_mode,panel,self.home_shape());
+        let top=matches!(fit,Some(WatomskFit::Band(_)));
+        if top!=self.picture_top {
+            self.picture_top=top;
+            self.apply_video_geometry();
         }
-        use slot_ui::bitmaps;
-        use slot_ui::fit_overlay::{fit_overlay, slot_bezel, watomsk};
-        let art=match (bezel,platform) {
-            (Bezel::Default,Platform::Gb)=>slot_bezel(bitmaps::bezel_gb()),
-            (Bezel::Default,_)=>slot_bezel(bitmaps::bezel_gbc()),
-            (Bezel::Gb,_)=>watomsk(bitmaps::overlay_gb()),
-            (Bezel::Pocket,_)=>watomsk(bitmaps::overlay_pocket()),
-            _=>watomsk(bitmaps::overlay_color()),
+        let whole=[0.0,0.0,slot_gfx::out_w() as f32,OUT_H as f32];
+        let rect=|r: [f32; 4]| r.map(|v| v.round() as i32);
+        let (key,rgba)=if bezel==Bezel::Default {
+            if !video_mode::bezel_fits(bezel,self.video_mode) ||
+                !matches!(platform,Platform::Gb|Platform::Gbc) {return None;}
+            if !fitted_canvas() {
+                let tex=if platform==Platform::Gb {self.gb_bezel_tex} else {self.gbc_bezel_tex};
+                // Bezels frame the 3:2 game frame, wherever it sits.
+                return Some((tex,slot_gfx::default_area()));
+            }
+            if !video_mode::bezel_has_room(bezel,platform,panel) {return None;}
+            let window=video_mode::bezel_window(bezel,platform,panel);
+            let key=(bezel,platform,panel,rect(window));
+            if let Some((tex,fitted))=self.fitted_bezel {
+                if fitted==key {return Some((tex,whole));}
+            }
+            use slot_ui::{bitmaps, fit_overlay::{fit_overlay, slot_bezel}};
+            let art=if platform==Platform::Gb {slot_bezel(bitmaps::bezel_gb())}
+                else {slot_bezel(bitmaps::bezel_gbc())};
+            (key,fit_overlay(&art,panel,window))
+        } else {
+            let fit=fit?;
+            let (design,grey)=bezel.watomsk()?;
+            let key=(bezel,platform,panel,rect(match fit {
+                WatomskFit::Side(_,r)|WatomskFit::Band(r)=>r,
+            }));
+            // On the KONKR the 3:2 game frame is the whole panel.
+            let area=if fitted_canvas() {whole} else {slot_gfx::default_area()};
+            if let Some((tex,fitted))=self.fitted_bezel {
+                if fitted==key {return Some((tex,area));}
+            }
+            use slot_ui::{watomsk, fit_overlay::{fit_band, fit_overlay}};
+            let rgba=match fit {
+                WatomskFit::Side(shape,window)=>{
+                    let side=watomsk::side(design,grey,shape)?;
+                    fit_overlay(&side.art(),panel,window)
+                }
+                WatomskFit::Band(pic)=>{
+                    let band=watomsk::band(design,grey)?;
+                    fit_band(&band.art(),panel,pic)
+                }
+            };
+            let tex=self.bezel_texture(panel,&rgba);
+            self.fitted_bezel=Some((tex,key));
+            return Some((tex,area));
         };
-        let rgba=fit_overlay(&art,panel,video_mode::bezel_window(bezel,platform,panel));
-        let tex=match self.fitted_bezel {
-            Some((tex,_)) => { self.gpu.update_texture(tex,panel.0,panel.1,&rgba); tex }
-            None => self.gpu.create_texture(panel.0,panel.1,&rgba),
-        };
+        let tex=self.bezel_texture(panel,&rgba);
         self.fitted_bezel=Some((tex,key));
         Some((tex,whole))
     }
 
+    fn bezel_texture(&mut self, panel: (u32, u32), rgba: &[u8]) -> slot_gfx::TexId {
+        match self.fitted_bezel {
+            Some((tex,_)) => { self.gpu.update_texture(tex,panel.0,panel.1,rgba); tex }
+            None => self.gpu.create_texture(panel.0,panel.1,rgba),
+        }
+    }
+
+    // The Bezel row shows only where an overlay can appear on this panel
+    // (video_mode::bezel_offered): not GBA on the KONKR, not the Game Boys
+    // on near-square screens, not NES/SNES on 4:3 or narrower.
     fn screen_rows(platform: Platform)-> &'static [usize] {
-        match platform {
-            // Upstream v1.7 hides GBA bezel on an unframed 3:2 panel:
-            // GBA already fills KONKR's native 960x640 display.
-            Platform::Gba=>&[34,29],
-            Platform::Gbc=>&[88,29,90],
-            Platform::Gb=>&[89,29,36,90],
-            Platform::Nes|Platform::Snes|Platform::Md=>&[120],
+        let bezel=video_mode::bezel_offered(platform,panel_size());
+        match (platform,bezel) {
+            (Platform::Gba,false)=>&[34,29],
+            (Platform::Gba,true)=>&[34,29,90],
+            (Platform::Gbc,false)=>&[88,29],
+            (Platform::Gbc,true)=>&[88,29,90],
+            (Platform::Gb,false)=>&[89,29,36],
+            (Platform::Gb,true)=>&[89,29,36,90],
+            (Platform::Nes|Platform::Snes|Platform::Md,false)=>&[120],
+            (Platform::Nes|Platform::Snes|Platform::Md,true)=>&[120,90],
         }
     }
     fn screen_keys(platform:Platform)-> &'static [usize] {
-        match platform {
-            Platform::Gba=>&[0,22],
-            Platform::Gbc=>&[21,23,26],
-            Platform::Gb=>&[1,24,3,27],
-            Platform::Nes|Platform::Snes|Platform::Md=>&[SCREEN_SIZE_KEY],
+        let bezel=video_mode::bezel_offered(platform,panel_size());
+        match (platform,bezel) {
+            (Platform::Gba,false)=>&[0,22],
+            (Platform::Gba,true)=>&[0,22,25],
+            (Platform::Gbc,false)=>&[21,23],
+            (Platform::Gbc,true)=>&[21,23,26],
+            (Platform::Gb,false)=>&[1,24,3],
+            (Platform::Gb,true)=>&[1,24,3,27],
+            (Platform::Nes|Platform::Snes|Platform::Md,false)=>&[SCREEN_SIZE_KEY],
+            (Platform::Nes,true)=>&[SCREEN_SIZE_KEY,44],
+            (Platform::Snes,true)=>&[SCREEN_SIZE_KEY,45],
+            (Platform::Md,true)=>&[SCREEN_SIZE_KEY,46],
         }
     }
     // Settings > Systems opens with the system's default core, then its
@@ -3832,33 +3900,47 @@ impl Engine {
     // shows. A system whose shape the panel already has (GBA on the KONKR)
     // offers neither Screen Size nor a bezel (Siham 2026-11-02).
     fn system_rows(platform: Platform)-> &'static [usize] {
-        let fits=video_mode::screen_fits(platform,panel_size());
-        match (platform,fits) {
-            (Platform::Gba,true)=>&[118,34,29],
-            (Platform::Gba,false)=>&[118,120,34,29],
-            (Platform::Gbc,true)=>&[118,88,29],
-            (Platform::Gbc,false)=>&[118,120,88,29,90],
-            (Platform::Gb,true)=>&[118,89,29,36],
-            (Platform::Gb,false)=>&[118,120,89,29,36,90],
-            (Platform::Nes|Platform::Snes|Platform::Md,true)=>&[118],
-            (Platform::Nes|Platform::Snes|Platform::Md,false)=>&[118,120],
+        let panel=panel_size();
+        let fits=video_mode::screen_fits(platform,panel);
+        let bezel=video_mode::bezel_offered(platform,panel);
+        match (platform,fits,bezel) {
+            (Platform::Gba,true,_)=>&[118,34,29],
+            (Platform::Gba,false,false)=>&[118,120,34,29],
+            (Platform::Gba,false,true)=>&[118,120,34,29,90],
+            (Platform::Gbc,true,_)=>&[118,88,29],
+            (Platform::Gbc,false,false)=>&[118,120,88,29],
+            (Platform::Gbc,false,true)=>&[118,120,88,29,90],
+            (Platform::Gb,true,_)=>&[118,89,29,36],
+            (Platform::Gb,false,false)=>&[118,120,89,29,36],
+            (Platform::Gb,false,true)=>&[118,120,89,29,36,90],
+            (Platform::Nes|Platform::Snes|Platform::Md,true,_)=>&[118],
+            (Platform::Nes|Platform::Snes|Platform::Md,false,false)=>&[118,120],
+            (Platform::Nes|Platform::Snes|Platform::Md,false,true)=>&[118,120,90],
         }
     }
     fn system_keys(platform:Platform)-> &'static [usize] {
-        let fits=video_mode::screen_fits(platform,panel_size());
-        match (platform,fits) {
-            (Platform::Gba,true)=>&[29,0,22],
-            (Platform::Gba,false)=>&[29,SCREEN_SIZE_KEY,0,22],
-            (Platform::Gbc,true)=>&[30,21,23],
-            (Platform::Gbc,false)=>&[30,SCREEN_SIZE_KEY,21,23,26],
-            (Platform::Gb,true)=>&[31,1,24,3],
-            (Platform::Gb,false)=>&[31,SCREEN_SIZE_KEY,1,24,3,27],
-            (Platform::Nes,true)=>&[41],
-            (Platform::Nes,false)=>&[41,SCREEN_SIZE_KEY],
-            (Platform::Snes,true)=>&[42],
-            (Platform::Snes,false)=>&[42,SCREEN_SIZE_KEY],
-            (Platform::Md,true)=>&[43],
-            (Platform::Md,false)=>&[43,SCREEN_SIZE_KEY],
+        let panel=panel_size();
+        let fits=video_mode::screen_fits(platform,panel);
+        let bezel=video_mode::bezel_offered(platform,panel);
+        match (platform,fits,bezel) {
+            (Platform::Gba,true,_)=>&[29,0,22],
+            (Platform::Gba,false,false)=>&[29,SCREEN_SIZE_KEY,0,22],
+            (Platform::Gba,false,true)=>&[29,SCREEN_SIZE_KEY,0,22,25],
+            (Platform::Gbc,true,_)=>&[30,21,23],
+            (Platform::Gbc,false,false)=>&[30,SCREEN_SIZE_KEY,21,23],
+            (Platform::Gbc,false,true)=>&[30,SCREEN_SIZE_KEY,21,23,26],
+            (Platform::Gb,true,_)=>&[31,1,24,3],
+            (Platform::Gb,false,false)=>&[31,SCREEN_SIZE_KEY,1,24,3],
+            (Platform::Gb,false,true)=>&[31,SCREEN_SIZE_KEY,1,24,3,27],
+            (Platform::Nes,true,_)=>&[41],
+            (Platform::Nes,false,false)=>&[41,SCREEN_SIZE_KEY],
+            (Platform::Nes,false,true)=>&[41,SCREEN_SIZE_KEY,44],
+            (Platform::Snes,true,_)=>&[42],
+            (Platform::Snes,false,false)=>&[42,SCREEN_SIZE_KEY],
+            (Platform::Snes,false,true)=>&[42,SCREEN_SIZE_KEY,45],
+            (Platform::Md,true,_)=>&[43],
+            (Platform::Md,false,false)=>&[43,SCREEN_SIZE_KEY],
+            (Platform::Md,false,true)=>&[43,SCREEN_SIZE_KEY,46],
         }
     }
     fn core_key_platform(key:usize)->Option<Platform> {
@@ -3917,19 +3999,20 @@ impl Engine {
 
     fn pause_screen_rows(&self) -> &'static [usize] {
         // GB/GBC resize with L1/R1; GBA's shoulders belong to the game.
+        let bezel=video_mode::bezel_offered(self.current_cart_platform(),panel_size());
         if self.current_cart_platform()==Platform::Gba && fitted_canvas() {
-            return &[34,29,120];
+            return if bezel {&[34,29,120,90]} else {&[34,29,120]};
         }
         if self.current_cart_platform()==Platform::Gb &&
             !self.game.as_ref().is_some_and(GameSession::can_change_gb_palette) {
-            &[89,29,90]
+            if bezel {&[89,29,90]} else {&[89,29]}
         } else {
             Self::screen_rows(self.current_cart_platform())
         }
     }
     fn pause_screen_key(&self,row:usize)->Option<usize> {
         if self.current_cart_platform()==Platform::Gba && fitted_canvas() {
-            return [0,22,SCREEN_SIZE_KEY].get(row).copied();
+            return [0,22,SCREEN_SIZE_KEY,25].get(row).copied();
         }
         if self.current_cart_platform()==Platform::Gb &&
             !self.game.as_ref().is_some_and(GameSession::can_change_gb_palette) {
@@ -4039,7 +4122,7 @@ impl Engine {
         let relaunch=self.game.as_ref().is_some_and(GameSession::requires_relaunch);
         // Shader and color-correction are display-only and safe while linked;
         // never change input, save states, emulation speed or rewind in Link.
-        if relaunch || (linked && !matches!(key,0|1|2|21|22|23|24|25|26|27)) {
+        if relaunch || (linked && !matches!(key,0|1|2|21|22|23|24|25|26|27|44|45|46)) {
             set_message("Not available during Multiplayer.".into());
             return;
         }
@@ -4629,7 +4712,10 @@ impl Engine {
                 else if scoped.colour_correction_gba {4}else{5},
             23 => if scoped.colour_correction_gbc {4}else{5},
             24 => if scoped.colour_correction_gb {4}else{5},
-            25 => if scoped.bezel_gba==crate::settings::Bezel::None {5}else{4},
+            25 => bezel_value(scoped.bezel_for(Platform::Gba)),
+            44 => bezel_value(scoped.bezel_nes),
+            45 => bezel_value(scoped.bezel_snes),
+            46 => bezel_value(scoped.bezel_md),
             SCREEN_SIZE_KEY => SCREEN_SIZE_VALUE + match match self.overlay {
                 ShelfOverlay::ScreenSystemSettings { platform, .. } =>
                     self.system_video_modes[platform as usize],
@@ -4674,7 +4760,7 @@ impl Engine {
         for (index, key) in keys.iter().copied().enumerate() {
             // Action-only rows have no value; Screen Size and the home
             // consoles' Default Core rows (40-43) do.
-            if key > 31 && key != SUN_KEY && !(SCREEN_SIZE_KEY..=43).contains(&key) { continue; }
+            if key > 31 && key != SUN_KEY && !(SCREEN_SIZE_KEY..=46).contains(&key) { continue; }
             let (tex, width, height) =
                 if key == SUN_KEY {
                     let sun = self.current_emulation().sun(light_sensor(), self.sun_top());
