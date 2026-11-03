@@ -15,7 +15,7 @@ HOLE = (360, 1560)
 SIDE = (1620 - 1200) // 2
 
 
-def adapt(path):
+def adapt(path, size=(960, 640)):
     im = Image.open(path).convert("RGBA")
     out = Image.new("RGBA", (1620, 1080), (0, 0, 0, 255))
     out.paste(im.crop((HOLE[0], 0, HOLE[1], 1080)), (SIDE, 0))
@@ -31,7 +31,7 @@ def adapt(path):
         xs = np.where(mask.any(axis=0))[0]
         x0, x1 = xs.min(), xs.max() + 1
         out.alpha_composite(panel.crop((x0, 0, x1, 1080)), (dst + (SIDE - (x1 - x0)) // 2, 0))
-    return out.resize((960, 640), Image.LANCZOS)
+    return out if size == out.size else out.resize(size, Image.LANCZOS)
 
 
 if __name__ == "__main__":

@@ -485,14 +485,12 @@ impl Compositor {
     }
 }
 
+/// The framebuffer is the panel's own size, whole multiples included: the
+/// interface is drawn at panel density (3x masters, text, SVG), so a 2x or 3x
+/// panel (1280x960, 1920x1440) must not get a 1x canvas blown up.
 pub fn canvas_size(window: (u32, u32)) -> (u32, u32) {
     let (_, _, w, h) = blit_rect(window, 0.0);
-    let (w, h) = (w.max(1) as u32, h.max(1) as u32);
-    if w % out_w() == 0 && h % OUT_H == 0 && w / out_w() == h / OUT_H {
-        (out_w(), OUT_H)
-    } else {
-        (w, h)
-    }
+    (w.max(1) as u32, h.max(1) as u32)
 }
 
 impl Drop for Compositor {

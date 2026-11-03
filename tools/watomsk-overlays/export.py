@@ -6,7 +6,8 @@ Usage: python3 export.py <Watomsk 1080p dir> <assets/watomsk dir>
 Genesis) from WatomsksOverlays-1080p. Every variant comes in black and in
 his dark grey (-G). Two kinds of files:
 
-* <name>[-g]-<3x2|4x3|16x9>.png: side frames, the window cut for the full
+* <name>[-g]-<3x2|4x3|16x9>.png: side frames, all 1080 high (his own
+  resolution, so 3x panels stay sharp), the window cut for the full
   height at the system's shape (GB 10:9, GBA 3:2, home 4:3), centred. The
   app refits them to the real panel (fit_overlay).
 * <name>[-g]-band.png: the logo (opaque, on the frame's colour) for screens
@@ -116,8 +117,9 @@ def main(src_dir, out):
                 tag = f"{key}-g" if grey else key
                 shape = SHAPE[console]
                 if console == "GameBoy":
-                    save(make.adapt(f"{src_dir}/{console}/{file}.png"), f"{out}/{tag}-3x2.png")
-                    save(side(src, 1024, 768, shape), f"{out}/{tag}-4x3.png")
+                    save(make.adapt(f"{src_dir}/{console}/{file}.png", (1620, 1080)),
+                         f"{out}/{tag}-3x2.png")
+                    save(side(src, 1440, 1080, shape), f"{out}/{tag}-4x3.png")
                     save(src["im"], f"{out}/{tag}-16x9.png")
                 elif console == "GameBoyAdvance":
                     logo = gba_logo(src)
@@ -125,7 +127,7 @@ def main(src_dir, out):
                          f"{out}/{tag}-16x9.png")
                     save(logo, f"{out}/{tag}-band.png")
                 else:
-                    save(side(src, 960, 640, shape), f"{out}/{tag}-3x2.png")
+                    save(side(src, 1620, 1080, shape), f"{out}/{tag}-3x2.png")
                     save(side(src, 1920, 1080, shape), f"{out}/{tag}-16x9.png")
                     if console == "Genesis":
                         save(sega_logo(src), f"{out}/{tag}-band.png")

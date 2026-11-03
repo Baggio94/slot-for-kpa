@@ -86,8 +86,8 @@ jobs:
               data = (Path('android/app/src/main/assets/apps_controls') / f'{name}.png').read_bytes()
               assert data[:8] == bytes((137, 80, 78, 71, 13, 10, 26, 10))
               width, height = struct.unpack('>II', data[16:24])
-              # Drawn at the KONKR's 4/3 panel density: Slot's 24px band.
-              assert width > 20 and height == 32, (name, width, height)
+              # Drawn at 3x: Slot's 24px band.
+              assert width > 45 and height == 72, (name, width, height)
               print(f'Verified Slot legend {name}: {width}x{height}')
           PY
       - name: Test Android library

@@ -105,8 +105,8 @@ internal object SlotUi {
      * geometry scale and .68 alpha, on a 720×480 canvas. Keep the real
      * Rust rasterization and transparent side padding, not Android text.
      */
-    /** apps_controls PNGs are drawn at 960/720 of Slot's logical pixels. */
-    const val LEGEND_DENSITY = 4f / 3f
+    /** apps_controls PNGs are drawn at 3x Slot's logical pixels. */
+    const val LEGEND_DENSITY = 3f
 
     fun menuPixel(context: Context, px: Int): Int =
         (px * canvasScale(context) + .5f).toInt()
