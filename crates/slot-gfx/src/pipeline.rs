@@ -68,6 +68,10 @@ pub enum Fit {
     Integer(f32),
     /// The full height (or width) at the display aspect.
     Aspect(f32),
+    /// RetroArch's integer overscale: the next whole multiple up when the
+    /// picture doesn't fit exactly, its edges cut. Hi-res frames (448
+    /// lines and up) count lines double.
+    Overscale(f32),
     /// The whole screen.
     Stretch,
 }
@@ -83,6 +87,14 @@ pub fn fit_window(fit: Fit, tex: (u32, u32), out: (f32, f32)) -> [f32; 4] {
         Fit::Aspect(aspect) => {
             let a = picture(aspect);
             if oh * a <= ow { (oh * a, oh) } else { (ow, ow / a) }
+        }
+        Fit::Overscale(aspect) => {
+            let a = picture(aspect);
+            let unit = if th >= 400.0 { th / 2.0 } else { th };
+            let k = (oh / unit).min(ow / (unit * a));
+            // Within a hair of a whole multiple it fits: no cut.
+            let k = if (k - k.round()).abs() < 1e-3 { k.round() } else { k.ceil() }.max(1.0);
+            (unit * k * a, unit * k)
         }
         Fit::Integer(aspect) => {
             let a = picture(aspect);
@@ -405,6 +417,20 @@ mod tests {
         // 853.3 of 960 columns show the picture.
         assert!((w - 960.0 / (640.0 * 4.0 / 3.0)).abs() < 1e-5);
         assert!((x + w / 2.0 - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn overscale_takes_the_next_whole_multiple_and_cuts_the_edges() {
+        // SNES at 8:7 on the Retroid Pocket Classic: x5, 1280x1120.
+        let [x, y, w, h] = fit_window(Fit::Overscale(256.0 / 224.0), (256, 224), (1240.0, 1080.0));
+        assert!((1080.0 / h - 1120.0).abs() < 1e-2 && (1240.0 / w - 1280.0).abs() < 1e-2);
+        assert!(x > 0.0 && y > 0.0, "the window crops the picture");
+        // The same picture size for a hi-res interlaced frame.
+        let [_, _, w2, h2] = fit_window(Fit::Overscale(256.0 / 224.0), (512, 448), (1240.0, 1080.0));
+        assert!((w - w2).abs() < 1e-6 && (h - h2).abs() < 1e-6);
+        // NES on a 720x720 square: x3, 768x720.
+        let [_, _, w, h] = fit_window(Fit::Overscale(256.0 / 240.0), (256, 240), (720.0, 720.0));
+        assert!((720.0 / w - 768.0).abs() < 1e-2 && (720.0 / h - 720.0).abs() < 1e-2);
     }
 
     #[test]

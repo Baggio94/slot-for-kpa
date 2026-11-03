@@ -1374,7 +1374,7 @@ impl Engine {
             custom_wallpaper_present,
             setting_values,
             default_cores: Platform::ALL.map(Core::default_for),
-            system_video_modes: Platform::ALL.map(video_mode::default_mode),
+            system_video_modes: Platform::ALL.map(|platform| video_mode::default_mode(platform, panel_size())),
             palette_values,
             setting_carets,
             settings_hints,
@@ -3689,7 +3689,9 @@ impl Engine {
             let aspect = self.game.as_ref().map_or(4.0 / 3.0, GameSession::display_aspect);
             self.gpu.set_picture(slot_gfx::WHOLE_TEXTURE);
             self.gpu.set_game_source_rect(slot_gfx::WHOLE_TEXTURE);
-            self.gpu.set_game_fit(video_mode::home_fit(self.video_mode, aspect));
+            let frame = self.game.as_ref().map_or((256, 224), GameSession::frame_size);
+            self.gpu.set_game_fit(video_mode::home_fit(platform, self.video_mode, aspect,
+                frame, panel_size()));
             self.gpu.set_game_top(self.picture_top);
             self.gpu.set_screen_effect(self.game_effect());
             return;
@@ -3954,7 +3956,7 @@ impl Engine {
         let paths=PATHS.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some((storage,_))=paths {
             self.default_cores=Platform::ALL.map(|platform| core_selection::default(&storage,platform));
-            self.system_video_modes=Platform::ALL.map(|platform| video_mode::system_mode(&storage,platform));
+            self.system_video_modes=Platform::ALL.map(|platform| video_mode::system_mode(&storage,platform,panel_size()));
         }
     }
     /// Settings > Systems' Screen Size: Integer, Original Ratio, Stretch.
@@ -5596,8 +5598,8 @@ impl Engine {
                         .map_or("", |cart| cart.stem.as_str());
                     let platform = self.current_cart_platform();
                     self.video_mode = PATHS.lock().unwrap_or_else(|e| e.into_inner())
-                        .as_ref().map_or(video_mode::default_mode(platform),
-                            |(root, _)| video_mode::video_mode_for(root, name, platform));
+                        .as_ref().map_or(video_mode::default_mode(platform, panel_size()),
+                            |(root, _)| video_mode::video_mode_for(root, name, platform, panel_size()));
                     self.apply_video_geometry();
                     self.screen_power = 0.0;
                     self.exiting_screen = false;
@@ -5700,6 +5702,7 @@ impl Engine {
         }
         let profile = self.current_emulation();
         let bezel=self.game_bezel(); // resolved before mutably borrowing GameSession
+        let cart_platform=self.current_cart_platform();
         let live=self.live_game_options(); // Copy, zero allocations on 60/120Hz callback
         FF_AUDIO_ENABLED.store(live.ff_sound,Ordering::Release);
         if live.ff_speed == 0 && (self.ff_held || self.ff_latched) {
@@ -5997,8 +6000,8 @@ impl Engine {
                     // Home consoles: the frame at its own size, fitted at
                     // the aspect the core reports (it may change mid-game).
                     self.gpu.upload_game_sized(session.frame(), session.frame_size());
-                    self.gpu.set_game_fit(video_mode::home_fit(self.video_mode,
-                        session.display_aspect()));
+                    self.gpu.set_game_fit(video_mode::home_fit(cart_platform, self.video_mode,
+                        session.display_aspect(), session.frame_size(), panel_size()));
                 }
                 frame_phases.gpu_upload_us = upload_started.elapsed().as_micros() as u64;
                 RUMBLE_STRENGTH.store(

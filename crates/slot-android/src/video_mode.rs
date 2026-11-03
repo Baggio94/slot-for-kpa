@@ -94,11 +94,11 @@ pub fn screen_effect(shader: Shader, platform: Platform, mode: VideoMode) -> Scr
     }
 }
 
-pub fn video_mode_for(root: &Path, stem: &str, platform: Platform) -> VideoMode {
+pub fn video_mode_for(root: &Path, stem: &str, platform: Platform, panel: (u32, u32)) -> VideoMode {
     ini::value(root, VIDEO_MODE_FILE, stem)
         .as_deref()
         .and_then(VideoMode::parse)
-        .unwrap_or_else(|| system_mode(root, platform))
+        .unwrap_or_else(|| system_mode(root, platform, panel))
 }
 
 /// Settings > Systems' Screen Size: the size a system's games start at
@@ -108,11 +108,11 @@ fn system_key(platform: Platform) -> String {
     format!("*{}", platform.dir_name().to_ascii_lowercase())
 }
 
-pub fn system_mode(root: &Path, platform: Platform) -> VideoMode {
+pub fn system_mode(root: &Path, platform: Platform, panel: (u32, u32)) -> VideoMode {
     ini::value(root, VIDEO_MODE_FILE, &system_key(platform))
         .as_deref()
         .and_then(VideoMode::parse)
-        .unwrap_or_else(|| default_mode(platform))
+        .unwrap_or_else(|| default_mode(platform, panel))
 }
 
 pub fn write_system_mode(root: &Path, platform: Platform, mode: VideoMode) -> std::io::Result<()> {
@@ -134,13 +134,41 @@ pub fn screen_fits(platform: Platform, panel: (u32, u32)) -> bool {
 }
 
 /// RetroArch's default for the home consoles: the core's aspect ratio,
-/// full height, no integer scaling. The Game Boys start at Integer.
-pub fn default_mode(platform: Platform) -> VideoMode {
-    if platform.handheld() { VideoMode::Actual } else { VideoMode::Aspect }
+/// full height, no integer scaling. The Game Boys start at Integer, and so
+/// do NES and SNES on screens narrower than 4:3 (Integer overscale there).
+pub fn default_mode(platform: Platform, panel: (u32, u32)) -> VideoMode {
+    if platform.handheld() || square_pixels(platform, panel) { VideoMode::Actual }
+    else { VideoMode::Aspect }
+}
+
+/// NES and SNES on screens narrower than 4:3 (the Retroid Pocket Classic,
+/// the 1:1 screens) show square pixels, 8:7 for a 256x224 picture: Integer
+/// is overscale (the next whole multiple up, a few pixels cut at the
+/// edges), then Original Ratio and Stretch (Siham, 2026-11-03).
+pub fn square_pixels(platform: Platform, panel: (u32, u32)) -> bool {
+    matches!(platform, Platform::Nes | Platform::Snes) && panel_aspect(panel) < 4.0 / 3.0 * 0.99
+}
+
+/// A frame's shape in its console's own pixels: SNES hi-res and interlaced
+/// frames (512 wide, 448 tall) count their pixels double.
+pub fn square_aspect(frame: (u32, u32)) -> f32 {
+    let w = if frame.0 >= 400 { frame.0 / 2 } else { frame.0 };
+    let h = if frame.1 >= 400 { frame.1 / 2 } else { frame.1 };
+    w.max(1) as f32 / h.max(1) as f32
 }
 
 /// How a home console frame fills the screen in `mode`.
-pub fn home_fit(mode: VideoMode, aspect: f32) -> slot_gfx::Fit {
+pub fn home_fit(platform: Platform, mode: VideoMode, aspect: f32, frame: (u32, u32),
+    panel: (u32, u32)) -> slot_gfx::Fit
+{
+    if square_pixels(platform, panel) {
+        let a = square_aspect(frame);
+        return match mode {
+            VideoMode::Actual => slot_gfx::Fit::Overscale(a),
+            VideoMode::Aspect => slot_gfx::Fit::Aspect(a),
+            VideoMode::Stretch => slot_gfx::Fit::Stretch,
+        };
+    }
     match mode {
         VideoMode::Actual => slot_gfx::Fit::Integer(aspect),
         VideoMode::Aspect => slot_gfx::Fit::Aspect(aspect),
@@ -399,6 +427,22 @@ mod tests {
         assert!(bezel_offered(Platform::Md, (720, 720)) && !bezel_offered(Platform::Snes, (720, 720)));
         assert!(!bezel_offered(Platform::Gba, (960, 640)) && bezel_offered(Platform::Nes, (960, 640)));
         assert!(!bezel_offered(Platform::Gb, (1240, 1080)));
+    }
+
+    #[test]
+    fn nes_and_snes_use_square_pixels_on_narrow_screens() {
+        use slot_gfx::Fit;
+        let rpc = (1240, 1080);
+        assert_eq!(default_mode(Platform::Snes, rpc), VideoMode::Actual);
+        assert_eq!(default_mode(Platform::Nes, (720, 720)), VideoMode::Actual);
+        assert_eq!(default_mode(Platform::Md, rpc), VideoMode::Aspect);
+        assert_eq!(default_mode(Platform::Snes, (960, 640)), VideoMode::Aspect);
+        assert_eq!(home_fit(Platform::Snes, VideoMode::Actual, 4.0 / 3.0, (512, 448), rpc),
+            Fit::Overscale(256.0 / 224.0));
+        assert_eq!(home_fit(Platform::Nes, VideoMode::Aspect, 4.0 / 3.0, (256, 240), rpc),
+            Fit::Aspect(256.0 / 240.0));
+        assert_eq!(home_fit(Platform::Nes, VideoMode::Actual, 4.0 / 3.0, (256, 240), (960, 640)),
+            Fit::Integer(4.0 / 3.0));
     }
 
     #[test]
