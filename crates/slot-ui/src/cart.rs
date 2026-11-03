@@ -264,16 +264,6 @@ pub fn cart_face(cart: &Cart) -> CartFace {
     cart_face_with(cart, art)
 }
 
-/// A 1x bitmap layer at panel density. The upstream PNGs have no larger
-/// source, so they are filtered up once; text, art and edges are not.
-fn dense_layer(face: CartFace) -> CartFace {
-    if !density::is_dense() {
-        return face;
-    }
-    let rgba = crate::native_assets::resample(&face.rgba, face.w, face.h, px(face.w), px(face.h));
-    CartFace { rgba, w: face.w, h: face.h }
-}
-
 pub fn is_clear(cart: &Cart) -> bool {
     see_through(shell_for(cart).finish, matches!(body_of(cart), Body::Home(_)))
 }
@@ -295,7 +285,7 @@ pub fn cart_interior(cart: &Cart) -> CartFace {
         return crate::board::pak_shell_face(cart, CLEAR_ALPHA);
     }
     let colour = shell_for(cart).colour;
-    let mut rgba = bitmaps::gba_interior().to_vec();
+    let mut rgba = bitmaps::dense_gba_interior().to_vec();
     for px in rgba.chunks_exact_mut(4) {
         if px[3] == 0 {
             continue;
@@ -305,7 +295,7 @@ pub fn cart_interior(cart: &Cart) -> CartFace {
         }
         px[3] = ((u32::from(px[3]) * u32::from(CLEAR_ALPHA) + 127) / 255) as u8;
     }
-    dense_layer(CartFace { rgba, w: BOARD_W, h: BOARD_H })
+    CartFace { rgba, w: BOARD_W, h: BOARD_H }
 }
 
 /// The board a clear cart's plastic is drawn over, between the back and front
@@ -392,7 +382,7 @@ fn blend_over(dst: &mut [u8], src: &[u8]) {
 
 pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
     let s = spec(shape_of(cart));
-    let mut face = dense_layer(shell_face(&s, &shell_for(cart)));
+    let mut face = shell_face(&s, &shell_for(cart));
     let label = match art {
         Some(rgba) => rgba,
         None => generated_label(&s, &label_text(cart)),
@@ -524,26 +514,25 @@ fn overlay(base: u8, colour: u8) -> u8 {
     out.clamp(0, 255) as u8
 }
 
+/// The shell in the game's colour at panel density, filtered from its master
+/// (`bitmaps::dense_shell`) before the colour goes on, so a 3x master stays
+/// sharp on every screen.
 fn shell_face(s: &Spec, shell: &Shell) -> CartFace {
     let clear = see_through(shell.finish, matches!(s.mould, Mould::Home(_)));
-    let src = bitmaps::shell_asset(s.mould, clear);
-    assert_eq!(
-        src.len(),
-        (s.w * s.h * 4) as usize,
-        "shell bitmap is not {}x{}",
-        s.w,
-        s.h
-    );
+    let src = bitmaps::dense_shell(s.mould, clear);
+    let (tw, th) = (px(s.w), px(s.h));
+    assert_eq!(src.len(), (tw * th * 4) as usize, "shell bitmap is not {}x{}", tw, th);
     let mut rgba = src.to_vec();
     // The neutral asset is blended with the game's colour everywhere but the label box, which
     // stays the grey of the asset. A clear shell is its own asset with real transparency: what the
     // compositor drew underneath (the board) shows through and stays put while the shell moves.
     // The label box stays opaque.
     let (lx, ly, lw, lh) = s.label;
-    for y in 0..s.h {
-        for x in 0..s.w {
-            let on_label = (lx..lx + lw).contains(&x) && (ly..ly + lh).contains(&y);
-            let i = ((y * s.w + x) * 4) as usize;
+    let (lx0, ly0, lx1, ly1) = (px(lx), px(ly), px(lx + lw), px(ly + lh));
+    for y in 0..th {
+        for x in 0..tw {
+            let on_label = (lx0..lx1).contains(&x) && (ly0..ly1).contains(&y);
+            let i = ((y * tw + x) * 4) as usize;
             if !on_label {
                 for c in 0..3 {
                     rgba[i + c] = overlay(rgba[i + c], shell.colour[c]);
@@ -562,17 +551,19 @@ fn shell_face(s: &Spec, shell: &Shell) -> CartFace {
         }
     }
     if let Mould::Home(m) = s.mould {
-        if let Some(decal) = home::decal(m) {
-            blend_over(&mut rgba, decal);
+        if let Some(decal) = home::dense_decal(m) {
+            blend_over(&mut rgba, &decal);
         }
     }
     if shell.finish == Finish::Glitter {
-        for y in 0..s.h {
-            for x in 0..s.w {
-                if !fleck(x, y) {
+        // The flecks keep their logical size and place at any density.
+        let k = density::scale();
+        for y in 0..th {
+            for x in 0..tw {
+                if !fleck((x as f32 / k) as u32, (y as f32 / k) as u32) {
                     continue;
                 }
-                let i = ((y * s.w + x) * 4) as usize;
+                let i = ((y * tw + x) * 4) as usize;
                 if rgba[i + 3] == 0 {
                     continue;
                 }
@@ -686,4 +677,29 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
         ((g + m) * 255.0).round() as u8,
         ((b + m) * 255.0).round() as u8,
     ]
+}
+
+#[cfg(test)]
+mod dense_tests {
+    use super::*;
+
+    /// Every shell is coloured at the panel's own density, from its master.
+    #[test]
+    fn shells_are_built_at_every_density() {
+        let bodies = [Body::Gba, Body::Gb(GbShell::Notched), Body::Gb(GbShell::Rounded)]
+            .into_iter()
+            .chain(HomeMould::ALL.into_iter().map(Body::Home));
+        for body in bodies {
+            for k in [1.0, 4.0 / 3.0, 2.25, 3.0] {
+                density::with_scale(k, || {
+                    let s = spec(body);
+                    for finish in [Finish::Solid, Finish::Translucent, Finish::Glitter] {
+                        let face = shell_face(&s, &Shell { colour: [200, 40, 40], finish });
+                        assert_eq!(face.rgba.len(), (px(s.w) * px(s.h) * 4) as usize, "{body:?} at {k}");
+                        assert_eq!(mask_of(&s).len(), (px(s.w) * px(s.h)) as usize, "{body:?} at {k}");
+                    }
+                });
+            }
+        }
+    }
 }

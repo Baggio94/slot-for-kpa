@@ -11,6 +11,7 @@ import android.util.AtomicFile
 import android.util.Log
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import kotlin.math.roundToInt
 
 /**
  * Conservative automatic cartridge label acquisition. Exact ROM CRC first,
@@ -286,7 +287,7 @@ internal object AutoCartLabels {
      * earlier hard-coded "physical cartridge scan" aspect checks and 137..865
      * percent crop rejected valid images and cut off real label artwork.
      *
-     * Retain the low-resolution Android output sizes and the bounded decode
+     * Saved at up to 3x the label well (3x panels) within the bounded decode
      * budget: no custom/Studio label or ROM bytes are changed.
      */
     private fun cropPhysicalCartLabel(bytes: ByteArray, platform: String): ByteArray? {
@@ -304,12 +305,17 @@ internal object AutoCartLabels {
             return null
         }
         return try {
-            val (tw, th) = when (platform) {
+            val (lw, lh) = when (platform) {
                 "GBA" -> 264 to 136
                 "GB" -> 220 to 195
                 "GBC" -> 223 to 199
                 else -> return null
             }
+            // Kept at up to three times the label's 1x size, so it stays
+            // sharp on 3x panels; never enlarged past the source's own pixels.
+            val k = minOf(w.toFloat() / lw, h.toFloat() / lh).coerceIn(1f, 3f)
+            val tw = (lw * k).roundToInt()
+            val th = (lh * k).roundToInt()
             val coverScale = maxOf(tw.toFloat() / w, th.toFloat() / h)
             val dw = w * coverScale
             val dh = h * coverScale

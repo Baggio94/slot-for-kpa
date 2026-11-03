@@ -14,7 +14,7 @@
 
 use std::sync::OnceLock;
 
-use crate::home_art::{home_pick, HomeMould, HomeSystem, BOARD_K, HOME_CART_W};
+use crate::home_art::{home_pick, HomeMould, HomeSystem, BOARD_K, FRONT_K, HOME_CART_W};
 use crate::{art, cart, label, text};
 
 /// The longer side of a home label, in pixels: the well's shape at about the
@@ -169,49 +169,51 @@ fn decoded(bytes: &'static [u8]) -> (Vec<u8>, u32, u32) {
     art::decode(bytes).expect("a home cart png decodes")
 }
 
+/// A master drawn at `k` times the logical size, averaged down to 1x.
+fn at_1x(bytes: &'static [u8], m: HomeMould, k: u32) -> Vec<u8> {
+    let (big, bw, _) = decoded(bytes);
+    let (w, h) = m.size();
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = [0u32; 4];
+            for dy in 0..k {
+                for dx in 0..k {
+                    let i = (((y * k + dy) * bw + x * k + dx) * 4) as usize;
+                    let a = big[i + 3] as u32;
+                    for c in 0..3 {
+                        acc[c] += big[i + c] as u32 * a;
+                    }
+                    acc[3] += a;
+                }
+            }
+            let o = ((y * w + x) * 4) as usize;
+            if acc[3] > 0 {
+                for c in 0..3 {
+                    out[o + c] = ((acc[c] + acc[3] / 2) / acc[3]) as u8;
+                }
+            }
+            out[o + 3] = ((acc[3] + (k * k) / 2) / (k * k)) as u8;
+        }
+    }
+    out
+}
+
 fn neutral(m: HomeMould) -> &'static [u8] {
     static CACHE: [OnceLock<Vec<u8>>; 9] = [const { OnceLock::new() }; 9];
-    CACHE[m.index()].get_or_init(|| decoded(m.art().neutral).0)
+    CACHE[m.index()].get_or_init(|| at_1x(m.art().neutral, m, FRONT_K))
 }
 
 fn decal(m: HomeMould) -> Option<&'static [u8]> {
     static CACHE: [OnceLock<Vec<u8>>; 9] = [const { OnceLock::new() }; 9];
     let bytes = m.art().decal?;
-    Some(CACHE[m.index()].get_or_init(|| decoded(bytes).0))
+    Some(CACHE[m.index()].get_or_init(|| at_1x(bytes, m, FRONT_K)))
 }
 
-/// The bare board at 1x: the drawn one is at twice the size.
+/// The bare board at 1x.
 fn board(m: HomeMould) -> &'static [u8] {
     static CACHE: [OnceLock<Vec<u8>>; 9] = [const { OnceLock::new() }; 9];
-    CACHE[m.index()].get_or_init(|| {
-        let (big, bw, _) = decoded(m.art().board);
-        let (w, h) = m.size();
-        let k = BOARD_K;
-        let mut out = vec![0u8; (w * h * 4) as usize];
-        for y in 0..h {
-            for x in 0..w {
-                let mut acc = [0u32; 4];
-                for dy in 0..k {
-                    for dx in 0..k {
-                        let i = (((y * k + dy) * bw + x * k + dx) * 4) as usize;
-                        let a = big[i + 3] as u32;
-                        for c in 0..3 {
-                            acc[c] += big[i + c] as u32 * a;
-                        }
-                        acc[3] += a;
-                    }
-                }
-                let o = ((y * w + x) * 4) as usize;
-                if acc[3] > 0 {
-                    for c in 0..3 {
-                        out[o + c] = ((acc[c] + acc[3] / 2) / acc[3]) as u8;
-                    }
-                }
-                out[o + 3] = ((acc[3] + (k * k) / 2) / (k * k)) as u8;
-            }
-        }
-        out
-    })
+    CACHE[m.index()].get_or_init(|| at_1x(m.art().board, m, BOARD_K))
 }
 
 /// Photoshop's Overlay of one channel, as slot-ui's.

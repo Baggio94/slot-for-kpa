@@ -51,8 +51,10 @@ pub(crate) struct MouldArt {
 }
 
 pub const HOME_CART_W: u32 = 312;
-/// Boards are drawn at twice the logical size.
-pub const BOARD_K: u32 = 2;
+/// Boards are drawn at three times the logical size, for 3x panels.
+pub const BOARD_K: u32 = 3;
+/// So are the front shells and decals (Siham 2026-11-03).
+pub const FRONT_K: u32 = 3;
 
 macro_rules! art {
     ($name:literal, $h:expr, $label:expr, $fp:expr, $title:expr, $colour:expr, $decal:expr) => {

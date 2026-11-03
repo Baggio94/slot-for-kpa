@@ -1,9 +1,10 @@
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 
 use crate::art::decode_png_bytes;
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum Mould {
     Gba,
     Notched,
@@ -67,7 +68,7 @@ fn load(bytes: &'static [u8], w: u32, h: u32, slot: &'static OnceLock<Vec<u8>>) 
         if sh == h && sw > w {
             rgba = crop_centre(&rgba, sw, sh, w);
         } else if (sw, sh) != (w, h) {
-            rgba = scale(&rgba, sw, sh, w, h);
+            rgba = crate::native_assets::resample(&rgba, sw, sh, w, h);
         }
         // Transparent pixels are often stored as white. The cart is sampled with a linear
         // filter, which would pull that white in along every edge.
@@ -107,20 +108,6 @@ fn crop_centre(src: &[u8], sw: u32, sh: u32, w: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity((w * sh * 4) as usize);
     for row in src.chunks_exact(sw as usize * 4) {
         out.extend_from_slice(&row[left * 4..(left + w as usize) * 4]);
-    }
-    out
-}
-
-fn scale(src: &[u8], sw: u32, sh: u32, w: u32, h: u32) -> Vec<u8> {
-    let mut out = vec![0u8; (w * h * 4) as usize];
-    for y in 0..h {
-        let sy = y * sh / h;
-        for x in 0..w {
-            let sx = x * sw / w;
-            let from = ((sy * sw + sx) * 4) as usize;
-            let to = ((y * w + x) * 4) as usize;
-            out[to..to + 4].copy_from_slice(&src[from..from + 4]);
-        }
     }
     out
 }
@@ -343,6 +330,46 @@ const GBC_SHELL_PNG: &[u8] = include_bytes!("../../../assets/gbc_neutral.png");
 const GBA_CLEAR_PNG: &[u8] = include_bytes!("../../../assets/gba_clear.png");
 const GB_CLEAR_PNG: &[u8] = include_bytes!("../../../assets/gb_neutral.png");
 const GBC_CLEAR_PNG: &[u8] = include_bytes!("../../../assets/gbc_clear.png");
+
+/// A bundled PNG master at panel density: `px(w)` x `px(h)` texels for a
+/// `w` x `h` logical layer, filtered once from the master's own pixels
+/// (reduced from a 3x master, enlarged from a 1x one) and kept.
+pub(crate) fn dense_png(bytes: &'static [u8], w: u32, h: u32) -> Arc<Vec<u8>> {
+    type Cache = Mutex<HashMap<(usize, u32, u32, u32), Arc<Vec<u8>>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let key = (bytes.as_ptr() as usize, w, h, crate::density::scale().to_bits());
+    if let Some(hit) = CACHE.get_or_init(Mutex::default).lock()
+        .unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return hit.clone();
+    }
+    let (tw, th) = (crate::density::px(w), crate::density::px(h));
+    let rgba = Arc::new(crate::native_assets::png_at(bytes, tw, th));
+    CACHE.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
+        .insert(key, rgba.clone());
+    rgba
+}
+
+/// The inside of a GBA cart at panel density.
+pub(crate) fn dense_gba_interior() -> Arc<Vec<u8>> {
+    dense_png(GBA_INTERIOR_PNG, BOARD_W, BOARD_H)
+}
+
+/// The neutral shell for a mould at panel density, from its master.
+pub(crate) fn dense_shell(mould: Mould, clear: bool) -> Arc<Vec<u8>> {
+    let (bytes, w, h) = match (mould, clear) {
+        (Mould::Gba, false) => (GBA_SHELL_PNG, GBA_CART_W, GBA_CART_H),
+        (Mould::Notched, false) => (GB_SHELL_PNG, GB_CART_W, GB_CART_H),
+        (Mould::Rounded, false) => (GBC_SHELL_PNG, GB_CART_W, GB_CART_H),
+        (Mould::Gba, true) => (GBA_CLEAR_PNG, GBA_CART_W, GBA_CART_H),
+        (Mould::Notched, true) => (GB_CLEAR_PNG, GB_CART_W, GB_CART_H),
+        (Mould::Rounded, true) => (GBC_CLEAR_PNG, GB_CART_W, GB_CART_H),
+        (Mould::Home(m), _) => {
+            let (w, h) = m.size();
+            (m.art().neutral, w, h)
+        }
+    };
+    dense_png(bytes, w, h)
+}
 
 /// The neutral shell asset for a mould, opaque or the separate clear one. The game's colour is
 /// blended onto it by the caller.

@@ -42,7 +42,7 @@ internal object HomeCartLabels {
     // in minutes, not hours (each pass waits for the next shelf idle).
     private const val MAX_SAVED = 24
     private const val MAX_ATTEMPTS = 40
-    private const val LABEL_MAX = 640
+    private const val LABEL_MAX = 960
 
     private val retry = AutoLabelRetryPolicy()
     /** Set when ScreenScraper refuses slot.'s credentials or closes its API. */

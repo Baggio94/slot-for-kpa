@@ -87,14 +87,10 @@ pub(crate) fn neutral(m: HomeMould) -> &'static [u8] {
     })
 }
 
-/// A publisher's printed part of the shell (EA's yellow tab), over the colour.
-pub(crate) fn decal(m: HomeMould) -> Option<&'static [u8]> {
-    static CACHE: [OnceLock<Vec<u8>>; 9] = [const { OnceLock::new() }; 9];
-    let bytes = m.art().decal?;
-    Some(CACHE[m.index()].get_or_init(|| {
-        let (w, h) = m.size();
-        decoded(bytes, w, h)
-    }))
+/// The publisher's decal at panel density, from its master.
+pub(crate) fn dense_decal(m: HomeMould) -> Option<Arc<Vec<u8>>> {
+    let (w, h) = m.size();
+    Some(crate::bitmaps::dense_png(m.art().decal?, w, h))
 }
 
 /// The outline at 1x: the neutral shell's own alpha.
@@ -112,8 +108,7 @@ pub(crate) fn dense_mask(m: HomeMould) -> Arc<Vec<u8>> {
     cache
         .entry(key)
         .or_insert_with(|| {
-            let (w, h) = m.size();
-            let big = crate::native_assets::resample(neutral(m), w, h, px(w), px(h));
+            let big = crate::bitmaps::dense_shell(crate::bitmaps::Mould::Home(m), false);
             Arc::new(big.iter().skip(3).step_by(4).copied().collect())
         })
         .clone()
