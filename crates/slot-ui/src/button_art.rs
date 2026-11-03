@@ -7,8 +7,8 @@ use crate::art::decode_png_bytes;
 use crate::density::{self, Canvas};
 use crate::plate::UndoFace;
 
-/// Drawn height inside the 24px hint band. The 58px art is box-filtered,
-/// straight to panel density, so the KONKR gets 2x rather than 2.6x.
+/// Drawn height inside the 24px hint band. The art (174px, 3x of slot.'s
+/// 58px) is box-filtered straight to panel density.
 pub const BUTTON_H: u32 = 22;
 const COMBO_GAP: u32 = 2;
 
