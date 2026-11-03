@@ -931,16 +931,13 @@ impl Engine {
         let custom_colours = visuals_root.as_deref()
             .is_some_and(|root| root.join("Config/theme.txt").exists());
         let mut make_slot = |light: bool| {
-            let (back, front) = if light {
-                (slot_ui::bitmaps::slot_back_light(), slot_ui::bitmaps::slot_front_light())
-            } else {
-                (slot_ui::bitmaps::slot_back(), slot_ui::bitmaps::slot_front())
-            };
+            let (back, front) = slot_ui::bitmaps::slot_bar_png(light);
             // The 720-wide band is refitted to the canvas: same mouth and
-            // ends, longer or shorter housing on either side.
-            let mut band = |rgba: &[u8]| {
-                let (rgba, w, h) = slot_ui::native_rgba(
-                    rgba, slot_ui::bitmaps::SLOT_W, slot_ui::bitmaps::SLOT_H);
+            // ends, longer or shorter housing on either side. Its 3x master
+            // is filtered straight to the panel's density.
+            let mut band = |png: &[u8]| {
+                let (rgba, w, h) = slot_ui::native_png(
+                    png, slot_ui::bitmaps::SLOT_W, slot_ui::bitmaps::SLOT_H);
                 let wide = (w as f32 * out_w() as f32 / slot_ui::bitmaps::SLOT_W as f32)
                     .round() as u32;
                 gpu.create_texture(wide, h, &slot_ui::refit_band(&rgba, w, h, wide))
@@ -955,10 +952,10 @@ impl Engine {
         let slot_light_faces=make_slot(true);
         let footer_inked_dark_at_start = settings.appearance == crate::settings::Appearance::Light;
         let home_slot_themes=[0usize, 1, 2].map(|theme| [0usize, 1, 2, 3, 4, 5, 6].map(|family| {
-            let (back, front) = slot_ui::bitmaps::home_slot(family, theme);
-            let mut band = |rgba: &[u8]| {
-                let (rgba, w, h) = slot_ui::native_rgba(
-                    rgba, slot_ui::bitmaps::SLOT_W, slot_ui::bitmaps::SLOT_H);
+            let (back, front) = slot_ui::bitmaps::home_slot_png(family, theme);
+            let mut band = |png: &[u8]| {
+                let (rgba, w, h) = slot_ui::native_png(
+                    png, slot_ui::bitmaps::SLOT_W, slot_ui::bitmaps::SLOT_H);
                 let wide = (w as f32 * out_w() as f32 / slot_ui::bitmaps::SLOT_W as f32)
                     .round() as u32;
                 gpu.create_texture(wide, h, &slot_ui::refit_band(&rgba, w, h, wide))

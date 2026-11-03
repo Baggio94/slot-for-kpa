@@ -221,7 +221,8 @@ pub fn slot_front_light() -> &'static [u8] {
 /// 3 Mega Drive, 4 Game Boy, 5 Game Boy Color, 6 GBA) in a bar theme: 0
 /// the console's own colours, 1 dark (black and grey), 2 light (light
 /// versions of its colours) (Siham 2026-11-03).
-pub fn home_slot(family: usize, theme: usize) -> (&'static [u8], &'static [u8]) {
+/// A console's slot bar masters, PNG bytes at 3x (`family`, `theme` as `home_slot`).
+pub fn home_slot_png(family: usize, theme: usize) -> (&'static [u8], &'static [u8]) {
     macro_rules! bars {
         ($part:literal, $suffix:literal) => {[
             include_bytes!(concat!("../../../assets/home/slot_", $part, "_fc", $suffix, ".png")).as_slice(),
@@ -235,10 +236,22 @@ pub fn home_slot(family: usize, theme: usize) -> (&'static [u8], &'static [u8]) 
     }
     const BACK: [[&[u8]; CONSOLE_SLOTS]; BAR_THEMES] = [bars!("back", ""), bars!("back", "_dark"), bars!("back", "_light")];
     const FRONT: [[&[u8]; CONSOLE_SLOTS]; BAR_THEMES] = [bars!("front", ""), bars!("front", "_dark"), bars!("front", "_light")];
+    let (t, i) = (theme.min(BAR_THEMES - 1), family.min(CONSOLE_SLOTS - 1));
+    (BACK[t][i], FRONT[t][i])
+}
+
+/// A console's slot bar at its logical 720x58 (see `home_slot_png`).
+pub fn home_slot(family: usize, theme: usize) -> (&'static [u8], &'static [u8]) {
     static B: [[OnceLock<Vec<u8>>; CONSOLE_SLOTS]; BAR_THEMES] = [const { [const { OnceLock::new() }; CONSOLE_SLOTS] }; BAR_THEMES];
     static F: [[OnceLock<Vec<u8>>; CONSOLE_SLOTS]; BAR_THEMES] = [const { [const { OnceLock::new() }; CONSOLE_SLOTS] }; BAR_THEMES];
     let (t, i) = (theme.min(BAR_THEMES - 1), family.min(CONSOLE_SLOTS - 1));
-    (load(BACK[t][i], SLOT_W, SLOT_H, &B[t][i]), load(FRONT[t][i], SLOT_W, SLOT_H, &F[t][i]))
+    let (back, front) = home_slot_png(family, theme);
+    (load(back, SLOT_W, SLOT_H, &B[t][i]), load(front, SLOT_W, SLOT_H, &F[t][i]))
+}
+
+/// slot.'s own bar masters (back, front), dark or light, at 3x.
+pub fn slot_bar_png(light: bool) -> (&'static [u8], &'static [u8]) {
+    if light { (SLOT_BACK_LIGHT_PNG, SLOT_FRONT_LIGHT_PNG) } else { (SLOT_BACK_DARK_PNG, SLOT_FRONT_DARK_PNG) }
 }
 
 /// How many colour themes the console slot bars come in (see `home_slot`).
