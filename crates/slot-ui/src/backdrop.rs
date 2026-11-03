@@ -28,17 +28,16 @@ pub fn wallpaper_face_native(path: &Path) -> Option<Vec<u8>> {
     art::cover(path, crate::native_w(), crate::native_h())
 }
 /// The upstream default is embedded verbatim and resampled once for GLES.
+/// Its master is 3x, covered straight onto the panel's own pixels.
 pub fn default_background_native() -> Option<&'static [u8]> {
     static CACHE: OnceLock<Option<Vec<u8>>> = OnceLock::new();
-    CACHE.get_or_init(|| default_background().map(|bytes| {
-        crate::native_rgba(bytes, out_w(), OUT_H).0
-    })).as_deref()
+    CACHE.get_or_init(|| art::cover_bytes(DEFAULT_PNG, crate::native_w(), crate::native_h()))
+        .as_deref()
 }
 pub fn blur_background_native() -> Option<&'static [u8]> {
     static CACHE: OnceLock<Option<Vec<u8>>> = OnceLock::new();
-    CACHE.get_or_init(|| blur_background().map(|bytes| {
-        crate::native_rgba(bytes, out_w(), OUT_H).0
-    })).as_deref()
+    CACHE.get_or_init(|| art::cover_bytes(BLUR_PNG, crate::native_w(), crate::native_h()))
+        .as_deref()
 }
 
 pub fn wallpaper_face(path: &Path) -> Option<Vec<u8>> {

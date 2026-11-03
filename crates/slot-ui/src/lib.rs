@@ -5,6 +5,7 @@ pub mod watomsk;
 mod native_assets;
 pub use native_assets::{native_png, native_rgba, native_w, native_h, refit_band, NATIVE_W, NATIVE_H};
 pub use art::cover;
+pub use art::decode_png_bytes as decode_png;
 mod backdrop;
 mod barcode;
 mod battery;

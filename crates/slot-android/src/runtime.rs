@@ -974,9 +974,9 @@ impl Engine {
                 Some(slot_light_faces)
             } else { Some(slot_dark_faces) };
         // Official 720x480 GB/GBC screen bezels, sampled once for KONKR.
-        let (gb, w, h)=slot_ui::native_rgba(slot_ui::bitmaps::bezel_gb(),720,480);
+        let (gb, w, h)=slot_ui::native_png(slot_ui::bitmaps::bezel_master(false),720,480);
         let gb_bezel_tex=gpu.create_texture(w,h,&gb);
-        let (gbc,w,h)=slot_ui::native_rgba(slot_ui::bitmaps::bezel_gbc(),720,480);
+        let (gbc,w,h)=slot_ui::native_png(slot_ui::bitmaps::bezel_master(true),720,480);
         let gbc_bezel_tex=gpu.create_texture(w,h,&gbc);
 
         let mut shelves = Vec::new();
@@ -3841,10 +3841,9 @@ impl Engine {
             if let Some((tex,fitted))=self.fitted_bezel {
                 if fitted==key {return Some((tex,whole));}
             }
-            use slot_ui::{bitmaps, fit_overlay::{fit_overlay, slot_bezel}};
-            let art=if platform==Platform::Gb {slot_bezel(bitmaps::bezel_gb())}
-                else {slot_bezel(bitmaps::bezel_gbc())};
-            (key,fit_overlay(&art,panel,window))
+            use slot_ui::{bitmaps, fit_overlay::{fit_overlay, slot_bezel_sized}};
+            let (master,mw,mh)=slot_ui::decode_png(bitmaps::bezel_master(platform==Platform::Gbc))?;
+            (key,fit_overlay(&slot_bezel_sized(&master,(mw,mh)),panel,window))
         } else {
             let fit=fit?;
             let (design,grey)=bezel.watomsk()?;

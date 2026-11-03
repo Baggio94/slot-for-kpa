@@ -21,11 +21,18 @@ pub struct OverlayArt<'a> {
 
 /// The slot. GB/GBC bezel (720x480): window cut for 3x integer.
 pub fn slot_bezel(rgba: &[u8]) -> OverlayArt<'_> {
+    slot_bezel_sized(rgba, (720, 480))
+}
+
+/// The same bezel from a larger master (its 3x one), its layout scaled.
+pub fn slot_bezel_sized(rgba: &[u8], size: (u32, u32)) -> OverlayArt<'_> {
+    let k = size.0 as f32 / 720.0;
+    let s = |v: f32| v * k;
     OverlayArt {
-        rgba, size: (720, 480),
-        window: [120.0, 24.0, 600.0, 456.0],
-        column: [111.0, 609.0],
-        plain: [[97.0, 109.0], [612.0, 716.0]],
+        rgba, size,
+        window: [s(120.0), s(24.0), s(600.0), s(456.0)],
+        column: [s(111.0), s(609.0)],
+        plain: [[s(97.0), s(109.0)], [s(612.0), s(716.0)]],
     }
 }
 

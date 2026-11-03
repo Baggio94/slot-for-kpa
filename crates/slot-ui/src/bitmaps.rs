@@ -168,7 +168,12 @@ pub fn chip() -> &'static [u8] {
     load(CHIP_PNG, CHIP_W, CHIP_H, &P)
 }
 
-/// Official Slot v1.7 full-panel transparent bezels, native source 720x480.
+/// The slot. bezels' 3x masters (2160x1440), for drawing at panel density.
+pub fn bezel_master(gbc: bool) -> &'static [u8] {
+    if gbc { BEZEL_GBC_PNG } else { BEZEL_GB_PNG }
+}
+
+/// Official Slot v1.7 full-panel transparent bezels, at their 720x480.
 pub fn bezel_gb() -> &'static [u8] {
     static P: OnceLock<Vec<u8>>=OnceLock::new();
     load(BEZEL_GB_PNG,720,480,&P)
