@@ -39,6 +39,9 @@ pub enum Toast {
     Sun(u8),
     SunSensor,
     SunAuto,
+    RunAheadOff,
+    RunAhead1,
+    RunAhead2,
 }
 
 const SUN_TEXT: [&str; 11] = [
@@ -47,7 +50,7 @@ const SUN_TEXT: [&str; 11] = [
 ];
 
 impl Toast {
-    const FIXED: [Toast; 27] = [
+    const FIXED: [Toast; 30] = [
         Toast::StateSaved,
         Toast::StateLoaded,
         Toast::NeedsGpsp,
@@ -75,6 +78,9 @@ impl Toast {
         Toast::ScreenStretch,
         Toast::SunSensor,
         Toast::SunAuto,
+        Toast::RunAheadOff,
+        Toast::RunAhead1,
+        Toast::RunAhead2,
     ];
 
     pub fn all() -> Vec<Toast> {
@@ -125,6 +131,9 @@ impl Toast {
             Toast::Sun(level) => SUN_TEXT[usize::from(level.min(10))],
             Toast::SunSensor => "Sun: Sensor",
             Toast::SunAuto => "Sun: Auto",
+            Toast::RunAheadOff => "Run-Ahead: Off",
+            Toast::RunAhead1 => "Run-Ahead: 1 Frame",
+            Toast::RunAhead2 => "Run-Ahead: 2 Frames",
         }
     }
 }

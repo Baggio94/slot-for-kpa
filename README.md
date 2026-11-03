@@ -132,6 +132,8 @@ The KONKR's round top button is called **slot. cap** in this port. Since it cont
 | <kbd>SELECT</kbd> + <kbd>B</kbd> / <kbd>A</kbd> | Previous / next shader |
 | <kbd>SELECT</kbd> + <kbd>Y</kbd> | Toggle color correction |
 | <kbd>SELECT</kbd> + <kbd>L2</kbd> / <kbd>R2</kbd> | Change GB palette (when enabled) |
+| <kbd>SELECT</kbd> + <kbd>Up</kbd> / <kbd>Down</kbd> | Bigger / smaller screen: Integer, Original Ratio, Stretch |
+| <kbd>SELECT</kbd> + <kbd>Left</kbd> / <kbd>Right</kbd> | Run-Ahead: Off, 1 frame, 2 frames |
 | <kbd>L1</kbd> / <kbd>R1</kbd> | Bigger / smaller screen: Integer, Original Ratio, Stretch (GB/GBC only) |
 
 ### Save State Switcher

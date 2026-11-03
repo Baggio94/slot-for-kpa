@@ -304,6 +304,7 @@ fn select_chord_bit(code: i32) -> u16 {
     match code {
         96 => 1, 97 => 2, 100 => 4, 102 => 8,
         103 => 16, 104 => 32, 105 => 64,
+        19 => 128, 20 => 256, 21 => 512, 22 => 1024,
         _ => 0,
     }
 }
@@ -1763,6 +1764,21 @@ impl Engine {
                     }
                 }
             }
+            // SELECT + Up / Down: one screen size up / down on every system.
+            19 | 20 => self.step_screen_size(code == 19),
+            // SELECT + Left / Right: Run-Ahead OFF, 1 FRAME, 2 FRAMES.
+            21 | 22 => {
+                let frames = |s: &Self| s.game_emulation
+                    .map_or(s.settings.run_ahead_frames, |p| p.run_ahead_frames);
+                let before = frames(self);
+                self.change_game_emulation(12, code == 22);
+                let after = frames(self);
+                if after != before {
+                    self.hud.toast(match after {
+                        1 => Toast::RunAhead1, 2 => Toast::RunAhead2, _ => Toast::RunAheadOff,
+                    }, time);
+                }
+            }
             // Boktai's sun, like L3 / R3, for handhelds without stick clicks.
             104 | 105 if self.game.as_ref().is_some_and(GameSession::solar) => {
                 self.nudge_sun(code == 105);
@@ -3034,17 +3050,7 @@ impl Engine {
                             Platform::Gba | Platform::Snes | Platform::Md)
                         && self.buttons & ButtonMask::SELECT == 0
                         && (code == 102 || code == 103) {
-                        if pressed {
-                            let mode = if code == 102 {
-                                self.video_mode.bigger()
-                            } else { self.video_mode.smaller() };
-                            if mode != self.video_mode {
-                                self.set_video_mode(mode);
-                                self.hud.toast(self.video_mode_toast(),
-                                    self.born.elapsed().as_millis() as u64);
-                                self.tell_hidden_bezel();
-                            }
-                        }
+                        if pressed { self.step_screen_size(code == 102); }
                         return;
                     }
                     let mask = controls(code);
@@ -3766,6 +3772,17 @@ impl Engine {
     }
 
     /// The top banner naming the new screen size.
+    /// One screen size up (Integer -> Original Ratio -> Stretch) or down,
+    /// with its banner. GBA on the KONKR has a single size.
+    fn step_screen_size(&mut self, bigger: bool) {
+        let mode = if bigger { self.video_mode.bigger() } else { self.video_mode.smaller() };
+        if mode == self.video_mode { return; }
+        self.set_video_mode(mode);
+        if self.video_mode != mode { return; }
+        self.hud.toast(self.video_mode_toast(), self.born.elapsed().as_millis() as u64);
+        self.tell_hidden_bezel();
+    }
+
     fn video_mode_toast(&self) -> Toast {
         match self.video_mode {
             VideoMode::Actual => Toast::ScreenInteger,

@@ -160,9 +160,11 @@ impl EmulationProfile {
         match key {
             0 if platform==Platform::Gba =>
                 self.screen_shader=Some(view.shader_gba),
-            1 if platform!=Platform::Gba =>
+            // The paused game's rows send each system's own key (21 GBC
+            // shader, 22/23/24 corrections); 1 and 2 are the old shared ones.
+            1|21 if platform!=Platform::Gba =>
                 self.screen_shader=Some(view.shader_for(platform)),
-            2 => self.colour_correction_override=Some(view.colour_for(platform)),
+            2|22|23|24 => self.colour_correction_override=Some(view.colour_for(platform)),
             25..=27|44..=46 => self.screen_bezel=Some(view.bezel_for(platform)),
             3 if platform==Platform::Gb =>
                 self.gb_palettes_override=Some(view.gb_palettes),
@@ -502,6 +504,21 @@ mod tests {
         assert_eq!(scoped.colour_correction_gb,global.colour_correction_gb);
         assert_eq!(scoped.bezel_gbc,Bezel::Color);
         assert_eq!(global,Settings::default());
+    }
+
+    #[test]
+    fn the_paused_games_own_screen_keys_are_saved_for_that_game() {
+        let global=Settings::default();
+        for (platform,shader,colour) in [(Platform::Gba,0,22),(Platform::Gbc,21,23),(Platform::Gb,1,24)] {
+            let mut p=EmulationProfile::from_settings(&global);
+            assert!(p.change_visual_and_gameplay(&global,platform,colour,true),"{platform:?}");
+            assert_eq!(p.colour_correction_override,Some(!global.colour_for(platform)));
+            assert!(p.change_visual_and_gameplay(&global,platform,shader,true),"{platform:?}");
+            let mut scoped=global.clone();
+            p.apply_visual_and_gameplay(&mut scoped,platform);
+            assert_ne!(scoped.shader_for(platform),global.shader_for(platform),"{platform:?}");
+            assert_ne!(scoped.colour_for(platform),global.colour_for(platform),"{platform:?}");
+        }
     }
 
     #[test]
