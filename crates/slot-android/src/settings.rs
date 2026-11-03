@@ -60,9 +60,17 @@ impl WallpaperTint {
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Appearance { #[default] Dark, Light }
+pub enum Appearance { #[default] Dark, Light, Original }
 impl Appearance {
-    pub fn toggle(self)->Self { if self==Self::Dark {Self::Light}else{Self::Dark} }
+    /// Dark, Light, then Original: the dark interface with every console
+    /// bar in its console's own colours (Siham 2026-11-03).
+    pub fn toggle(self)->Self {
+        match self { Self::Dark=>Self::Light, Self::Light=>Self::Original, Self::Original=>Self::Dark }
+    }
+    /// Which set of console bars `slot_ui::bitmaps::home_slot` draws.
+    pub fn bar_theme(self)->usize {
+        match self { Self::Original=>0, Self::Dark=>1, Self::Light=>2 }
+    }
 }
 
 /// Original PR #2 by Its-TroyM: persisted optional 12/24-hour shelf clock.
@@ -706,7 +714,8 @@ mod tests {
         assert_eq!(WallpaperTint::ALL.map(WallpaperTint::alpha),
             [0.0,0.25,0.45,0.65]);
         assert_eq!(Appearance::Dark.toggle(),Appearance::Light);
-        assert_eq!(Appearance::Light.toggle(),Appearance::Dark);
+        assert_eq!(Appearance::Light.toggle(),Appearance::Original);
+        assert_eq!(Appearance::Original.toggle(),Appearance::Dark);
     }
 
     #[test]

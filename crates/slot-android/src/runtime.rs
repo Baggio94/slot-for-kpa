@@ -737,8 +737,11 @@ struct Engine {
     /// Live rear/front v1.7.0 slot textures. Always draw in proper depth order.
     slot_faces: Option<(slot_gfx::TexId, slot_gfx::TexId)>,
     slot_dark_faces: (slot_gfx::TexId, slot_gfx::TexId),
-    /// The Famicom, NES, Super Nintendo and Mega Drive slot bars.
+    /// Every console's slot bar in the current appearance's bar theme.
     home_slot_faces: [(slot_gfx::TexId, slot_gfx::TexId); slot_ui::bitmaps::CONSOLE_SLOTS],
+    /// The console bars in the three bar themes, made once like slot.'s own.
+    home_slot_themes: [[(slot_gfx::TexId, slot_gfx::TexId); slot_ui::bitmaps::CONSOLE_SLOTS];
+        slot_ui::bitmaps::BAR_THEMES],
     /// Whether the footer's clock and percent textures are inked black.
     footer_inked_dark: bool,
     /// What closes those slots' holes (none for the Famicom's open slot).
@@ -938,8 +941,8 @@ impl Engine {
         let slot_dark_faces=make_slot(false);
         let slot_light_faces=make_slot(true);
         let footer_inked_dark_at_start = settings.appearance == crate::settings::Appearance::Light;
-        let home_slot_faces=[0usize, 1, 2, 3, 4, 5, 6].map(|family| {
-            let (back, front) = slot_ui::bitmaps::home_slot(family);
+        let home_slot_themes=[0usize, 1, 2].map(|theme| [0usize, 1, 2, 3, 4, 5, 6].map(|family| {
+            let (back, front) = slot_ui::bitmaps::home_slot(family, theme);
             let mut band = |rgba: &[u8]| {
                 let (rgba, w, h) = slot_ui::native_rgba(
                     rgba, slot_ui::bitmaps::SLOT_W, slot_ui::bitmaps::SLOT_H);
@@ -948,7 +951,8 @@ impl Engine {
                 gpu.create_texture(wide, h, &slot_ui::refit_band(&rgba, w, h, wide))
             };
             (band(back), band(front))
-        });
+        }));
+        let home_slot_faces = home_slot_themes[settings.appearance.bar_theme()];
         // The home consoles' bars are open recesses like the GB/GBA bar
         // (Siham 2026-11-02): no flap or doors close them any more.
         let home_closers: [Option<slot_ui::SlotCloser>; 4] = [None; 4];
@@ -1159,7 +1163,7 @@ impl Engine {
                                "Shelf", "AUTO",
                                "INTEGER", "ORIGINAL RATIO", "STRETCH",
                                "FCEUmm", "Nestopia", "Snes9x", "bsnes",
-                               "Genesis Plus GX", "PicoDrive"]
+                               "Genesis Plus GX", "PicoDrive", "Original"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -1341,6 +1345,7 @@ impl Engine {
             slot_faces,
             slot_dark_faces,
             home_slot_faces,
+            home_slot_themes,
             footer_inked_dark: footer_inked_dark_at_start,
             home_closers,
             slot_light_faces,
@@ -1501,7 +1506,7 @@ impl Engine {
         let shelf = &self.shelves[self.active];
         match (self.slot_faces, shelf.carts.get(shelf.index)) {
             (Some(_), Some(cart)) => slot_ui::bitmaps::console_slot_takes_dark_ink(
-                slot_ui::bitmaps::console_slot_family(cart)),
+                slot_ui::bitmaps::console_slot_family(cart), self.settings.appearance.bar_theme()),
             _ => self.settings.appearance == crate::settings::Appearance::Light,
         }
     }
@@ -4506,6 +4511,7 @@ impl Engine {
 
     fn cycle_appearance(&mut self) {
         self.settings.appearance=self.settings.appearance.toggle();
+        self.home_slot_faces=self.home_slot_themes[self.settings.appearance.bar_theme()];
         let custom_colours = PATHS.lock().unwrap_or_else(|e| e.into_inner())
             .as_ref().is_some_and(|(root,_)|
                 root.join("Config/theme.txt").is_file());
@@ -4611,8 +4617,11 @@ impl Engine {
                 crate::settings::WallpaperTint::Medium => 24,
                 crate::settings::WallpaperTint::High => 25,
             },
-            18 => if self.settings.appearance == crate::settings::Appearance::Light
-                { 22 } else { 21 },
+            18 => match self.settings.appearance {
+                crate::settings::Appearance::Dark => 21,
+                crate::settings::Appearance::Light => 22,
+                crate::settings::Appearance::Original => 76,
+            },
             19 => if self.settings.show_recents {4}else{5},
             20 => if self.settings.show_titles {4}else{5},
             21 => shader(scoped.shader_gbc),
