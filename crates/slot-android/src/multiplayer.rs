@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::link_lan::{self, Advertiser, HostInfo, Multicast};
-use crate::link_net::{Cancel, TcpLink, LabGreeting};
+use crate::link_net::{Cancel, TcpLink, LabGreeting, PeerBios};
 use crate::trusted_link::{self, PeerPermission};
 use crate::link_kind::LinkKind;
 
@@ -31,7 +31,9 @@ pub enum Progress {
     /// Both devices must explicitly approve transmitting their ROM image
     /// to the other player. Only emitted for mixed-ROM mGBA Cable.
     PeerRomConsent(String),
-    Ready(TcpLink, Option<PathBuf>),
+    /// The link, the other player's cartridge when it differs, and the
+    /// BIOS the other player's GBA runs here (mGBA Cable).
+    Ready(TcpLink, Option<PathBuf>, PeerBios),
     Failed(Failure),
 }
 
@@ -150,6 +152,8 @@ fn portable_core_recipe(backend: Backend) -> [u8; 32] {
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/mgba/zz-link-peer-silence.patch")),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/mgba/zz-gb-link-rtc.patch")),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/patch-mgba-speculative-audio.py")),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/patch-mgba-gb-inner-trace.py")),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/patch-mgba-link-peer-bios.py")),
         ],
         Backend::GpspNetpacket => &[
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/build-gpsp-android.sh")),
@@ -186,7 +190,10 @@ impl LinkConfig {
         }
         let game: [u8; 4] = code.as_bytes().try_into()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid game code"))?;
-        let bios_sha256 = if self.bios_file.is_file() {
+        // mGBA plays a BIOS file only at its exact 16 KiB size, its own
+        // built-in BIOS otherwise: announce what it will really run.
+        let bios_sha256 = if self.bios_file.metadata().is_ok_and(|m|
+            m.is_file() && m.len() == crate::link_net::GBA_BIOS_SIZE as u64) {
             sha256_file(&self.bios_file, 1024 * 1024).map_err(|e|
                 io::Error::new(e.kind(), format!("read selected GBA BIOS fingerprint: {e}")))?
         } else { [0u8; 32] };
@@ -226,7 +233,7 @@ impl LinkConfig {
 
 fn connect(role: Role, local: Ipv4Addr, config: &LinkConfig,
            cancel: &Cancel, ui: &Sender<Progress>, approval: &Receiver<PeerPermission>)
-    -> io::Result<(TcpLink, Option<PathBuf>)> {
+    -> io::Result<(TcpLink, Option<PathBuf>, PeerBios)> {
     if local.is_unspecified() || local.is_loopback() || local.is_multicast()
         || local.is_link_local() || local.is_broadcast() {
         return Err(io::Error::new(io::ErrorKind::AddrNotAvailable,
@@ -261,7 +268,13 @@ fn connect(role: Role, local: Ipv4Addr, config: &LinkConfig,
     }?;
     let peer_path = stage_mgba_peer(&mut link, &fingerprint, config,
         role == Role::Host, cancel, ui, approval)?;
-    Ok((link, peer_path))
+    let peer_bios = if config.backend == Backend::MgbaSlotCable {
+        let cache = config.rom.parent().ok_or_else(|| io::Error::new(
+            io::ErrorKind::InvalidInput, "Own ROM has no private cache folder"))?
+            .join("link-peer-cache");
+        link.exchange_mgba_peer_bios(&fingerprint, &config.bios_file, &cache, cancel)?
+    } else { PeerBios::Same };
+    Ok((link, peer_path, peer_bios))
 }
 
 /// A new KMLB/4 session cannot become READY until the remote cartridge
@@ -331,7 +344,7 @@ mod cross_abi_fingerprint_tests {
         let mac = root.join("mac-x86_64.so");
         let konkr = root.join("konkr-arm64.so");
         std::fs::write(&rom, b"exact same cartridge").unwrap();
-        std::fs::write(&bios, b"exact same BIOS").unwrap();
+        std::fs::write(&bios, vec![0x5A; crate::link_net::GBA_BIOS_SIZE]).unwrap();
         std::fs::write(&mac, b"ELF-for-x86_64").unwrap();
         std::fs::write(&konkr, b"ELF-for-arm64-different-bytes").unwrap();
         let left = LinkConfig {
@@ -356,8 +369,12 @@ mod cross_abi_fingerprint_tests {
         std::fs::write(&rom, b"modified or hacked ROM").unwrap();
         assert_ne!(host.rom_sha256, left.fingerprint().unwrap().rom_sha256);
         std::fs::write(&rom, b"exact same cartridge").unwrap();
-        std::fs::write(&bios, b"wrong BIOS").unwrap();
+        std::fs::write(&bios, vec![0xA5; crate::link_net::GBA_BIOS_SIZE]).unwrap();
         assert_ne!(host.bios_sha256, left.fingerprint().unwrap().bios_sha256);
+        // mGBA ignores a BIOS file of any other size: it plays its built-in
+        // BIOS, and the greeting says so.
+        std::fs::write(&bios, b"not a BIOS").unwrap();
+        assert_eq!(left.fingerprint().unwrap().bios_sha256, [0; 32]);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -386,8 +403,8 @@ impl LinkStarter {
             let result = connect(role, local, &config, &worker_cancel, &tx, &approval);
             if let Err(ref error) = result { report_setup_error(error); }
             let report = match result {
-                Ok((link, remote)) if !worker_cancel.is_cancelled() =>
-                    Progress::Ready(link, remote),
+                Ok((link, remote, bios)) if !worker_cancel.is_cancelled() =>
+                    Progress::Ready(link, remote, bios),
                 Ok(_) => Progress::Failed(Failure::Cancelled),
                 Err(e) if e.kind() == io::ErrorKind::AddrNotAvailable =>
                     Progress::Failed(Failure::NoNetwork),

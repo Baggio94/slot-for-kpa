@@ -80,6 +80,14 @@ pub struct LabGreeting {
     pub core_sha256: [u8; 32],
     pub bios_sha256: [u8; 32],
 }
+/// GBA Link plays whatever BIOS each console has, none included. mGBA Cable
+/// runs each player's GBA on that player's own BIOS on both consoles (see
+/// exchange_mgba_peer_bios); gpSP runs only its own GBA. The Game Boy and
+/// home-console links use no BIOS at all.
+fn bios_may_differ(backend: u8) -> bool {
+    matches!(backend, 1 | 2)
+}
+
 impl LabGreeting {
     fn bytes(&self) -> [u8; LAB_GREETING_LEN] {
         let mut bytes = [0u8; LAB_GREETING_LEN];
@@ -115,7 +123,9 @@ impl LabGreeting {
         if self.backend != other.backend { parts.push(format!("backend {} vs {}", self.backend, other.backend)); }
         if self.mode != other.mode { parts.push(format!("mode {} vs {}", self.mode, other.mode)); }
         if self.core_sha256 != other.core_sha256 { parts.push("core (another core or slot. version)".into()); }
-        if self.bios_sha256 != other.bios_sha256 { parts.push("BIOS".into()); }
+        if !bios_may_differ(self.backend) && self.bios_sha256 != other.bios_sha256 {
+            parts.push("BIOS".into());
+        }
         if self.game != other.game { parts.push(format!("game {} vs {}", code(&self.game), code(&other.game))); }
         else if self.rom_sha256 != other.rom_sha256 { parts.push("ROM contents".into()); }
         if parts.is_empty() { parts.push("game pairing not supported".into()); }
@@ -131,7 +141,7 @@ impl LabGreeting {
             std::str::from_utf8(&other.game).unwrap_or(""))) { return false; }
         if self.backend!=other.backend || self.mode!=other.mode ||
             self.core_sha256!=other.core_sha256 ||
-            (self.backend!=1 && self.bios_sha256!=other.bios_sha256){return false;}
+            (!bios_may_differ(self.backend) && self.bios_sha256!=other.bios_sha256){return false;}
         let mode=match self.mode{1=>crate::link_kind::LinkKind::Cable,
             2=>crate::link_kind::LinkKind::Wireless,_=>return false};
         if self.backend==2 {
@@ -637,6 +647,114 @@ fn write_packet_frame(writer: &mut impl Write, buf: &[u8]) -> std::io::Result<()
     writer.write_all(buf)
 }
 
+/// The BIOS the other player's GBA runs on this console during mGBA Cable.
+///
+/// Each console emulates both GBAs, and each GBA must run the same way on
+/// both: with its owner's BIOS, the one its state was made with. A console
+/// without a BIOS plays on mGBA's built-in one, on both consoles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PeerBios {
+    /// Both consoles hold the same BIOS, or neither has one.
+    Same,
+    /// The other console has no BIOS: its GBA uses mGBA's built-in BIOS here.
+    BuiltIn,
+    /// The other console's own BIOS, received and SHA-256 checked, in the
+    /// private Link cache.
+    File(PathBuf),
+}
+
+/// A GBA BIOS is 16 KiB; mGBA ignores a file of any other size.
+pub const GBA_BIOS_SIZE: usize = 16 * 1024;
+
+impl TcpLink {
+    /// mGBA Cable only, after the ROM exchange. When the two consoles'
+    /// BIOS differ (one has none, or another dump), each sends its own BIOS
+    /// to the other in one "KBI1" frame (just the tag when it has none) and
+    /// keeps the other's in [cache]. Identical BIOS send nothing at all.
+    pub fn exchange_mgba_peer_bios(&mut self, local: &LabGreeting, own_bios: &Path,
+                                   cache: &Path, cancel: &Cancel)
+        -> std::io::Result<PeerBios> {
+        fn invalid(message: &str) -> std::io::Error {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+        }
+        const NONE: [u8; 32] = [0; 32];
+        const WAIT: Duration = Duration::from_secs(20);
+        let peer = self.peer_identity().ok_or_else(||
+            invalid("KMLB BIOS exchange without a verified peer greeting"))?.clone();
+        if local.backend != 1 || peer.backend != 1 || local.mode != 1 || !local.accepts(&peer) {
+            return Err(invalid("Not a negotiated mGBA Cable pair"));
+        }
+        if local.bios_sha256 == peer.bios_sha256 {
+            return Ok(PeerBios::Same);
+        }
+        let mut frame = Vec::with_capacity(4 + GBA_BIOS_SIZE);
+        frame.extend_from_slice(b"KBI1");
+        if local.bios_sha256 != NONE {
+            let own = fs::read(own_bios)?;
+            if own.len() != GBA_BIOS_SIZE || digest(&SHA256, &own).as_ref() != local.bios_sha256 {
+                return Err(invalid("Own BIOS changed since the Link greeting"));
+            }
+            frame.extend_from_slice(&own);
+        }
+        report_link_rom_phase("bios", &format!("own={} peer={}",
+            if local.bios_sha256 == NONE { "built-in" } else { "file" },
+            if peer.bios_sha256 == NONE { "built-in" } else { "file" }));
+        self.send(slot_retro::NETPACKET_RELIABLE, &frame);
+        if self.is_closed() {
+            return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe,
+                "Cannot send own BIOS"));
+        }
+        let limit = Instant::now() + WAIT;
+        let reply = loop {
+            if cancel.is_cancelled() {
+                return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,
+                    "Peer BIOS exchange cancelled"));
+            }
+            if self.peer_ended() || self.is_closed() {
+                return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof,
+                    "Peer closed BIOS exchange"));
+            }
+            if let Some(data) = self.try_recv() { break data; }
+            if Instant::now() >= limit {
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut,
+                    "Peer BIOS exchange timed out"));
+            }
+            thread::sleep(Duration::from_millis(2));
+        };
+        if reply.len() < 4 || &reply[..4] != b"KBI1" {
+            return Err(invalid("Peer BIOS frame missing"));
+        }
+        let body = &reply[4..];
+        if peer.bios_sha256 == NONE {
+            if !body.is_empty() {
+                return Err(invalid("Peer sent a BIOS it did not announce"));
+            }
+            return Ok(PeerBios::BuiltIn);
+        }
+        if body.len() != GBA_BIOS_SIZE || digest(&SHA256, body).as_ref() != peer.bios_sha256 {
+            return Err(invalid("Peer BIOS failed SHA-256 authentication"));
+        }
+        fs::create_dir_all(cache)?;
+        let hex: String = peer.bios_sha256.iter().map(|b| format!("{b:02x}")).collect();
+        let dest = cache.join(format!("bios-{hex}.bin"));
+        if dest.is_file() && fs::read(&dest)? == body {
+            return Ok(PeerBios::File(dest));
+        }
+        let scratch = cache.join(format!("bios-{hex}.partial-{}", std::process::id()));
+        let written = (|| -> std::io::Result<()> {
+            let mut file = fs::File::create(&scratch)?;
+            file.write_all(body)?;
+            file.sync_all()?;
+            fs::rename(&scratch, &dest)
+        })();
+        if let Err(error) = written {
+            let _ = fs::remove_file(&scratch);
+            return Err(error);
+        }
+        Ok(PeerBios::File(dest))
+    }
+}
+
 impl Drop for TcpLink {
     fn drop(&mut self) {
         let _ = self.stream.shutdown(Shutdown::Both);
@@ -764,6 +882,50 @@ mod lab_negotiation_tests {
         // The private peer caches are not added to the user's library.
         assert_eq!(host_peer.parent().unwrap().file_name().unwrap(), "link-peer-cache");
         assert_eq!(guest_peer.parent().unwrap().file_name().unwrap(), "link-peer-cache");
+        drop(guest);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn mgba_cable_hands_each_console_the_other_players_bios() {
+        use std::net::{SocketAddr, TcpListener};
+        let home = std::env::temp_dir().join(format!(
+            "slot-kbi1-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        let (a_dir, b_dir) = (home.join("host"), home.join("guest"));
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+        let bios = vec![0x3C; GBA_BIOS_SIZE];
+        let host_bios = a_dir.join("gba_bios.bin");
+        fs::write(&host_bios, &bios).unwrap();
+        // Host has a BIOS, Join has none.
+        let mut h = identity();
+        h.bios_sha256.copy_from_slice(digest(&SHA256, &bios).as_ref());
+        let mut g = h.clone();
+        g.bios_sha256 = [0; 32];
+        assert!(h.accepts(&g) && g.accepts(&h));
+
+        let reserve = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr: SocketAddr = reserve.local_addr().unwrap();
+        drop(reserve);
+        let (ready, listening) = channel();
+        let (h_copy, cache_a) = (h.clone(), a_dir.join("link-peer-cache"));
+        let host = thread::spawn(move || {
+            let mut wire = TcpLink::host_lab_greeted_until(
+                "127.0.0.1", addr.port(), Duration::from_secs(5),
+                &Cancel::new(), &h_copy, || { ready.send(()).unwrap(); }).unwrap();
+            wire.exchange_mgba_peer_bios(&h_copy, &host_bios, &cache_a, &Cancel::new()).unwrap()
+        });
+        listening.recv_timeout(Duration::from_secs(3)).unwrap();
+        let mut guest = TcpLink::join_lab_greeted(addr, &g).unwrap();
+        let guest_side = guest.exchange_mgba_peer_bios(&g, &b_dir.join("gba_bios.bin"),
+            &b_dir.join("link-peer-cache"), &Cancel::new()).unwrap();
+        assert_eq!(host.join().unwrap(), PeerBios::BuiltIn,
+            "Join's GBA runs mGBA's built-in BIOS on Host too");
+        let PeerBios::File(received) = guest_side else { panic!("Join needs Host's BIOS") };
+        assert_eq!(fs::read(&received).unwrap(), bios);
+        assert_eq!(received.parent().unwrap().file_name().unwrap(), "link-peer-cache");
         drop(guest);
         fs::remove_dir_all(home).unwrap();
     }
@@ -957,18 +1119,20 @@ mod lab_negotiation_tests {
         server.send_end();
     }
     #[test]
-    fn mgba_cable_bios_is_optional_but_other_backends_stay_strict() {
+    fn gba_links_play_any_bios_but_other_backends_stay_strict() {
         let host = identity();
         let mut guest = host.clone();
         guest.bios_sha256 = [0; 32];
-        assert!(host.accepts(&guest));
+        assert!(host.accepts(&guest), "mGBA Cable: BIOS on one console only");
+        guest.bios_sha256 = [0x77; 32];
+        assert!(host.accepts(&guest), "mGBA Cable: two different BIOS files");
         guest.backend = 2;
-        assert!(!host.accepts(&guest));
+        assert!(!host.accepts(&guest), "the backend itself must still match");
         let mut gpsp = host.clone();
         gpsp.backend = 2;
         let mut other = gpsp.clone();
         other.bios_sha256 = [0; 32];
-        assert!(!gpsp.accepts(&other));
+        assert!(gpsp.accepts(&other), "gpSP runs only its own GBA");
         let mut gambatte = host.clone();
         gambatte.backend = 3;
         let mut other = gambatte.clone();
@@ -981,7 +1145,8 @@ mod lab_negotiation_tests {
         let mut other=host.clone();other.game=*b"BPGE";other.rom_sha256=[0xAB;32];
         assert!(host.accepts(&other));
         let mut bad=other.clone();bad.core_sha256[1]^=1;assert!(!host.accepts(&bad));
-        let mut bad=other.clone();bad.bios_sha256[1]^=1;assert!(!host.accepts(&bad));
+        // gpSP runs only its own GBA: the other console's BIOS is its own business.
+        let mut any=other.clone();any.bios_sha256[1]^=1;assert!(host.accepts(&any));
         let mut bad=other.clone();bad.backend=1;assert!(!host.accepts(&bad));
         let mut bad=other.clone();bad.game=*b"BRBE";assert!(!host.accepts(&bad));
         let mut bad=other.clone();bad.mode=2;assert!(!host.accepts(&bad));

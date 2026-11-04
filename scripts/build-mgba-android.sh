@@ -94,6 +94,9 @@ python3 "$ROOT/scripts/patch-mgba-twb64.py" "$SRC"
 # the GB SIO lockstep. They run only while two Game Boys are linked; solo play
 # runs mGBA's own SM83Run and GBProcessEvents unchanged.
 python3 "$ROOT/scripts/patch-mgba-gb-inner-trace.py" "$SRC"
+# Cable Link: the other player's GBA runs on that player's own BIOS (or
+# mGBA's built-in one), so the two consoles never need the same BIOS file.
+python3 "$ROOT/scripts/patch-mgba-link-peer-bios.py" "$SRC"
 # The pinned libretro version script hides ALL non-retro symbols unless
 # explicitly exported. Keep the new GB/GBC watchdog result observable via dlsym.
 python3 - "$SRC/src/platform/libretro/link.T" <<'PY'
@@ -162,6 +165,6 @@ fi
 # F11: machine-readable provenance shipped INSIDE the APK. These fields
 # record the exact pinned source and safety patches used in this binary.
 cat > "$ROOT/android/app/src/main/assets/core-build-mgba.json" <<EOF
-{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","gb-blank-frame-after-lcd-on.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py","patch-mgba-sun.py","patch-mgba-twb64.py"],"gb_link_diagnostics":"android_spin_monitor_v1_inner_trace_v2_link_only"}
+{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","gb-blank-frame-after-lcd-on.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py","patch-mgba-sun.py","patch-mgba-twb64.py","patch-mgba-gb-inner-trace.py","patch-mgba-link-peer-bios.py"],"gb_link_diagnostics":"android_spin_monitor_v1_inner_trace_v2_link_only"}
 EOF
 echo "mGBA arm64 libretro: $DEST/libmgba_libretro.so"

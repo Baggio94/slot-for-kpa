@@ -2087,7 +2087,8 @@ impl Engine {
 
     fn begin_link_session(&mut self, role: LinkRole,
                           wire: crate::link_net::TcpLink,
-                          peer_rom: Option<PathBuf>) -> Result<(), String> {
+                          peer_rom: Option<PathBuf>,
+                          peer_bios: crate::link_net::PeerBios) -> Result<(), String> {
         let game = self.game.as_ref().ok_or("No game active")?;
         if game.core_kind().netplay() {
             self.game.as_mut().ok_or("No game active")?
@@ -2169,7 +2170,7 @@ impl Engine {
         drop(self.game.take());
         let mut linked = match GameSession::open_mgba_linked(&rom, &core_file,
             &storage, platform, &stem, palette.as_deref(), colour, role,
-            &solo_snapshot, peer_rom.as_deref()) {
+            &solo_snapshot, peer_rom.as_deref(), &peer_bios) {
             Ok(session) => session,
             Err(error) => {
                 let recovery = self.restore_solo_after_link_failure(
@@ -2326,12 +2327,12 @@ impl Engine {
                     // decision asynchronously; GL stays nonblocking.
                     UI_ACTION.lock().unwrap_or_else(|e| e.into_inner()).push_back(18);
                 }
-                LinkProgress::Ready(wire, peer_rom) => {
+                LinkProgress::Ready(wire, peer_rom, peer_bios) => {
                     self.cancel_link_discovery();
                     let role = if self.link_role == LinkRow::Host {
                         LinkRole::Host
                     } else { LinkRole::Join };
-                    let joined = self.begin_link_session(role, wire, peer_rom);
+                    let joined = self.begin_link_session(role, wire, peer_rom, peer_bios);
                     match joined {
                         Ok(()) => {
                             // Host purple / Join grey, permanently shown in

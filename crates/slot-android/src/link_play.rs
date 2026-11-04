@@ -108,12 +108,15 @@ pub struct LinkPlay {
     // Cable starts at upstream's 3-frame delay, then adapts (cable.rs).
     // Wireless passes bytes through the core's registered netpacket ABI.
     stalled_for_input: bool,
-    // A GBA state carries its BIOS checksum; other consoles' states don't.
+    // A GBA state carries its BIOS checksum; other consoles' states don't,
+    // and in an mGBA Cable pair with two different BIOS each GBA carries
+    // its own player's.
     bios_checked: bool,
 }
 
 impl LinkPlay {
-    /// For a console whose state has no GBA BIOS checksum to compare.
+    /// For a console whose state has no GBA BIOS checksum to compare, or an
+    /// mGBA Cable pair whose two GBAs each keep their own player's BIOS.
     pub fn without_bios_check(mut self) -> Self {
         self.bios_checked = false;
         self
@@ -355,7 +358,7 @@ impl LinkPlay {
                         Ok(state) => state,
                         Err(_) => return self.fail(LinkError::InvalidState),
                     };
-                    if !link_state::same_bios(&host_state, &join_state) {
+                    if self.bios_checked && !link_state::same_bios(&host_state, &join_state) {
                         return self.fail(LinkError::BiosMismatch);
                     }
                     let combined = match link_state::combine_players(&host_state, &join_state) {
@@ -915,6 +918,27 @@ mod tests {
         assert_eq!(h.frame(&mut host, ButtonMask(0)), Frame::Failed(LinkError::BiosMismatch));
         assert_eq!(host.state, before);
         assert_eq!(host.steps, 0);
+    }
+
+    #[test]
+    fn mga_link_pairs_two_bios_when_each_gba_keeps_its_own_players() {
+        // One console with the official BIOS, the other with a DS dump (or
+        // none): each GBA's state carries its own player's BIOS checksum.
+        let (host_wire, guest_wire) = pair();
+        let (mut host, mut guest) = (PairedCore::new(0x11, 0xBAAE187F),
+                                      PairedCore::new(0x22, 0xA6473709));
+        let mut h = LinkPlay::begin(&mut host, Role::Host, LinkKind::Cable, host_wire)
+            .unwrap().without_bios_check();
+        assert_eq!(h.frame(&mut host, ButtonMask(1)), Frame::Waiting);
+        let mut g = LinkPlay::begin(&mut guest, Role::Join, LinkKind::Cable, guest_wire)
+            .unwrap().without_bios_check();
+        assert_eq!(h.frame(&mut host, ButtonMask(2)), Frame::Waiting);
+        assert_eq!(link_state::local(&host.state, 0).unwrap()[12], 0x11);
+        assert_eq!(link_state::local(&host.state, 1).unwrap()[12], 0x22);
+        assert_eq!(g.frame(&mut guest, ButtonMask(3)), Frame::Advanced);
+        assert_eq!(h.frame(&mut host, ButtonMask(4)), Frame::Advanced);
+        assert_eq!(host.state, guest.state);
+        assert_eq!((host.steps, guest.steps), (1, 1));
     }
 
     #[test]

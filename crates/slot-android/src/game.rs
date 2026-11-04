@@ -256,6 +256,9 @@ pub struct GameSession {
     // NES/SNES/Mega Drive netplay: one console, the other player on port 2.
     // Join keeps its own game here and gets it back when the session ends.
     home_netplay: Option<HomeNetplay>,
+    // mGBA Cable with two different BIOS: each GBA's state carries its own
+    // player's BIOS checksum, so the two never compare equal.
+    link_peer_bios: bool,
     // Isolated mGBA OR gpSP Link core boot. Apart from app-controlled SRAM,
     // libretro's GET_SAVE_DIRECTORY must itself point into this private root.
     // No running solo gpSP may have its save paths redirected in-place.
@@ -372,7 +375,8 @@ impl GameSession {
                 colour_correction: bool,
                 achievements: Option<&slot_achievements::Service>) -> Result<Self, String> {
         Self::open_internal(rom, core_file, storage, which, platform, resume_state,
-            rom_stem, gb_palette, colour_correction, achievements, None, "auto", None, None)
+            rom_stem, gb_palette, colour_correction, achievements, None, "auto", None, None,
+            &crate::link_net::PeerBios::Same)
     }
 
     /// Slot upstream treats GBA Cable/Wireless as a gpSP core option fixed
@@ -386,7 +390,8 @@ impl GameSession {
             return Err("Unsupported gpSP GBA serial mode".into());
         }
         Self::open_internal(rom, core_file, storage, Core::Gpsp, Platform::Gba,
-            true, rom_stem, None, colour_correction, achievements, None, serial, None, None)
+            true, rom_stem, None, colour_correction, achievements, None, serial, None, None,
+            &crate::link_net::PeerBios::Same)
     }
 
     /// A post-Link solo rebuild must not consume an old RetroArch auto-state,
@@ -400,7 +405,8 @@ impl GameSession {
             return Err("Unsupported gpSP solo serial mode".into());
         }
         Self::open_internal(rom, core_file, storage, Core::Gpsp, Platform::Gba,
-            false, rom_stem, None, colour_correction, achievements, None, serial, None, None)
+            false, rom_stem, None, colour_correction, achievements, None, serial, None, None,
+            &crate::link_net::PeerBios::Same)
     }
 
     /// Reopen a *fresh* two-console mGBA instance (two GBAs, or two Game
@@ -411,13 +417,14 @@ impl GameSession {
                             platform: Platform, rom_stem: &str,
                             gb_palette: Option<&str>, colour_correction: bool,
                             role: Role, solo_state: &[u8],
-                            peer_rom: Option<&Path>) -> Result<Self, String> {
+                            peer_rom: Option<&Path>,
+                            peer_bios: &crate::link_net::PeerBios) -> Result<Self, String> {
         // Fail BEFORE any filesystem writes or a dropped solo core if the
         // source state cannot fit as a valid single-console Link seed.
         crate::linked_storage::validate_solo_snapshot(solo_state)?;
         Self::open_internal(rom, core_file, storage, Core::Mgba, platform,
             false, rom_stem, gb_palette, colour_correction, None, Some(role), "auto",
-            Some(solo_state), peer_rom)
+            Some(solo_state), peer_rom, peer_bios)
     }
 
     /// gpSP requires a NEW libretro instance whose GET_SAVE_DIRECTORY is
@@ -434,7 +441,7 @@ impl GameSession {
         crate::linked_storage::validate_solo_snapshot(solo_state)?;
         Self::open_internal(rom, core_file, storage, Core::Gpsp, Platform::Gba,
             false, rom_stem, None, colour_correction, None, Some(role), serial,
-            Some(solo_state), None)
+            Some(solo_state), None, &crate::link_net::PeerBios::Same)
     }
 
     fn open_internal(rom: &Path, core_file: &Path, storage: &Path,
@@ -445,7 +452,8 @@ impl GameSession {
                      linked_boot: Option<Role>,
                      gpsp_serial: &'static str,
                      linked_resume: Option<&[u8]>,
-                     peer_rom: Option<&Path>) -> Result<Self, String> {
+                     peer_rom: Option<&Path>,
+                     peer_bios: &crate::link_net::PeerBios) -> Result<Self, String> {
         let opening_at = Instant::now();
         // gpSP is GBA-only; mGBA also links two Game Boys.
         if linked_boot.is_some() && ((platform != Platform::Gba && which != Core::Mgba) ||
@@ -467,6 +475,21 @@ impl GameSession {
                 return Err("Unverified remote ROM cache location".into());
             }
         }
+        // The other player's own BIOS (or none) for its GBA in mGBA Cable.
+        let peer_bios_option = match peer_bios {
+            crate::link_net::PeerBios::Same => None,
+            _ if linked_boot.is_none() || which != Core::Mgba || platform != Platform::Gba =>
+                return Err("A remote BIOS is only valid inside GBA mGBA Cable Link".into()),
+            crate::link_net::PeerBios::BuiltIn => Some("hle".to_owned()),
+            crate::link_net::PeerBios::File(path) => {
+                let sized = path.metadata().is_ok_and(|m|
+                    m.is_file() && m.len() == crate::link_net::GBA_BIOS_SIZE as u64);
+                if !sized || !path.to_string_lossy().contains("/link-peer-cache/") {
+                    return Err("Unverified remote BIOS cache location".into());
+                }
+                Some(path.to_str().ok_or("Remote BIOS path is not UTF-8")?.to_owned())
+            }
+        };
         if !rom.exists() || !core_file.exists() {
             return Err(format!("ROM cache or {} core missing", which.text()));
         }
@@ -593,6 +616,11 @@ impl GameSession {
                     if let Some(path) = peer_rom {
                         core.set_option("mgba_link_peer_rom", path.to_str()
                             .ok_or("Remote ROM path is not UTF-8")?);
+                    }
+                    // Unset: the other player's GBA uses this console's BIOS
+                    // (the two are the same). See scripts/patch-mgba-link-peer-bios.py.
+                    if let Some(value) = peer_bios_option.as_deref() {
+                        core.set_option("mgba_link_peer_bios", value);
                     }
                 } else {
                     core.set_option("mgba_link", "off");
@@ -742,9 +770,13 @@ impl GameSession {
         // Neither may silently restart at the title screen on a bad state.
         if let Some(solo) = linked_resume {
             if which == Core::Mgba {
-                let combined = if peer_rom.is_some() {
+                // Another cartridge or another BIOS: this console's state
+                // fits only its own GBA. The other player's GBA starts fresh
+                // and receives that player's own state in the exchange.
+                let own_half_only = peer_rom.is_some() || peer_bios_option.is_some();
+                let combined = if own_half_only {
                     let fresh = core.serialize().map_err(|e|
-                        format!("Cannot capture the two different GBA cartridges: {e}"))?;
+                        format!("Cannot capture the fresh Link pair: {e}"))?;
                     let player = if linked_boot == Some(Role::Host) { 0 } else { 1 };
                     crate::link_state::with_local_player(&fresh, player, solo)
                         .ok_or("Cannot restore own state without modifying peer cartridge")?
@@ -756,8 +788,8 @@ impl GameSession {
                 if !crate::link_state::is_pair(&verified) {
                     return Err("mGBA Link restored without two-GBA SLK1 state".into());
                 }
-                log_launch_timing(if peer_rom.is_some() {
-                    "mGBA Link: distinct ROMs, own solo state only; private peer kept fresh"
+                log_launch_timing(if own_half_only {
+                    "mGBA Link: distinct ROMs or BIOS, own solo state only; private peer kept fresh"
                 } else {
                     "mGBA Link: loaded live solo progress into isolated SLK1 pair"
                 });
@@ -886,7 +918,8 @@ impl GameSession {
             }
         } else { None };
         let mut session = Self {
-            core, link: None, game_link: None, link_touched: false, home_netplay: None, linked_boot, gpsp_serial,
+            core, link: None, game_link: None, link_touched: false, home_netplay: None,
+            link_peer_bios: peer_bios_option.is_some(), linked_boot, gpsp_serial,
             rom_path: rom.to_path_buf(), rom_stem: rom_stem.to_owned(),
             save, rtc, manual_export_prefix, state, retroarch_export,
             gambatte_legacy_export, ring,
@@ -1007,7 +1040,8 @@ impl GameSession {
             }
             other => return Err(format!("{} has no Slot Link support", other.text())),
         }
-        let link = LinkPlay::begin(self.core.as_mut(), role, mode, transport)?;
+        let mut link = LinkPlay::begin(self.core.as_mut(), role, mode, transport)?;
+        if self.link_peer_bios { link = link.without_bios_check(); }
         self.link = Some(link);
         self.link_touched = true;
         self.runahead_video.clear();
