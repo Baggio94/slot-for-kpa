@@ -171,7 +171,7 @@ pub fn body_seated_box(body: Body) -> (u32, u32) {
             // Super Nintendo and Mega Drive carts stay 20% bigger in the
             // slot too, whose recess is drawn to fit them.
             let (w, h) = m.size();
-            let sw = (SEATED_W as f32 * shelf_grow(body)).round() as u32;
+            let sw = (SEATED_W as f32 * seat_grow(body)).round() as u32;
             (sw, (sw * h + w / 2) / w)
         }
     }
@@ -194,7 +194,18 @@ pub fn cart_box_for(cart: &Cart) -> (u32, u32) {
 /// How much larger than its own box a cart is shown on the shelf and as it
 /// travels to the slot: Super Nintendo and Mega Drive carts are drawn 20%
 /// bigger (Siham 2026-11-02), every other cart at its own size.
+/// EA's tall Mega Drive carts are drawn 20% smaller than that (Siham
+/// 2026-11-04): at full size they ran off the top of the screen.
 pub fn shelf_grow(body: Body) -> f32 {
+    match body {
+        Body::Home(HomeMould::MegaDriveEa) => 1.2 * 0.8,
+        _ => seat_grow(body),
+    }
+}
+
+/// How much larger a cart is drawn once seated: SNES and Mega Drive carts,
+/// EA's included, fill their slot's recess, which is drawn to fit them.
+fn seat_grow(body: Body) -> f32 {
     match body {
         Body::Home(m) if m.system() != home::HomeSystem::Nes => 1.2,
         _ => 1.0,

@@ -599,3 +599,21 @@ mod konkr_navigation_tests {
         assert_eq!(shelf.carts[shelf.index].stem, "Apple");
     }
 }
+
+#[cfg(test)]
+mod home_fit_tests {
+    use super::*;
+    use crate::home::HomeMould;
+
+    /// The centre cart, at full size, keeps its top on screen: EA's tall
+    /// Mega Drive carts once ran off it (Siham 2026-11-04).
+    #[test]
+    fn every_home_cart_stands_inside_the_screen() {
+        for m in HomeMould::ALL {
+            let body = Body::Home(m);
+            let (_, h) = shelf_box(body);
+            let top = body_foot_y(body) - h;
+            assert!(top >= 0.0, "{m:?} top at {top}");
+        }
+    }
+}
