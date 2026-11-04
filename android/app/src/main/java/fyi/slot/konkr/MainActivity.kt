@@ -2423,8 +2423,11 @@ class MainActivity : Activity() {
         val percent = if (level >= 0 && scale > 0) (100 * level / scale).coerceIn(0, 100)
             else -1
         val state = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        // Some handhelds (the Retroid Pocket Classic) report NOT_CHARGING or
+        // DISCHARGING while on a weak USB port: plugged in counts as charging.
+        val plugged = battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
         val charging = state == BatteryManager.BATTERY_STATUS_CHARGING ||
-            state == BatteryManager.BATTERY_STATUS_FULL
+            state == BatteryManager.BATTERY_STATUS_FULL || plugged != 0
         nativeSystemStatus(clock, percent, charging)
 
     }
