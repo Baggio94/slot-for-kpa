@@ -136,9 +136,16 @@ pub fn screen_fits(platform: Platform, panel: (u32, u32)) -> bool {
 /// RetroArch's default for the home consoles: the core's aspect ratio,
 /// full height, no integer scaling. The Game Boys start at Integer, and so
 /// do NES and SNES on screens narrower than 4:3 (Integer overscale there).
+/// GB and GBC on screens narrower than 4:3 (the Retroid Pocket Classic)
+/// start at Original Ratio, full height (Siham, 2026-11-04).
 pub fn default_mode(platform: Platform, panel: (u32, u32)) -> VideoMode {
-    if platform.handheld() || square_pixels(platform, panel) { VideoMode::Actual }
+    if matches!(platform, Platform::Gb | Platform::Gbc) && narrow(panel) { VideoMode::Aspect }
+    else if platform.handheld() || square_pixels(platform, panel) { VideoMode::Actual }
     else { VideoMode::Aspect }
+}
+
+fn narrow(panel: (u32, u32)) -> bool {
+    panel_aspect(panel) < 4.0 / 3.0 * 0.99
 }
 
 /// NES and SNES on screens narrower than 4:3 (the Retroid Pocket Classic,
@@ -146,7 +153,7 @@ pub fn default_mode(platform: Platform, panel: (u32, u32)) -> VideoMode {
 /// is overscale (the next whole multiple up, a few pixels cut at the
 /// edges), then Original Ratio and Stretch (Siham, 2026-11-03).
 pub fn square_pixels(platform: Platform, panel: (u32, u32)) -> bool {
-    matches!(platform, Platform::Nes | Platform::Snes) && panel_aspect(panel) < 4.0 / 3.0 * 0.99
+    matches!(platform, Platform::Nes | Platform::Snes) && narrow(panel)
 }
 
 /// A frame's shape in its console's own pixels: SNES hi-res and interlaced
@@ -427,6 +434,15 @@ mod tests {
         assert!(bezel_offered(Platform::Md, (720, 720)) && !bezel_offered(Platform::Snes, (720, 720)));
         assert!(!bezel_offered(Platform::Gba, (960, 640)) && bezel_offered(Platform::Nes, (960, 640)));
         assert!(!bezel_offered(Platform::Gb, (1240, 1080)));
+    }
+
+    #[test]
+    fn game_boys_start_at_original_ratio_on_narrow_screens() {
+        let rpc = (1240, 1080);
+        assert_eq!(default_mode(Platform::Gb, rpc), VideoMode::Aspect);
+        assert_eq!(default_mode(Platform::Gbc, rpc), VideoMode::Aspect);
+        assert_eq!(default_mode(Platform::Gba, rpc), VideoMode::Actual);
+        assert_eq!(default_mode(Platform::Gb, (960, 640)), VideoMode::Actual);
     }
 
     #[test]
