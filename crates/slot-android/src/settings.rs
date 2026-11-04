@@ -218,6 +218,8 @@ pub enum Shader {
     Off, Lcd3x, Grid, Dot, Simpletex,
     LcdGridV2, LcdGridV2Gba, ZfastLcd, Lcd1x, SimpletexGba,
     Agb001, Ags001, SharpBilinear,
+    // NES, Super Nintendo and Mega Drive (Siham 2026-11-04).
+    ZfastCrt, CrtGdvTrinitron, CrtGeomDeluxe, CrtPi,
 }
 impl Shader {
     // Exactly ten GBA RetroArch shaders plus Off, preserving the backward
@@ -231,6 +233,11 @@ impl Shader {
     pub const GB: [Self; 9] = [
         Self::Off, Self::Lcd3x, Self::Grid, Self::Simpletex,
         Self::ZfastLcd, Self::Lcd1x, Self::LcdGridV2, Self::SharpBilinear, Self::Dot,
+    ];
+    /// NES / Super Nintendo / Mega Drive: Off, then Siham's CRT list with
+    /// zfast-crt first (the default).
+    pub const HOME: [Self; 5] = [
+        Self::Off, Self::ZfastCrt, Self::CrtGdvTrinitron, Self::CrtGeomDeluxe, Self::CrtPi,
     ];
     pub fn effect(self) -> ScreenEffect {
         match self {
@@ -247,6 +254,10 @@ impl Shader {
             Self::Agb001 => ScreenEffect::Agb001,
             Self::Ags001 => ScreenEffect::Ags001,
             Self::SharpBilinear => ScreenEffect::SharpBilinear,
+            Self::ZfastCrt => ScreenEffect::ZfastCrt,
+            Self::CrtGdvTrinitron => ScreenEffect::CrtGdvMiniUltra,
+            Self::CrtGeomDeluxe => ScreenEffect::CrtGeomDeluxe,
+            Self::CrtPi => ScreenEffect::CrtPi,
         }
     }
     pub fn includes_gba_color(self) -> bool {
@@ -291,6 +302,8 @@ pub struct Settings {
     pub ff_speed: u8, pub ff_sound: bool, pub colour_correction: bool,
     pub rumble: bool, pub shader_gba: Shader, pub shader_gb: Shader,
     pub shader_gbc: Shader,
+    /// The home consoles' CRT shaders (new in 1.3.5: zfast-crt by default).
+    pub shader_nes: Shader, pub shader_snes: Shader, pub shader_md: Shader,
     // Retain legacy field for old RC1 Settings.json and old desktop Link code;
     // the three platform fields below are authoritative after migration.
     pub colour_correction_gba: bool,
@@ -348,6 +361,8 @@ impl Default for Settings {
         Self { ff_speed: 2, ff_sound: true, colour_correction: false,
             rumble: true, shader_gba: Shader::Off, shader_gb: Shader::Off,
             shader_gbc: Shader::Off,
+            shader_nes: Shader::ZfastCrt, shader_snes: Shader::ZfastCrt,
+            shader_md: Shader::ZfastCrt,
             colour_correction_gba: false, colour_correction_gb: false,
             colour_correction_gbc: false,
             bezel_gba: Bezel::None, bezel_gbc: Bezel::Default, bezel_gb: Bezel::Default,
@@ -455,6 +470,9 @@ impl Settings {
                 if !Shader::GBA.contains(&s.shader_gba) { s.shader_gba = Shader::Off; }
                 if !Shader::GB.contains(&s.shader_gb) { s.shader_gb = Shader::Off; }
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
+                for shader in [&mut s.shader_nes, &mut s.shader_snes, &mut s.shader_md] {
+                    if !Shader::HOME.contains(shader) { *shader = Shader::ZfastCrt; }
+                }
                 if s.gb_palette as usize >= GbPalette::COUNT { s.gb_palette = 1; }
                 if !REWIND_SPEEDS.contains(&s.rewind_speed) { s.rewind_speed = 2; }
                 if s.run_ahead_frames > 2 { s.run_ahead_frames = 0; }
@@ -500,9 +518,9 @@ impl Settings {
             slot_store::Platform::Gba=>self.shader_gba,
             slot_store::Platform::Gbc=>self.shader_gbc,
             slot_store::Platform::Gb=>self.shader_gb,
-            // The home consoles have no LCD to imitate: RetroArch's default,
-            // no shader (sharp-bilinear when the picture isn't integer).
-            _=>Shader::Off,
+            slot_store::Platform::Nes=>self.shader_nes,
+            slot_store::Platform::Snes=>self.shader_snes,
+            slot_store::Platform::Md=>self.shader_md,
         }
     }
     pub fn set_shader_for(&mut self,platform:slot_store::Platform,shader:Shader) {
@@ -510,7 +528,18 @@ impl Settings {
             slot_store::Platform::Gba=>self.shader_gba=shader,
             slot_store::Platform::Gbc=>self.shader_gbc=shader,
             slot_store::Platform::Gb=>self.shader_gb=shader,
-            _=>{}
+            slot_store::Platform::Nes=>self.shader_nes=shader,
+            slot_store::Platform::Snes=>self.shader_snes=shader,
+            slot_store::Platform::Md=>self.shader_md=shader,
+        }
+    }
+    /// The Shader row's key of a home console (47 NES, 48 SNES, 49 MD).
+    pub fn home_shader_key(platform:slot_store::Platform)->Option<usize> {
+        match platform {
+            slot_store::Platform::Nes=>Some(47),
+            slot_store::Platform::Snes=>Some(48),
+            slot_store::Platform::Md=>Some(49),
+            _=>None,
         }
     }
     pub fn colour_for(&self,platform:slot_store::Platform)->bool {
@@ -589,6 +618,9 @@ impl Settings {
             44 => self.step_bezel(slot_store::Platform::Nes,right),
             45 => self.step_bezel(slot_store::Platform::Snes,right),
             46 => self.step_bezel(slot_store::Platform::Md,right),
+            47 => self.shader_nes=self.shader_nes.step(&Shader::HOME,right),
+            48 => self.shader_snes=self.shader_snes.step(&Shader::HOME,right),
+            49 => self.shader_md=self.shader_md.step(&Shader::HOME,right),
             3 => step_palette(&mut self.gb_palettes, &mut self.gb_palette, right),
             4 => {
                 let at = SPEEDS.iter().position(|x| *x == self.ff_speed).unwrap_or(0);

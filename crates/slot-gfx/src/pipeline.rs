@@ -56,7 +56,7 @@ fn game_frag(effect: ScreenEffect) -> String {
         &format!("const float u_mode = {:.1};", effect.mode()))
 }
 
-const EFFECTS: usize = ScreenEffect::SharpBilinear as usize + 1;
+const EFFECTS: usize = ScreenEffect::CrtGeomDeluxe as usize + 1;
 
 /// How a home console frame (any size) fills the screen. The Game Boy
 /// family keeps its 240x160 canvas and the source/picture rects instead.
@@ -407,7 +407,7 @@ mod tests {
             assert!(!frag.contains("uniform float u_mode;"));
             assert!(frag.contains(&format!("const float u_mode = {:.1};", effect.mode())));
         }
-        assert_eq!(EFFECTS, 13);
+        assert_eq!(EFFECTS, 17);
     }
 
     #[test]

@@ -445,7 +445,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 124] = [
+const MENU_TEXT: [&str; 125] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -570,6 +570,7 @@ const MENU_TEXT: [&str; 124] = [
     "NES",                               // 121
     "Super Nintendo",                    // 122
     "Mega Drive",                        // 123
+    "Shader",                            // 124, NES / SNES / Mega Drive
 ];
 
 /// Settings > Systems, top to bottom.
@@ -1170,7 +1171,8 @@ impl Engine {
                                "GBA CLASSIC", "GBA", "GBA SP", "GBA ALT",
                                "NES", "NES SILVER",
                                "SNES", "SNES ALT", "SNES SILVER", "SNES SILVER ALT",
-                               "GENESIS CLASSIC", "GENESIS", "MEGA DRIVE"]
+                               "GENESIS CLASSIC", "GENESIS", "MEGA DRIVE",
+                               "zfast-crt", "GDV Trinitron", "CRT Geom Deluxe", "crt-pi"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -1683,7 +1685,10 @@ impl Engine {
         let time = self.born.elapsed().as_millis() as u64;
         match code {
             96 | 97 => {
-                let key = if self.current_cart_platform() == Platform::Gba { 0 } else { 1 };
+                let platform = self.current_cart_platform();
+                let key = if platform == Platform::Gba { 0 } else {
+                    crate::settings::Settings::home_shader_key(platform).unwrap_or(1)
+                };
                 if self.game.is_some() {
                     self.change_game_screen_or_gameplay(key,code == 96);
                 } else { self.change_setting(key,code == 96); }
@@ -1703,6 +1708,10 @@ impl Engine {
                      crate::settings::Shader::Agb001 => Toast::ShaderAgb001,
                      crate::settings::Shader::Ags001 => Toast::ShaderAgs001,
                      crate::settings::Shader::SharpBilinear => Toast::ShaderSharpBilinear,
+                     crate::settings::Shader::ZfastCrt => Toast::ShaderZfastCrt,
+                     crate::settings::Shader::CrtGdvTrinitron => Toast::ShaderCrtGdv,
+                     crate::settings::Shader::CrtGeomDeluxe => Toast::ShaderCrtGeomDeluxe,
+                     crate::settings::Shader::CrtPi => Toast::ShaderCrtPi,
                 }, time);
             }
             100 => {
@@ -3889,8 +3898,8 @@ impl Engine {
             // the cores correct only GBC/GBA colours (Siham, 2026-11-04).
             (Platform::Gb,false)=>&[89,36],
             (Platform::Gb,true)=>&[89,36,90],
-            (Platform::Nes|Platform::Snes|Platform::Md,false)=>&[120],
-            (Platform::Nes|Platform::Snes|Platform::Md,true)=>&[120,90],
+            (Platform::Nes|Platform::Snes|Platform::Md,false)=>&[120,124],
+            (Platform::Nes|Platform::Snes|Platform::Md,true)=>&[120,124,90],
         }
     }
     fn screen_keys(platform:Platform)-> &'static [usize] {
@@ -3902,10 +3911,12 @@ impl Engine {
             (Platform::Gbc,true)=>&[21,23,26],
             (Platform::Gb,false)=>&[1,3],
             (Platform::Gb,true)=>&[1,3,27],
-            (Platform::Nes|Platform::Snes|Platform::Md,false)=>&[SCREEN_SIZE_KEY],
-            (Platform::Nes,true)=>&[SCREEN_SIZE_KEY,44],
-            (Platform::Snes,true)=>&[SCREEN_SIZE_KEY,45],
-            (Platform::Md,true)=>&[SCREEN_SIZE_KEY,46],
+            (Platform::Nes,false)=>&[SCREEN_SIZE_KEY,47],
+            (Platform::Snes,false)=>&[SCREEN_SIZE_KEY,48],
+            (Platform::Md,false)=>&[SCREEN_SIZE_KEY,49],
+            (Platform::Nes,true)=>&[SCREEN_SIZE_KEY,47,44],
+            (Platform::Snes,true)=>&[SCREEN_SIZE_KEY,48,45],
+            (Platform::Md,true)=>&[SCREEN_SIZE_KEY,49,46],
         }
     }
     // Settings > Systems opens with the system's default core, then its
@@ -3926,9 +3937,9 @@ impl Engine {
             (Platform::Gb,true,_)=>&[118,89,36],
             (Platform::Gb,false,false)=>&[118,120,89,36],
             (Platform::Gb,false,true)=>&[118,120,89,36,90],
-            (Platform::Nes|Platform::Snes|Platform::Md,true,_)=>&[118],
-            (Platform::Nes|Platform::Snes|Platform::Md,false,false)=>&[118,120],
-            (Platform::Nes|Platform::Snes|Platform::Md,false,true)=>&[118,120,90],
+            (Platform::Nes|Platform::Snes|Platform::Md,true,_)=>&[118,124],
+            (Platform::Nes|Platform::Snes|Platform::Md,false,false)=>&[118,120,124],
+            (Platform::Nes|Platform::Snes|Platform::Md,false,true)=>&[118,120,124,90],
         }
     }
     fn system_keys(platform:Platform)-> &'static [usize] {
@@ -3945,15 +3956,15 @@ impl Engine {
             (Platform::Gb,true,_)=>&[31,1,3],
             (Platform::Gb,false,false)=>&[31,SCREEN_SIZE_KEY,1,3],
             (Platform::Gb,false,true)=>&[31,SCREEN_SIZE_KEY,1,3,27],
-            (Platform::Nes,true,_)=>&[41],
-            (Platform::Nes,false,false)=>&[41,SCREEN_SIZE_KEY],
-            (Platform::Nes,false,true)=>&[41,SCREEN_SIZE_KEY,44],
-            (Platform::Snes,true,_)=>&[42],
-            (Platform::Snes,false,false)=>&[42,SCREEN_SIZE_KEY],
-            (Platform::Snes,false,true)=>&[42,SCREEN_SIZE_KEY,45],
-            (Platform::Md,true,_)=>&[43],
-            (Platform::Md,false,false)=>&[43,SCREEN_SIZE_KEY],
-            (Platform::Md,false,true)=>&[43,SCREEN_SIZE_KEY,46],
+            (Platform::Nes,true,_)=>&[41,47],
+            (Platform::Nes,false,false)=>&[41,SCREEN_SIZE_KEY,47],
+            (Platform::Nes,false,true)=>&[41,SCREEN_SIZE_KEY,47,44],
+            (Platform::Snes,true,_)=>&[42,48],
+            (Platform::Snes,false,false)=>&[42,SCREEN_SIZE_KEY,48],
+            (Platform::Snes,false,true)=>&[42,SCREEN_SIZE_KEY,48,45],
+            (Platform::Md,true,_)=>&[43,49],
+            (Platform::Md,false,false)=>&[43,SCREEN_SIZE_KEY,49],
+            (Platform::Md,false,true)=>&[43,SCREEN_SIZE_KEY,49,46],
         }
     }
     fn core_key_platform(key:usize)->Option<Platform> {
@@ -4135,7 +4146,7 @@ impl Engine {
         let relaunch=self.game.as_ref().is_some_and(GameSession::requires_relaunch);
         // Shader and color-correction are display-only and safe while linked;
         // never change input, save states, emulation speed or rewind in Link.
-        if relaunch || (linked && !matches!(key,0|1|2|21|22|23|24|25|26|27|44|45|46)) {
+        if relaunch || (linked && !matches!(key,0|1|2|21|22|23|24|25|26|27|44|45|46|47|48|49)) {
             set_message("Not available during Multiplayer.".into());
             return;
         }
@@ -4165,7 +4176,7 @@ impl Engine {
         self.game_emulation=Some(profile);
         if matches!(key,26|27) {self.tell_hidden_bezel();}
         let view=self.game_settings();
-        if matches!(key,0|1|21) {
+        if matches!(key,0|1|21|47|48|49) {
             self.gpu.set_screen_effect(self.game_effect());
         }
         // A shader change can switch to/from a preset with its own GBA Color.
@@ -4678,6 +4689,8 @@ impl Engine {
              Shader::ZfastLcd => 29, Shader::Lcd1x => 30,
              Shader::SimpletexGba => 31, Shader::Agb001 => 32,
              Shader::Ags001 => 33, Shader::SharpBilinear => 34,
+             Shader::ZfastCrt => 90, Shader::CrtGdvTrinitron => 91,
+             Shader::CrtGeomDeluxe => 92, Shader::CrtPi => 93,
         };
         match key {
             0 => shader(scoped.shader_gba),
@@ -4721,6 +4734,9 @@ impl Engine {
             19 => if self.settings.show_recents {4}else{5},
             20 => if self.settings.show_titles {4}else{5},
             21 => shader(scoped.shader_gbc),
+            47 => shader(scoped.shader_nes),
+            48 => shader(scoped.shader_snes),
+            49 => shader(scoped.shader_md),
             22 => if scoped.shader_gba.includes_gba_color() { 42 }
                 else if scoped.colour_correction_gba {4}else{5},
             23 => if scoped.colour_correction_gbc {4}else{5},

@@ -31,6 +31,10 @@ pub enum Toast {
     ShaderAgb001,
     ShaderAgs001,
     ShaderSharpBilinear,
+    ShaderZfastCrt,
+    ShaderCrtGdv,
+    ShaderCrtGeomDeluxe,
+    ShaderCrtPi,
     ScreenInteger,
     ScreenRatio,
     ScreenStretch,
@@ -50,7 +54,7 @@ const SUN_TEXT: [&str; 11] = [
 ];
 
 impl Toast {
-    const FIXED: [Toast; 30] = [
+    const FIXED: [Toast; 34] = [
         Toast::StateSaved,
         Toast::StateLoaded,
         Toast::NeedsGpsp,
@@ -73,6 +77,10 @@ impl Toast {
         Toast::ShaderAgb001,
         Toast::ShaderAgs001,
         Toast::ShaderSharpBilinear,
+        Toast::ShaderZfastCrt,
+        Toast::ShaderCrtGdv,
+        Toast::ShaderCrtGeomDeluxe,
+        Toast::ShaderCrtPi,
         Toast::ScreenInteger,
         Toast::ScreenRatio,
         Toast::ScreenStretch,
@@ -124,6 +132,10 @@ impl Toast {
             Toast::ShaderAgb001 => "Shader: AGB-001",
             Toast::ShaderAgs001 => "Shader: AGS-001",
             Toast::ShaderSharpBilinear => "Shader: Sharp Bilinear",
+            Toast::ShaderZfastCrt => "Shader: zfast-crt",
+            Toast::ShaderCrtGdv => "Shader: GDV Trinitron",
+            Toast::ShaderCrtGeomDeluxe => "Shader: CRT Geom Deluxe",
+            Toast::ShaderCrtPi => "Shader: crt-pi",
             Toast::ScreenInteger => "Screen: Integer",
             Toast::ScreenRatio => "Screen: Original Ratio",
             Toast::ScreenStretch => "Screen: Stretch",

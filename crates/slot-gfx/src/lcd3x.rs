@@ -24,6 +24,10 @@ pub enum ScreenEffect {
     Agb001,
     Ags001,
     SharpBilinear,
+    ZfastCrt,
+    CrtPi,
+    CrtGdvMiniUltra,
+    CrtGeomDeluxe,
 }
 
 impl ScreenEffect {

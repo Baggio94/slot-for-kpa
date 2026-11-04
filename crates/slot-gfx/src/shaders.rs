@@ -156,6 +156,151 @@ vec3 nearest_bilinear(vec2 uv) {
     vec3 d=texture2D(u_game,pos+stepuv).rgb;
     return mix(mix(a,b,t.x),mix(c,d,t.x),t.y);
 }
+/* CRT presets for the home consoles (libretro glsl/slang-shaders, GPL; see
+   licenses/shaders.txt). One pass each: slot. draws the game in a single
+   pass, so multi-pass parts are folded in or approximated as noted. */
+vec2 crt_out_px() {
+    // Screen pixels per source texel, per axis.
+    return (u_rect.zw*u_fbo)/(u_uv.zw*u_src);
+}
+float crtpi_weight(float dist) {
+    return max(1.0-dist*dist*6.0, 0.12);
+}
+vec3 gdv_mask(vec2 pos) {
+    // Mask 11 (the Trinitron preset's), maskDark 0.0.
+    pos = floor(pos);
+    return fract(pos.x/3.0) > 0.333 ? vec3(1.0) : vec3(0.0);
+}
+float gdv_sw(float x, float l) {
+    return exp2(-10.0*pow(max(x,0.0), mix(1.5,2.0,l)));
+}
+vec3 gdv_tap(vec2 at) {
+    return texture2D(u_game, at).rgb;
+}
+vec3 gdv_glow(vec2 tc) {
+    // Upstream squares nothing here (its "c*c;" lines are no-ops).
+    vec2 b = vec2(1.0)/u_src;
+    vec3 c11 = gdv_tap(tc);
+    vec3 ring1 = gdv_tap(tc+vec2(-b.x,0.0)) + gdv_tap(tc+vec2(b.x,0.0))
+        + gdv_tap(tc+vec2(-b.x,-b.y)) + gdv_tap(tc+vec2(b.x,b.y))
+        + gdv_tap(tc+vec2(-b.x,b.y)) + gdv_tap(tc+vec2(b.x,-b.y))
+        + gdv_tap(tc+vec2(0.0,-b.y)) + gdv_tap(tc+vec2(0.0,b.y));
+    vec3 ring2 = gdv_tap(tc+vec2(-2.0*b.x,0.0)) + gdv_tap(tc+vec2(2.0*b.x,0.0))
+        + gdv_tap(tc+vec2(-2.0*b.x,-b.y)) + gdv_tap(tc+vec2(-b.x,-2.0*b.y))
+        + gdv_tap(tc+vec2(b.x,2.0*b.y)) + gdv_tap(tc+vec2(2.0*b.x,b.y))
+        + gdv_tap(tc+vec2(-2.0*b.x,b.y)) + gdv_tap(tc+vec2(-b.x,2.0*b.y))
+        + gdv_tap(tc+vec2(b.x,-2.0*b.y)) + gdv_tap(tc+vec2(2.0*b.x,-b.y))
+        + gdv_tap(tc+vec2(0.0,-2.0*b.y)) + gdv_tap(tc+vec2(0.0,2.0*b.y));
+    return (3.0*c11 + 2.5*ring1 + 1.5*ring2)/45.0*0.35;
+}
+vec3 gdv_saturation(vec3 c) {
+    float l = length(c)*0.5775;
+    vec3 w = vec3(0.3,0.6,0.1);
+    if (l < 0.5) w = w*w + w*w;
+    return mix(vec3(dot(c,w)), c, 1.2);
+}
+vec3 crt_gdv_mini_ultra(vec2 uv) {
+    // guest(r) + Dr. Venom crt-gdv-mini-ultra, Trinitron preset defaults,
+    // CurvatureX/Y 0 (Siham 2026-11-04).
+    vec2 ps = vec2(1.0)/u_src;
+    vec2 at = uv*u_src;
+    vec2 fp = fract(at);
+    vec2 pc = floor(at)*ps + 0.5*ps;
+    vec3 ul = gdv_tap(pc);
+    vec3 ur = gdv_tap(pc+vec2(ps.x,0.0));
+    vec3 dl = gdv_tap(pc+vec2(0.0,ps.y));
+    vec3 dr = gdv_tap(pc+ps);
+    float lx = pow(fp.x, 2.5);
+    float rx = pow(1.0-fp.x, 2.5);
+    vec3 c1 = (ur*lx + ul*rx)/(lx+rx);
+    vec3 c2 = (dr*lx + dl*rx)/(lx+rx);
+    float l1 = dot(c1, vec3(0.3,0.6,0.1));
+    float l2 = dot(c2, vec3(0.3,0.6,0.1));
+    c1 = 2.0*pow(c1,vec3(2.8)) - pow(c1,vec3(3.6));
+    c2 = 2.0*pow(c2,vec3(2.8)) - pow(c2,vec3(3.6));
+    vec3 mask = gdv_mask(gl_FragCoord.xy);
+    c1 *= mix(mask, vec3(1.0), l1*0.4);
+    c2 *= mix(mask, vec3(1.0), l2*0.4);
+    vec3 c = c1*gdv_sw(fp.y,l1) + c2*gdv_sw(1.0-fp.y,l2);
+    if (u_src.y >= 400.0) c = (c1+c2)/2.0;
+    c = min(c, 1.0);
+    float lum = dot(c, vec3(0.3,0.6,0.1));
+    c = pow(max(c,vec3(0.0)), vec3(1.0/2.2));
+    c += gdv_glow(pc);
+    c *= mix(1.0, 1.2, lum);
+    c = gdv_saturation(c);
+    vec2 v = uv*(1.0-uv);
+    c *= min(pow(max(v.x*v.y*45.0,0.0), 0.15), 1.0);
+    return c;
+}
+vec4 geom_tex(vec2 at) {
+    vec2 under = step(0.0,at)*step(0.0,vec2(1.0)-at);
+    return pow(texture2D(u_game,at), vec4(2.4))*(under.x*under.y);
+}
+vec4 geom_weights(float dist, vec4 col) {
+    vec4 wid = 2.0 + 2.0*pow(col, vec4(4.0));
+    vec4 w = vec4(dist/0.3);
+    return 1.4*exp(-pow(w*inversesqrt(0.5*wid), wid))/(0.6+0.2*wid);
+}
+vec3 geom_blur(vec2 at) {
+    // Halation source: upstream blurs the frame in two extra passes; here a
+    // gaussian of the same width from four bilinear taps and the centre.
+    float wid = 2.0*u_src.x/320.0;
+    vec2 o = vec2(0.6*wid)/u_src;
+    vec3 b = 0.2*texture2D(u_game, at).rgb
+        + 0.2*nearest_bilinear(at+vec2(-o.x,-o.y))
+        + 0.2*nearest_bilinear(at+vec2(o.x,-o.y))
+        + 0.2*nearest_bilinear(at+vec2(-o.x,o.y))
+        + 0.2*nearest_bilinear(at+vec2(o.x,o.y));
+    vec3 col = pow(b, vec3(2.4));
+    vec2 c = min(at, vec2(1.0)-at)*vec2(1.0,0.75)/(2.0/320.0);
+    vec2 e2c = exp(-c*c);
+    c = (step(0.0,c)-vec2(0.5))*sqrt(vec2(1.0)-e2c)*(vec2(1.0)+vec2(0.1749)*e2c)+vec2(0.5);
+    return col*c.x*c.y;
+}
+vec3 crt_geom_deluxe(vec2 xy) {
+    // cgwg/DOLLS crt-geom-deluxe, curvature 0 (Siham 2026-11-04). Phosphor
+    // persistence and raster bloom (two passes and a mipmap) are left out.
+    vec2 cxy = min(xy, vec2(1.0)-xy)*vec2(1.0,0.75);
+    cxy = vec2(0.01) - min(cxy, vec2(0.01));
+    float cval = clamp((0.01-length(cxy))*1000.0, 0.0, 1.0);
+    vec2 il = vec2(1.0, clamp(floor(u_src.y/200.0), 1.0, 2.0));
+    vec2 one = il/u_src;
+    vec2 rs = (xy*u_src - vec2(0.5))/il;
+    float over = (1.0/crt_out_px().y)/il.y;
+    vec2 ur = fract(rs);
+    vec2 at = (floor(rs)*il + vec2(0.5))/u_src;
+    vec4 k = 3.141592653589*vec4(1.0+ur.x, ur.x, 1.0-ur.x, 2.0-ur.x);
+    k = max(abs(k), 1e-5);
+    k = 2.0*sin(k)*sin(k/2.0)/(k*k);
+    k /= dot(k, vec4(1.0));
+    vec4 col = clamp(geom_tex(at+vec2(-one.x,0.0))*k.x + geom_tex(at)*k.y
+        + geom_tex(at+vec2(one.x,0.0))*k.z + geom_tex(at+vec2(2.0*one.x,0.0))*k.w, 0.0, 1.0);
+    vec4 col2 = clamp(geom_tex(at+vec2(-one.x,one.y))*k.x + geom_tex(at+vec2(0.0,one.y))*k.y
+        + geom_tex(at+one)*k.z + geom_tex(at+vec2(2.0*one.x,one.y))*k.w, 0.0, 1.0);
+    // OVERSAMPLE: three samples a third of a screen row apart.
+    vec4 w = geom_weights(ur.y, col);
+    vec4 w2 = geom_weights(1.0-ur.y, col2);
+    float y = ur.y + over/3.0;
+    w = (w + geom_weights(y, col))/3.0;
+    w2 = (w2 + geom_weights(abs(1.0-y), col2))/3.0;
+    y -= 2.0*over/3.0;
+    w += geom_weights(abs(y), col)/3.0;
+    w2 += geom_weights(abs(1.0-y), col2)/3.0;
+    vec3 m = (col*w + col2*w2).rgb;
+    vec3 blur = geom_blur(xy);
+    m = mix(m, blur, 0.1)*cval;
+    m = mix(m, blur, 0.1)*cval;
+    // Aperture mask 1 (magenta/green), strength 0.4, brightboost 0.4.
+    vec3 mask = mod(floor(gl_FragCoord.x), 2.0) < 0.5 ? vec3(1.0,0.0,1.0) : vec3(0.0,1.0,0.0);
+    vec2 ts = crt_out_px();
+    float fbright = 127.5/(ts.x*ts.y);
+    float avg = mix(1.0-0.4*(1.0-0.4), 1.0, fbright);
+    vec3 clow = vec3(0.6)*m + vec3(0.16)*m*m;
+    float ifb = 1.0/fbright;
+    vec3 chi = vec3(ifb*avg)*m - vec3(ifb-1.0)*clow;
+    return pow(max(mix(clow, chi, mask), vec3(0.0)), vec3(1.0/2.2));
+}
 void main() {
     vec2 uv = u_uv.xy + v_uv * u_uv.zw;
     vec2 f = fract(uv * u_src);
@@ -166,6 +311,37 @@ void main() {
         // Outside the picture (a home console's side bands at Integer or
         // Original Ratio): black, as RetroArch, never the edge texel smeared.
         c = vec3(0.0);
+    } else if (u_mode > 15.5) {
+        c = crt_geom_deluxe(uv);
+    } else if (u_mode > 14.5) {
+        c = crt_gdv_mini_ultra(uv);
+    } else if (u_mode > 13.5) {
+        // davej crt-pi defaults: scanlines, multisample, gamma, mask 1.
+        vec2 tp = uv*u_src;
+        float ty = floor(tp.y)+0.5;
+        float dy = tp.y-ty;
+        float fw = (1.0/crt_out_px().y)/3.0;
+        float sw = (crtpi_weight(dy)+crtpi_weight(dy-fw)+crtpi_weight(dy+fw))*0.3333333;
+        float sy = sign(dy);
+        dy = dy*dy; dy = dy*dy; dy *= 8.0; dy /= u_src.y; dy *= sy;
+        vec3 col = nearest_bilinear(vec2(uv.x, ty/u_src.y + dy));
+        col = pow(col, vec3(2.4))*sw*1.5;
+        col = pow(col, vec3(1.0/2.2));
+        c = col*(fract(gl_FragCoord.x*0.5) < 0.5 ? vec3(0.7,1.0,0.7) : vec3(1.0,0.7,1.0));
+    } else if (u_mode > 12.5) {
+        // SoltanGris42 zfast_crt_standard, RetroArch's parameter defaults.
+        vec2 p = uv*u_src;
+        vec2 i = floor(p)+0.5;
+        vec2 ff = p-i;
+        p = (i+4.0*ff*ff*ff)/u_src;
+        p.x = mix(p.x, uv.x, 0.30);
+        float yy1 = ff.y*ff.y;
+        float yy2 = yy1*yy1;
+        float mask = 1.0 - (fract(floor(gl_FragCoord.x)*-0.5) < 0.5 ? 0.25 : 0.0);
+        vec3 col = nearest_bilinear(p);
+        float w1 = 1.25 - 6.0*(yy1-2.05*yy2);
+        float w2 = 1.0 - 8.0*(yy2-2.8*yy2*yy1);
+        c = col*mix(w1*mask, w2, dot(col, vec3(0.3333*0.8)));
     } else if (u_mode > 11.5) {
         // Themaister sharp-bilinear: automatic prescale from the shown rows.
         vec2 texel=uv*u_src;
@@ -188,9 +364,12 @@ void main() {
         c=(pow(c*0.8,vec3(1.8))+vec3(0.16))*mgba_mask(uv)*
             (py>=3.0 ? 0.8 : 1.0);
     } else if (u_mode > 8.5) {
-        // jdgleaver simpletex_lcd+gba-color: official grid parameters,
-        // using Slot's existing licensed paper texture crop.
+        // jdgleaver simpletex_lcd+gba-color, using Slot's existing
+        // licensed paper texture crop. Russ (RetroGameCorps) settings,
+        // Siham 2026-11-04: Background Intensity 0.80, Darken Colours
+        // 0.25, Darken Grid 0.15, Grid Intensity 0.65.
         c=gba_simpletex_color(c);
+        c=pow(c,vec3(1.25));
         vec2 dd=abs(f-vec2(0.5));
         float d2=max(dd.x,dd.y); d2*=d2;
         float d4=d2*d2;
@@ -198,10 +377,10 @@ void main() {
         weight=weight*(weight+(1.0-weight)*0.65)*0.65;
         float lum=dot(c,luma_coeff);
         weight*=lum+(1.0-lum)*0.4;
-        c=mix(c,vec3(1.0),weight);
+        c=mix(c,vec3(0.85),weight);
         vec3 paper=texture2D(u_paper,
             (floor(gl_FragCoord.xy)+vec2(0.5))/u_paper_size).rgb;
-        c=mix(c,paper*c,dot(c,luma_coeff));
+        c=mix(c,paper*c,dot(c,luma_coeff)*0.80);
     } else if (u_mode > 7.5) {
         // jdgleaver LCD1x: proper scanline alignment, no RGB separation.
         vec2 angle=6.283185307*(uv*u_src-vec2(0.25));
@@ -222,7 +401,10 @@ void main() {
     } else if (u_mode > 4.5) {
         c=lcd_grid_v2(uv,false);
     } else if (u_mode > 3.5) {
-        c = pow(c, vec3(1.05));
+        // simpletex_lcd with Russ (RetroGameCorps) settings, Siham
+        // 2026-11-04: Background Intensity 0.80, Darken Colours 0.25,
+        // Darken Grid 0.15, Grid Intensity 0.65.
+        c = pow(c, vec3(1.25));
         vec2 d = abs(f - 0.5);
         float x2 = max(d.x, d.y);
         x2 = x2 * x2;
@@ -231,9 +413,9 @@ void main() {
         w = w * (w + (1.0 - w) * 0.65) * 0.65;
         float luma = dot(c, luma_coeff);
         w = w * luma;
-        c = mix(c, vec3(1.0), w);
+        c = mix(c, vec3(0.85), w);
         vec3 bg = texture2D(u_paper, (floor(gl_FragCoord.xy) + 0.5) / u_paper_size).rgb * c;
-        c = mix(c, bg, dot(c, luma_coeff));
+        c = mix(c, bg, dot(c, luma_coeff) * 0.80);
     } else if (u_mode > 2.5) {
         float bloom = mix(1.05, 0.95, dot(c, vec3(0.30, 0.59, 0.11)));
         float mid = dot_weight(f, vec2(0.0), bloom);
