@@ -156,6 +156,27 @@ vec3 nearest_bilinear(vec2 uv) {
     vec3 d=texture2D(u_game,pos+stepuv).rgb;
     return mix(mix(a,b,t.x),mix(c,d,t.x),t.y);
 }
+/* Pixel AA (after fishku's pixel_aa / shimmerless): at a non-integer
+   scale every game pixel keeps one width and only the screen pixel that
+   straddles two of them blends them, by area, in linear light. At a whole
+   scale it is exactly the nearest texel. No pass and no name of its own:
+   the LCD shaders read the game through it (Siham 2026-11-04). */
+vec3 aa_tap(vec2 at) {
+    return pow(texture2D(u_game, at).rgb, vec3(2.2));
+}
+vec3 pixel_aa(vec2 uv) {
+    vec2 s = (u_rect.zw*u_fbo)/(u_uv.zw*u_src);
+    vec2 texel = uv*u_src - vec2(0.5);
+    vec2 base = floor(texel);
+    vec2 t = clamp((fract(texel) - vec2(0.5))*s + vec2(0.5), 0.0, 1.0);
+    vec2 step1 = vec2(1.0)/u_src;
+    vec2 at = (base + vec2(0.5))*step1;
+    vec3 a = aa_tap(at);
+    vec3 b = aa_tap(at + vec2(step1.x, 0.0));
+    vec3 c = aa_tap(at + vec2(0.0, step1.y));
+    vec3 d = aa_tap(at + step1);
+    return pow(mix(mix(a, b, t.x), mix(c, d, t.x), t.y), vec3(1.0/2.2));
+}
 /* CRT presets for the home consoles (libretro glsl/slang-shaders, GPL; see
    licenses/shaders.txt). One pass each: slot. draws the game in a single
    pass, so multi-pass parts are folded in or approximated as noted. */
@@ -304,7 +325,15 @@ vec3 crt_geom_deluxe(vec2 xy) {
 void main() {
     vec2 uv = u_uv.xy + v_uv * u_uv.zw;
     vec2 f = fract(uv * u_src);
-    vec3 c = texture2D(u_game, uv).rgb;
+    vec3 c;
+    // The LCD shaders (LCD3x, Dot, Simpletex, zfast LCD, LCD1x, Simpletex
+    // + GBA, AGB-001) read the game through Pixel AA; the others as before.
+    if (u_mode > 0.5 && u_mode < 10.5 && !(u_mode > 1.5 && u_mode < 2.5)
+        && !(u_mode > 4.5 && u_mode < 6.5)) {
+        c = pixel_aa(uv);
+    } else {
+        c = texture2D(u_game, uv).rgb;
+    }
     bool inside = all(greaterThanEqual(uv, u_pic.xy)) && all(lessThan(uv, u_pic.zw));
 
     if (!inside) {
