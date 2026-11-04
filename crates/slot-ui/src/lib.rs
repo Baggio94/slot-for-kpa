@@ -97,7 +97,7 @@ pub use slot_chrome::{
     ALERT_PX, LIP_H, MOUTH_H, MOUTH_W,
 };
 pub use sticker::{
-    draw_sticker, head_rows, sticker_face, sticker_face_konkr, sticker_lines, StickerFields, COPYRIGHT, CREDITS, DC,
+    draw_sticker, head_rows, sticker_face, sticker_face_handheld, sticker_face_konkr, sticker_lines, StickerFields, COPYRIGHT, CREDITS, DC,
     HOME, ORIGIN, STICKER_H, STICKER_W,
 };
 pub use toast::{toast_box, toast_face, toast_rect, Toast};

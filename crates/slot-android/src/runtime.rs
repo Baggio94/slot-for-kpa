@@ -250,6 +250,9 @@ static CAROUSEL_QUIET: AtomicBool = AtomicBool::new(false);
 // Android reports the exact device model before the first EGL surface is made.
 // Used only to choose initial settings when no stored settings file exists.
 static RPC_DEFAULT_RESPONSIVE: AtomicBool = AtomicBool::new(false);
+// How the handheld names itself (Kotlin: model, with its maker before a short
+// code such as RG405M) and its Android model, for the About sticker.
+pub(crate) static DEVICE_NAME: Mutex<(String, String)> = Mutex::new((String::new(), String::new()));
 // The GLES owner reports a stable selection, never dereferencing SAF URIs itself.
 static WARM_ROM_URI: Mutex<Option<String>> = Mutex::new(None);
 // Read-only GL-owned library swap gate for Kotlin's background scanner.
@@ -3798,9 +3801,17 @@ impl Engine {
 
     fn prepare_about(&mut self) {
         if self.about_texture.is_none() {
-            let sticker = sticker_face_konkr(&StickerFields {
+            let fields = StickerFields {
                 battery: self.battery_percent, serial: "0000130", dirty_digit: '0',
-            });
+            };
+            // The KONKR keeps its own logos; every other handheld gets
+            // slot.'s wordmark and its own name (Siham, 2026-11-04).
+            let sticker = if panel_size() == (960, 640) {
+                sticker_face_konkr(&fields)
+            } else {
+                let (name, model) = DEVICE_NAME.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                slot_ui::sticker_face_handheld(&fields, &name, &model)
+            };
             self.about_texture = Some(self.gpu.create_face(&sticker));
         }
     }
@@ -5146,10 +5157,18 @@ impl Engine {
                     x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32,
                     colour: opening(),
                 });
+                // Narrower than the 720 of the KONKR's 3:2 (4:3 640, Retroid
+                // Pocket Classic 552, 1:1 480): the sticker shrinks to the
+                // width and the rows keep their right margin. It once went
+                // off-screen there: (out_w - STICKER_W) wrapped as a u32.
+                let width = out_w() as f32;
+                let narrower = (width - 720.0).min(0.0);
                 if let Some(tex) = self.about_texture {
+                    let scale = ((width - 24.0) / STICKER_W as f32).min(1.0);
+                    let (w, h) = (STICKER_W as f32 * scale, STICKER_H as f32 * scale);
                     out.push(Draw::Tex {
-                        x: (out_w() - STICKER_W) as f32 / 2.0,
-                        y: 30.0, w: STICKER_W as f32, h: STICKER_H as f32,
+                        x: (width - w) / 2.0,
+                        y: 30.0, w, h,
                         tex, alpha: 1.0,
                     });
                 }
@@ -5165,10 +5184,10 @@ impl Engine {
                     colour: { let mut c = edge(); c[3] *= fade; c },
                 });
                 self.text_fit(if about_primary_action(self.update_status) == 21 {110} else {95},
-                    37.0, top + 8.0, 590.0, fade, out);
-                self.text_fit(98, 37.0, top + QUICK_PITCH + 8.0, 475.0, fade, out);
+                    37.0, top + 8.0, 590.0 + narrower, fade, out);
+                self.text_fit(98, 37.0, top + QUICK_PITCH + 8.0, 475.0 + narrower, fade, out);
                 self.text_fit(if self.update_auto {105}else{104},
-                    592.0, top + QUICK_PITCH + 8.0, 95.0, fade, out);
+                    592.0 + narrower, top + QUICK_PITCH + 8.0, 95.0, fade, out);
                 // Equal first-pixel baselines: the third status line begins
                 // exactly one QUICK_PITCH after the second line, rather than
                 // being vertically centered using a different offset.
@@ -5180,20 +5199,20 @@ impl Engine {
                         (w.max(1) as f32, h as f32)
                     };
                     let status_center = status_top +
-                        label_h * (0.79f32.min(420.0 / label_w)) / 2.0;
+                        label_h * (0.79f32.min((420.0 + narrower) / label_w)) / 2.0;
                     let right = self.draw_update_value(self.update_version_face,
                         37.0, status_center, 0.90 * fade, out);
                     self.draw_update_status_centered(115, right + 17.0,
-                        status_center, 600.0 - right, 0.78 * fade, out);
+                        status_center, 600.0 + narrower - right, 0.78 * fade, out);
                 } else {
                     let status = match self.update_status {
                         2 => 112, 3 => 114, 4 => 113, _ => 111,
                     };
                     let (_, w, h) = self.menu_textures[status];
                     let status_center = status_top +
-                        h as f32 * (0.79f32.min(610.0 / w.max(1) as f32)) / 2.0;
+                        h as f32 * (0.79f32.min((610.0 + narrower) / w.max(1) as f32)) / 2.0;
                     self.draw_update_status_centered(status, 37.0,
-                        status_center, 610.0, 0.78 * fade, out);
+                        status_center, 610.0 + narrower, 0.78 * fade, out);
                 }
                 for (tex,w,x) in centred_hints(&self.menu_hints, LEGEND_GAP) {
                     out.push(Draw::Tex {
