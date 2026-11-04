@@ -66,6 +66,8 @@ mod link_compat;
 mod linked_storage;
 // Single-threaded libretro link session adapter: core never runs from a socket worker.
 mod link_play;
+// Desync check and resync for an mGBA pair in Cable lockstep.
+mod link_sync;
 // Compile Slot's exact mechanical plug and wireless adapter renderer from
 // upstream instead of recreating SVGs, timings, easing or positions.
 mod app;
