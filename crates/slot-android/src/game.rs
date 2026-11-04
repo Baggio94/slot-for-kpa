@@ -565,7 +565,9 @@ impl GameSession {
         core.set_native_video(!platform.handheld());
         // Exact upstream Slot libretro options for colour and Game Boy palettes.
         // Read only the 336-byte header: never read the entire cached ROM.
-        let dmg_only = platform != Platform::Gba && which != Core::Gpsp
+        // Game Boy carts only: byte 0x143 of a NES, SNES or Mega Drive ROM
+        // is game data and once let SELECT+L2/R2 switch "palettes" there.
+        let dmg_only = matches!(platform, Platform::Gb | Platform::Gbc) && which != Core::Gpsp
             && std::fs::File::open(rom).and_then(|mut file| {
                 let mut header = [0u8; 0x150];
                 file.read_exact(&mut header)?;
@@ -632,6 +634,9 @@ impl GameSession {
                     Some(name) => {
                         core.set_option("gambatte_gb_colorization", "internal");
                         core.set_option("gambatte_gb_internal_palette", name);
+                        if let Some(twb64) = gb_palette.and_then(crate::gb_core_switch::gambatte_twb64) {
+                            core.set_option("gambatte_gb_palette_twb64_1", twb64);
+                        }
                     }
                     None => core.set_option("gambatte_gb_colorization", "GBC"),
                 }
@@ -1571,6 +1576,9 @@ impl GameSession {
             match crate::gb_core_switch::gambatte_palette(name).filter(|_| enabled) {
                 Some(palette) => {
                     self.set_core_option("gambatte_gb_colorization", "internal");
+                    if let Some(twb64) = crate::gb_core_switch::gambatte_twb64(name) {
+                        self.set_core_option("gambatte_gb_palette_twb64_1", twb64);
+                    }
                     self.set_core_option("gambatte_gb_internal_palette", palette);
                 }
                 None => self.set_core_option("gambatte_gb_colorization", "GBC"),

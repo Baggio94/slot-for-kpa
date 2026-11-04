@@ -20,7 +20,7 @@ pub use core::{
     choose_core, core_for, core_for_platform, default_core, read_selected_cores, write_default_core,
     write_selected_core, Core, DEFAULT_CORE_FILE, SELECTED_CORE_FILE,
 };
-pub use gb_palette::GbPalette;
+pub use gb_palette::{GbPalette, TWB64_GAME_COM};
 pub use gba::{header_clean, header_code, header_title};
 pub use platform::Platform;
 pub use ring::{StateEntry, StateRing, RING_MAX};

@@ -202,8 +202,11 @@ fn cycle_rewind_setting(enabled: &mut bool, speed: &mut u8, right: bool) {
     if *enabled { *speed = REWIND_SPEEDS[next-1]; }
 }
 
-/// Index of "GBC Green" in slot_store's palette list.
+/// Index of "GBC Green" in slot_store's palette list (the default before
+/// TWB64 Game.com).
 const GB_PALETTE_GBC_GREEN: u8 = 13;
+/// Index of "TWB64 028 Game.com Ver.", the Game Boy default since 1.3.5.
+const GB_PALETTE_TWB64_GAME_COM: u8 = 48;
 
 /// Original Slot 1.8.1 (#123): 0 means Fast Forward Off.
 pub const SPEEDS: [u8; 5] = [0, 2, 3, 4, 6];
@@ -334,6 +337,9 @@ pub struct Settings {
     /// Set once the home consoles' 3:2 default (no overlay) was applied.
     #[serde(default)]
     pub home_bezel_three_two: bool,
+    /// One-time move of the old GBC Green default to TWB64 Game.com.
+    #[serde(default)]
+    pub gb_palette_twb64: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -355,7 +361,8 @@ impl Default for Settings {
             time_format: TimeFormat::TwentyFourHour,
             status_opt_in_v2: true, wallpaper: WallpaperPick::Default,
             wallpaper_tint: WallpaperTint::Off, appearance: Appearance::Dark,
-            show_recents: false, show_titles: false, home_bezel_three_two: false }
+            show_recents: false, show_titles: false, home_bezel_three_two: false,
+            gb_palette_twb64: false }
     }
 }
 impl Settings {
@@ -373,7 +380,7 @@ impl Settings {
             // Shown only where the GBA picture leaves room (not the KONKR).
             bezel_gba: Bezel::GbaClassic,
             gb_palettes: true,
-            gb_palette: GB_PALETTE_GBC_GREEN,
+            gb_palette: GB_PALETTE_TWB64_GAME_COM,
             ff_speed: 3,
             rewind_speed: 3,
             turbo: false,
@@ -382,6 +389,7 @@ impl Settings {
             responsive_loop: false,
             run_ahead_frames: 0,
             home_bezel_three_two: true,
+            gb_palette_twb64: true,
             ..Self::default()
         }
     }
@@ -447,7 +455,7 @@ impl Settings {
                 if !Shader::GBA.contains(&s.shader_gba) { s.shader_gba = Shader::Off; }
                 if !Shader::GB.contains(&s.shader_gb) { s.shader_gb = Shader::Off; }
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
-                if s.gb_palette >= 48 { s.gb_palette = 1; }
+                if s.gb_palette as usize >= GbPalette::COUNT { s.gb_palette = 1; }
                 if !REWIND_SPEEDS.contains(&s.rewind_speed) { s.rewind_speed = 2; }
                 if s.run_ahead_frames > 2 { s.run_ahead_frames = 0; }
                 // Before this version all three toggles defaulted ON.
@@ -465,6 +473,14 @@ impl Settings {
                 if !s.home_bezel_three_two {
                     if device.three_two { s.home_bezels_off(); }
                     s.home_bezel_three_two = true;
+                }
+                // Once: Game Boy carts that still wore the old default
+                // (GBC Green) move to the new one, TWB64 Game.com.
+                if !s.gb_palette_twb64 {
+                    if s.gb_palette == GB_PALETTE_GBC_GREEN {
+                        s.gb_palette = GB_PALETTE_TWB64_GAME_COM;
+                    }
+                    s.gb_palette_twb64 = true;
                 }
                 s
             }).unwrap_or_else(|| Self::first_install_defaults_for_device(device))
@@ -905,7 +921,7 @@ mod tests {
         assert_eq!((s.bezel_nes,s.bezel_snes,s.bezel_md),
             (Bezel::Nes,Bezel::Snes,Bezel::GenesisClassic));
         assert!(s.gb_palettes);
-        assert_eq!(s.palette_label(),"GBC Green");
+        assert_eq!(s.palette_label(),"TWB64 Game.com");
         // GAMEPLAY: Fast Forward 3x, Rewind 3x, X/Y Buttons A/B.
         assert_eq!(s.ff_speed,3);
         assert!(s.rewind);
@@ -1162,7 +1178,7 @@ mod tests {
     fn roundtrip_and_invalid_values() {
         let dir = std::env::temp_dir().join(format!("slot-konkr-dev14-{}", std::process::id()));
         // Already past the one-time 3:2 home overlay change.
-        let mut s = Settings { home_bezel_three_two: true, ..Settings::default() };
+        let mut s = Settings { home_bezel_three_two: true, gb_palette_twb64: true, ..Settings::default() };
         s.change(0, true); s.change(6, true); s.gb_palette = 47;
         s.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), s);
@@ -1171,6 +1187,23 @@ mod tests {
         assert_eq!(s.ff_speed, 2);
         assert_eq!(s.shader_gba, Shader::Off);
         assert_eq!(s.gb_palette, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_old_gbc_green_default_moves_to_twb64_game_com_once() {
+        let dir = std::env::temp_dir().join(format!("slot-konkr-twb64-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(NAME), r#"{"gb_palettes":true,"gb_palette":13}"#).unwrap();
+        let mut s = Settings::load(&dir);
+        assert_eq!(s.palette_name(), "TWB64 028 Game.com Ver.");
+        assert!(s.gb_palette_twb64);
+        // A palette picked afterwards, GBC Green included, is kept.
+        s.gb_palette = 13;
+        s.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).gb_palette, 13);
+        fs::write(dir.join(NAME), r#"{"gb_palettes":true,"gb_palette":2}"#).unwrap();
+        assert_eq!(Settings::load(&dir).palette_name(), "GB Pocket");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1184,7 +1217,7 @@ mod tests {
         assert!(!s.gb_palettes, "left from the first palette is OFF");
         assert!(s.change(3, false));
         assert_eq!((s.gb_palettes, s.gb_palette as usize), (true, GbPalette::COUNT - 1));
-        assert_eq!(s.palette_label(), "SGB 4-H");
+        assert_eq!(s.palette_label(), "TWB64 Game.com");
         assert!(s.change(3, true));
         assert!(!s.gb_palettes, "right from the last palette is OFF");
         s.change(3, true);

@@ -94,10 +94,10 @@ internal object RomLibrary {
         val rootId = DocumentsContract.getTreeDocumentId(treeUri)
         val pending = ArrayDeque<Directory>()
         val seen = HashSet<String>()
-        // Search the entire user-selected SAF tree, including custom layouts.
-        // Do not pre-enumerate the root or assume platform-named folders.
+        // Search the user-selected SAF tree, including custom layouts, but
+        // skip folders that ES-DE names after systems slot. does not run.
         pending.add(Directory(rootId, 0, ""))
-        android.util.Log.i("SlotKonkr", "ROM scan scope: full selected tree")
+        android.util.Log.i("SlotKonkr", "ROM scan scope: selected tree without other systems' folders")
         val games = JSONArray()
         var directories = 0
         var truncated = false
@@ -297,11 +297,50 @@ internal object RomLibrary {
             oldSize == size && oldModified == modified
 
     private fun ignoredDirectory(name: String): Boolean {
-        return name.lowercase(Locale.ROOT) in setOf(
-            "bios", "saves", "savestates", "states", "screenshots", "videos",
-            "themes", "media", "images", "artwork", "covers", "system volume information"
-        )
+        val lower = name.lowercase(Locale.ROOT)
+        return lower in IGNORED_DIRECTORIES || lower in OTHER_SYSTEM_DIRECTORIES
     }
+
+    private val IGNORED_DIRECTORIES = setOf(
+        "bios", "saves", "savestates", "states", "screenshots", "videos",
+        "themes", "media", "images", "artwork", "covers", "system volume information",
+        // ES-DE's scraped media, gamelists and its own folder: never ROMs.
+        "downloaded_media", "gamelists", "manuals", "es-de"
+    )
+
+    /**
+     * ES-DE ROM folder names of systems slot. does not run (the ES-DE
+     * convention most handheld setups follow). Their folders can hold
+     * thousands of files, and listing them through SAF is most of a scan's
+     * time. Our own systems' folders (gb, gbc, gba, sgb, nes, famicom, snes,
+     * sfc, snesna, megadrive, megadrivejp, genesis) and any folder with an
+     * unknown name are still searched, so custom layouts keep working.
+     */
+    private val OTHER_SYSTEM_DIRECTORIES = setOf(
+        "3do", "adam", "ags", "amiga", "amiga1200", "amiga600", "amigacd32", "amstradcpc",
+        "android", "apple2", "apple2gs", "arcade", "arcadia", "archimedes", "arduboy",
+        "astrocde", "atari2600", "atari5200", "atari7800", "atari800", "atarijaguar",
+        "atarijaguarcd", "atarilynx", "atarist", "atarixe", "atomiswave", "bbcmicro", "c64",
+        "cdimono1", "cdtv", "chailove", "channelf", "coco", "colecovision", "consolearcade",
+        "cps", "cps1", "cps2", "cps3", "crvision", "daphne", "desktop", "doom", "dos",
+        "dragon32", "dreamcast", "easyrpg", "electron", "emulators", "epic", "fba", "fbneo",
+        "fds", "flash", "fm7", "fmtowns", "fpinball", "gamate", "gameandwatch", "gamecom",
+        "gamegear", "gc", "gmaster", "gx4000", "intellivision", "j2me", "kodi", "laserdisc",
+        "lcdgames", "lowresnx", "lutro", "macintosh", "mame", "mame-advmame", "mastersystem",
+        "megacd", "megacdjp", "megaduck", "mess", "model2", "model3", "moto", "msx", "msx1",
+        "msx2", "msxturbor", "mugen", "multivision", "n3ds", "n64", "n64dd", "naomi",
+        "naomi2", "naomigd", "nds", "neogeo", "neogeocd", "neogeocdjp", "ngage", "ngp",
+        "ngpc", "odyssey2", "openbor", "oric", "palm", "pc", "pc88", "pc98", "pcarcade",
+        "pcengine", "pcenginecd", "pcfx", "pico8", "plus4", "pokemini", "ports", "ps2", "ps3",
+        "ps4", "psp", "psvita", "psx", "pv1000", "quake", "samcoupe", "saturn", "saturnjp",
+        "scummvm", "scv", "sega32x", "sega32xjp", "sega32xna", "segacd", "sg-1000",
+        "solarus", "spectravideo", "steam", "stv", "supergrafx", "supervision", "supracan",
+        "switch", "symbian", "tanodragon", "tg16", "tg-cd", "ti99", "tic80", "to8", "trs-80",
+        "uzebox", "vectrex", "vic20", "videopac", "virtualboy", "vpinball", "vsmile",
+        "wasm4", "wii", "wiiu", "windows", "windows3x", "windows9x", "wonderswan",
+        "wonderswancolor", "x1", "x68000", "xbox", "xbox360", "zmachine", "zx81", "zxnext",
+        "zxspectrum"
+    )
 
     private fun cartridgeHeader(context: Context, fileUri: Uri, length: Int): ByteArray {
         return try {

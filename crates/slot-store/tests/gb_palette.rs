@@ -1,15 +1,16 @@
 use slot_store::GbPalette;
 
 #[test]
-fn the_list_is_mgba_s_48_palettes_in_its_order() {
+fn the_list_is_mgba_s_48_palettes_in_its_order_then_twb64_game_com() {
     let names: Vec<&str> = GbPalette::all().map(GbPalette::core_name).collect();
     assert_eq!(names.len(), GbPalette::COUNT);
-    assert_eq!(GbPalette::COUNT, 48);
+    assert_eq!(GbPalette::COUNT, 49);
     assert_eq!(names[0], "Grayscale");
     assert_eq!(names[1], "DMG Green");
     assert_eq!(names[14], "GBC Dark Green →A");
     assert_eq!(names[16], "SGB 1-A");
     assert_eq!(names[47], "SGB 4-H");
+    assert_eq!(names[48], "TWB64 028 Game.com Ver.");
 }
 
 #[test]
@@ -48,7 +49,7 @@ fn next_walks_the_list_and_wraps() {
 fn prev_walks_back_and_wraps() {
     assert_eq!(GbPalette::DEFAULT.prev().core_name(), "Grayscale");
     let first = GbPalette::all().next().unwrap();
-    assert_eq!(first.prev().core_name(), "SGB 4-H");
+    assert_eq!(first.prev().core_name(), "TWB64 028 Game.com Ver.");
     for p in GbPalette::all() {
         assert_eq!(p.next().prev(), p);
     }

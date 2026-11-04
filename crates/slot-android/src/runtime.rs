@@ -1777,8 +1777,11 @@ impl Engine {
             104 | 105 if self.game_settings().gb_palettes
                 && self.game.as_ref().is_some_and(|g| g.can_change_gb_palette()) => {
                     let index = if code == 105 {
-                        (self.settings.gb_palette + 1) % 48
-                    } else { (self.settings.gb_palette + 47) % 48 };
+                        (self.settings.gb_palette + 1) % slot_store::GbPalette::COUNT as u8
+                    } else {
+                        let count = slot_store::GbPalette::COUNT as u8;
+                        (self.settings.gb_palette + count - 1) % count
+                    };
                     self.settings.gb_palette = index;
                     if let Some(game) = self.game.as_mut() {
                         game.set_gb_palette(self.settings.palette_name());

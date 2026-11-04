@@ -33,6 +33,8 @@ pub fn gambatte_palette(mgba: &str) -> Option<&'static str> {
         "GBC Green →" => "GBC - Green",
         "GBC Dark Green →A" => "GBC - Dark Green",
         "GBC Reverse →B" => "GBC - Inverted",
+        // Its colours are picked by gambatte_twb64() below.
+        slot_store::TWB64_GAME_COM => "TWB64 - Pack 1",
         sgb => {
             const SGB: [&str; 32] = [
                 "SGB - 1A", "SGB - 1B", "SGB - 1C", "SGB - 1D",
@@ -48,6 +50,11 @@ pub fn gambatte_palette(mgba: &str) -> Option<&'static str> {
             SGB.into_iter().find(|name| name[6..] == wanted)?
         }
     })
+}
+
+/// Gambatte's TWB64 Pack 1 entry for a slot. palette from that pack.
+pub fn gambatte_twb64(name: &str) -> Option<&'static str> {
+    (name == slot_store::TWB64_GAME_COM).then_some("TWB64 028 - Game.com Ver.")
 }
 
 /// The other core whose battery file is the same raw SRAM: mGBA and

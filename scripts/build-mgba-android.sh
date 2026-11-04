@@ -84,6 +84,8 @@ python3 "$ROOT/scripts/patch-mgba-speculative-audio.py" "$SRC"
 python3 "$ROOT/scripts/patch-mgba-active-sram.py" "$SRC"
 # Boktai's sunlight, set by slot. on every sample (0..255).
 python3 "$ROOT/scripts/patch-mgba-sun.py" "$SRC"
+# TWB64 028 Game.com Ver., slot.'s default Game Boy palette.
+python3 "$ROOT/scripts/patch-mgba-twb64.py" "$SRC"
 # Retain the Game Boy LCD reactivation blank-frame fix from build 266.
 # Native diagnostic monitor is Android-only; the core links Android's liblog
 # to report a stalled GB Link from its separate monitor thread even when the
@@ -160,6 +162,6 @@ fi
 # F11: machine-readable provenance shipped INSIDE the APK. These fields
 # record the exact pinned source and safety patches used in this binary.
 cat > "$ROOT/android/app/src/main/assets/core-build-mgba.json" <<EOF
-{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","gb-blank-frame-after-lcd-on.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py","patch-mgba-sun.py"],"gb_link_diagnostics":"android_spin_monitor_v1_inner_trace_v1"}
+{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","gb-blank-frame-after-lcd-on.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py","patch-mgba-sun.py","patch-mgba-twb64.py"],"gb_link_diagnostics":"android_spin_monitor_v1_inner_trace_v1"}
 EOF
 echo "mGBA arm64 libretro: $DEST/libmgba_libretro.so"
