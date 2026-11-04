@@ -133,15 +133,12 @@ pub fn screen_fits(platform: Platform, panel: (u32, u32)) -> bool {
     (panel / shape - 1.0).abs() < 0.01
 }
 
-/// RetroArch's default for the home consoles: the core's aspect ratio,
-/// full height, no integer scaling. The Game Boys start at Integer, and so
-/// do NES and SNES on screens narrower than 4:3 (Integer overscale there).
-/// GB and GBC on screens narrower than 4:3 (the Retroid Pocket Classic)
-/// start at Original Ratio, full height (Siham, 2026-11-04).
+/// Every system starts at Original Ratio, full height (Siham's per-ratio
+/// plan, 2026-11-04: GB, GBC and GBA on every screen; GBA already fills a
+/// 3:2 panel), except NES and SNES on screens narrower than 4:3: Integer
+/// overscale there, in square pixels.
 pub fn default_mode(platform: Platform, panel: (u32, u32)) -> VideoMode {
-    if matches!(platform, Platform::Gb | Platform::Gbc) && narrow(panel) { VideoMode::Aspect }
-    else if platform.handheld() || square_pixels(platform, panel) { VideoMode::Actual }
-    else { VideoMode::Aspect }
+    if square_pixels(platform, panel) { VideoMode::Actual } else { VideoMode::Aspect }
 }
 
 fn narrow(panel: (u32, u32)) -> bool {
@@ -437,12 +434,12 @@ mod tests {
     }
 
     #[test]
-    fn game_boys_start_at_original_ratio_on_narrow_screens() {
-        let rpc = (1240, 1080);
-        assert_eq!(default_mode(Platform::Gb, rpc), VideoMode::Aspect);
-        assert_eq!(default_mode(Platform::Gbc, rpc), VideoMode::Aspect);
-        assert_eq!(default_mode(Platform::Gba, rpc), VideoMode::Actual);
-        assert_eq!(default_mode(Platform::Gb, (960, 640)), VideoMode::Actual);
+    fn game_boys_start_at_original_ratio_on_every_screen() {
+        for panel in [(1240, 1080), (960, 640), (1440, 1080), (1920, 1080), (720, 720)] {
+            for platform in [Platform::Gb, Platform::Gbc, Platform::Gba] {
+                assert_eq!(default_mode(platform, panel), VideoMode::Aspect, "{platform:?} {panel:?}");
+            }
+        }
     }
 
     #[test]
