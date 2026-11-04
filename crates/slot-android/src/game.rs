@@ -722,7 +722,7 @@ impl GameSession {
         // With Share Saves, a GB/GBC cart switched between mGBA and Gambatte
         // brings its newer battery along; that core's older state must not resume.
         let carried_battery = linked_boot.is_none() && crate::gb_core_switch::sharing() && match
-            crate::gb_core_switch::carry_battery(&root, rom_stem, which, platform) {
+            crate::gb_core_switch::carry_battery_for(&root, rom_stem, which, platform, Some(rom)) {
             Ok(carried) => carried,
             Err(error) => {
                 eprintln!("slot-konkr: battery carry from the other core skipped: {error}");
