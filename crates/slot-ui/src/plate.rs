@@ -74,13 +74,17 @@ pub fn hint_width(key: &str, label: &str) -> u32 {
 }
 
 pub fn hint_face(key: &str, label: &str) -> UndoFace {
+    hint_face_ink(key, label, INK)
+}
+
+pub fn hint_face_ink(key: &str, label: &str, ink: [u8; 3]) -> UndoFace {
     let mut face = Canvas::new(hint_width(key, label), HINT_H);
     let cap_w = cap_width(key);
     stamp_key(&mut face, key, cap_w, 0);
     let text_w = band_width(label);
     if let Some(font) = text::label_font() {
         let layout = text::fit(font, label, text_w as f32, 1, LABEL_PX, LABEL_MIN_PX);
-        face.text_in(cap_w + CAP_GAP, 0, text_w, HINT_H, &layout, INK);
+        face.text_in(cap_w + CAP_GAP, 0, text_w, HINT_H, &layout, ink);
     }
     face.into_undo()
 }
@@ -291,6 +295,10 @@ pub fn arrows_hint_width(label: &str) -> u32 {
 }
 
 pub fn arrows_hint_face(label: &str) -> UndoFace {
+    arrows_hint_face_ink(label, INK)
+}
+
+pub fn arrows_hint_face_ink(label: &str, ink: [u8; 3]) -> UndoFace {
     let mut face = Canvas::new(arrows_hint_width(label), HINT_H);
     if let Some(art) = arrows_art() {
         let (aw, ah) = art.texels();
@@ -307,7 +315,7 @@ pub fn arrows_hint_face(label: &str) -> UndoFace {
     let text_w = band_width(label);
     if let Some(font) = text::label_font() {
         let layout = text::fit(font, label, text_w as f32, 1, LABEL_PX, LABEL_MIN_PX);
-        face.text_in(arrows_w() + CAP_GAP, 0, text_w, HINT_H, &layout, INK);
+        face.text_in(arrows_w() + CAP_GAP, 0, text_w, HINT_H, &layout, ink);
     }
     face.into_undo()
 }

@@ -18,8 +18,9 @@ use std::time::Instant;
 use std::net::Ipv4Addr;
 use crate::multiplayer::{LinkStarter, Progress as LinkProgress, Role as LinkRole};
 use crate::link_kind::{self, LinkKind};
-use crate::app::{GameMenu as LinkMenu, LinkRow, LinkFail, LinkStep};
-use crate::link_screen::{self, LinkSprites, Sprite};
+use crate::app::{GameMenu as LinkMenu, LinkRow, LinkFail, LinkStep, ReleaseFrom};
+use crate::link_screen::{self, LinkSprites, Marks, Sprite};
+use slot_ui::link_hardware::{self, Hardware};
 
 use slot_gfx::{Compositor, GfxError, Surface, OUT_H, out_w};
 use slot_store::{Platform, Core, stamp_now};
@@ -407,12 +408,13 @@ thread_local! {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum LinkEntry { Shortcut, GameMenu }
+enum LinkEntry { Shortcut, GameMenu, Stopped }
 
 impl LinkEntry {
     fn back(self, linked: bool, requires_relaunch: bool) -> ShelfOverlay {
         match self {
             Self::Shortcut => ShelfOverlay::None,
+            Self::Stopped => ShelfOverlay::GameMenu { row: 0 },
             Self::GameMenu => ShelfOverlay::GameMenu {
                 row: pause_rows(linked, requires_relaunch).iter()
                     .position(|item| *item == PauseRow::Multiplayer).unwrap_or(0),
@@ -800,7 +802,8 @@ struct Engine {
     link_entry: LinkEntry,
     link_worked_at: u64,
     link_starter: Option<LinkStarter>,
-    link_art: LinkSprites,
+    link_art: Option<LinkSprites>,
+    link_marks: Marks,
     // A single account-scoped engine outlives individual games, allowing
     // queued offline awards to sync even after the cartridge is ejected.
     ra_service: Option<slot_achievements::Service>,
@@ -902,10 +905,10 @@ struct Engine {
     link_step_faces: [(slot_gfx::TexId, u32, u32); 2],
     link_fail_faces: [(slot_gfx::TexId, u32, u32); 3],
     link_connected_face: (slot_gfx::TexId, u32, u32),
-    link_hints: [(slot_gfx::TexId, u32); 3],
-    link_switch_hints: [(slot_gfx::TexId, u32); 4],
-    link_connected_hints: [(slot_gfx::TexId, u32); 2],
-    link_failed_hints: [(slot_gfx::TexId, u32); 1],
+    link_hints: [[(slot_gfx::TexId, u32); 3]; 2],
+    link_switch_hints: [[(slot_gfx::TexId, u32); 4]; 2],
+    link_connected_hints: [[(slot_gfx::TexId, u32); 2]; 2],
+    link_failed_hints: [[(slot_gfx::TexId, u32); 1]; 2],
     board_texture: Option<slot_gfx::TexId>,
     picker: Option<CorePicker>,
     socket_textures: [slot_gfx::TexId; Core::ALL.len()],
@@ -1156,18 +1159,11 @@ impl Engine {
                 .any(|uri|uri==cart.rom.to_string_lossy().as_ref()));
         }
 
-        // Exactly the four Slot upstream SVG parts, original link_screen
-        // positions/easing, pre-rasterised once on the GL thread.
-        let art = slot_ui::link_art();
+        let art = slot_ui::link_marks();
         let mut sprite = |face: slot_ui::CartFace| Sprite {
-            tex: gpu.create_face(&face),
-            w: face.w, h: face.h,
+            tex: gpu.create_face(&face), w: face.w, h: face.h,
         };
-        let link_art = LinkSprites {
-            port: sprite(art.port),
-            plug_host: sprite(art.plug_host),
-            plug_join: sprite(art.plug_join),
-            adapter: sprite(art.adapter),
+        let link_marks = Marks {
             arcs_right: art.arcs_right.map(&mut sprite),
             arcs_left: art.arcs_left.map(&mut sprite),
             clicks: sprite(art.clicks),
@@ -1231,33 +1227,18 @@ impl Engine {
         let link_fail_faces = LinkFail::SHOWN
             .map(|failure| make_link_text(&mut gpu, failure.line()));
         let link_connected_face = make_link_text(&mut gpu, "Linked");
-        let link_hints = [
-            hint_face("B", "Cancel"),
-            arrows_hint_face("Swap"),
-            hint_face("A", "Link"),
-        ].map(|face| {
+        let mut link_hint = |key, label, ink| {
+            let face = if key == "SWAP" { slot_ui::arrows_hint_face_ink(label, ink) }
+                else { slot_ui::hint_face_ink(key, label, ink) };
             (gpu.create_face(&face), face.w)
-        });
-        // State-specific original Slot legends; never advertise an active
-        // Connect button when already linked or after a failed handshake.
-        let link_connected_hints = [("B", "Back"), ("A", "End Link")]
-            .map(|(key, label)| {
-                let face = hint_face(key, label);
-                (gpu.create_face(&face), face.w)
-            });
-        let link_failed_hints = [hint_face("A", "OK")].map(|face| {
-            (gpu.create_face(&face), face.w)
-        });
-        // Upstream has SELECT Mode in the picker when Cable/RFU is truly
-        // switchable. Reuse exactly its hint and arrow primitives.
-        let link_switch_hints = [
-            hint_face("B", "Cancel"),
-            hint_face("SELECT", "Mode"),
-            arrows_hint_face("Swap"),
-            hint_face("A", "Link"),
-        ].map(|face| {
-            (gpu.create_face(&face), face.w)
-        });
+        };
+        let inks = [[246,244,239], [23,23,25]];
+        let link_switch_hints = inks.map(|ink| [("B","Cancel"), ("SELECT","Mode"),
+            ("SWAP","Swap"), ("A","Link")].map(|(k,v)| link_hint(k,v,ink)));
+        let link_hints = link_switch_hints.map(|[cancel, _, swap, link]| [cancel, swap, link]);
+        let link_connected_hints = inks.map(|ink| [("B","Back"), ("A","End Link")]
+            .map(|(k,v)| link_hint(k,v,ink)));
+        let link_failed_hints = inks.map(|ink| [link_hint("A","OK",ink)]);
         let setting_values = SETTING_VALUE_NAMES
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
@@ -1396,7 +1377,8 @@ impl Engine {
             link_entry: LinkEntry::GameMenu,
             link_worked_at: 0,
             link_starter: None,
-            link_art,
+            link_art: None,
+            link_marks,
             ra_service: None,
             ra_signing_out: false,
             buttons: 0,
@@ -2027,6 +2009,7 @@ impl Engine {
         if matches!(self.link_phase, LinkMenu::Working {..} | LinkMenu::Linked {..}) { return; }
         if let Err(error) = self.ensure_gpsp_link_serial() {
             if self.game.is_some() {
+                self.link_worked_at = self.link_millis();
                 self.fail_multiplayer(&error, LinkFail::Radio);
             } else {
                 set_message(error);
@@ -2208,7 +2191,7 @@ impl Engine {
             if linked.requires_relaunch() {
                 // Join's own game could not be put back: the session stays
                 // stopped and unsaved until the cartridge is reinserted.
-                set_message("Press A to eject, then reinsert to play solo.".into());
+                return Err("Join’s solo state could not be restored. Eject and reinsert the cartridge.".into());
             }
             self.game_accum = 0.0;
             self.buttons = 0;
@@ -2317,6 +2300,7 @@ impl Engine {
 
     fn poll_multiplayer(&mut self) {
         if !matches!(self.overlay, ShelfOverlay::Multiplayer) { return; }
+        self.prepare_link_art();
         let event = self.link_starter.as_mut().and_then(LinkStarter::poll);
         if let Some(event) = event {
             match event {
@@ -2382,9 +2366,64 @@ impl Engine {
         if link_unplug_complete(self.link_phase, self.link_millis()) {
             // A successfully rebuilt solo cartridge resumes *in place*.
             // A failed conversion remains in the fail-closed Eject menu.
-            self.overlay = if self.game.as_ref().is_some_and(GameSession::requires_relaunch) {
-                ShelfOverlay::GameMenu { row: 0 }
-            } else { ShelfOverlay::None };
+            let relaunch = self.game.as_ref().is_some_and(GameSession::requires_relaunch);
+            self.overlay = if relaunch { ShelfOverlay::GameMenu { row: 0 } }
+                else if matches!(self.link_phase, LinkMenu::Unplug { from: ReleaseFrom::Seated, .. }) {
+                    ShelfOverlay::None
+                } else { self.link_entry.back(false, false) };
+        }
+    }
+
+    fn show_unplug(&mut self, from: ReleaseFrom) {
+        self.link_phase = LinkMenu::Unplug { role: self.link_role, since: self.link_millis(), from };
+        self.overlay = ShelfOverlay::Multiplayer;
+        self.game_accum = 0.0;
+        self.buttons = 0;
+    }
+
+    fn dismiss_link(&mut self) {
+        self.cancel_link_discovery();
+        match self.link_phase {
+            LinkMenu::Working { since, .. } => self.show_unplug(ReleaseFrom::Search { worked: since }),
+            LinkMenu::Failed { worked, since, .. } => self.show_unplug(ReleaseFrom::Failure { worked, failed: since }),
+            LinkMenu::Unplug { .. } => {}
+            _ => self.overlay = self.link_entry.back(
+                self.game.as_ref().is_some_and(GameSession::linked),
+                self.game.as_ref().is_some_and(GameSession::requires_relaunch)),
+        }
+    }
+
+    fn link_recovery_failed(&mut self, message: &str, reason: &str) {
+        if let Some(game) = self.game.as_mut() {
+            game.end_multiplayer();
+            self.hud.set_link(link_badge_for(self.link_role, true));
+            self.link_entry = LinkEntry::Stopped;
+            self.link_phase = LinkMenu::Failed { role: self.link_role, fail: LinkFail::PeerVanished,
+                worked: self.link_worked_at, since: self.link_millis() };
+            self.overlay = ShelfOverlay::Multiplayer;
+        } else { self.handle(Input::Exit); }
+        set_error_message(message, &reason);
+    }
+
+    fn peer_link_stopped(&mut self, fault: crate::link_play::LinkError) {
+        use crate::link_play::LinkError::{Disconnected, PeerEnded};
+        self.ff_held = false;
+        self.ff_latched = false;
+        self.rewind_held = false;
+        self.hud.set_ff(FfState::Off);
+        AUDIO_SPEED_PERMILLE.store(1000, Ordering::Release);
+        if matches!(fault, PeerEnded | Disconnected) {
+            match self.return_link_to_solo() {
+                Ok(()) => {
+                    self.hud.set_link(LinkBadge::Off);
+                    self.show_unplug(ReleaseFrom::Seated);
+                }
+                Err(reason) => self.link_recovery_failed("Connection lost with the other console.", &reason),
+            }
+        } else {
+            let now = self.link_millis();
+            self.hud.toast(link_fault_toast(fault), now);
+            self.link_recovery_failed("Multiplayer paused. Check the connection and try again.", &format!("{fault:?}"));
         }
     }
 
@@ -2757,10 +2796,7 @@ impl Engine {
                         if matches!(self.link_phase, LinkMenu::Linked { opened: true, .. }) {
                             self.overlay = ShelfOverlay::None;
                         } else if !matches!(self.link_phase, LinkMenu::Unplug { .. }) {
-                            self.cancel_link_discovery();
-                            self.overlay = self.link_entry.back(
-                                        self.game.as_ref().is_some_and(GameSession::linked),
-                                        self.game.as_ref().is_some_and(GameSession::requires_relaunch));
+                            self.dismiss_link();
                         }
                     }
                     return;
@@ -2837,21 +2873,12 @@ impl Engine {
                                 _ => {}
                             },
                             LinkMenu::Working { .. } => {
-                                if code == 97 || code == 108 {
-                                    self.cancel_link_discovery();
-                                    self.overlay = self.link_entry.back(
-                                        self.game.as_ref().is_some_and(GameSession::linked),
-                                        self.game.as_ref().is_some_and(GameSession::requires_relaunch));
-                                }
+                                if code == 97 || code == 108 { self.dismiss_link(); }
                             }
                             LinkMenu::Failed { .. } => {
-                                if code == 96 || code == 97 || code == 108 {
-                                    self.overlay = self.link_entry.back(
-                                        self.game.as_ref().is_some_and(GameSession::linked),
-                                        self.game.as_ref().is_some_and(GameSession::requires_relaunch));
-                                }
+                                if code == 96 || code == 97 || code == 108 { self.dismiss_link(); }
                             }
-                            LinkMenu::Linked { opened: true, role, .. } => match code {
+                            LinkMenu::Linked { opened: true, .. } => match code {
                                 96 => {
                                     // End Link is a virtual unplug, not a
                                     // cartridge ejection. Solo save states and
@@ -2862,26 +2889,13 @@ impl Engine {
                                             self.hud.set_link(LinkBadge::Off);
                                             // The physical unplug animation is the success cue.
                                             // No additional transient toast over gameplay.
-                                            self.link_phase = LinkMenu::Unplug {
-                                                role, since: self.link_millis(),
-                                            };
-                                            self.game_accum = 0.0;
-                                            self.buttons = 0;
+                                            self.show_unplug(ReleaseFrom::Seated);
                                         }
                                         Err(reason) => {
                                             // Never continue in a stale Link
                                             // core and never overwrite solo
                                             // progress following recovery error.
-                                            if let Some(game) = self.game.as_mut() {
-                                                game.end_multiplayer();
-                                            }
-                                            set_error_message("Couldn't return to solo. Your solo progress is safe.", &reason);
-                                            self.hud.set_link(link_badge_for(role, true));
-                                            if self.game.is_some() {
-                                                self.overlay = ShelfOverlay::GameMenu { row: 0 };
-                                            } else {
-                                                self.handle(Input::Exit);
-                                            }
+                                            self.link_recovery_failed("Couldn't return to solo. Your solo progress is safe.", &reason);
                                         }
                                     }
                                 }
@@ -4941,16 +4955,53 @@ impl Engine {
         }
     }
 
-    /// Exact upstream Slot Link menu composition: no additional Android
-    /// title, mode label or bottom bar. Cable plug and wireless adapter sprites
-    /// are identical to original and fork, as are progress/failure messages.
+    /// Resolve the inserted cart, including mixed shelves and regional NES moulds.
+    /// Reuse texture IDs so switching themes or cartridges cannot grow the GL cache.
+    fn prepare_link_art(&mut self) {
+        let shelf = &self.shelves[self.active];
+        let Some(cart) = shelf.carts.get(shelf.index) else { return };
+        let key = Hardware::new(slot_ui::bitmaps::console_slot_family(cart),
+            self.settings.appearance.bar_theme(), self.link_mode == LinkKind::Wireless);
+        let previous = self.link_art.as_ref();
+        if previous.is_some_and(|art| art.key == key) { return; }
+        let faces = link_hardware::hardware_art(key);
+        let mut upload = |face: slot_ui::CartFace, old: Option<Sprite>| {
+            let tex = if let Some(sprite) = old {
+                self.gpu.update_face(sprite.tex, &face);
+                sprite.tex
+            } else { self.gpu.create_face(&face) };
+            Sprite { tex, w: face.w, h: face.h }
+        };
+        // Retain the four small release-button slots when switching away from RFU.
+        let old_buttons = previous.and_then(|s| s.buttons);
+        let buttons = faces.buttons.map(|pair| {
+            let [host, join] = pair;
+            [(0, host), (1, join)].map(|(i, [left, right])| {
+                [upload(left, old_buttons.map(|b| b[i][0])),
+                 upload(right, old_buttons.map(|b| b[i][1]))]
+            })
+        }).or(old_buttons);
+        let [host,join] = faces.grips;
+        self.link_art = Some(LinkSprites {
+            key, buttons,
+            grips: [upload(host, previous.map(|s|s.grips[0])),
+                    upload(join, previous.map(|s|s.grips[1]))],
+            wall: upload(faces.wall, previous.map(|s|s.wall)),
+            front: upload(faces.front, previous.map(|s|s.front)),
+            socket: upload(faces.socket, previous.map(|s|s.socket)),
+            rim: upload(faces.rim, previous.map(|s|s.rim)),
+            nose: upload(faces.nose, previous.map(|s|s.nose)),
+        });
+    }
+
     fn draw_multiplayer(&self, out: &mut Vec<Draw>) {
         out.push(Draw::Rect {
             x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32,
             colour: opening(),
         });
-        link_screen::draw_link_art(self.link_phase, self.link_mode,
-            self.link_millis(), &self.link_art, out);
+        let Some(art) = &self.link_art else { return };
+        link_screen::draw_link_art(self.link_phase, self.link_millis(), art, &self.link_marks, out);
+        let ink = usize::from(art.key.dark_ink());
         let text = match self.link_phase {
             LinkMenu::Pick(role) => Some(self.link_role_faces[role.index()]),
             LinkMenu::Working { step, .. } => Some(self.link_step_faces[step.index()]),
@@ -4968,11 +5019,11 @@ impl Engine {
         }
         let hints: &[(slot_gfx::TexId, u32)] =
             match link_legend_profile(self.link_phase, self.link_mode_switchable()) {
-                LinkLegendProfile::PickerWithMode => &self.link_switch_hints,
-                LinkLegendProfile::Picker => &self.link_hints,
-                LinkLegendProfile::Searching => &self.link_hints[..1],
-                LinkLegendProfile::ConnectedMenu => &self.link_connected_hints,
-                LinkLegendProfile::Failed => &self.link_failed_hints,
+                LinkLegendProfile::PickerWithMode => &self.link_switch_hints[ink],
+                LinkLegendProfile::Picker => &self.link_hints[ink],
+                LinkLegendProfile::Searching => &self.link_hints[ink][..1],
+                LinkLegendProfile::ConnectedMenu => &self.link_connected_hints[ink],
+                LinkLegendProfile::Failed => &self.link_failed_hints[ink],
                 LinkLegendProfile::None => &[],
             };
         let seen = |w: u32| w.saturating_sub(HINT_EDGE) as f32;
@@ -5711,42 +5762,7 @@ impl Engine {
             // End Link or a broken socket is invisible until the local player
             // closes the menu, potentially leaving a permanent "Linked" UI.
             if let Some(fault) = self.game.as_ref().and_then(GameSession::link_fault) {
-                // Peer End/EOF returns to SOLO in-place; don't display
-                // a misleading transient link-ended banner over gameplay.
-                if !matches!(fault,
-                    crate::link_play::LinkError::PeerEnded |
-                    crate::link_play::LinkError::Disconnected) {
-                    self.hud.toast(link_fault_toast(fault),
-                        self.born.elapsed().as_millis() as u64);
-                }
-                self.ff_held = false;
-                self.ff_latched = false;
-                self.rewind_held = false;
-                self.hud.set_ff(FfState::Off);
-                AUDIO_SPEED_PERMILLE.store(1000, Ordering::Release);
-                let rejoined = if matches!(fault,
-                    crate::link_play::LinkError::PeerEnded |
-                    crate::link_play::LinkError::Disconnected) {
-                    self.return_link_to_solo()
-                } else {
-                    Err(format!("Unsafe Link transport: {fault:?}"))
-                };
-                match rejoined {
-                    Ok(()) => {
-                        // Peer unplugged; this cartridge keeps its local
-                        // SRAM and full solo state without an app eject.
-                        self.hud.set_link(LinkBadge::Off);
-                        self.overlay = ShelfOverlay::None;
-                    }
-                    Err(reason) => {
-                        if let Some(game) = self.game.as_mut() { game.end_multiplayer(); }
-                        self.hud.set_link(link_badge_for(self.link_role, true));
-                        if self.game.is_some() {
-                            self.overlay = ShelfOverlay::GameMenu { row: 0 };
-                        } else { self.handle(Input::Exit); }
-                        set_error_message("Multiplayer stopped. Your solo progress is safe.", &reason);
-                    }
-                }
+                self.peer_link_stopped(fault);
             }
             self.game_accum = 0.0;
             let mut commands = vec![Draw::Game];
@@ -5805,7 +5821,7 @@ impl Engine {
             // Android indicators remain visible on the first game frame.
             SHELF_INDICATOR_FLAGS.store(0, Ordering::Release);
             let mut stepped = 0;
-            let mut peer_unplugged = None;
+            let mut peer_fault = None;
             // RETROARCH mode runs Run-Ahead as RetroArch's Preemptive Frames.
             let mut preemptive = false;
             if self.rewind_held {
@@ -5949,26 +5965,8 @@ impl Engine {
                             self.game_accum.min(period * 2.0)
                         } else { 0.0 };
                         if let Some(fault) = session.link_fault() {
-                            // Remote End Link and TCP loss can become a
-                            // verified single-GBA SOLO instance after the
-                            // live session's final frame has been drawn.
-                            // Invalid/corrupt frames remain fail-closed.
-                            if matches!(fault, crate::link_play::LinkError::PeerEnded |
-                                crate::link_play::LinkError::Disconnected) {
-                                peer_unplugged = Some(fault);
-                            } else {
-                                session.end_multiplayer();
-                                self.hud.set_link(link_badge_for(self.link_role, true));
-                                self.hud.toast(link_fault_toast(fault),
-                                    self.born.elapsed().as_millis() as u64);
-                                self.overlay = ShelfOverlay::GameMenu { row: 0 };
-                                set_error_message("Multiplayer paused. Check the connection and try again.", &format!("{fault:?}"));
-                            }
-                            self.ff_held = false;
-                            self.ff_latched = false;
-                            self.rewind_held = false;
-                            self.hud.set_ff(FfState::Off);
-                            AUDIO_SPEED_PERMILLE.store(1000, Ordering::Release);
+                            // Release the session borrow after its last frame, then recover.
+                            peer_fault = Some(fault);
                         }
                         break;
                     }
@@ -6148,23 +6146,7 @@ impl Engine {
             a12_draw_sample(session.linked() && session.core_kind() == Core::Mgba,
                 stepped, a12_native_started.elapsed().as_micros() as u64,
                 MGBA_CABLE_RECOVERY.load(Ordering::Acquire));
-            if let Some(_fault) = peer_unplugged {
-                // Silent, verified solo return on intentional unplug or TCP EOF.
-                match self.return_link_to_solo() {
-                    Ok(()) => {
-                        self.hud.set_link(LinkBadge::Off);
-                        self.overlay = ShelfOverlay::None;
-                    }
-                    Err(reason) => {
-                        if let Some(game) = self.game.as_mut() { game.end_multiplayer(); }
-                        self.hud.set_link(link_badge_for(self.link_role, true));
-                        if self.game.is_some() {
-                            self.overlay = ShelfOverlay::GameMenu { row: 0 };
-                        } else { self.handle(Input::Exit); }
-                        set_error_message("Connection lost with the other console.", &reason);
-                    }
-                }
-            }
+            if let Some(fault) = peer_fault { self.peer_link_stopped(fault); }
             return;
         }
 
@@ -6470,12 +6452,10 @@ fn link_boot_failure(context: &str, error: &str,
     }
 }
 
-// The source-of-truth coordinates and width accounting from upstream
-// BrandonKowalski/slot app.rs: draw_game_menu(). Do not replace the
-// original 720x480 centred keycaps with the Android Settings footer or
-// a second full-width black rectangle at y=420.
+// Keep the upstream centred heading and keycaps. The hints sit below the
+// sockets on the console’s 58-pixel bar, including on narrow canvases.
 const LINK_TEXT_Y: f32 = 44.0;
-const LINK_LEGEND_Y: f32 = 422.0;
+const LINK_LEGEND_Y: f32 = OUT_H as f32 - HINT_H as f32 - 2.0;
 const LINK_LEGEND_GAP: f32 = 40.0;
 
 fn link_heading_x(width: u32) -> f32 {
@@ -6594,10 +6574,9 @@ fn link_menu_auto_closes(phase: LinkMenu, now: u64) -> bool {
         if now.saturating_sub(since) >= 1000)
 }
 
-/// Use the exact 260ms Slot link adapter unplug animation.
+/// Hold the screen through the cable or RFU release and its settling time.
 fn link_unplug_complete(phase: LinkMenu, now: u64) -> bool {
-    // Upstream: the hardware withdraws in 260ms, then holds the screen
-    // another 160ms before exiting the Link menu (420ms total).
+    // Includes the RFU’s initial button press and the return to the free pose.
     matches!(phase, LinkMenu::Unplug { since, .. }
         if now.saturating_sub(since) >= 420)
 }

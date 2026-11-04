@@ -20,6 +20,7 @@ mod home_art;
 mod hud;
 mod icon;
 mod link_art;
+pub mod link_hardware;
 mod plate;
 mod polaroids;
 mod power_menu;
@@ -62,12 +63,12 @@ pub use hud::{
 };
 pub use icon::{badge_face, icon_box, icon_face, star_face, Badge, Icon};
 pub use link_art::{
-    link_art, LinkArt, ADAPTER_BASE_X, ADAPTER_BASE_Y, ADAPTER_H, ADAPTER_W, ARCS, ARROW_H,
+    link_art, link_marks, LinkArt, LinkMarks, ADAPTER_BASE_X, ADAPTER_BASE_Y, ADAPTER_H, ADAPTER_W, ARCS, ARROW_H,
     ARROW_LEFT_X, ARROW_RIGHT_X, ARROW_W, ARROW_Y, CLICKS_H, CLICKS_W, CLICKS_X, CLICKS_Y, PLUG_H,
     PLUG_TIP_X, PLUG_W, PORT_H, PORT_W, PORT_Y,
 };
 pub use plate::{
-    arrows_hint_face, arrows_hint_width, cap_width, centred_hints, hint_face, hint_quad, hint_row,
+    arrows_hint_face, arrows_hint_face_ink, hint_face_ink, arrows_hint_width, cap_width, centred_hints, hint_face, hint_quad, hint_row,
     hint_width, title_face, title_line_face, word_face, word_ink, word_width, platform_name_face, PLATFORM_NAME_SCALE,
     onboarding_instruction_face, onboarding_note_face, onboarding_max_w,
     Hint, UndoFace, ARROW_GAP, CAP, CAP_GAP,
