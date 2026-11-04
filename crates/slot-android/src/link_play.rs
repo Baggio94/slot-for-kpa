@@ -486,7 +486,7 @@ impl LinkPlay {
                 if let Some(sync) = self.sync.as_mut() {
                     if sync.due(frame) {
                         if let Ok(state) = core.serialize() {
-                            let packet = sync.record(frame, link_sync::hash(&state));
+                            let packet = sync.record(frame, link_sync::pair_hash(&state));
                             self.wire.send(NETPACKET_RELIABLE, &packet);
                         }
                     }

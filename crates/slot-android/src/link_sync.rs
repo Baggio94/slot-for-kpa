@@ -44,6 +44,45 @@ pub fn hash(state: &[u8]) -> u64 {
     })
 }
 
+/// mGBA Game Boy savestates (magic 0x004000xx) keep the 64 colours the
+/// screen is drawn with at 0xD4..0x154. A DMG game's colours come from each
+/// console's own palette setting and the game never reads them back, so two
+/// consoles with different palettes hold different bytes there while the
+/// game is the same: they are left out. A GBA's palette is the game's own.
+const GB_MAGIC_MASK: u32 = 0xFFFF_FF00;
+const GB_MAGIC: u32 = 0x0040_0000;
+const GB_COLOURS: std::ops::Range<usize> = 0xD4..0x154;
+
+/// The hash two consoles compare: for an SLK1 pair, each console's state
+/// without what only shows on screen; any other state as it is.
+pub fn pair_hash(state: &[u8]) -> u64 {
+    let Some(halves) = slk1_halves(state) else { return hash(state) };
+    let mut masked = state.to_vec();
+    for (start, len) in halves {
+        let half = &mut masked[start..start + len];
+        let magic = half.get(..4).map(|m| u32::from_le_bytes([m[0], m[1], m[2], m[3]]));
+        if magic.is_some_and(|m| m & GB_MAGIC_MASK == GB_MAGIC) && half.len() >= GB_COLOURS.end {
+            half[GB_COLOURS].fill(0);
+        }
+    }
+    hash(&masked)
+}
+
+/// Where each console's state starts in an SLK1 pair, and its length.
+fn slk1_halves(state: &[u8]) -> Option<[(usize, usize); 2]> {
+    if state.get(..4)? != b"SLK1" { return None; }
+    let mut at = 4;
+    let mut out = [(0, 0); 2];
+    for half in &mut out {
+        let len = u32::from_le_bytes(state.get(at..at + 4)?.try_into().ok()?) as usize;
+        at += 4;
+        if state.len() < at.checked_add(len)? { return None; }
+        *half = (at, len);
+        at += len;
+    }
+    (at == state.len()).then_some(out)
+}
+
 pub fn hash_packet(frame: u64, hash: u64) -> [u8; 17] {
     let mut out = [0u8; 17];
     out[0] = KIND_HASH;
@@ -252,6 +291,42 @@ mod tests {
         join.record(16, 1);
         assert_eq!(join.mismatch(), None);
         assert_eq!((host.resyncs(), join.resyncs()), (1, 1));
+    }
+
+    fn slk1(a: &[u8], b: &[u8]) -> Vec<u8> {
+        let mut out = b"SLK1".to_vec();
+        for half in [a, b] {
+            out.extend_from_slice(&(half.len() as u32).to_le_bytes());
+            out.extend_from_slice(half);
+        }
+        out
+    }
+
+    #[test]
+    fn game_boy_screen_colours_are_left_out_but_nothing_else() {
+        let mut gb = vec![0u8; 0x800];
+        gb[..4].copy_from_slice(&0x0040_0003u32.to_le_bytes());
+        let base = pair_hash(&slk1(&gb, &gb));
+        // Another palette setting on the other console: same game.
+        let mut other_palette = gb.clone();
+        other_palette[0xD4] = 0x7F;
+        other_palette[0x153] = 0x55;
+        assert_eq!(pair_hash(&slk1(&gb, &other_palette)), base);
+        // Anything else is the game itself.
+        let mut other_game = gb.clone();
+        other_game[0x154] = 1;
+        assert_ne!(pair_hash(&slk1(&gb, &other_game)), base);
+        other_game[0x154] = 0;
+        other_game[0xD3] = 1;
+        assert_ne!(pair_hash(&slk1(&gb, &other_game)), base);
+        // A GBA's palette is written by the game: it counts.
+        let mut gba = vec![0u8; 0x800];
+        gba[..4].copy_from_slice(&0x0100_0007u32.to_le_bytes());
+        let mut gba_palette = gba.clone();
+        gba_palette[0xD4] = 1;
+        assert_ne!(pair_hash(&slk1(&gba, &gba)), pair_hash(&slk1(&gba, &gba_palette)));
+        // Not a pair: the whole state.
+        assert_eq!(pair_hash(&gb), hash(&gb));
     }
 
     #[test]
