@@ -1707,6 +1707,8 @@ impl Engine {
             }
             100 => {
                 let platform=self.current_cart_platform();
+                // Game Boy colours are the palette's: nothing to correct.
+                if platform==Platform::Gb {return true;}
                 if self.game_settings().shader_for(platform).includes_gba_color() {
                     set_message("This shader already includes color correction.".into());
                     return true;
@@ -3880,8 +3882,10 @@ impl Engine {
             (Platform::Gba,true)=>&[34,29,90],
             (Platform::Gbc,false)=>&[88,29],
             (Platform::Gbc,true)=>&[88,29,90],
-            (Platform::Gb,false)=>&[89,29,36],
-            (Platform::Gb,true)=>&[89,29,36,90],
+            // No Color Correction row: a Game Boy picture is its palette,
+            // the cores correct only GBC/GBA colours (Siham, 2026-11-04).
+            (Platform::Gb,false)=>&[89,36],
+            (Platform::Gb,true)=>&[89,36,90],
             (Platform::Nes|Platform::Snes|Platform::Md,false)=>&[120],
             (Platform::Nes|Platform::Snes|Platform::Md,true)=>&[120,90],
         }
@@ -3893,8 +3897,8 @@ impl Engine {
             (Platform::Gba,true)=>&[0,22,25],
             (Platform::Gbc,false)=>&[21,23],
             (Platform::Gbc,true)=>&[21,23,26],
-            (Platform::Gb,false)=>&[1,24,3],
-            (Platform::Gb,true)=>&[1,24,3,27],
+            (Platform::Gb,false)=>&[1,3],
+            (Platform::Gb,true)=>&[1,3,27],
             (Platform::Nes|Platform::Snes|Platform::Md,false)=>&[SCREEN_SIZE_KEY],
             (Platform::Nes,true)=>&[SCREEN_SIZE_KEY,44],
             (Platform::Snes,true)=>&[SCREEN_SIZE_KEY,45],
@@ -3916,9 +3920,9 @@ impl Engine {
             (Platform::Gbc,true,_)=>&[118,88,29],
             (Platform::Gbc,false,false)=>&[118,120,88,29],
             (Platform::Gbc,false,true)=>&[118,120,88,29,90],
-            (Platform::Gb,true,_)=>&[118,89,29,36],
-            (Platform::Gb,false,false)=>&[118,120,89,29,36],
-            (Platform::Gb,false,true)=>&[118,120,89,29,36,90],
+            (Platform::Gb,true,_)=>&[118,89,36],
+            (Platform::Gb,false,false)=>&[118,120,89,36],
+            (Platform::Gb,false,true)=>&[118,120,89,36,90],
             (Platform::Nes|Platform::Snes|Platform::Md,true,_)=>&[118],
             (Platform::Nes|Platform::Snes|Platform::Md,false,false)=>&[118,120],
             (Platform::Nes|Platform::Snes|Platform::Md,false,true)=>&[118,120,90],
@@ -3935,9 +3939,9 @@ impl Engine {
             (Platform::Gbc,true,_)=>&[30,21,23],
             (Platform::Gbc,false,false)=>&[30,SCREEN_SIZE_KEY,21,23],
             (Platform::Gbc,false,true)=>&[30,SCREEN_SIZE_KEY,21,23,26],
-            (Platform::Gb,true,_)=>&[31,1,24,3],
-            (Platform::Gb,false,false)=>&[31,SCREEN_SIZE_KEY,1,24,3],
-            (Platform::Gb,false,true)=>&[31,SCREEN_SIZE_KEY,1,24,3,27],
+            (Platform::Gb,true,_)=>&[31,1,3],
+            (Platform::Gb,false,false)=>&[31,SCREEN_SIZE_KEY,1,3],
+            (Platform::Gb,false,true)=>&[31,SCREEN_SIZE_KEY,1,3,27],
             (Platform::Nes,true,_)=>&[41],
             (Platform::Nes,false,false)=>&[41,SCREEN_SIZE_KEY],
             (Platform::Nes,false,true)=>&[41,SCREEN_SIZE_KEY,44],
@@ -4011,7 +4015,7 @@ impl Engine {
         }
         if self.current_cart_platform()==Platform::Gb &&
             !self.game.as_ref().is_some_and(GameSession::can_change_gb_palette) {
-            if bezel {&[89,29,90]} else {&[89,29]}
+            if bezel {&[89,90]} else {&[89]}
         } else {
             Self::screen_rows(self.current_cart_platform())
         }
@@ -4022,7 +4026,7 @@ impl Engine {
         }
         if self.current_cart_platform()==Platform::Gb &&
             !self.game.as_ref().is_some_and(GameSession::can_change_gb_palette) {
-            [1,24,27].get(row).copied()
+            [1,27].get(row).copied()
         } else {
             Self::screen_keys(self.current_cart_platform()).get(row).copied()
         }
