@@ -2205,6 +2205,11 @@ impl Engine {
             // Game Link never left the solo game: just pull the cable.
             // Home netplay: Host keeps playing, Join gets its own game back.
             linked.end_multiplayer();
+            if linked.requires_relaunch() {
+                // Join's own game could not be put back: the session stays
+                // stopped and unsaved until the cartridge is reinserted.
+                set_message("Press A to eject, then reinsert to play solo.".into());
+            }
             self.game_accum = 0.0;
             self.buttons = 0;
             return Ok(());

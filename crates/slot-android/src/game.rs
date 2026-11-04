@@ -1358,7 +1358,14 @@ impl GameSession {
         if let Some(net) = self.home_netplay.take() {
             if let Some(own) = net.own {
                 if let Err(error) = self.core.unserialize(&own) {
-                    log_launch_timing(&format!("Netplay: own game not restored: {error}"));
+                    // The core still holds Host's game: it must never reach
+                    // Join's battery, state or RetroArch files. Stop it as an
+                    // ended Link: no frame runs and nothing is saved until the
+                    // cartridge is relaunched, which resumes Join's own game
+                    // as saved when the session began.
+                    log_launch_timing(&format!(
+                        "Netplay: own game not restored ({error}); eject to resume it"));
+                    self.link_touched = true;
                 }
             }
         }
