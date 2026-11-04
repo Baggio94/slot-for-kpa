@@ -41,6 +41,8 @@ internal object HomeCartLabels {
     // One request at a time, but enough carts per pass that a library fills
     // in minutes, not hours (each pass waits for the next shelf idle).
     private const val MAX_SAVED = 24
+    /** Labels saved since the app started, for the shelf's counter. */
+    @Volatile private var savedTotal = 0
     private const val MAX_ATTEMPTS = 40
     private const val LABEL_MAX = 960
 
@@ -400,7 +402,7 @@ internal object HomeCartLabels {
         if (missing.isEmpty()) return false
         // The shelf's "LABELS n/total" counter, for the home carts' own pass.
         var checked = all.size - missing.size
-        AutoCartLabelDiagnostics.start(checked, all.size, 0)
+        AutoCartLabelDiagnostics.start(checked, all.size, savedTotal, AutoCartLabelDiagnostics.HOME)
         var saved = 0
         var attempts = 0
         var dirty = false
@@ -457,6 +459,7 @@ internal object HomeCartLabels {
                     throw error
                 }
                 saved++
+                savedTotal++
                 outcome = "SAVED"
                 onSaved(rom.uri)
             } catch (error: Exception) {
@@ -476,7 +479,8 @@ internal object HomeCartLabels {
                     "NETWORK_ERROR" -> retry.transient(rom.uri, android.os.SystemClock.elapsedRealtime())
                 }
                 if (!retry.pending(rom.uri)) checked++
-                AutoCartLabelDiagnostics.result(checked, saved, outcome)
+                AutoCartLabelDiagnostics.result(checked, savedTotal, outcome,
+                    AutoCartLabelDiagnostics.HOME)
                 Log.i(TAG, "HOME_ART_RESULT $outcome [${rom.platform}] ${rom.title.take(96)}")
             }
             Thread.sleep(250L)

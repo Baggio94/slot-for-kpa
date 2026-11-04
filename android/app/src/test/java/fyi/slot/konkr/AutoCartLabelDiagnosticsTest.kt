@@ -33,4 +33,17 @@ class AutoCartLabelDiagnosticsTest {
         assertEquals(3, snapshot.saved)
         assertEquals(0, snapshot.otherError)
     }
+
+    @Test fun handheldAndHomePassesShareOneCounter() {
+        AutoCartLabelDiagnostics.clear()
+        AutoCartLabelDiagnostics.start(10, 40, 2)
+        AutoCartLabelDiagnostics.start(3, 12, 0, AutoCartLabelDiagnostics.HOME)
+        AutoCartLabelDiagnostics.result(4, 1, "SAVED", AutoCartLabelDiagnostics.HOME)
+        // A later handheld batch leaves the home carts' progress alone.
+        AutoCartLabelDiagnostics.start(12, 40, 2)
+        val snapshot = AutoCartLabelDiagnostics.snapshot()
+        assertEquals(16, snapshot.checked)
+        assertEquals(52, snapshot.total)
+        assertEquals(3, snapshot.saved)
+    }
 }

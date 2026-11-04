@@ -1,8 +1,13 @@
 package fyi.slot.konkr
 
 /**
- * Lock-free, diagnostics-only bridge between the existing single-threaded
- * 1.2.0 artwork worker and Android's already-running 100ms UI pulse.
+ * Lock-free, diagnostics-only bridge between the single artwork worker and
+ * Android's already-running 100ms UI pulse.
+ *
+ * Two sources share the shelf's one counter: the GB/GBC/GBA official art
+ * pass and the NES/SNES/Mega Drive ScreenScraper pass. Each keeps its own
+ * slot for the session, so "LABELS n/total" counts every cart of both and
+ * no longer jumps between the two passes' own totals.
  *
  * No main-thread callbacks, no extra ROM reads, no network requests, and no
  * changes to matching, retries, attempts, writes or source/cache policies.
@@ -16,25 +21,35 @@ internal object AutoCartLabelDiagnostics {
         val networkError: Int = 0,
         val invalidArtwork: Int = 0,
         val otherError: Int = 0,
-    )
-    @Volatile private var current = Snapshot()
+    ) {
+        operator fun plus(o: Snapshot) = Snapshot(checked + o.checked, total + o.total,
+            saved + o.saved, notFound + o.notFound, networkError + o.networkError,
+            invalidArtwork + o.invalidArtwork, otherError + o.otherError)
+    }
+    const val HANDHELD = 0
+    const val HOME = 1
+    // Replaced whole on every write: readers never see a half update.
+    @Volatile private var slots = listOf(Snapshot(), Snapshot())
 
-    fun snapshot(): Snapshot = current
+    fun snapshot(): Snapshot = slots.reduce { a, b -> a + b }
 
-    /** Reset when a new batch starts, before the scanner accesses disk. */
-    fun clear() { current = Snapshot() }
+    fun clear() { slots = listOf(Snapshot(), Snapshot()) }
 
-    // Only AutoCartLabels.fill's single worker writes these snapshots.
-    fun start(checked: Int, total: Int, saved: Int) {
-        current = Snapshot(
-            checked = checked.coerceAtLeast(0),
-            total = total.coerceAtLeast(0),
-            saved = saved.coerceAtLeast(0))
+    private fun put(source: Int, value: Snapshot) {
+        slots = slots.toMutableList().also { it[source.coerceIn(0, 1)] = value }
     }
 
-    fun result(checked: Int, saved: Int, outcome: String) {
-        val old = current
-        current = old.copy(
+    // Only the single label worker writes these snapshots.
+    fun start(checked: Int, total: Int, saved: Int, source: Int = HANDHELD) {
+        put(source, Snapshot(
+            checked = checked.coerceAtLeast(0),
+            total = total.coerceAtLeast(0),
+            saved = saved.coerceAtLeast(0)))
+    }
+
+    fun result(checked: Int, saved: Int, outcome: String, source: Int = HANDHELD) {
+        val old = slots[source.coerceIn(0, 1)]
+        put(source, old.copy(
             checked = checked.coerceAtLeast(0),
             saved = saved.coerceAtLeast(0),
             notFound = old.notFound + if (outcome == "NOT_FOUND") 1 else 0,
@@ -42,6 +57,6 @@ internal object AutoCartLabelDiagnostics {
             invalidArtwork = old.invalidArtwork + if (outcome == "INVALID_ARTWORK") 1 else 0,
             otherError = old.otherError +
                 if (outcome == "ERROR" || outcome == "DAT_UNAVAILABLE") 1 else 0,
-        )
+        ))
     }
 }

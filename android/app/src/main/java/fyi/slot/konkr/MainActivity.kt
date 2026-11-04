@@ -211,6 +211,10 @@ class MainActivity : Activity() {
     }
     private val autoLabelsRunning = AtomicBoolean(false)
     private val autoLabelsRestartRequested = AtomicBoolean(false)
+    /** Labels saved before this run of passes, for its "N LABELS ADDED". */
+    @Volatile private var autoLabelsChainBase = -1
+    /** Last pulse's game state: leaving a game resumes the label passes. */
+    private var autoLabelsWasPlaying = false
     @Volatile private var cartStudioOpening = false
     // Paint fresh labels only when all moving carts and pending GPU uploads
     // have settled. The renderer's manual reload path is synchronous.
@@ -612,6 +616,13 @@ class MainActivity : Activity() {
             updateDisplaySyncMode()
             updateCarouselPacing()
             publishAutoLabelsWhenIdle()
+            val labelsPlaying = nativeIsPlaying()
+            if (autoLabelsWasPlaying && !labelsPlaying) {
+                // Back on the carousel after a game: carry on where the
+                // label passes stopped (Siham 2026-11-04).
+                startAutoCartLabels()
+            }
+            autoLabelsWasPlaying = labelsPlaying
             if (::autoLabelIndicator.isInitialized) {
                 if (nativeIsPlaying() || cartStudioOpening) {
                     autoLabelIndicator.hide()
@@ -2055,8 +2066,13 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Label passes run on the carousel and while Cart Studio is open over
+     * it (its labels are then on the shelf on return), never in a game. */
+    private fun autoLabelsMayRun(): Boolean =
+        (resumed || cartStudioOpening) && !isDestroyed && !nativeIsPlaying()
+
     private fun startAutoCartLabels() {
-        if (!resumed || isDestroyed || nativeIsPlaying() || cartStudioOpening) return
+        if (!autoLabelsMayRun()) return
         if (!autoLabelsRunning.compareAndSet(false, true)) {
             // A short Studio visit may return before the previous worker exits.
             autoLabelsRestartRequested.set(true)
@@ -2066,7 +2082,9 @@ class MainActivity : Activity() {
         try {
             autoLabelsWorker.execute {
                 var anotherBatch = false
-                AutoCartLabelDiagnostics.clear()
+                if (autoLabelsChainBase < 0) {
+                    autoLabelsChainBase = AutoCartLabelDiagnostics.snapshot().saved
+                }
                 try {
                     val manager = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
                     val caps = manager?.getNetworkCapabilities(manager.activeNetwork)
@@ -2077,7 +2095,7 @@ class MainActivity : Activity() {
                     // Exactly the production 1.2.0 callback: enqueue a
                     // successful saved label for an idle carousel repaint.
                     // Status/UI snapshots are completely separate.
-                    val keepGoing = { resumed && !isDestroyed && !nativeIsPlaying() && !cartStudioOpening }
+                    val keepGoing = { autoLabelsMayRun() }
                     anotherBatch = AutoCartLabels.fill(applicationContext,
                         shouldContinue = keepGoing,
                         onSaved = { uri -> autoLabelUpdates.add(uri) })
@@ -2091,6 +2109,8 @@ class MainActivity : Activity() {
                     autoLabelsRunning.set(false)
                     val recheck = autoLabelsRestartRequested.getAndSet(false)
                     val report = AutoCartLabelDiagnostics.snapshot()
+                    val added = (report.saved - autoLabelsChainBase.coerceAtLeast(0)).coerceAtLeast(0)
+                    if (!anotherBatch && !recheck) autoLabelsChainBase = -1
                     if (!anotherBatch && !recheck && report.total > 0) {
                         Log.i("SlotAutoLabels",
                             "ART_SUMMARY examined=${report.checked}/${report.total} " +
@@ -2101,7 +2121,7 @@ class MainActivity : Activity() {
                         uiHandler.post {
                             if (::autoLabelIndicator.isInitialized) {
                                 if (resumed && !isDestroyed && !nativeIsPlaying() &&
-                                    !cartStudioOpening) autoLabelIndicator.finished(report.saved)
+                                    !cartStudioOpening) autoLabelIndicator.finished(added)
                                 else autoLabelIndicator.hide()
                             }
                         }
@@ -2112,13 +2132,12 @@ class MainActivity : Activity() {
                             if (::autoLabelIndicator.isInitialized) autoLabelIndicator.hide()
                         }
                     }
-                    if ((anotherBatch || recheck) && resumed && !isDestroyed &&
-                        !nativeIsPlaying() && !cartStudioOpening) {
+                    if ((anotherBatch || recheck) && autoLabelsMayRun()) {
                         // A pause between bounded batches prevents continuous
                         // ROM reads and leaves the carousel's render thread free.
                         // Wait until the earliest bounded network/DAT
-                        // retry is due. Fresh unchecked ROMs still use the
-                        // original gentle 4s spacing between small batches.
+                        // retry is due. Fresh unchecked ROMs follow one
+                        // second after the previous batch.
                         uiHandler.postDelayed({ startAutoCartLabels() },
                             AutoCartLabels.nextBatchDelayMs())
                     }

@@ -19,7 +19,7 @@ import kotlin.math.roundToInt
  * the SAME DAT used in original Cart Studio. No fuzzy artwork guesses.
  * Manual and Studio labels always win.
  *
- * Low priority and bounded: at most eight new labels per batch, 16 attempts,
+ * Low priority and bounded: at most 24 new labels per batch, 48 attempts,
  * no work during gameplay or Android background sleep, and no ROM/BIOS writes.
  */
 internal object AutoCartLabels {
@@ -27,8 +27,10 @@ internal object AutoCartLabels {
     private const val MAX_INDEX = 12 * 1024 * 1024
     private const val MAX_SOURCE = 6 * 1024 * 1024
     private const val MAX_LABEL = 2 * 1024 * 1024
-    private const val MAX_ATTEMPTS = 16
-    private const val MAX_SAVED = 8
+    // Bigger batches one second apart (Siham 2026-11-04: scraping too slow).
+    private const val MAX_ATTEMPTS = 48
+    private const val MAX_SAVED = 24
+    private const val NEXT_BATCH_MS = 1_000L
     private val safeArtPath = Regex("[a-zA-Z0-9_./-]+")
     private val pngSignature = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
 
@@ -37,7 +39,7 @@ internal object AutoCartLabels {
     private val retry = AutoLabelRetryPolicy()
     private const val INDEX_KEY = "@official-art-index"
     private var savedTotal = 0
-    @Volatile private var batchDelayMs = 4_000L
+    @Volatile private var batchDelayMs = NEXT_BATCH_MS
 
     /** Read only from MainActivity after fill() returns on its single worker. */
     fun nextBatchDelayMs(): Long = batchDelayMs
@@ -48,7 +50,7 @@ internal object AutoCartLabels {
         val remaining = pending.filter { retry.pending(it.uri) }
         if (remaining.isEmpty()) return false
         val now = android.os.SystemClock.elapsedRealtime()
-        batchDelayMs = maxOf(4_000L,
+        batchDelayMs = maxOf(NEXT_BATCH_MS,
             retry.waitMs(INDEX_KEY, now),
             retry.nextDelayMs(remaining.map { it.uri }, now))
             .coerceAtMost(180_000L)
@@ -68,7 +70,7 @@ internal object AutoCartLabels {
     /** Returns true if more bounded foreground work is pending, including retries. */
     fun fill(context: Context, shouldContinue: () -> Boolean, onSaved: (String) -> Unit): Boolean {
         if (!shouldContinue()) return false
-        batchDelayMs = 4_000L
+        batchDelayMs = NEXT_BATCH_MS
         // The official GB/GBC/GBA art only: HomeCartLabels fetches the NES,
         // Super Nintendo and Mega Drive labels from ScreenScraper.
         val games = CartStudioCatalog.games(context).filter { it.platform !in Systems.HOME_PLATFORMS }
@@ -235,7 +237,6 @@ internal object AutoCartLabels {
                 savedTotal++
                 outcome = "SAVED"
                 onSaved(rom.uri)
-                Thread.sleep(120L)
             } catch (error: Exception) {
                 if (outcome != "SAVED") outcome = "ERROR"
                 errors++
