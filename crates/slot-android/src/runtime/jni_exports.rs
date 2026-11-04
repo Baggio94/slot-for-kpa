@@ -663,6 +663,18 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeConfigure(
     }
 }
 
+/// How the handheld names itself and its Android model, for the About sticker.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetDevice(
+    mut env: JNIEnv<'_>, _this: JObject<'_>, name: JString<'_>, model: JString<'_>,
+) {
+    let read = |env: &mut JNIEnv<'_>, value: &JString<'_>| env.get_string(value)
+        .map(|s| s.to_string_lossy().chars().take(64).collect::<String>())
+        .unwrap_or_default();
+    let (name, model) = (read(&mut env, &name), read(&mut env, &model));
+    *DEVICE_NAME.lock().unwrap_or_else(|e| e.into_inner()) = (name, model);
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePollLaunchUri(
     env: JNIEnv<'_>, _this: JObject<'_>,

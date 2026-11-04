@@ -113,6 +113,7 @@ class MainActivity : Activity() {
     external fun nativeSurfaceCreated(): Boolean
     external fun nativeSurfaceChanged(width: Int, height: Int)
     external fun nativeSetPanelSize(width: Int, height: Int)
+    external fun nativeSetDevice(name: String, model: String)
     external fun nativeDrawFrame(vsyncFrameNs: Long)
     // Beta9 optional actual display present timestamp via EGL. Read-only.
     external fun nativeEglPresentationReset()
@@ -889,9 +890,13 @@ class MainActivity : Activity() {
         val cleanSignOut = RaAccount.finishPendingSignOut(filesDir)
         // Device-specific *initial preference* only. Existing persisted
         // global/per-cartridge choices are never rewritten.
-        nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir,
-            Build.MODEL.contains("Pocket Classic", ignoreCase = true) &&
-                Build.MANUFACTURER.contains("Retroid", ignoreCase = true))
+        // The Retroid Pocket Classic reports its maker as "Moorechip"
+        // (getprop ro.product.manufacturer, Siham 2026-11-04): go by the model.
+        val retroidPocketClassic = Build.MODEL.contains("Retroid Pocket Classic", ignoreCase = true)
+        Log.i(TAG, "Device: model=${Build.MODEL} manufacturer=${Build.MANUFACTURER} " +
+            "retroid_pocket_classic=$retroidPocketClassic")
+        nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir, retroidPocketClassic)
+        nativeSetDevice(SlotDevice.displayName(Build.MANUFACTURER, Build.MODEL), Build.MODEL)
         // The slot. canvas takes the display's shape (3:2 on the KONKR, 16:9,
         // 4:3...) before the renderer builds its first face.
         windowManager.maximumWindowMetrics.bounds.let { panel ->
