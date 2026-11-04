@@ -353,6 +353,9 @@ pub struct Settings {
     /// One-time move of the old GBC Green default to TWB64 Game.com.
     #[serde(default)]
     pub gb_palette_twb64: bool,
+    /// One-time move of GB/GBC overlays left OFF to Watomsk's frames.
+    #[serde(default)]
+    pub gb_overlays_watomsk: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -377,7 +380,7 @@ impl Default for Settings {
             status_opt_in_v2: true, wallpaper: WallpaperPick::Default,
             wallpaper_tint: WallpaperTint::Off, appearance: Appearance::Dark,
             show_recents: false, show_titles: false, home_bezel_three_two: false,
-            gb_palette_twb64: false }
+            gb_palette_twb64: false, gb_overlays_watomsk: false }
     }
 }
 impl Settings {
@@ -390,8 +393,10 @@ impl Settings {
             shader_gba: Shader::Lcd3x,
             shader_gbc: Shader::Lcd3x,
             shader_gb: Shader::Lcd3x,
-            bezel_gbc: Bezel::None,
-            bezel_gb: Bezel::None,
+            // Watomsk's frames, wherever the screen leaves room beside the
+            // picture (3:2, 4:3, 16:9; Siham 2026-11-04).
+            bezel_gbc: Bezel::Color,
+            bezel_gb: Bezel::Gb,
             // Shown only where the GBA picture leaves room (not the KONKR).
             bezel_gba: Bezel::GbaClassic,
             gb_palettes: true,
@@ -405,19 +410,15 @@ impl Settings {
             run_ahead_frames: 0,
             home_bezel_three_two: true,
             gb_palette_twb64: true,
+            gb_overlays_watomsk: true,
             ..Self::default()
         }
     }
-    /// Device-local first-install defaults. Off the KONKR the light zfast
-    /// LCD shader; the Retroid Pocket Classic's GPU also keeps up better
-    /// with RESPONSIVE pacing. The KONKR keeps NATIVE and LCD3x.
+    /// Device-local first-install defaults: LCD3x on every screen (Siham
+    /// 2026-11-04); the Retroid Pocket Classic's GPU keeps up better with
+    /// RESPONSIVE pacing.
     pub fn first_install_defaults_for_device(device: Device) -> Self {
         let mut defaults = Self::first_install_defaults();
-        if !device.konkr {
-            defaults.shader_gba = Shader::ZfastLcd;
-            defaults.shader_gbc = Shader::ZfastLcd;
-            defaults.shader_gb = Shader::ZfastLcd;
-        }
         if device.retroid_pocket_classic { defaults.responsive_loop = true; }
         if device.three_two { defaults.home_bezels_off(); }
         defaults
@@ -499,6 +500,13 @@ impl Settings {
                         s.gb_palette = GB_PALETTE_TWB64_GAME_COM;
                     }
                     s.gb_palette_twb64 = true;
+                }
+                // Once: GB/GBC overlays left OFF take Watomsk's frames, the
+                // new default; a later OFF is kept.
+                if !s.gb_overlays_watomsk {
+                    if s.bezel_gb == Bezel::None { s.bezel_gb = Bezel::Gb; }
+                    if s.bezel_gbc == Bezel::None { s.bezel_gbc = Bezel::Color; }
+                    s.gb_overlays_watomsk = true;
                 }
                 s
             }).unwrap_or_else(|| Self::first_install_defaults_for_device(device))
@@ -948,8 +956,9 @@ mod tests {
         }
         // GBA's classic Watomsk frame is shown only off the KONKR.
         assert_eq!(s.bezel_gba,Bezel::GbaClassic);
-        assert_eq!(s.bezel_gbc,Bezel::None);
-        assert_eq!(s.bezel_gb,Bezel::None);
+        // GB/GBC: Watomsk's frames where the screen has room (2026-11-04).
+        assert_eq!(s.bezel_gbc,Bezel::Color);
+        assert_eq!(s.bezel_gb,Bezel::Gb);
         assert_eq!((s.bezel_nes,s.bezel_snes,s.bezel_md),
             (Bezel::Nes,Bezel::Snes,Bezel::GenesisClassic));
         assert!(s.gb_palettes);
@@ -968,7 +977,27 @@ mod tests {
         assert_eq!(s.run_ahead_frames,0);
     }
     #[test]
-    fn only_the_konkr_keeps_lcd3x_on_a_fresh_install() {
+    fn gb_and_gbc_overlays_left_off_move_to_watomsk_once() {
+        let root=std::env::temp_dir().join(format!("slot-gb-watomsk-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let old=Settings { bezel_gb: Bezel::None, bezel_gbc: Bezel::None, bezel_gba: Bezel::None,
+            ..Settings::default() };
+        old.save(&root).unwrap();
+        let mut s=Settings::load_for_device(&root, Device::KONKR);
+        assert_eq!((s.bezel_gb, s.bezel_gbc), (Bezel::Gb, Bezel::Color));
+        assert_eq!(s.bezel_gba, Bezel::None, "GBA keeps its choice");
+        // Turned OFF again afterwards: kept.
+        s.bezel_gb=Bezel::None;
+        s.save(&root).unwrap();
+        assert_eq!(Settings::load_for_device(&root, Device::KONKR).bezel_gb, Bezel::None);
+        // The slot. bezel someone picked is kept too.
+        let picked=Settings { bezel_gb: Bezel::Default, ..Settings::default() };
+        picked.save(&root).unwrap();
+        assert_eq!(Settings::load_for_device(&root, Device::KONKR).bezel_gb, Bezel::Default);
+        let _=std::fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn every_screen_starts_with_lcd3x_on_a_fresh_install() {
         let konkr=Settings::first_install_defaults_for_device(Device::KONKR);
         let mut plain=Settings::first_install_defaults();
         plain.home_bezels_off();
@@ -976,7 +1005,7 @@ mod tests {
         let other=Settings::first_install_defaults_for_device(
             Device { konkr: false, retroid_pocket_classic: false, three_two: false });
         for shader in [other.shader_gba, other.shader_gb, other.shader_gbc] {
-            assert_eq!(shader, Shader::ZfastLcd);
+            assert_eq!(shader, Shader::Lcd3x);
         }
         assert!(!other.responsive_loop);
         assert!(Settings::first_install_defaults_for_device(Device::RPC).responsive_loop);
@@ -1210,7 +1239,8 @@ mod tests {
     fn roundtrip_and_invalid_values() {
         let dir = std::env::temp_dir().join(format!("slot-konkr-dev14-{}", std::process::id()));
         // Already past the one-time 3:2 home overlay change.
-        let mut s = Settings { home_bezel_three_two: true, gb_palette_twb64: true, ..Settings::default() };
+        let mut s = Settings { home_bezel_three_two: true, gb_palette_twb64: true,
+            gb_overlays_watomsk: true, ..Settings::default() };
         s.change(0, true); s.change(6, true); s.gb_palette = 47;
         s.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), s);
