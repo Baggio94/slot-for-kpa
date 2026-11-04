@@ -1826,6 +1826,10 @@ impl Engine {
         }
         let game = self.game.as_ref().expect("checked above");
         let identity = self.link_identity.as_ref().expect("checked above");
+        if game.core_kind() == Core::Bsnes {
+            set_message("Multiplayer needs Snes9x. Change the core in Settings.".into());
+            return;
+        }
         if game.core_kind() != Core::Gpsp {
             // Slot original lockstep uses Cable only. mGBA is reopened in
             // dual-GBA (or dual-Game Boy) mode after the network connection
@@ -1966,6 +1970,7 @@ impl Engine {
             Core::Mgba => crate::multiplayer::Backend::MgbaSlotCable,
             Core::Gpsp => crate::multiplayer::Backend::GpspNetpacket,
             Core::Gambatte => crate::multiplayer::Backend::GambatteGameLink,
+            other if other.netplay() => crate::multiplayer::Backend::HomeNetplay,
             other => return Err(format!("{} has no Multiplayer", other.text())),
         };
         Ok(crate::multiplayer::LinkConfig {
@@ -1998,6 +2003,12 @@ impl Engine {
                           wire: crate::link_net::TcpLink,
                           peer_rom: Option<PathBuf>) -> Result<(), String> {
         let game = self.game.as_ref().ok_or("No game active")?;
+        if game.core_kind().netplay() {
+            self.game.as_mut().ok_or("No game active")?
+                .begin_home_netplay(role, Box::new(wire))?;
+            self.reset_time_controls();
+            return Ok(());
+        }
         if game.core_kind() == Core::Gambatte {
             // Join dials the Host's Game Link server; the Host listens.
             let host = match role {
@@ -2103,8 +2114,9 @@ impl Engine {
     fn return_link_to_solo(&mut self) -> Result<(), String> {
         let linked = self.game.as_mut().ok_or("No Link game to unplug")?;
         let which = linked.core_kind();
-        if which == Core::Gambatte {
+        if which == Core::Gambatte || linked.home_netplay() {
             // Game Link never left the solo game: just pull the cable.
+            // Home netplay: Host keeps playing, Join gets its own game back.
             linked.end_multiplayer();
             self.game_accum = 0.0;
             self.buttons = 0;
@@ -3625,8 +3637,10 @@ impl Engine {
                 Ok(session) => {
                     self.link_identity = if platform == Platform::Gba {
                         crate::link_rom::identify(Path::new(local)).ok()
-                    } else {
+                    } else if platform.handheld() {
                         crate::link_rom::identify_gb(Path::new(local)).ok()
+                    } else {
+                        crate::link_rom::identify_home(Path::new(local)).ok()
                     };
                     self.link_mode_override = None;
                     // Create libretro on the same GL thread, but defer audio

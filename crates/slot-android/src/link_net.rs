@@ -100,13 +100,28 @@ impl LabGreeting {
     }
     fn decode(bytes:&[u8])->Option<Self>{
         if bytes.len()!=LAB_GREETING_LEN || &bytes[0..4]!=b"KMLB" ||
-            !matches!((bytes[4], bytes[9]), (5, 1) | (3, 2) | (3, 3)) {return None;}
+            !matches!((bytes[4], bytes[9]), (5, 1) | (3, 2) | (3, 3) | (3, 4)) {return None;}
         let mut game=[0;4]; game.copy_from_slice(&bytes[5..9]);
         let mut rom_sha256=[0;32];rom_sha256.copy_from_slice(&bytes[11..43]);
         let mut core_sha256=[0;32];core_sha256.copy_from_slice(&bytes[43..75]);
         let mut bios_sha256=[0;32];bios_sha256.copy_from_slice(&bytes[75..107]);
         Some(Self{game,backend:bytes[9],mode:bytes[10],rom_sha256,core_sha256,bios_sha256})
     }
+    /// Which part of the other console's identity differs, for the log.
+    /// Names fields only, never hashes.
+    fn refusal(&self, other: &Self) -> String {
+        let code = |g: &[u8; 4]| String::from_utf8_lossy(g).into_owned();
+        let mut parts = Vec::new();
+        if self.backend != other.backend { parts.push(format!("backend {} vs {}", self.backend, other.backend)); }
+        if self.mode != other.mode { parts.push(format!("mode {} vs {}", self.mode, other.mode)); }
+        if self.core_sha256 != other.core_sha256 { parts.push("core (another core or slot. version)".into()); }
+        if self.bios_sha256 != other.bios_sha256 { parts.push("BIOS".into()); }
+        if self.game != other.game { parts.push(format!("game {} vs {}", code(&self.game), code(&other.game))); }
+        else if self.rom_sha256 != other.rom_sha256 { parts.push("ROM contents".into()); }
+        if parts.is_empty() { parts.push("game pairing not supported".into()); }
+        format!("identity refused: {}", parts.join(", "))
+    }
+
     fn accepts(&self,other:&Self)->bool{
         // A matching ROM hash must not make an impossible RFU adapter appear
         // on an unsupported cartridge such as Ruby/Sapphire.
@@ -139,8 +154,14 @@ fn vet_lab(stream:&mut TcpStream,local:&LabGreeting)->Option<LabGreeting>{
     if stream.set_read_timeout(Some(GREET_WAIT)).is_err() ||
         stream.set_write_timeout(Some(GREET_WAIT)).is_err() ||
         stream.read_exact(&mut bytes).is_err(){return None;}
-    let peer=LabGreeting::decode(&bytes)?;
-    if !local.accepts(&peer){return None;}
+    let Some(peer)=LabGreeting::decode(&bytes) else {
+        report_link_transport_fault("greeting", "peer greeting unreadable (other slot. version?)");
+        return None;
+    };
+    if !local.accepts(&peer){
+        report_link_transport_fault("greeting", &local.refusal(&peer));
+        return None;
+    }
     if stream.write_all(&[GREETING_ACK]).is_err() ||
         stream.write_all(&local.bytes()).is_err(){return None;}
     if stream.set_read_timeout(None).is_err() ||
@@ -250,7 +271,9 @@ impl TcpLink {
             let mut bytes=[0u8;LAB_GREETING_LEN];stream.read_exact(&mut bytes)?;
             let host=LabGreeting::decode(&bytes).ok_or_else(||
                 std::io::Error::new(std::io::ErrorKind::InvalidData,"invalid KMLB/3 host identity"))?;
-            if !identity.accepts(&host){return Err(std::io::Error::new(
+            if !identity.accepts(&host){
+                report_link_transport_fault("greeting", &identity.refusal(&host));
+                return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,"incompatible KMLB/3 host identity"));}
             stream.set_read_timeout(None)?;stream.set_write_timeout(None)?;
             TcpLink::wrap_identified(stream, Some(host))
@@ -678,6 +701,16 @@ mod lab_negotiation_tests {
     fn identity() -> LabGreeting {
         LabGreeting { game: *b"BPRE", backend: 1, mode: 1,
             rom_sha256: [3;32], core_sha256: [4;32], bios_sha256: [5;32] }
+    }
+    #[test]
+    fn home_netplay_greeting_crosses_the_wire_and_is_accepted() {
+        let home = LabGreeting { game: *b"2K7Q", backend: 4, mode: 1,
+            rom_sha256: [3;32], core_sha256: [4;32], bios_sha256: [0;32] };
+        let back = LabGreeting::decode(&home.bytes()).expect("decodes");
+        assert!(home.accepts(&back) && back.accepts(&home));
+        let mut other_core = back.clone(); other_core.core_sha256[0] ^= 1;
+        assert!(!home.accepts(&other_core));
+        assert!(home.refusal(&other_core).contains("core"));
     }
     #[test]
     fn kmlb4_transfers_two_distinct_gba_roms_into_verified_private_caches() {

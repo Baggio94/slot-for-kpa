@@ -253,6 +253,9 @@ pub struct GameSession {
     // A linked mGBA state may contain TWO cores, incompatible with solo
     // RetroArch .state files. Never overwrite solo timeline after link use.
     link_touched: bool,
+    // NES/SNES/Mega Drive netplay: one console, the other player on port 2.
+    // Join keeps its own game here and gets it back when the session ends.
+    home_netplay: Option<HomeNetplay>,
     // Isolated mGBA OR gpSP Link core boot. Apart from app-controlled SRAM,
     // libretro's GET_SAVE_DIRECTORY must itself point into this private root.
     // No running solo gpSP may have its save paths redirected in-place.
@@ -312,6 +315,11 @@ pub struct GameSession {
     battery_writer: Option<BatteryWriter>,
     pub sample_rate: i32,
     pub fps: f64,
+}
+
+struct HomeNetplay {
+    // Join's own game, restored when the session ends; None on Host.
+    own: Option<Vec<u8>>,
 }
 
 /// Testable strict recovery used by both mGBA and gpSP after a Link
@@ -878,7 +886,7 @@ impl GameSession {
             }
         } else { None };
         let mut session = Self {
-            core, link: None, game_link: None, link_touched: false, linked_boot, gpsp_serial,
+            core, link: None, game_link: None, link_touched: false, home_netplay: None, linked_boot, gpsp_serial,
             rom_path: rom.to_path_buf(), rom_stem: rom_stem.to_owned(),
             save, rtc, manual_export_prefix, state, retroarch_export,
             gambatte_legacy_export, ring,
@@ -949,7 +957,7 @@ impl GameSession {
                     capture_started.elapsed().as_micros() as u64;
             }
         } else { self.rewind_frames = 0; }
-        if self.last_sram.elapsed() >= SRAM_PERIOD {
+        if self.last_sram.elapsed() >= SRAM_PERIOD && !self.netplay_guest() {
             let battery_started = Instant::now();
             self.save_sram();
             self.last_step_timings.periodic_battery_us =
@@ -1026,8 +1034,44 @@ impl GameSession {
         Ok(())
     }
 
+    /// NES, SNES and Mega Drive play like RetroArch netplay: both devices
+    /// run the same console from Host's state, Host's buttons on port 1 and
+    /// Join's on port 2. Host keeps playing its own game; Join's game is
+    /// saved first and comes back when the session ends.
+    pub fn begin_home_netplay(&mut self, role: Role,
+                              transport: Box<dyn LinkChannel>) -> Result<(), String> {
+        if !self.core_kind.netplay() {
+            return Err(format!("{} has no Multiplayer", self.core_kind.text()));
+        }
+        if self.in_multiplayer() || self.link.is_some() { return Err("Already linked".into()); }
+        if self.runahead_rollback_failed { return Err("Unsafe Run-Ahead state; Link blocked".into()); }
+        // Both sides keep a durable copy of their own progress first.
+        self.save_for_eject(true)?;
+        let own = match role {
+            Role::Host => None,
+            Role::Join => Some(self.core.serialize().map_err(|e| e.to_string())?),
+        };
+        let link = LinkPlay::begin(self.core.as_mut(), role, LinkKind::Cable, transport)?
+            .without_bios_check();
+        self.link = Some(link);
+        self.home_netplay = Some(HomeNetplay { own });
+        self.runahead_video.clear();
+        self.preempt.clear();
+        self.rewind_frames = 0;
+        self.pending_undo = None;
+        Ok(())
+    }
+
+    /// Join is playing Host's game: nothing of it may reach Join's saves.
+    fn netplay_guest(&self) -> bool {
+        self.home_netplay.as_ref().is_some_and(|net| net.own.is_some())
+    }
+
+    pub fn home_netplay(&self) -> bool { self.home_netplay.is_some() }
+
     fn in_multiplayer(&self) -> bool {
         self.link_touched || self.linked_boot.is_some() || self.game_link.is_some()
+            || self.home_netplay.is_some()
     }
 
     pub fn link_fault(&self) -> Option<LinkError> {
@@ -1276,6 +1320,13 @@ impl GameSession {
         }
         if let Some(mut link) = self.game_link.take() {
             link.end(self.core.as_mut());
+        }
+        if let Some(net) = self.home_netplay.take() {
+            if let Some(own) = net.own {
+                if let Err(error) = self.core.unserialize(&own) {
+                    log_launch_timing(&format!("Netplay: own game not restored: {error}"));
+                }
+            }
         }
         self.runahead_video.clear();
         self.preempt.clear();
@@ -1833,6 +1884,10 @@ impl GameSession {
         // replacing good SRAM/RTC/auto-state with a damaged sandbox.
         if self.requires_relaunch() {
             log_launch_timing("Eject after failed Link: discarding private sandbox without native save");
+            return Ok(false);
+        }
+        if self.netplay_guest() {
+            // Join's own game was saved when the session began.
             return Ok(false);
         }
         if self.runahead_rollback_failed {

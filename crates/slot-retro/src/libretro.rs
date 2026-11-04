@@ -1123,7 +1123,11 @@ impl RetroCore for LibretroCore {
             self.host.frame = (w, h);
             self.host.video = vec![0; (w * h * 4) as usize];
         }
-        unsafe { (self.api.set_controller_port_device)(0, DEVICE_JOYPAD) };
+        unsafe {
+            (self.api.set_controller_port_device)(0, DEVICE_JOYPAD);
+            // Home console Multiplayer plays the second player on port 2.
+            if self.host.native { (self.api.set_controller_port_device)(1, DEVICE_JOYPAD); }
+        }
         Ok(())
     }
 
