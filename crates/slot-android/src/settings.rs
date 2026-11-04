@@ -415,11 +415,12 @@ impl Settings {
         }
     }
     /// Device-local first-install defaults: LCD3x on every screen (Siham
-    /// 2026-11-04); the Retroid Pocket Classic's GPU keeps up better with
-    /// RESPONSIVE pacing.
+    /// 2026-11-04); Frame Pacing RESPONSIVE everywhere but on the KONKR,
+    /// which keeps NATIVE (Siham 2026-11-05): with RESPONSIVE every shader
+    /// keeps up on the weaker GPUs (Retroid Pocket Classic and others).
     pub fn first_install_defaults_for_device(device: Device) -> Self {
         let mut defaults = Self::first_install_defaults();
-        if device.retroid_pocket_classic { defaults.responsive_loop = true; }
+        defaults.responsive_loop = !device.konkr;
         if device.three_two { defaults.home_bezels_off(); }
         defaults
     }
@@ -1007,11 +1008,12 @@ mod tests {
         for shader in [other.shader_gba, other.shader_gb, other.shader_gbc] {
             assert_eq!(shader, Shader::Lcd3x);
         }
-        assert!(!other.responsive_loop);
+        assert!(other.responsive_loop, "RESPONSIVE everywhere but on the KONKR");
         assert!(Settings::first_install_defaults_for_device(Device::RPC).responsive_loop);
+        assert!(!konkr.responsive_loop, "the KONKR keeps NATIVE");
     }
     #[test]
-    fn rpc_only_defaults_to_responsive_on_fresh_install_preserving_saved_pacing() {
+    fn responsive_by_default_but_native_on_the_konkr_preserving_saved_pacing() {
         let root=std::env::temp_dir().join(format!(
             "slot-rpc-responsive-default-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)

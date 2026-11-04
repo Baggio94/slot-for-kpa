@@ -148,6 +148,13 @@ fn whole_game_scale(panel: (u32, u32)) -> bool {
     k >= 1.0 && (k - k.round()).abs() < 0.01
 }
 
+/// A KONKR Pocket Advance: its 960x640 panel, or its Android model GT78-VN
+/// (maker ARBOR; getprop on Siham's KPA, 2026-11-05).
+fn is_konkr() -> bool {
+    panel_size() == (960, 640) ||
+        DEVICE_NAME.lock().unwrap_or_else(|e| e.into_inner()).1.eq_ignore_ascii_case("GT78-VN")
+}
+
 fn panel_size() -> (u32, u32) {
     let packed = PANEL_SIZE.load(Ordering::Acquire);
     let (w, h) = ((packed >> 32) as u32, packed as u32);
@@ -1015,7 +1022,7 @@ impl Engine {
         slot_ui::density::set_scale(size.1 as f32 / OUT_H as f32);
         let mut gpu = Compositor::new(&AndroidSurface { size }).map_err(|e| e.to_string())?;
         let device = crate::settings::Device {
-            konkr: size == (960, 640),
+            konkr: is_konkr(),
             retroid_pocket_classic: RPC_DEFAULT_RESPONSIVE.load(Ordering::Acquire),
             three_two: crate::settings::Device::is_three_two(size),
         };
@@ -3806,7 +3813,7 @@ impl Engine {
             };
             // The KONKR keeps its own logos; every other handheld gets
             // slot.'s wordmark and its own name (Siham, 2026-11-04).
-            let sticker = if panel_size() == (960, 640) {
+            let sticker = if is_konkr() {
                 sticker_face_konkr(&fields)
             } else {
                 let (name, model) = DEVICE_NAME.lock().unwrap_or_else(|e| e.into_inner()).clone();
