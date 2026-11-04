@@ -710,11 +710,13 @@ impl TcpLink {
                 return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,
                     "Peer BIOS exchange cancelled"));
             }
+            // A frame already received counts even if the other side has
+            // closed since: read before looking at the connection.
+            if let Some(data) = self.try_recv() { break data; }
             if self.peer_ended() || self.is_closed() {
                 return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof,
                     "Peer closed BIOS exchange"));
             }
-            if let Some(data) = self.try_recv() { break data; }
             if Instant::now() >= limit {
                 return Err(std::io::Error::new(std::io::ErrorKind::TimedOut,
                     "Peer BIOS exchange timed out"));
