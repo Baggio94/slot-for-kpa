@@ -607,15 +607,10 @@ fn bezel_value(bezel: crate::settings::Bezel) -> usize {
         Pocket => 48,
         Color => 49,
         // Watomsk's other designs: setting_values from 77, in this order.
-        GbGrey => 77, PocketGrey => 78, ColorGrey => 79,
-        GbaClassic => 80, GbaClassicGrey => 81, Gba => 82, GbaGrey => 83,
-        GbaSp => 84, GbaSpGrey => 85, GbaAlt => 86, GbaAltGrey => 87,
-        Nes => 88, NesGrey => 89, NesGrayLogo => 90, NesGrayLogoGrey => 91,
-        Snes => 92, SnesGrey => 93, SnesAlt => 94, SnesAltGrey => 95,
-        SnesGrayLogo => 96, SnesGrayLogoGrey => 97,
-        SnesGrayLogoAlt => 98, SnesGrayLogoAltGrey => 99,
-        GenesisClassic => 100, GenesisClassicGrey => 101, Genesis => 102, GenesisGrey => 103,
-        MegaDrive => 104, MegaDriveGrey => 105,
+        GbaClassic => 77, Gba => 78, GbaSp => 79, GbaAlt => 80,
+        Nes => 81, NesGrayLogo => 82,
+        Snes => 83, SnesAlt => 84, SnesGrayLogo => 85, SnesGrayLogoAlt => 86,
+        GenesisClassic => 87, Genesis => 88, MegaDrive => 89,
     }
 }
 
@@ -907,6 +902,7 @@ impl Engine {
         let device = crate::settings::Device {
             konkr: size == (960, 640),
             retroid_pocket_classic: RPC_DEFAULT_RESPONSIVE.load(Ordering::Acquire),
+            three_two: crate::settings::Device::is_three_two(size),
         };
         let settings = PATHS.lock().unwrap_or_else(|e| e.into_inner())
             .as_ref().map(|(root, _)| Settings::load_for_device(root, device))
@@ -1171,15 +1167,10 @@ impl Engine {
                                "INTEGER", "ORIGINAL RATIO", "STRETCH",
                                "FCEUmm", "Nestopia", "Snes9x", "bsnes",
                                "Genesis Plus GX", "PicoDrive", "Original",
-                               "GAME BOY GREY", "POCKET GREY", "COLOR GREY",
-                               "GBA CLASSIC", "GBA CLASSIC GREY", "GBA", "GBA GREY",
-                               "GBA SP", "GBA SP GREY", "GBA ALT", "GBA ALT GREY",
-                               "NES", "NES GREY", "NES SILVER", "NES SILVER GREY",
-                               "SNES", "SNES GREY", "SNES ALT", "SNES ALT GREY",
-                               "SNES SILVER", "SNES SILVER GREY",
-                               "SNES SILVER ALT", "SNES SILVER ALT GREY",
-                               "GENESIS CLASSIC", "GENESIS CLASSIC GREY", "GENESIS", "GENESIS GREY",
-                               "MEGA DRIVE", "MEGA DRIVE GREY"]
+                               "GBA CLASSIC", "GBA", "GBA SP", "GBA ALT",
+                               "NES", "NES SILVER",
+                               "SNES", "SNES ALT", "SNES SILVER", "SNES SILVER ALT",
+                               "GENESIS CLASSIC", "GENESIS", "MEGA DRIVE"]
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -3843,7 +3834,7 @@ impl Engine {
             (key,fit_overlay(&slot_bezel_sized(&master,(mw,mh)),panel,window))
         } else {
             let fit=fit?;
-            let (design,grey)=bezel.watomsk()?;
+            let design=bezel.watomsk()?;
             let key=(bezel,platform,panel,rect(match fit {
                 WatomskFit::Side(_,r)|WatomskFit::Band(r)=>r,
             }));
@@ -3855,11 +3846,11 @@ impl Engine {
             use slot_ui::{watomsk, fit_overlay::{fit_band, fit_overlay}};
             let rgba=match fit {
                 WatomskFit::Side(shape,window)=>{
-                    let side=watomsk::side(design,grey,shape)?;
+                    let side=watomsk::side(design,shape)?;
                     fit_overlay(&side.art(),panel,window)
                 }
                 WatomskFit::Band(pic)=>{
-                    let band=watomsk::band(design,grey)?;
+                    let band=watomsk::band(design)?;
                     fit_band(&band.art(),panel,pic)
                 }
             };

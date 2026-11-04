@@ -114,31 +114,37 @@ pub enum Bezel {
     #[default]
     Default,
     // Watomsk's overlays (github.com/Watomsk/Overlays, used with his
-    // permission), recomposed for each screen shape; each also in his
-    // dark grey.
-    Gb, Pocket, Color,
-    GbGrey, PocketGrey, ColorGrey,
-    GbaClassic, GbaClassicGrey, Gba, GbaGrey, GbaSp, GbaSpGrey, GbaAlt, GbaAltGrey,
-    Nes, NesGrey, NesGrayLogo, NesGrayLogoGrey,
-    Snes, SnesGrey, SnesAlt, SnesAltGrey, SnesGrayLogo, SnesGrayLogoGrey,
-    SnesGrayLogoAlt, SnesGrayLogoAltGrey,
-    GenesisClassic, GenesisClassicGrey, Genesis, GenesisGrey, MegaDrive, MegaDriveGrey,
+    // permission), recomposed for each screen shape. His dark grey versions
+    // were dropped (Siham, 2026-11-04): a saved grey reads as the black one.
+    #[serde(alias="gb_grey")] Gb,
+    #[serde(alias="pocket_grey")] Pocket,
+    #[serde(alias="color_grey")] Color,
+    #[serde(alias="gba_classic_grey")] GbaClassic,
+    #[serde(alias="gba_grey")] Gba,
+    #[serde(alias="gba_sp_grey")] GbaSp,
+    #[serde(alias="gba_alt_grey")] GbaAlt,
+    #[serde(alias="nes_grey")] Nes,
+    #[serde(alias="nes_gray_logo_grey")] NesGrayLogo,
+    #[serde(alias="snes_grey")] Snes,
+    #[serde(alias="snes_alt_grey")] SnesAlt,
+    #[serde(alias="snes_gray_logo_grey")] SnesGrayLogo,
+    #[serde(alias="snes_gray_logo_alt_grey")] SnesGrayLogoAlt,
+    #[serde(alias="genesis_classic_grey")] GenesisClassic,
+    #[serde(alias="genesis_grey")] Genesis,
+    #[serde(alias="mega_drive_grey")] MegaDrive,
 }
 impl Bezel {
     /// GB and GBC also keep the slot. bezel; every system's own Watomsk
     /// designs follow, the classic one first (Siham, 2026-11-03).
-    pub const GB: [Bezel; 6] = [Bezel::None, Bezel::Default, Bezel::Gb, Bezel::GbGrey,
-        Bezel::Pocket, Bezel::PocketGrey];
-    pub const GBC: [Bezel; 4] = [Bezel::None, Bezel::Default, Bezel::Color, Bezel::ColorGrey];
-    pub const GBA: [Bezel; 9] = [Bezel::None, Bezel::GbaClassic, Bezel::GbaClassicGrey,
-        Bezel::Gba, Bezel::GbaGrey, Bezel::GbaSp, Bezel::GbaSpGrey, Bezel::GbaAlt, Bezel::GbaAltGrey];
-    pub const NES: [Bezel; 5] = [Bezel::None, Bezel::Nes, Bezel::NesGrey,
-        Bezel::NesGrayLogo, Bezel::NesGrayLogoGrey];
-    pub const SNES: [Bezel; 9] = [Bezel::None, Bezel::Snes, Bezel::SnesGrey,
-        Bezel::SnesAlt, Bezel::SnesAltGrey, Bezel::SnesGrayLogo, Bezel::SnesGrayLogoGrey,
-        Bezel::SnesGrayLogoAlt, Bezel::SnesGrayLogoAltGrey];
-    pub const MD: [Bezel; 7] = [Bezel::None, Bezel::GenesisClassic, Bezel::GenesisClassicGrey,
-        Bezel::Genesis, Bezel::GenesisGrey, Bezel::MegaDrive, Bezel::MegaDriveGrey];
+    pub const GB: [Bezel; 4] = [Bezel::None, Bezel::Default, Bezel::Gb, Bezel::Pocket];
+    pub const GBC: [Bezel; 3] = [Bezel::None, Bezel::Default, Bezel::Color];
+    pub const GBA: [Bezel; 5] = [Bezel::None, Bezel::GbaClassic, Bezel::Gba, Bezel::GbaSp,
+        Bezel::GbaAlt];
+    pub const NES: [Bezel; 3] = [Bezel::None, Bezel::Nes, Bezel::NesGrayLogo];
+    pub const SNES: [Bezel; 5] = [Bezel::None, Bezel::Snes, Bezel::SnesAlt,
+        Bezel::SnesGrayLogo, Bezel::SnesGrayLogoAlt];
+    pub const MD: [Bezel; 4] = [Bezel::None, Bezel::GenesisClassic, Bezel::Genesis,
+        Bezel::MegaDrive];
     pub fn list(platform: slot_store::Platform) -> &'static [Bezel] {
         use slot_store::Platform;
         match platform {
@@ -155,30 +161,19 @@ impl Bezel {
         let at=list.iter().position(|b| *b==self).unwrap_or(0);
         list[if right {(at+1)%n} else {(at+n-1)%n}]
     }
-    /// Which Watomsk design, and whether in his dark grey.
-    pub fn watomsk(self) -> Option<(slot_ui::watomsk::Design, bool)> {
+    /// Which Watomsk design.
+    pub fn watomsk(self) -> Option<slot_ui::watomsk::Design> {
         use slot_ui::watomsk::Design as D;
         Some(match self {
             Bezel::None | Bezel::Default => return None,
-            Bezel::Gb => (D::Gb, false), Bezel::GbGrey => (D::Gb, true),
-            Bezel::Pocket => (D::Pocket, false), Bezel::PocketGrey => (D::Pocket, true),
-            Bezel::Color => (D::Color, false), Bezel::ColorGrey => (D::Color, true),
-            Bezel::GbaClassic => (D::GbaClassic, false), Bezel::GbaClassicGrey => (D::GbaClassic, true),
-            Bezel::Gba => (D::Gba, false), Bezel::GbaGrey => (D::Gba, true),
-            Bezel::GbaSp => (D::GbaSp, false), Bezel::GbaSpGrey => (D::GbaSp, true),
-            Bezel::GbaAlt => (D::GbaAlt, false), Bezel::GbaAltGrey => (D::GbaAlt, true),
-            Bezel::Nes => (D::Nes, false), Bezel::NesGrey => (D::Nes, true),
-            Bezel::NesGrayLogo => (D::NesGrayLogo, false), Bezel::NesGrayLogoGrey => (D::NesGrayLogo, true),
-            Bezel::Snes => (D::Snes, false), Bezel::SnesGrey => (D::Snes, true),
-            Bezel::SnesAlt => (D::SnesAlt, false), Bezel::SnesAltGrey => (D::SnesAlt, true),
-            Bezel::SnesGrayLogo => (D::SnesGrayLogo, false),
-            Bezel::SnesGrayLogoGrey => (D::SnesGrayLogo, true),
-            Bezel::SnesGrayLogoAlt => (D::SnesGrayLogoAlt, false),
-            Bezel::SnesGrayLogoAltGrey => (D::SnesGrayLogoAlt, true),
-            Bezel::GenesisClassic => (D::GenesisClassic, false),
-            Bezel::GenesisClassicGrey => (D::GenesisClassic, true),
-            Bezel::Genesis => (D::Genesis, false), Bezel::GenesisGrey => (D::Genesis, true),
-            Bezel::MegaDrive => (D::MegaDrive, false), Bezel::MegaDriveGrey => (D::MegaDrive, true),
+            Bezel::Gb => D::Gb, Bezel::Pocket => D::Pocket, Bezel::Color => D::Color,
+            Bezel::GbaClassic => D::GbaClassic, Bezel::Gba => D::Gba,
+            Bezel::GbaSp => D::GbaSp, Bezel::GbaAlt => D::GbaAlt,
+            Bezel::Nes => D::Nes, Bezel::NesGrayLogo => D::NesGrayLogo,
+            Bezel::Snes => D::Snes, Bezel::SnesAlt => D::SnesAlt,
+            Bezel::SnesGrayLogo => D::SnesGrayLogo, Bezel::SnesGrayLogoAlt => D::SnesGrayLogoAlt,
+            Bezel::GenesisClassic => D::GenesisClassic, Bezel::Genesis => D::Genesis,
+            Bezel::MegaDrive => D::MegaDrive,
         })
     }
 }
@@ -272,11 +267,19 @@ pub struct Device {
     /// The KONKR Pocket Advance's 960x640 panel.
     pub konkr: bool,
     pub retroid_pocket_classic: bool,
+    /// A 3:2 panel (the KONKR's and others): NES, SNES and Mega Drive start
+    /// at Original Ratio there, with no overlay (Siham, 2026-11-04).
+    pub three_two: bool,
 }
 
 impl Device {
-    pub const KONKR: Device = Device { konkr: true, retroid_pocket_classic: false };
-    pub const RPC: Device = Device { konkr: false, retroid_pocket_classic: true };
+    pub const KONKR: Device = Device { konkr: true, retroid_pocket_classic: false, three_two: true };
+    pub const RPC: Device = Device { konkr: false, retroid_pocket_classic: true, three_two: false };
+    /// Whether a panel is 3:2, within 1%.
+    pub fn is_three_two(panel: (u32, u32)) -> bool {
+        let a = panel.0.max(1) as f32 / panel.1.max(1) as f32;
+        (a / 1.5 - 1.0).abs() < 0.01
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,6 +331,9 @@ pub struct Settings {
     /// Slot v1.7 GENERAL: Recents is off by default; persist its list regardless.
     pub show_recents: bool,
     pub show_titles: bool,
+    /// Set once the home consoles' 3:2 default (no overlay) was applied.
+    #[serde(default)]
+    pub home_bezel_three_two: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -349,7 +355,7 @@ impl Default for Settings {
             time_format: TimeFormat::TwentyFourHour,
             status_opt_in_v2: true, wallpaper: WallpaperPick::Default,
             wallpaper_tint: WallpaperTint::Off, appearance: Appearance::Dark,
-            show_recents: false, show_titles: false }
+            show_recents: false, show_titles: false, home_bezel_three_two: false }
     }
 }
 impl Settings {
@@ -375,6 +381,7 @@ impl Settings {
             // itself on the KONKR (1.2.3 beta22 captures).
             responsive_loop: false,
             run_ahead_frames: 0,
+            home_bezel_three_two: true,
             ..Self::default()
         }
     }
@@ -389,7 +396,14 @@ impl Settings {
             defaults.shader_gb = Shader::ZfastLcd;
         }
         if device.retroid_pocket_classic { defaults.responsive_loop = true; }
+        if device.three_two { defaults.home_bezels_off(); }
         defaults
+    }
+    /// NES, SNES and Mega Drive without an overlay.
+    fn home_bezels_off(&mut self) {
+        self.bezel_nes = Bezel::None;
+        self.bezel_snes = Bezel::None;
+        self.bezel_md = Bezel::None;
     }
     /// Existing Settings.json always wins, including an explicit NATIVE choice.
     /// Only a missing or unreadable first-install configuration gets a
@@ -445,6 +459,12 @@ impl Settings {
                     s.show_bluetooth = false;
                     s.show_integrations = false;
                     s.status_opt_in_v2 = true;
+                }
+                // Once: on 3:2 the home consoles' overlays were on by
+                // default in the betas; they now start without one.
+                if !s.home_bezel_three_two {
+                    if device.three_two { s.home_bezels_off(); }
+                    s.home_bezel_three_two = true;
                 }
                 s
             }).unwrap_or_else(|| Self::first_install_defaults_for_device(device))
@@ -902,9 +922,11 @@ mod tests {
     #[test]
     fn only_the_konkr_keeps_lcd3x_on_a_fresh_install() {
         let konkr=Settings::first_install_defaults_for_device(Device::KONKR);
-        assert_eq!(konkr, Settings::first_install_defaults());
+        let mut plain=Settings::first_install_defaults();
+        plain.home_bezels_off();
+        assert_eq!(konkr, plain);
         let other=Settings::first_install_defaults_for_device(
-            Device { konkr: false, retroid_pocket_classic: false });
+            Device { konkr: false, retroid_pocket_classic: false, three_two: false });
         for shader in [other.shader_gba, other.shader_gb, other.shader_gbc] {
             assert_eq!(shader, Shader::ZfastLcd);
         }
@@ -945,7 +967,7 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&root).unwrap();
         let fresh=Settings::load(&root);
-        assert_eq!(fresh,Settings::first_install_defaults());
+        assert_eq!(fresh,Settings::first_install_defaults_for_device(Device::KONKR));
         assert!(!root.join(NAME).exists(), "loading must not write settings");
         // Saved existing settings MUST survive upgrading from 0.2.0.
         let mut customised=fresh.clone();
@@ -1139,7 +1161,8 @@ mod tests {
     #[test]
     fn roundtrip_and_invalid_values() {
         let dir = std::env::temp_dir().join(format!("slot-konkr-dev14-{}", std::process::id()));
-        let mut s = Settings::default();
+        // Already past the one-time 3:2 home overlay change.
+        let mut s = Settings { home_bezel_three_two: true, ..Settings::default() };
         s.change(0, true); s.change(6, true); s.gb_palette = 47;
         s.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), s);
@@ -1173,12 +1196,11 @@ mod tests {
     fn each_bezel_row_offers_only_its_own_watomsk_overlays() {
         use slot_store::Platform;
         let mut s=Settings::default();
-        for want in [Bezel::Gb,Bezel::GbGrey,Bezel::Pocket,Bezel::PocketGrey,
-            Bezel::None,Bezel::Default] {
+        for want in [Bezel::Gb,Bezel::Pocket,Bezel::None,Bezel::Default] {
             s.change(27,true);
             assert_eq!(s.bezel_gb,want);
         }
-        for want in [Bezel::Color,Bezel::ColorGrey,Bezel::None,Bezel::Default] {
+        for want in [Bezel::Color,Bezel::None,Bezel::Default] {
             s.change(26,true);
             assert_eq!(s.bezel_gbc,want);
         }
@@ -1191,11 +1213,11 @@ mod tests {
         s.bezel_gba=Bezel::Default;
         assert_eq!(s.bezel_for(Platform::Gba),Bezel::GbaClassic);
         s.change(25,true);
-        assert_eq!(s.bezel_gba,Bezel::GbaClassicGrey);
+        assert_eq!(s.bezel_gba,Bezel::Gba);
         // The home consoles start on their classic frame.
         assert_eq!(s.bezel_for(Platform::Md),Bezel::GenesisClassic);
         s.change(46,true);
-        assert_eq!(s.bezel_md,Bezel::GenesisClassicGrey);
+        assert_eq!(s.bezel_md,Bezel::Genesis);
         s.change(44,false);
         assert_eq!(s.bezel_nes,Bezel::None);
         s.change(45,false);
@@ -1206,5 +1228,34 @@ mod tests {
         // Old settings files without the new fields keep the defaults.
         let old: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(old.bezel_nes,Bezel::Nes);
+        // A grey overlay saved by an earlier beta reads as the black one.
+        let grey: Settings = serde_json::from_str(
+            r#"{"bezel_gb":"pocket_grey","bezel_gba":"gba_sp_grey","bezel_md":"mega_drive_grey","bezel_snes":"snes_gray_logo_alt_grey"}"#).unwrap();
+        assert_eq!((grey.bezel_gb,grey.bezel_gba,grey.bezel_md,grey.bezel_snes),
+            (Bezel::Pocket,Bezel::GbaSp,Bezel::MegaDrive,Bezel::SnesGrayLogoAlt));
+    }
+
+    #[test]
+    fn home_consoles_start_without_an_overlay_on_three_two_screens() {
+        assert!(Device::is_three_two((960, 640)) && Device::is_three_two((1620, 1080)));
+        assert!(!Device::is_three_two((1240, 1080)) && !Device::is_three_two((1920, 1080)));
+        let konkr=Settings::first_install_defaults_for_device(Device::KONKR);
+        assert_eq!((konkr.bezel_nes,konkr.bezel_snes,konkr.bezel_md),
+            (Bezel::None,Bezel::None,Bezel::None));
+        let rpc=Settings::first_install_defaults_for_device(Device::RPC);
+        assert_eq!((rpc.bezel_nes,rpc.bezel_snes,rpc.bezel_md),
+            (Bezel::Nes,Bezel::Snes,Bezel::GenesisClassic));
+        // A beta's saved overlays go off once on 3:2; a later choice stays.
+        let root=std::env::temp_dir().join(format!("slot-home-bezel-{}",std::process::id()));
+        let _=fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(NAME), r#"{"bezel_nes":"nes","bezel_md":"genesis"}"#).unwrap();
+        let mut s=Settings::load_for_device(&root, Device::KONKR);
+        assert_eq!((s.bezel_nes,s.bezel_md),(Bezel::None,Bezel::None));
+        assert_eq!(Settings::load_for_device(&root, Device::RPC).bezel_md,Bezel::Genesis);
+        s.bezel_md=Bezel::MegaDrive;
+        s.save(&root).unwrap();
+        assert_eq!(Settings::load_for_device(&root, Device::KONKR).bezel_md,Bezel::MegaDrive);
+        let _=fs::remove_dir_all(&root);
     }
 }

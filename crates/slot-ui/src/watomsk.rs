@@ -1,6 +1,7 @@
 //! Watomsk's overlays (github.com/Watomsk/Overlays, used with his
 //! permission), recomposed for each screen shape by
-//! tools/watomsk-overlays/export.py. Black, or his dark grey.
+//! tools/watomsk-overlays/export.py. Black only (his dark grey versions
+//! were dropped, Siham 2026-11-04).
 
 use crate::fit_overlay::{BandArt, OverlayArt};
 
@@ -42,32 +43,44 @@ macro_rules! files {
 }
 
 files!(
-        "gb-16x9", "gb-3x2", "gb-4x3",
-        "gb-g-16x9", "gb-g-3x2", "gb-g-4x3",
-        "gba-16x9", "gba-alt-16x9", "gba-alt-band",
-        "gba-alt-g-16x9", "gba-alt-g-band", "gba-band",
-        "gba-classic-16x9", "gba-classic-band", "gba-classic-g-16x9",
-        "gba-classic-g-band", "gba-g-16x9", "gba-g-band",
-        "gbasp-16x9", "gbasp-band", "gbasp-g-16x9",
-        "gbasp-g-band", "gbc-16x9", "gbc-3x2",
-        "gbc-4x3", "gbc-g-16x9", "gbc-g-3x2",
-        "gbc-g-4x3", "gbp-16x9", "gbp-3x2",
-        "gbp-4x3", "gbp-g-16x9", "gbp-g-3x2",
-        "gbp-g-4x3", "genesis-16x9", "genesis-3x2",
-        "genesis-band", "genesis-classic-16x9", "genesis-classic-3x2",
-        "genesis-classic-band", "genesis-classic-g-16x9", "genesis-classic-g-3x2",
-        "genesis-classic-g-band", "genesis-g-16x9", "genesis-g-3x2",
-        "genesis-g-band", "megadrive-16x9", "megadrive-3x2",
-        "megadrive-band", "megadrive-g-16x9", "megadrive-g-3x2",
-        "megadrive-g-band", "nes-16x9", "nes-3x2",
-        "nes-g-16x9", "nes-g-3x2", "nes-graylogo-16x9",
-        "nes-graylogo-3x2", "nes-graylogo-g-16x9", "nes-graylogo-g-3x2",
-        "snes-16x9", "snes-3x2", "snes-alt-16x9",
-        "snes-alt-3x2", "snes-alt-g-16x9", "snes-alt-g-3x2",
-        "snes-g-16x9", "snes-g-3x2", "snes-graylogo-16x9",
-        "snes-graylogo-3x2", "snes-graylogo-alt-16x9", "snes-graylogo-alt-3x2",
-        "snes-graylogo-alt-g-16x9", "snes-graylogo-alt-g-3x2", "snes-graylogo-g-16x9",
-        "snes-graylogo-g-3x2",
+        "gb-16x9",
+        "gb-3x2",
+        "gb-4x3",
+        "gba-16x9",
+        "gba-alt-16x9",
+        "gba-alt-band",
+        "gba-band",
+        "gba-classic-16x9",
+        "gba-classic-band",
+        "gbasp-16x9",
+        "gbasp-band",
+        "gbc-16x9",
+        "gbc-3x2",
+        "gbc-4x3",
+        "gbp-16x9",
+        "gbp-3x2",
+        "gbp-4x3",
+        "genesis-16x9",
+        "genesis-3x2",
+        "genesis-band",
+        "genesis-classic-16x9",
+        "genesis-classic-3x2",
+        "genesis-classic-band",
+        "megadrive-16x9",
+        "megadrive-3x2",
+        "megadrive-band",
+        "nes-16x9",
+        "nes-3x2",
+        "nes-graylogo-16x9",
+        "nes-graylogo-3x2",
+        "snes-16x9",
+        "snes-3x2",
+        "snes-alt-16x9",
+        "snes-alt-3x2",
+        "snes-graylogo-16x9",
+        "snes-graylogo-3x2",
+        "snes-graylogo-alt-16x9",
+        "snes-graylogo-alt-3x2",
 );
 
 fn key(design: Design) -> &'static str {
@@ -82,9 +95,9 @@ fn key(design: Design) -> &'static str {
     }
 }
 
-/// Black files are <key>-<part>.png, dark grey ones <key>-g-<part>.png.
-fn bytes(design: Design, grey: bool, part: &str) -> Option<&'static [u8]> {
-    file(&format!("{}{}-{}", key(design), if grey { "-g" } else { "" }, part))
+/// The files are <key>-<part>.png.
+fn bytes(design: Design, part: &str) -> Option<&'static [u8]> {
+    file(&format!("{}-{}", key(design), part))
 }
 
 fn part(shape: Shape) -> &'static str {
@@ -144,8 +157,8 @@ impl Side {
     }
 }
 
-pub fn side(design: Design, grey: bool, shape: Shape) -> Option<Side> {
-    let bytes = bytes(design, grey, part(shape))?;
+pub fn side(design: Design, shape: Shape) -> Option<Side> {
+    let bytes = bytes(design, part(shape))?;
     let (rgba, w, h) = crate::art::decode_png_bytes(bytes)?;
     let ww = (h as f32 * window_aspect(design)).round();
     let x0 = ((w as f32 - ww) / 2.0).floor();
@@ -164,14 +177,14 @@ impl Band {
     }
 }
 
-pub fn band(design: Design, grey: bool) -> Option<Band> {
-    let bytes = bytes(design, grey, "band")?;
+pub fn band(design: Design) -> Option<Band> {
+    let bytes = bytes(design, "band")?;
     let (rgba, w, h) = crate::art::decode_png_bytes(bytes)?;
     Some(Band { rgba, size: (w, h) })
 }
 
 pub fn has_band(design: Design) -> bool {
-    bytes(design, false, "band").is_some()
+    bytes(design, "band").is_some()
 }
 
 #[cfg(test)]
@@ -187,11 +200,11 @@ mod tests {
     ];
 
     #[test]
-    fn every_design_has_its_frames_in_both_colours() {
+    fn every_design_has_its_frames() {
         for design in ALL {
-            for grey in [false, true] {
+            {
                 for &shape in shapes(design) {
-                    let side = side(design, grey, shape).expect("side frame decodes");
+                    let side = side(design, shape).expect("side frame decodes");
                     let [x0, y0, x1, y1] = side.window;
                     let (w, h) = side.size;
                     // The window is see-through in its middle.
@@ -201,7 +214,7 @@ mod tests {
                 }
                 let wants_band = matches!(design, Design::GbaClassic | Design::Gba | Design::GbaSp
                     | Design::GbaAlt | Design::GenesisClassic | Design::Genesis | Design::MegaDrive);
-                assert_eq!(band(design, grey).is_some(), wants_band, "{design:?}");
+                assert_eq!(band(design).is_some(), wants_band, "{design:?}");
             }
         }
     }

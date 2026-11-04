@@ -3,14 +3,14 @@
 Usage: python3 export.py <Watomsk 1080p dir> <assets/watomsk dir>
 
 <1080p dir> holds his console folders (GameBoy, GameBoyAdvance, NES, SNES,
-Genesis) from WatomsksOverlays-1080p. Every variant comes in black and in
-his dark grey (-G). Two kinds of files:
+Genesis) from WatomsksOverlays-1080p. Only his black variants ship (the
+dark grey -G ones were dropped, Siham 2026-11-04). Two kinds of files:
 
-* <name>[-g]-<3x2|4x3|16x9>.png: side frames, all 1080 high (his own
+* <name>-<3x2|4x3|16x9>.png: side frames, all 1080 high (his own
   resolution, so 3x panels stay sharp), the window cut for the full
   height at the system's shape (GB 10:9, GBA 3:2, home 4:3), centred. The
   app refits them to the real panel (fit_overlay).
-* <name>[-g]-band.png: the logo (opaque, on the frame's colour) for screens
+* <name>-band.png: the logo (opaque, on the frame's colour) for screens
   narrower than the picture: the game sits at the top and the logo is
   centred in the band below (fit_band). Drawn at his 1080p scale.
 
@@ -39,11 +39,6 @@ VARIANTS = {
                 ("Megadrive", "megadrive")],
 }
 SHAPE = {"GameBoy": 10 / 9, "GameBoyAdvance": 1.5, "NES": 4 / 3, "SNES": 4 / 3, "Genesis": 4 / 3}
-
-
-def grey_name(v):
-    head, _, tail = v.partition("-")
-    return f"{head}-G-{tail}" if tail else f"{head}-G"
 
 
 def side(src, W, H, aspect, logo=None):
@@ -109,28 +104,26 @@ def main(src_dir, out):
     os.makedirs(out, exist_ok=True)
     for console, vs in VARIANTS.items():
         for name, key in vs:
-            for grey in (False, True):
-                file = grey_name(name) if grey else name
-                src = C.load(f"{console}/{file}.png")
+            src = C.load(f"{console}/{name}.png")
+            if console == "Genesis":
+                src["sega"] = C.strip_info(src)
+            tag = key
+            shape = SHAPE[console]
+            if console == "GameBoy":
+                save(make.adapt(f"{src_dir}/{console}/{name}.png", (1620, 1080)),
+                     f"{out}/{tag}-3x2.png")
+                save(side(src, 1440, 1080, shape), f"{out}/{tag}-4x3.png")
+                save(src["im"], f"{out}/{tag}-16x9.png")
+            elif console == "GameBoyAdvance":
+                logo = gba_logo(src)
+                save(side(src, 1920, 1080, shape, logo.rotate(-90, expand=True)),
+                     f"{out}/{tag}-16x9.png")
+                save(logo, f"{out}/{tag}-band.png")
+            else:
+                save(side(src, 1620, 1080, shape), f"{out}/{tag}-3x2.png")
+                save(side(src, 1920, 1080, shape), f"{out}/{tag}-16x9.png")
                 if console == "Genesis":
-                    src["sega"] = C.strip_info(src)
-                tag = f"{key}-g" if grey else key
-                shape = SHAPE[console]
-                if console == "GameBoy":
-                    save(make.adapt(f"{src_dir}/{console}/{file}.png", (1620, 1080)),
-                         f"{out}/{tag}-3x2.png")
-                    save(side(src, 1440, 1080, shape), f"{out}/{tag}-4x3.png")
-                    save(src["im"], f"{out}/{tag}-16x9.png")
-                elif console == "GameBoyAdvance":
-                    logo = gba_logo(src)
-                    save(side(src, 1920, 1080, shape, logo.rotate(-90, expand=True)),
-                         f"{out}/{tag}-16x9.png")
-                    save(logo, f"{out}/{tag}-band.png")
-                else:
-                    save(side(src, 1620, 1080, shape), f"{out}/{tag}-3x2.png")
-                    save(side(src, 1920, 1080, shape), f"{out}/{tag}-16x9.png")
-                    if console == "Genesis":
-                        save(sega_logo(src), f"{out}/{tag}-band.png")
+                    save(sega_logo(src), f"{out}/{tag}-band.png")
 
 
 if __name__ == "__main__":

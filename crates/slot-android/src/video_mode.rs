@@ -265,7 +265,7 @@ pub fn home_rect(mode: VideoMode, aspect: f32, frame: (u32, u32), panel: (u32, u
 pub fn watomsk_fit(bezel: Bezel, platform: Platform, mode: VideoMode, panel: (u32, u32),
     home: (f32, (u32, u32))) -> Option<WatomskFit>
 {
-    let (design, _) = bezel.watomsk()?;
+    let design = bezel.watomsk()?;
     if !bezel_fits(bezel, mode) || !Bezel::list(platform).contains(&bezel) { return None; }
     let a = panel_aspect(panel);
     let (pw, ph) = (panel.0 as f32, panel.1 as f32);
@@ -398,8 +398,8 @@ mod tests {
         let gb = |b, p, m, panel| watomsk_fit(b, p, m, panel, nes);
         // GB/GBC: beside the picture on 3:2, 4:3, 16:9; not on squares.
         assert!(matches!(gb(Bezel::Gb, Platform::Gb, Aspect, (960, 640)), Some(Side(Shape::ThreeTwo, _))));
-        assert!(matches!(gb(Bezel::GbGrey, Platform::Gb, Actual, (1024, 768)), Some(Side(Shape::FourThree, _))));
-        assert!(matches!(gb(Bezel::ColorGrey, Platform::Gbc, Aspect, (1920, 1080)), Some(Side(Shape::SixteenNine, _))));
+        assert!(matches!(gb(Bezel::Pocket, Platform::Gb, Actual, (1024, 768)), Some(Side(Shape::FourThree, _))));
+        assert!(matches!(gb(Bezel::Color, Platform::Gbc, Aspect, (1920, 1080)), Some(Side(Shape::SixteenNine, _))));
         assert_eq!(gb(Bezel::Gb, Platform::Gb, Aspect, (720, 720)), None);
         assert_eq!(gb(Bezel::Gb, Platform::Gb, Aspect, (1240, 1080)), None);
         assert_eq!(gb(Bezel::Gb, Platform::Gb, Stretch, (960, 640)), None);
@@ -513,23 +513,23 @@ mod watomsk_preview {
         use slot_ui::fit_overlay::{fit_band, fit_overlay};
         let Ok(dir) = std::env::var("SLOT_OVERLAY_PREVIEW") else { return };
         let panels = [(960, 640), (1024, 768), (1920, 1080), (720, 720), (1240, 1080), (1280, 800)];
-        let cases = [(Platform::Gb, Bezel::Gb), (Platform::Gbc, Bezel::ColorGrey),
+        let cases = [(Platform::Gb, Bezel::Gb), (Platform::Gbc, Bezel::Color),
             (Platform::Gba, Bezel::GbaClassic), (Platform::Nes, Bezel::Nes),
-            (Platform::Snes, Bezel::SnesGrey), (Platform::Md, Bezel::GenesisClassic),
-            (Platform::Md, Bezel::MegaDriveGrey)];
+            (Platform::Snes, Bezel::SnesAlt), (Platform::Md, Bezel::GenesisClassic),
+            (Platform::Md, Bezel::MegaDrive)];
         for panel in panels {
             for (platform, bezel) in cases {
                 for mode in [VideoMode::Actual, VideoMode::Aspect] {
                     let home = (4.0 / 3.0, if platform == Platform::Md { (320, 224) } else { (256, 224) });
                     let Some(fit) = watomsk_fit(bezel, platform, mode, panel, home) else { continue };
-                    let (design, grey) = bezel.watomsk().unwrap();
+                    let design = bezel.watomsk().unwrap();
                     let (rgba, pic) = match fit {
                         WatomskFit::Side(shape, window) => {
-                            let side = slot_ui::watomsk::side(design, grey, shape).unwrap();
+                            let side = slot_ui::watomsk::side(design, shape).unwrap();
                             (fit_overlay(&side.art(), panel, window), window)
                         }
                         WatomskFit::Band(pic) => {
-                            let band = slot_ui::watomsk::band(design, grey).unwrap();
+                            let band = slot_ui::watomsk::band(design).unwrap();
                             (fit_band(&band.art(), panel, pic), pic)
                         }
                     };
