@@ -917,18 +917,23 @@ mod lab_negotiation_tests {
             let mut wire = TcpLink::host_lab_greeted_until(
                 "127.0.0.1", addr.port(), Duration::from_secs(5),
                 &Cancel::new(), &h_copy, || { ready.send(()).unwrap(); }).unwrap();
-            wire.exchange_mgba_peer_bios(&h_copy, &host_bios, &cache_a, &Cancel::new()).unwrap()
+            let got = wire.exchange_mgba_peer_bios(&h_copy, &host_bios, &cache_a, &Cancel::new()).unwrap();
+            // Keep the link open, as a session does: dropping it at once could
+            // shut the socket before the writer thread has sent Host's BIOS.
+            (got, wire)
         });
         listening.recv_timeout(Duration::from_secs(3)).unwrap();
         let mut guest = TcpLink::join_lab_greeted(addr, &g).unwrap();
         let guest_side = guest.exchange_mgba_peer_bios(&g, &b_dir.join("gba_bios.bin"),
             &b_dir.join("link-peer-cache"), &Cancel::new()).unwrap();
-        assert_eq!(host.join().unwrap(), PeerBios::BuiltIn,
+        let (host_side, host_wire) = host.join().unwrap();
+        assert_eq!(host_side, PeerBios::BuiltIn,
             "Join's GBA runs mGBA's built-in BIOS on Host too");
         let PeerBios::File(received) = guest_side else { panic!("Join needs Host's BIOS") };
         assert_eq!(fs::read(&received).unwrap(), bios);
         assert_eq!(received.parent().unwrap().file_name().unwrap(), "link-peer-cache");
         drop(guest);
+        drop(host_wire);
         fs::remove_dir_all(home).unwrap();
     }
 
