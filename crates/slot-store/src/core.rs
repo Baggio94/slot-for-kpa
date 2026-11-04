@@ -47,6 +47,14 @@ impl Core {
         self as usize
     }
 
+    /// A home console core that plays Multiplayer like RetroArch netplay:
+    /// one console on both devices, the second player on port 2. bsnes keeps
+    /// its own save file and cannot hand a session to another device.
+    pub fn netplay(self) -> bool {
+        matches!(self, Core::Fceumm | Core::Nestopia | Core::Snes9x
+            | Core::GenesisPlusGx | Core::Picodrive)
+    }
+
     /// The name RetroArch gives the core, also its save folder name.
     pub fn text(self) -> &'static str {
         match self {

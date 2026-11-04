@@ -108,9 +108,17 @@ pub struct LinkPlay {
     // Cable starts at upstream's 3-frame delay, then adapts (cable.rs).
     // Wireless passes bytes through the core's registered netpacket ABI.
     stalled_for_input: bool,
+    // A GBA state carries its BIOS checksum; other consoles' states don't.
+    bios_checked: bool,
 }
 
 impl LinkPlay {
+    /// For a console whose state has no GBA BIOS checksum to compare.
+    pub fn without_bios_check(mut self) -> Self {
+        self.bios_checked = false;
+        self
+    }
+
     /// Host sends the authoritative core state before receiving frame inputs.
     /// The guest restores this state before running any linked frame.
     pub fn begin(
@@ -159,6 +167,10 @@ impl LinkPlay {
                         }
                     }
                 } else if role == Role::Host {
+                    // Host starts from a load of what it sends, as Join does:
+                    // a load also resets what a state leaves out, such as
+                    // Genesis Plus GX's pads, on both consoles alike.
+                    core.unserialize(&state).map_err(|e| e.to_string())?;
                     for packet in cable::state_packets(&state) {
                         wire.send(NETPACKET_RELIABLE, &packet);
                     }
@@ -180,6 +192,7 @@ impl LinkPlay {
             waiting_for_input_since: None,
             last_poll_at: Instant::now(),
             stalled_for_input: false,
+            bios_checked: true,
         })
     }
 
@@ -371,7 +384,7 @@ impl LinkPlay {
                     Ok(local) => local,
                     Err(_) => return self.fail(LinkError::InvalidState),
                 };
-                if !link_state::same_bios(&state, &local) {
+                if self.bios_checked && !link_state::same_bios(&state, &local) {
                     return self.fail(LinkError::BiosMismatch);
                 }
                 if core.unserialize(&state).is_err() {

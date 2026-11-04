@@ -100,7 +100,7 @@ pub struct LinkConfig {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Backend { MgbaSlotCable, GpspNetpacket, GambatteGameLink }
+pub enum Backend { MgbaSlotCable, GpspNetpacket, GambatteGameLink, HomeNetplay }
 
 fn sha256_file(path: &Path, max_size: u64) -> io::Result<[u8; 32]> {
     let mut file = File::open(path)?;
@@ -161,6 +161,11 @@ fn portable_core_recipe(backend: Backend) -> [u8; 32] {
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/gambatte/netlink-framing.patch")),
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cores/gambatte/net_serial_io.h")),
         ],
+        // The core's own name is added by the caller: FCEUmm never plays
+        // against Nestopia.
+        Backend::HomeNetplay => &[
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/build-home-core-android.sh")),
+        ],
     };
     for bytes in files {
         digest.update(&(bytes.len() as u64).to_be_bytes());
@@ -198,14 +203,22 @@ impl LinkConfig {
             game,
             backend: match self.backend {
                 Backend::MgbaSlotCable => 1, Backend::GpspNetpacket => 2,
-                Backend::GambatteGameLink => 3,
+                Backend::GambatteGameLink => 3, Backend::HomeNetplay => 4,
             },
             mode: match self.mode {
                 LinkKind::Cable => 1, LinkKind::Wireless => 2,
             },
             rom_sha256: sha256_file(&self.rom, 128 * 1024 * 1024).map_err(|e|
                 io::Error::new(e.kind(), format!("read active ROM fingerprint: {e}")))?,
-            core_sha256: portable_core_recipe(self.backend),
+            core_sha256: if self.backend == Backend::HomeNetplay {
+                let mut digest = Context::new(&SHA256);
+                digest.update(&portable_core_recipe(self.backend));
+                digest.update(self.core_file.file_name().map_or(&[][..],
+                    |name| name.as_encoded_bytes()));
+                let mut hash = [0; 32];
+                hash.copy_from_slice(digest.finish().as_ref());
+                hash
+            } else { portable_core_recipe(self.backend) },
             bios_sha256,
         })
     }
@@ -297,7 +310,7 @@ fn stage_mgba_peer(link: &mut TcpLink, local: &LabGreeting,
     }
     match config.backend {
         Backend::MgbaSlotCable => link.exchange_mgba_peer_rom(local, &config.rom, cancel),
-        Backend::GpspNetpacket | Backend::GambatteGameLink => Ok(None),
+        Backend::GpspNetpacket | Backend::GambatteGameLink | Backend::HomeNetplay => Ok(None),
     }
 }
 

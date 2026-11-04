@@ -100,7 +100,7 @@ impl LabGreeting {
     }
     fn decode(bytes:&[u8])->Option<Self>{
         if bytes.len()!=LAB_GREETING_LEN || &bytes[0..4]!=b"KMLB" ||
-            !matches!((bytes[4], bytes[9]), (5, 1) | (3, 2) | (3, 3)) {return None;}
+            !matches!((bytes[4], bytes[9]), (5, 1) | (3, 2) | (3, 3) | (3, 4)) {return None;}
         let mut game=[0;4]; game.copy_from_slice(&bytes[5..9]);
         let mut rom_sha256=[0;32];rom_sha256.copy_from_slice(&bytes[11..43]);
         let mut core_sha256=[0;32];core_sha256.copy_from_slice(&bytes[43..75]);

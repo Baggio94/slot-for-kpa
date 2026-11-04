@@ -117,6 +117,7 @@ fn session(root: &Path, failure: Failure) -> (GameSession, Arc<Mutex<Calls>>) {
         link: None,
         game_link: None,
         link_touched: false,
+        home_netplay: None,
         linked_boot: None,
         gpsp_serial: "auto",
         rom_path: root.join("test.gba"),
