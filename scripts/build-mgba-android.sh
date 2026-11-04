@@ -86,14 +86,11 @@ python3 "$ROOT/scripts/patch-mgba-active-sram.py" "$SRC"
 python3 "$ROOT/scripts/patch-mgba-sun.py" "$SRC"
 # TWB64 028 Game.com Ver., slot.'s default Game Boy palette.
 python3 "$ROOT/scripts/patch-mgba-twb64.py" "$SRC"
-# Retain the Game Boy LCD reactivation blank-frame fix from build 266.
-# Native diagnostic monitor is Android-only; the core links Android's liblog
-# to report a stalled GB Link from its separate monitor thread even when the
-# main GL emulation thread never returns from SM83Run().
-# GB/GBC Link scheduler hooks and stall probes in SM83Run, GBProcessEvents and
-# the GB SIO lockstep. They run only while two Game Boys are linked; solo play
-# runs mGBA's own SM83Run and GBProcessEvents unchanged.
-python3 "$ROOT/scripts/patch-mgba-gb-inner-trace.py" "$SRC"
+# The two linked Game Boys share a direct cable inside this one core instead
+# of mGBA's thread lockstep: no parked CPU, no lost fast-clock byte, the same
+# result on both consoles (tools/gb-link-test checks it in CI). The core links
+# Android's liblog for the Link messages it reports.
+python3 "$ROOT/scripts/patch-mgba-gb-direct-cable.py" "$SRC"
 # Cable Link: the other player's GBA runs on that player's own BIOS (or
 # mGBA's built-in one), so the two consoles never need the same BIOS file.
 python3 "$ROOT/scripts/patch-mgba-link-peer-bios.py" "$SRC"
@@ -165,6 +162,6 @@ fi
 # F11: machine-readable provenance shipped INSIDE the APK. These fields
 # record the exact pinned source and safety patches used in this binary.
 cat > "$ROOT/android/app/src/main/assets/core-build-mgba.json" <<EOF
-{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","gb-blank-frame-after-lcd-on.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py","patch-mgba-sun.py","patch-mgba-twb64.py","patch-mgba-gb-inner-trace.py","patch-mgba-link-peer-bios.py"],"gb_link_diagnostics":"android_spin_monitor_v1_inner_trace_v2_link_only"}
+{"core":"mgba","revision":"$PIN","patches":["685023e05-fifo-dma-source-offset.patch","gb-audio-capacitor.patch","gb-audio-stopped-channel.patch","link-mode.patch","zz-gb-link-mode.patch","zz-link-peer-frameskip.patch","zz-link-peer-silence.patch","zz-gb-link-rtc.patch","flash-bank-survives-mask.patch","gb-dmg-palette-follows-option.patch","543a19758-mbc2-sram-bank.patch","gb-blank-frame-after-lcd-on.patch","patch-mgba-speculative-audio.py","patch-mgba-active-sram.py","patch-mgba-sun.py","patch-mgba-twb64.py","patch-mgba-gb-direct-cable.py","patch-mgba-link-peer-bios.py"],"gb_link":"direct_cable_v1"}
 EOF
 echo "mGBA arm64 libretro: $DEST/libmgba_libretro.so"

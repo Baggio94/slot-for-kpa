@@ -101,11 +101,13 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: Validate core patch scripts
-        run: python3 -m py_compile scripts/patch-mgba-speculative-audio.py scripts/patch-gpsp-speculative-audio.py scripts/patch-mgba-active-sram.py scripts/patch-mgba-sun.py scripts/patch-mgba-twb64.py scripts/patch-mgba-gb-inner-trace.py scripts/patch-mgba-link-peer-bios.py scripts/patch-gpsp-backend-diagnostic.py
+        run: python3 -m py_compile scripts/patch-mgba-speculative-audio.py scripts/patch-gpsp-speculative-audio.py scripts/patch-mgba-active-sram.py scripts/patch-mgba-sun.py scripts/patch-mgba-twb64.py scripts/patch-mgba-gb-direct-cable.py scripts/patch-mgba-link-peer-bios.py scripts/patch-gpsp-backend-diagnostic.py
       - name: Build mGBA arm64 libretro core
         run: |
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
           bash scripts/build-mgba-android.sh
+      - name: Test the Game Boy Link cable (host build of the same mGBA source)
+        run: bash tools/gb-link-test/test.sh
       - name: Build gpSP arm64 libretro core
         run: |
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
@@ -271,6 +273,7 @@ jobs:
           assert "patch-mgba-sun.py" in mgba["patches"]
           assert "patch-mgba-twb64.py" in mgba["patches"]
           assert "patch-mgba-link-peer-bios.py" in mgba["patches"]
+          assert "patch-mgba-gb-direct-cable.py" in mgba["patches"]
           assert "aw-session-reset.patch" in gpsp["patches"]
           assert "patch-gpsp-backend-diagnostic.py" in gpsp["patches"]
           assert gpsp["native_aw_harness"] == "asan-passed"

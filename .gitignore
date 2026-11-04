@@ -30,3 +30,4 @@
 # The signed APK bundles only the selected packaged assets and native libs.
 /.build/
 /studio-upstream/
+__pycache__/
