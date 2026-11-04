@@ -220,6 +220,8 @@ pub enum Shader {
     Agb001, Ags001, SharpBilinear,
     // NES, Super Nintendo and Mega Drive (Siham 2026-11-04).
     ZfastCrt, CrtGdvTrinitron, CrtGeomDeluxe, CrtPi,
+    // Light ones for the weaker GPUs (Siham 2026-11-05).
+    Fakelottes, CrtAperture,
 }
 impl Shader {
     // Exactly ten GBA RetroArch shaders plus Off, preserving the backward
@@ -235,9 +237,10 @@ impl Shader {
         Self::ZfastLcd, Self::Lcd1x, Self::LcdGridV2, Self::SharpBilinear, Self::Dot,
     ];
     /// NES / Super Nintendo / Mega Drive: Off, then Siham's CRT list with
-    /// zfast-crt first (the default).
-    pub const HOME: [Self; 5] = [
-        Self::Off, Self::ZfastCrt, Self::CrtGdvTrinitron, Self::CrtGeomDeluxe, Self::CrtPi,
+    /// zfast-crt first (the default), fakelottes second, crt-aperture third.
+    pub const HOME: [Self; 7] = [
+        Self::Off, Self::ZfastCrt, Self::Fakelottes, Self::CrtAperture,
+        Self::CrtGdvTrinitron, Self::CrtGeomDeluxe, Self::CrtPi,
     ];
     pub fn effect(self) -> ScreenEffect {
         match self {
@@ -258,6 +261,8 @@ impl Shader {
             Self::CrtGdvTrinitron => ScreenEffect::CrtGdvMiniUltra,
             Self::CrtGeomDeluxe => ScreenEffect::CrtGeomDeluxe,
             Self::CrtPi => ScreenEffect::CrtPi,
+            Self::Fakelottes => ScreenEffect::Fakelottes,
+            Self::CrtAperture => ScreenEffect::CrtAperture,
         }
     }
     pub fn includes_gba_color(self) -> bool {

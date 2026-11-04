@@ -28,6 +28,8 @@ pub enum ScreenEffect {
     CrtPi,
     CrtGdvMiniUltra,
     CrtGeomDeluxe,
+    Fakelottes,
+    CrtAperture,
 }
 
 impl ScreenEffect {

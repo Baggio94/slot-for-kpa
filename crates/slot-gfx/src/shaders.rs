@@ -192,6 +192,93 @@ vec3 pixel_aa(vec2 uv) {
     vec3 d = aa_tap(at + step1);
     return pow(mix(mix(a, b, t.x), mix(c, d, t.x), t.y), vec3(1.0/2.2));
 }
+/* hunterk's fakelottes: crt-lottes' shadow mask and gamma with a sine
+   scanline, in one cheap pass. Its defaults (mask 1, maskDark 0.5,
+   maskLight 1.5, CRT gamma 2.5, monitor gamma 2.2, scanline 0.95 + 0.40
+   sine), bilinear input as its preset; without its curvature, as CRT
+   Geom Deluxe here. */
+vec3 fakelottes_mask(vec2 pos) {
+    vec3 mask = vec3(0.5);
+    float line = 1.5;
+    float odd = 0.0;
+    if (fract(pos.x*0.166666666) < 0.5) odd = 1.0;
+    if (fract((pos.y + odd)*0.5) < 0.5) line = 0.5;
+    pos.x = fract(pos.x*0.333333333);
+    if (pos.x < 0.333) mask.r = 1.5;
+    else if (pos.x < 0.666) mask.g = 1.5;
+    else mask.b = 1.5;
+    return mask*line;
+}
+vec3 fakelottes(vec2 uv) {
+    vec3 res = pow(nearest_bilinear(uv), vec3(2.5));
+    res *= fakelottes_mask(gl_FragCoord.xy*1.0001);
+    // Its sine has no horizontal part at the defaults (SINE_COMP_A 0).
+    float sine = sin((uv.y - 0.25/u_src.y)*6.283*u_src.y);
+    res *= 0.95 + 0.40*sine;
+    return pow(max(res, vec3(0.0)), vec3(1.0/2.2));
+}
+/* EasyMode's crt-aperture (GPL), already one pass: Gaussian glow, two
+   Lanczos sharpness taps, beam-shaped scanlines and an aperture-grille
+   mask, at its defaults. */
+vec3 aperture_tap(vec2 at) {
+    // pow(texel, 2.4) as GLSL defines pow, exp2(y*log2(x)): Mesa's llvmpipe
+    // miscompiles a pow straight on a texture fetch in this program.
+    vec3 t = texture2D(u_game, at).rgb;
+    return exp2(log2(max(t, vec3(1e-5)))*2.4);
+}
+vec3 aperture_blur(vec3 a, vec3 b, vec3 c, float dist, float rad) {
+    vec3 x = vec3(dist - 1.0, dist, dist + 1.0)/rad;
+    vec3 w = exp2(x*x*-1.0);
+    return (a*w.x + b*w.y + c*w.z)/(w.x + w.y + w.z);
+}
+vec3 aperture_gaussian(vec2 co) {
+    vec2 dx = vec2(1.0/u_src.x, 0.0);
+    vec2 dy = vec2(0.0, 1.0/u_src.y);
+    vec2 pix = co*u_src;
+    vec2 tc = (floor(pix) + 0.5)/u_src;
+    vec2 dist = (fract(pix) - 0.5)*-1.0;
+    vec3 l0 = aperture_blur(aperture_tap(tc-dy-dx), aperture_tap(tc-dy), aperture_tap(tc-dy+dx), dist.x, 0.5);
+    vec3 l1 = aperture_blur(aperture_tap(tc-dx), aperture_tap(tc), aperture_tap(tc+dx), dist.x, 0.5);
+    vec3 l2 = aperture_blur(aperture_tap(tc+dy-dx), aperture_tap(tc+dy), aperture_tap(tc+dy+dx), dist.x, 0.5);
+    return aperture_blur(l0, l1, l2, dist.y, 0.5);
+}
+vec3 aperture_lanczos(vec2 co, float sharp) {
+    vec2 size = vec2(u_src.x*sharp, u_src.y);
+    vec2 dx = vec2(1.0/size.x, 0.0);
+    vec2 pix = co*size - vec2(0.5, 0.0);
+    vec2 tc = (floor(pix) + vec2(0.5, 0.0))/size;
+    float d = fract(pix.x);
+    vec4 coef = 3.141592653589*vec4(d + 1.0, d, d - 1.0, d - 2.0);
+    coef = max(abs(coef), vec4(1e-5));
+    coef = 2.0*sin(coef)*sin(coef/2.0)/(coef*coef);
+    coef /= dot(coef, vec4(1.0));
+    vec3 c1 = aperture_tap(tc);
+    vec3 c2 = aperture_tap(tc + dx);
+    return c1*(coef.x + coef.y) + c2*(coef.z + coef.w);
+}
+vec3 crt_aperture(vec2 uv) {
+    // Screen pixels per source row (crt_out_px().y, defined further down).
+    float scale = floor((u_rect.w*u_fbo.y)/(u_uv.w*u_src.y) + 0.001);
+    float offset = 1.0/scale*0.5;
+    if (mod(scale, 2.0) > 0.5) offset = 0.0;
+    vec2 co = (uv*u_src - vec2(0.0, offset))/u_src;
+    vec3 glow = aperture_gaussian(co);
+    vec3 soft = aperture_lanczos(co, 1.0);
+    vec3 sharp = aperture_lanczos(co, 3.0);
+    vec3 col = sqrt(sharp*soft);
+    // Scanline weight, beam from 0.5 to 1.5 rows, shape 1.5.
+    vec3 beam = mix(vec3(0.5), vec3(1.5), pow(soft, vec3(1.0/1.5)));
+    vec3 xm = 2.0/beam;
+    vec3 xo = xm*0.5;
+    col *= smoothstep(0.0, 1.0, 1.0 - abs(fract(co.y*u_src.y)*xm - xo))*xo;
+    glow = clamp(glow - col, 0.0, 1.0);
+    col += glow*glow*0.1;
+    // Two-colour aperture grille, one screen pixel per stripe, strength 0.3.
+    vec3 mask = mod(floor(gl_FragCoord.x), 2.0) < 0.5 ? vec3(1.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+    col = mix(col, col*mask*2.0, 0.3);
+    col += glow*0.05;
+    return pow(max(col*1.5, vec3(0.0)), vec3(1.0/2.4));
+}
 /* CRT presets for the home consoles (libretro glsl/slang-shaders, GPL; see
    licenses/shaders.txt). One pass each: slot. draws the game in a single
    pass, so multi-pass parts are folded in or approximated as noted. */
@@ -355,6 +442,10 @@ void main() {
         // Outside the picture (a home console's side bands at Integer or
         // Original Ratio): black, as RetroArch, never the edge texel smeared.
         c = vec3(0.0);
+    } else if (u_mode > 17.5) {
+        c = crt_aperture(uv);
+    } else if (u_mode > 16.5) {
+        c = fakelottes(uv);
     } else if (u_mode > 15.5) {
         c = crt_geom_deluxe(uv);
     } else if (u_mode > 14.5) {

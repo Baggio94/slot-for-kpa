@@ -596,7 +596,7 @@ const RECENTS_RACK: usize = Platform::ALL.len();
 const FAVORITES_RACK: usize = RECENTS_RACK + 1;
 
 /// Every Settings value face, by index: setting_face gives these indices.
-const SETTING_VALUE_NAMES: [&str; 94] = ["2×", "3×", "4×", "6×", "ON", "OFF",
+const SETTING_VALUE_NAMES: [&str; 96] = ["2×", "3×", "4×", "6×", "ON", "OFF",
                               "LCD3x", "Grid", "Dot", "Simpletex",
                               "STANDARD", "RESPONSIVE", "1 FRAME", "2 FRAMES",
                               "DISPLAY SYNC", "TURBO A/B", "A/B",
@@ -618,7 +618,8 @@ const SETTING_VALUE_NAMES: [&str; 94] = ["2×", "3×", "4×", "6×", "ON", "OFF"
                                "NES", "NES SILVER",
                                "SNES", "SNES ALT", "SNES SILVER", "SNES SILVER ALT",
                                "GENESIS CLASSIC", "GENESIS", "MEGA DRIVE",
-                               "zfast-crt", "GDV Trinitron", "CRT Geom Deluxe", "crt-pi"];
+                               "zfast-crt", "GDV Trinitron", "CRT Geom Deluxe", "crt-pi",
+                               "fakelottes", "crt-aperture"];
 
 /// The value face (an index in SETTING_VALUE_NAMES) a Settings key shows,
 /// None for an action-only row. Every key a menu lists must have one: the
@@ -636,6 +637,7 @@ fn setting_face(key: usize, settings: &Settings, scoped: &Settings,
          Shader::Ags001 => 33, Shader::SharpBilinear => 34,
          Shader::ZfastCrt => 90, Shader::CrtGdvTrinitron => 91,
          Shader::CrtGeomDeluxe => 92, Shader::CrtPi => 93,
+         Shader::Fakelottes => 94, Shader::CrtAperture => 95,
     };
     Some(match key {
         0 => shader(scoped.shader_gba),
@@ -1790,6 +1792,8 @@ impl Engine {
                      crate::settings::Shader::CrtGdvTrinitron => Toast::ShaderCrtGdv,
                      crate::settings::Shader::CrtGeomDeluxe => Toast::ShaderCrtGeomDeluxe,
                      crate::settings::Shader::CrtPi => Toast::ShaderCrtPi,
+                     crate::settings::Shader::Fakelottes => Toast::ShaderFakelottes,
+                     crate::settings::Shader::CrtAperture => Toast::ShaderCrtAperture,
                 }, time);
             }
             100 => {
