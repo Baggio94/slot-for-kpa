@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
-"""Diagnostic-only mGBA GB Link probes for non-root KPA freeze investigation.
+"""mGBA Game Boy Link scheduler hooks and stall probes, gated to Link play.
 
-Only used by the special ARM64 mGBA libretro build; never bundled in GBA Link
-or gpSP cores. The export is defined in zz-gb-link-mode.patch and inspected
-by the existing independent Android monitor.
+The GB/GBC Link scheduler (zz-gb-link-mode.patch) parks a Game Boy that waits
+for its peer and must hand control back to slot. from inside SM83Run and
+GBProcessEvents. The same places carry read-only probes that the Android
+monitor reports when a linked frame stalls.
+
+None of it runs in solo play: every hook sits behind slot_mgba_gb_link_hooks,
+raised only while two Game Boys are plugged together (_linkPlugGB) and
+lowered when they are unplugged. With the flag down SM83Run and
+GBProcessEvents run mGBA's own code, instruction for instruction.
 
 Idempotent and fail-closed: anchored source must match the pinned mGBA commit.
-No emulated cycles, CPU instructions, event timing, serial state, or saves are
-changed by this patch. Intended only for draft investigation.
 """
 from pathlib import Path
 import sys
 
 src = Path(sys.argv[1])
-trace = "slot_mgba_gb_link_inner_trace"
+MARK = "SLOT_GB_INNER_TRACE_V2"
 
 def replace(path, changes):
     p = src / path
     text = p.read_text()
-    if "SLOT_GB_INNER_TRACE_V1" in text:
+    if MARK in text:
         print(f"Already instrumented: {path}")
         return
     for label, before, after in changes:
@@ -28,6 +32,14 @@ def replace(path, changes):
         text = text.replace(before, after, 1)
     p.write_text(text)
     print(f"Instrumented: {path}")
+
+DECLS = """/* SLOT_GB_INNER_TRACE_V2 */
+extern int slot_mgba_gb_link_hooks;
+extern void slot_mgba_gb_link_inner_trace(unsigned, unsigned, unsigned);
+extern void slot_mgba_gb_link_mark_fault(void);
+extern uint32_t slot_mgba_gb_link_fault(void);
+extern bool slot_mgba_gb_link_should_yield(const struct SM83Core*);
+"""
 
 replace("src/sm83/sm83.c", [
     ("SM83Run",
@@ -43,13 +55,13 @@ replace("src/sm83/sm83.c", [
 \t}
 }
 """,
-     """/* SLOT_GB_INNER_TRACE_V1 */
-extern void slot_mgba_gb_link_inner_trace(unsigned, unsigned, unsigned);
-extern void slot_mgba_gb_link_mark_fault(void);
-extern uint32_t slot_mgba_gb_link_fault(void);
-extern bool slot_mgba_gb_link_should_yield(const struct SM83Core*);
-
-void SM83Run(struct SM83Core* cpu) {
+     DECLS.replace("/* SLOT_GB_INNER_TRACE_V2 */\n",
+                   "/* SLOT_GB_INNER_TRACE_V2 */\n"
+                   "/* Raised only while two Game Boys are linked (libretro.c). */\n"
+                   "__attribute__((visibility(\"hidden\"))) int slot_mgba_gb_link_hooks = 0;\n"
+                   "\n").replace("extern int slot_mgba_gb_link_hooks;\n", "") +
+     """
+static void _SM83RunLinked(struct SM83Core* cpu) {
 \tbool running = true;
 \tunsigned diagnosticLoops = 0;
 \twhile (running || cpu->executionState != SM83_CORE_FETCH) {
@@ -83,6 +95,22 @@ void SM83Run(struct SM83Core* cpu) {
 \t\t}
 \t}
 }
+
+void SM83Run(struct SM83Core* cpu) {
+\tif (slot_mgba_gb_link_hooks) {
+\t\t_SM83RunLinked(cpu);
+\t\treturn;
+\t}
+\tbool running = true;
+\twhile (running || cpu->executionState != SM83_CORE_FETCH) {
+\t\tif (cpu->cycles < cpu->nextEvent) {
+\t\t\trunning = _SM83TickInternal(cpu) && running;
+\t\t} else {
+\t\t\tcpu->irqh.processEvents(cpu);
+\t\t\trunning = false;
+\t\t}
+\t}
+}
 """),
 ])
 
@@ -93,17 +121,13 @@ replace("src/gb/gb.c", [
 \tbool wasHalted = cpu->halted;
 \twhile (true) {
 """,
-     """/* SLOT_GB_INNER_TRACE_V1 */
-extern void slot_mgba_gb_link_inner_trace(unsigned, unsigned, unsigned);
-extern void slot_mgba_gb_link_mark_fault(void);
-extern uint32_t slot_mgba_gb_link_fault(void);
-extern bool slot_mgba_gb_link_should_yield(const struct SM83Core*);
-
+     DECLS + """
 void GBProcessEvents(struct SM83Core* cpu) {
 \tstruct GB* gb = (struct GB*) cpu->master;
 \tbool wasHalted = cpu->halted;
+\tconst bool linked = slot_mgba_gb_link_hooks != 0;
 \tunsigned diagnosticEventTicks = 0;
-\tslot_mgba_gb_link_inner_trace(21, cpu->pc, cpu->cycles);
+\tif (linked) slot_mgba_gb_link_inner_trace(21, cpu->pc, cpu->cycles);
 \twhile (true) {
 """),
     ("GB tick call",
@@ -112,6 +136,10 @@ void GBProcessEvents(struct SM83Core* cpu) {
 \t\t\t} while (gb->cpuBlocked);
 """,
      """\t\t\tdo {
+\t\t\t\tif (!linked) {
+\t\t\t\t\tnextEvent = mTimingTick(&gb->timing, nextEvent);
+\t\t\t\t\tcontinue;
+\t\t\t\t}
 \t\t\t\tslot_mgba_gb_link_inner_trace(22, cpu->pc, nextEvent);
 \t\t\t\tnextEvent = mTimingTick(&gb->timing, nextEvent);
 \t\t\t\tslot_mgba_gb_link_inner_trace(23, cpu->pc, nextEvent);
@@ -140,7 +168,7 @@ void GBProcessEvents(struct SM83Core* cpu) {
 }
 
 void GBSetInterrupts(struct SM83Core* cpu, bool enable) {""",
-     """\tslot_mgba_gb_link_inner_trace(24, cpu->pc, cpu->cycles);
+     """\tif (linked) slot_mgba_gb_link_inner_trace(24, cpu->pc, cpu->cycles);
 \tgb->earlyExit = false;
 }
 
@@ -153,7 +181,7 @@ replace("src/gb/sio/lockstep.c", [
 \tstruct GBSIOLockstepNode* node = user;
 \tmLockstepLock(&node->p->d);
 """,
-     """/* SLOT_GB_INNER_TRACE_V1 */
+     """/* SLOT_GB_INNER_TRACE_V2: lockstep nodes exist only while linked. */
 extern void slot_mgba_gb_link_inner_trace(unsigned, unsigned, unsigned);
 
 static void _GBSIOLockstepNodeProcessEvents(struct mTiming* timing, void* user, uint32_t cyclesLate) {
@@ -177,4 +205,39 @@ static void GBSIOLockstepNodeWriteSB(""",
 }
 
 static void GBSIOLockstepNodeWriteSB("""),
+])
+
+# The flag follows the two Game Boys' cable: up once both nodes are attached,
+# down before they are detached.
+replace("src/platform/libretro/libretro.c", [
+    ("GB hooks flag",
+     """static void _linkPlugInGB(void) {
+""",
+     """/* SLOT_GB_INNER_TRACE_V2: defined in sm83.c, read by SM83Run and
+ * GBProcessEvents. */
+extern int slot_mgba_gb_link_hooks;
+
+static void _linkPlugInGB(void) {
+"""),
+    ("GB plug",
+     """\tlinkPlugged = true;
+\tlinkStuck = false;
+\t_gbDiagStart();
+}
+""",
+     """\tlinkPlugged = true;
+\tlinkStuck = false;
+\t_gbDiagStart();
+\t/* SLOT_GB_INNER_TRACE_V2 */
+\tslot_mgba_gb_link_hooks = 1;
+}
+"""),
+    ("GB unplug",
+     """static void _linkUnplugGB(void) {
+\t_gbDiagStop();
+""",
+     """static void _linkUnplugGB(void) {
+\tslot_mgba_gb_link_hooks = 0;
+\t_gbDiagStop();
+"""),
 ])
