@@ -92,6 +92,12 @@ jobs:
           PY
       - name: Test Android library
         run: cargo test -p slot-android --lib
+      - name: Test every menu row shows its value (runtime menus)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y libegl-dev
+          cargo test -p slot-android --features runtime-tests --lib runtime:: 2>&1 | tee "$RUNNER_TEMP/menu-tests.log"
+          grep -F 'test runtime::settings_value_tests::every_settings_row_shows_its_value ... ok' "$RUNNER_TEMP/menu-tests.log"
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: Validate core patch scripts

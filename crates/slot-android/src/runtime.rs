@@ -583,6 +583,114 @@ const SYSTEM_TITLES: [usize; 6] = [91, 92, 93, 121, 122, 123];
 const RECENTS_RACK: usize = Platform::ALL.len();
 const FAVORITES_RACK: usize = RECENTS_RACK + 1;
 
+/// Every Settings value face, by index: setting_face gives these indices.
+const SETTING_VALUE_NAMES: [&str; 94] = ["2×", "3×", "4×", "6×", "ON", "OFF",
+                              "LCD3x", "Grid", "Dot", "Simpletex",
+                              "STANDARD", "RESPONSIVE", "1 FRAME", "2 FRAMES",
+                              "DISPLAY SYNC", "TURBO A/B", "A/B",
+                              "None", "Random", "Default", "DEFAULT BLUR",
+                              "Dark", "Light", "Low", "Medium", "High", "Custom",
+                               "LCD Grid V2", "Grid V2 + GBA", "zfast LCD",
+                               "LCD1x", "Simpletex + GBA", "AGB-001",
+                               "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
+                               "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN",
+                               "RA CLOCK LAB", "RETROARCH", "NATIVE",
+                               "SLOT.", "GAME BOY", "POCKET", "COLOR",
+                               "mGBA", "gpSP", "Gambatte", "SENSOR",
+                               "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+                               "Shelf", "AUTO",
+                               "INTEGER", "ORIGINAL RATIO", "STRETCH",
+                               "FCEUmm", "Nestopia", "Snes9x", "bsnes",
+                               "Genesis Plus GX", "PicoDrive", "Original",
+                               "GBA CLASSIC", "GBA", "GBA SP", "GBA ALT",
+                               "NES", "NES SILVER",
+                               "SNES", "SNES ALT", "SNES SILVER", "SNES SILVER ALT",
+                               "GENESIS CLASSIC", "GENESIS", "MEGA DRIVE",
+                               "zfast-crt", "GDV Trinitron", "CRT Geom Deluxe", "crt-pi"];
+
+/// The value face (an index in SETTING_VALUE_NAMES) a Settings key shows,
+/// None for an action-only row. Every key a menu lists must have one: the
+/// test every_settings_row_shows_its_value checks all menus on all screens.
+fn setting_face(key: usize, settings: &Settings, scoped: &Settings,
+                profile: &EmulationProfile, cart: Platform, video: VideoMode,
+                cores: &[Core]) -> Option<usize> {
+    use crate::settings::Shader;
+    let shader = |shader| match shader {
+        Shader::Off => 5, Shader::Lcd3x => 6, Shader::Grid => 7,
+        Shader::Dot => 8, Shader::Simpletex => 9,
+         Shader::LcdGridV2 => 27, Shader::LcdGridV2Gba => 28,
+         Shader::ZfastLcd => 29, Shader::Lcd1x => 30,
+         Shader::SimpletexGba => 31, Shader::Agb001 => 32,
+         Shader::Ags001 => 33, Shader::SharpBilinear => 34,
+         Shader::ZfastCrt => 90, Shader::CrtGdvTrinitron => 91,
+         Shader::CrtGeomDeluxe => 92, Shader::CrtPi => 93,
+    };
+    Some(match key {
+        0 => shader(scoped.shader_gba),
+        1 => shader(scoped.shader_gb),
+        2 => if scoped.shader_for(cart).includes_gba_color() {42}
+             else if scoped.colour_for(cart) {4}else{5},
+        3 => if scoped.gb_palettes { 4 } else { 5 },
+        4 => match scoped.ff_speed { 0 => 5, 2 => 0, 3 => 1, 4 => 2, _ => 3 },
+        5 => if scoped.ff_sound { 4 } else { 5 },
+        6 => if !scoped.rewind { 5 } else {
+            match scoped.rewind_speed { 1 => 38, 2 => 39, 3 => 40, _ => 41 }
+        },
+        7 => if scoped.turbo { 15 } else { 16 },
+        8 => if scoped.rumble { 4 } else { 5 },
+        9 => if scoped.eject_save { 4 } else { 5 },
+        10 => if profile.show_fps { 4 } else { 5 },
+        11 => if profile.responsive_loop { 11 } else { 45 },
+        12 => match profile.run_ahead_frames { 1 => 12, 2 => 13, _ => 5 },
+        13 => if settings.show_wifi { 4 } else { 5 },
+        14 => if settings.show_bluetooth { 4 } else { 5 },
+        15 => if settings.show_integrations { 4 } else { 5 },
+        16 => match &settings.wallpaper {
+            crate::settings::WallpaperPick::None => 17,
+            crate::settings::WallpaperPick::Random => 18,
+            crate::settings::WallpaperPick::Shelf => 65,
+            crate::settings::WallpaperPick::Default => 19,
+            crate::settings::WallpaperPick::Blur => 20,
+            crate::settings::WallpaperPick::File(_) => 26,
+        },
+        17 => match settings.wallpaper_tint {
+            crate::settings::WallpaperTint::Off => 5,
+            crate::settings::WallpaperTint::Low => 23,
+            crate::settings::WallpaperTint::Medium => 24,
+            crate::settings::WallpaperTint::High => 25,
+        },
+        18 => match settings.appearance {
+            crate::settings::Appearance::Dark => 21,
+            crate::settings::Appearance::Light => 22,
+            crate::settings::Appearance::Original => 76,
+        },
+        19 => if settings.show_recents {4}else{5},
+        20 => if settings.show_titles {4}else{5},
+        21 => shader(scoped.shader_gbc),
+        47 => shader(scoped.shader_nes),
+        48 => shader(scoped.shader_snes),
+        49 => shader(scoped.shader_md),
+        22 => if scoped.shader_gba.includes_gba_color() { 42 }
+            else if scoped.colour_correction_gba {4}else{5},
+        23 => if scoped.colour_correction_gbc {4}else{5},
+        24 => if scoped.colour_correction_gb {4}else{5},
+        25 => bezel_value(scoped.bezel_for(Platform::Gba)),
+        44 => bezel_value(scoped.bezel_nes),
+        45 => bezel_value(scoped.bezel_snes),
+        46 => bezel_value(scoped.bezel_md),
+        SCREEN_SIZE_KEY => SCREEN_SIZE_VALUE + match video {
+            VideoMode::Actual => 0, VideoMode::Aspect => 1, VideoMode::Stretch => 2,
+        },
+        26 => bezel_value(scoped.bezel_gbc),
+        27 => bezel_value(scoped.bezel_gb),
+        28 => if settings.time_format==crate::settings::TimeFormat::TwelveHour
+            {35}else{36},
+        29..=31 | 41..=43 => core_value(Engine::core_key_platform(key)
+            .map_or(Core::Mgba, |platform| cores[platform as usize])),
+        _ => return None,
+    })
+}
+
 /// A core's name among the setting values.
 fn core_value(core: Core) -> usize {
     match core {
@@ -1150,29 +1258,7 @@ impl Engine {
         ].map(|face| {
             (gpu.create_face(&face), face.w)
         });
-        let setting_values = ["2×", "3×", "4×", "6×", "ON", "OFF",
-                              "LCD3x", "Grid", "Dot", "Simpletex",
-                              "STANDARD", "RESPONSIVE", "1 FRAME", "2 FRAMES",
-                              "DISPLAY SYNC", "TURBO A/B", "A/B",
-                              "None", "Random", "Default", "DEFAULT BLUR",
-                              "Dark", "Light", "Low", "Medium", "High", "Custom",
-                               "LCD Grid V2", "Grid V2 + GBA", "zfast LCD",
-                               "LCD1x", "Simpletex + GBA", "AGB-001",
-                               "AGS-001", "Sharp Bilinear", "12 HR", "24 HR",
-                               "SYNC LAB", "1×", "2×", "3×", "5×", "BUILT-IN",
-                               "RA CLOCK LAB", "RETROARCH", "NATIVE",
-                               "SLOT.", "GAME BOY", "POCKET", "COLOR",
-                               "mGBA", "gpSP", "Gambatte", "SENSOR",
-                               "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
-                               "Shelf", "AUTO",
-                               "INTEGER", "ORIGINAL RATIO", "STRETCH",
-                               "FCEUmm", "Nestopia", "Snes9x", "bsnes",
-                               "Genesis Plus GX", "PicoDrive", "Original",
-                               "GBA CLASSIC", "GBA", "GBA SP", "GBA ALT",
-                               "NES", "NES SILVER",
-                               "SNES", "SNES ALT", "SNES SILVER", "SNES SILVER ALT",
-                               "GENESIS CLASSIC", "GENESIS", "MEGA DRIVE",
-                               "zfast-crt", "GDV Trinitron", "CRT Geom Deluxe", "crt-pi"]
+        let setting_values = SETTING_VALUE_NAMES
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
                 let tex = gpu.create_face(&face);
@@ -3902,7 +3988,10 @@ impl Engine {
     // (video_mode::bezel_offered): not GBA on the KONKR, not the Game Boys
     // on near-square screens, not NES/SNES on 4:3 or narrower.
     fn screen_rows(platform: Platform)-> &'static [usize] {
-        let bezel=video_mode::bezel_offered(platform,panel_size());
+        Self::screen_rows_on(platform,panel_size())
+    }
+    fn screen_rows_on(platform: Platform, panel: (u32,u32))-> &'static [usize] {
+        let bezel=video_mode::bezel_offered(platform,panel);
         match (platform,bezel) {
             (Platform::Gba,false)=>&[34,29],
             (Platform::Gba,true)=>&[34,29,90],
@@ -3916,8 +4005,11 @@ impl Engine {
             (Platform::Nes|Platform::Snes|Platform::Md,true)=>&[120,124,90],
         }
     }
-    fn screen_keys(platform:Platform)-> &'static [usize] {
-        let bezel=video_mode::bezel_offered(platform,panel_size());
+    fn screen_keys(platform: Platform)-> &'static [usize] {
+        Self::screen_keys_on(platform,panel_size())
+    }
+    fn screen_keys_on(platform: Platform, panel: (u32,u32))-> &'static [usize] {
+        let bezel=video_mode::bezel_offered(platform,panel);
         match (platform,bezel) {
             (Platform::Gba,false)=>&[0,22],
             (Platform::Gba,true)=>&[0,22,25],
@@ -3938,7 +4030,9 @@ impl Engine {
     // shows. A system whose shape the panel already has (GBA on the KONKR)
     // offers neither Screen Size nor a bezel (Siham 2026-11-02).
     fn system_rows(platform: Platform)-> &'static [usize] {
-        let panel=panel_size();
+        Self::system_rows_on(platform,panel_size())
+    }
+    fn system_rows_on(platform: Platform, panel: (u32,u32))-> &'static [usize] {
         let fits=video_mode::screen_fits(platform,panel);
         let bezel=video_mode::bezel_offered(platform,panel);
         match (platform,fits,bezel) {
@@ -3956,8 +4050,10 @@ impl Engine {
             (Platform::Nes|Platform::Snes|Platform::Md,false,true)=>&[118,120,124,90],
         }
     }
-    fn system_keys(platform:Platform)-> &'static [usize] {
-        let panel=panel_size();
+    fn system_keys(platform: Platform)-> &'static [usize] {
+        Self::system_keys_on(platform,panel_size())
+    }
+    fn system_keys_on(platform: Platform, panel: (u32,u32))-> &'static [usize] {
         let fits=video_mode::screen_fits(platform,panel);
         let bezel=video_mode::bezel_offered(platform,panel);
         match (platform,fits,bezel) {
@@ -4686,8 +4782,8 @@ impl Engine {
         scoped.gb_palettes.then(|| self.palette_values.get(scoped.gb_palette as usize).copied()).flatten()
     }
 
-    fn setting_value(&self, key: usize) -> usize {
-        use crate::settings::Shader;
+    /// The value face a Settings key shows, None for an action-only row.
+    fn setting_value(&self, key: usize) -> Option<usize> {
         let profile = if matches!(self.overlay, ShelfOverlay::PauseEmulationSettings { .. }) {
             self.current_emulation()
         } else { EmulationProfile::from_settings(&self.settings) };
@@ -4696,84 +4792,13 @@ impl Engine {
             ShelfOverlay::PauseGameplaySettings { .. }) {
             self.game_settings()
         } else { self.settings.clone() };
-        let shader = |shader| match shader {
-            Shader::Off => 5, Shader::Lcd3x => 6, Shader::Grid => 7,
-            Shader::Dot => 8, Shader::Simpletex => 9,
-             Shader::LcdGridV2 => 27, Shader::LcdGridV2Gba => 28,
-             Shader::ZfastLcd => 29, Shader::Lcd1x => 30,
-             Shader::SimpletexGba => 31, Shader::Agb001 => 32,
-             Shader::Ags001 => 33, Shader::SharpBilinear => 34,
-             Shader::ZfastCrt => 90, Shader::CrtGdvTrinitron => 91,
-             Shader::CrtGeomDeluxe => 92, Shader::CrtPi => 93,
+        let video = match self.overlay {
+            ShelfOverlay::ScreenSystemSettings { platform, .. } =>
+                self.system_video_modes[platform as usize],
+            _ => self.video_mode,
         };
-        match key {
-            0 => shader(scoped.shader_gba),
-            1 => shader(scoped.shader_gb),
-            2 => if scoped.shader_for(self.current_cart_platform()).includes_gba_color() {42}
-                 else if scoped.colour_for(self.current_cart_platform()) {4}else{5},
-            3 => if scoped.gb_palettes { 4 } else { 5 },
-            4 => match scoped.ff_speed { 0 => 5, 2 => 0, 3 => 1, 4 => 2, _ => 3 },
-            5 => if scoped.ff_sound { 4 } else { 5 },
-            6 => if !scoped.rewind { 5 } else {
-                match scoped.rewind_speed { 1 => 38, 2 => 39, 3 => 40, _ => 41 }
-            },
-            7 => if scoped.turbo { 15 } else { 16 },
-            8 => if scoped.rumble { 4 } else { 5 },
-            9 => if scoped.eject_save { 4 } else { 5 },
-            10 => if profile.show_fps { 4 } else { 5 },
-            11 => if profile.responsive_loop { 11 } else { 45 },
-            12 => match profile.run_ahead_frames { 1 => 12, 2 => 13, _ => 5 },
-            13 => if self.settings.show_wifi { 4 } else { 5 },
-            14 => if self.settings.show_bluetooth { 4 } else { 5 },
-            15 => if self.settings.show_integrations { 4 } else { 5 },
-            16 => match &self.settings.wallpaper {
-                crate::settings::WallpaperPick::None => 17,
-                crate::settings::WallpaperPick::Random => 18,
-                crate::settings::WallpaperPick::Shelf => 65,
-                crate::settings::WallpaperPick::Default => 19,
-                crate::settings::WallpaperPick::Blur => 20,
-                crate::settings::WallpaperPick::File(_) => 26,
-            },
-            17 => match self.settings.wallpaper_tint {
-                crate::settings::WallpaperTint::Off => 5,
-                crate::settings::WallpaperTint::Low => 23,
-                crate::settings::WallpaperTint::Medium => 24,
-                crate::settings::WallpaperTint::High => 25,
-            },
-            18 => match self.settings.appearance {
-                crate::settings::Appearance::Dark => 21,
-                crate::settings::Appearance::Light => 22,
-                crate::settings::Appearance::Original => 76,
-            },
-            19 => if self.settings.show_recents {4}else{5},
-            20 => if self.settings.show_titles {4}else{5},
-            21 => shader(scoped.shader_gbc),
-            47 => shader(scoped.shader_nes),
-            48 => shader(scoped.shader_snes),
-            49 => shader(scoped.shader_md),
-            22 => if scoped.shader_gba.includes_gba_color() { 42 }
-                else if scoped.colour_correction_gba {4}else{5},
-            23 => if scoped.colour_correction_gbc {4}else{5},
-            24 => if scoped.colour_correction_gb {4}else{5},
-            25 => bezel_value(scoped.bezel_for(Platform::Gba)),
-            44 => bezel_value(scoped.bezel_nes),
-            45 => bezel_value(scoped.bezel_snes),
-            46 => bezel_value(scoped.bezel_md),
-            SCREEN_SIZE_KEY => SCREEN_SIZE_VALUE + match match self.overlay {
-                ShelfOverlay::ScreenSystemSettings { platform, .. } =>
-                    self.system_video_modes[platform as usize],
-                _ => self.video_mode,
-            } {
-                VideoMode::Actual => 0, VideoMode::Aspect => 1, VideoMode::Stretch => 2,
-            },
-            26 => bezel_value(scoped.bezel_gbc),
-            27 => bezel_value(scoped.bezel_gb),
-            28 => if self.settings.time_format==crate::settings::TimeFormat::TwelveHour
-                {35}else{36},
-            29..=31 | 41..=43 => core_value(Self::core_key_platform(key)
-                .map_or(Core::Mgba, |platform| self.default_cores[platform as usize])),
-            _ => 5,
-        }
+        setting_face(key, &self.settings, &scoped, &profile,
+            self.current_cart_platform(), video, &self.default_cores)
     }
 
     /// Exact Settings ON/OFF texture and carets on Library row 4.
@@ -4801,9 +4826,8 @@ impl Engine {
     fn draw_setting_values(&self, row: usize, keys: &[usize], out: &mut Vec<Draw>) {
         let top = settings_row_top(keys.len());
         for (index, key) in keys.iter().copied().enumerate() {
-            // Action-only rows have no value; Screen Size and the home
-            // consoles' Default Core rows (40-43) do.
-            if key > 31 && key != SUN_KEY && !(SCREEN_SIZE_KEY..=46).contains(&key) { continue; }
+            // Only action rows (usize::MAX) have no value: setting_face
+            // answers every other key, so a new key can't go blank.
             let (tex, width, height) =
                 if key == SUN_KEY {
                     let sun = self.current_emulation().sun(light_sensor(), self.sun_top());
@@ -4817,9 +4841,10 @@ impl Engine {
                     self.wallpaper_name_face.unwrap_or(self.setting_values[26])
                 } else if let Some(face) = (key == 3).then(|| self.palette_value()).flatten() {
                     face
-                } else {
-                    self.setting_values[self.setting_value(key)]
-                };
+                } else if let Some(face) = self.setting_value(key)
+                    .and_then(|value| self.setting_values.get(value)) {
+                    *face
+                } else { continue };
             let y = top + index as f32 * QUICK_PITCH + 8.0;
             let scale = 0.79;
             let w = width as f32 * scale;
@@ -6725,3 +6750,87 @@ mod ui_feedback_tests;
 mod jni_exports;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use jni_exports::exercise_session_graphics_recovery;
+
+/// Every row of every Settings and game menu shows its value, on every
+/// screen shape and for every choice the row cycles through. A key missing
+/// from setting_face would draw a blank value (the NES/SNES/MD Shader row,
+/// 2026-11-04, after the Default Core rows on 2026-11-02).
+#[cfg(test)]
+mod settings_value_tests {
+    use super::*;
+
+    const PANELS: [(u32, u32); 7] = [(960, 640), (1240, 1080), (1920, 1080),
+        (720, 720), (1024, 768), (1280, 720), (1920, 1152)];
+
+    fn menu_keys() -> Vec<(String, usize, Platform)> {
+        let mut keys = Vec::new();
+        for platform in Platform::ALL {
+            for panel in PANELS {
+                let system = (Engine::system_rows_on(platform, panel),
+                    Engine::system_keys_on(platform, panel));
+                let screen = (Engine::screen_rows_on(platform, panel),
+                    Engine::screen_keys_on(platform, panel));
+                assert_eq!(system.0.len(), system.1.len(),
+                    "Settings > Systems > {platform:?} on {panel:?}: rows and values differ");
+                assert_eq!(screen.0.len(), screen.1.len(),
+                    "{platform:?} game menu Screen on {panel:?}: rows and values differ");
+                for key in system.1 {
+                    keys.push((format!("Settings > Systems > {platform:?} on {panel:?}"), *key, platform));
+                }
+                for key in screen.1 {
+                    keys.push((format!("{platform:?} game menu > Screen on {panel:?}"), *key, platform));
+                }
+            }
+            for key in GAMEPLAY_KEYS {
+                keys.push(("Gameplay".into(), key, platform));
+            }
+            for key in INTERFACE_KEYS.into_iter().chain([10, 11, 12]).chain(16..=20) {
+                keys.push(("Interface/Emulation/General".into(), key, platform));
+            }
+        }
+        assert_eq!(GAMEPLAY_ROWS.len(), GAMEPLAY_KEYS.len());
+        assert_eq!(INTERFACE_ROWS.len(), INTERFACE_KEYS.len());
+        keys
+    }
+
+    fn face(settings: &Settings, key: usize, cart: Platform, video: VideoMode) -> Option<usize> {
+        setting_face(key, settings, settings, &EmulationProfile::from_settings(settings),
+            cart, video, &Platform::ALL.map(Core::default_for))
+    }
+
+    #[test]
+    fn every_settings_row_shows_its_value() {
+        for (menu, key, platform) in menu_keys() {
+            let mut settings = Settings::default();
+            let mut seen = std::collections::BTreeSet::new();
+            // Walk every choice the row offers, both ways.
+            for step in 0..40 {
+                seen.insert(face(&settings, key, platform, VideoMode::Aspect));
+                for video in [VideoMode::Actual, VideoMode::Aspect, VideoMode::Stretch] {
+                    let value = face(&settings, key, platform, video).unwrap_or_else(||
+                        panic!("{menu}: key {key} shows no value"));
+                    assert!(value < SETTING_VALUE_NAMES.len(),
+                        "{menu}: key {key} points at value {value}, past the names");
+                }
+                settings.change(key, step < 20);
+            }
+            // Screen Size and Default Core keep their own files, and General
+            // (16-20) changes through cycle_general_row, not Settings::change.
+            let own_file = key == SCREEN_SIZE_KEY || Engine::core_key_platform(key).is_some()
+                || (16..=20).contains(&key);
+            assert!(own_file || seen.len() > 1, "{menu}: key {key} never changes its value");
+        }
+    }
+
+    #[test]
+    fn every_core_and_bezel_has_a_name() {
+        for core in Core::ALL {
+            assert!(core_value(core) < SETTING_VALUE_NAMES.len(), "{core:?}");
+        }
+        use crate::settings::Bezel;
+        for bezel in Bezel::GB.into_iter().chain(Bezel::GBC).chain(Bezel::GBA)
+            .chain(Bezel::NES).chain(Bezel::SNES).chain(Bezel::MD) {
+            assert!(bezel_value(bezel) < SETTING_VALUE_NAMES.len(), "{bezel:?}");
+        }
+    }
+}

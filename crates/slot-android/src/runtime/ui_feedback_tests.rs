@@ -19,7 +19,8 @@ fn gba_three_two_screen_hides_no_op_bezel_but_keeps_gb_gbc() {
     assert_eq!(Engine::screen_rows(Platform::Gba), &[34,29]);
     assert_eq!(Engine::screen_keys(Platform::Gba), &[0,22]);
     assert_eq!(Engine::screen_rows(Platform::Gbc), &[88,29,90]);
-    assert_eq!(Engine::screen_rows(Platform::Gb), &[89,29,36,90]);
+    // No Color Correction row on Game Boy (2026-11-04).
+    assert_eq!(Engine::screen_rows(Platform::Gb), &[89,36,90]);
 }
 #[test]
 fn ordinary_cart_scrolling_does_not_restart_name_fade() {
