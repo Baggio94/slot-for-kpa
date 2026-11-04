@@ -171,6 +171,21 @@ vec3 pixel_aa(vec2 uv) {
     vec2 t = clamp((fract(texel) - vec2(0.5))*s + vec2(0.5), 0.0, 1.0);
     vec2 step1 = vec2(1.0)/u_src;
     vec2 at = (base + vec2(0.5))*step1;
+    /* Same picture, less work: most screen pixels lie inside one game
+       pixel (t is 0 or 1 on both axes) and are that texel as it is; one
+       straddling a single edge blends two texels, a corner all four. */
+    vec2 edge = step(vec2(0.001), t) * step(t, vec2(0.999));
+    if (edge.x + edge.y < 0.5) {
+        return texture2D(u_game, at + step1*step(vec2(0.5), t)).rgb;
+    }
+    if (edge.y < 0.5) {
+        vec2 row = at + vec2(0.0, step1.y*step(0.5, t.y));
+        return pow(mix(aa_tap(row), aa_tap(row + vec2(step1.x, 0.0)), t.x), vec3(1.0/2.2));
+    }
+    if (edge.x < 0.5) {
+        vec2 column = at + vec2(step1.x*step(0.5, t.x), 0.0);
+        return pow(mix(aa_tap(column), aa_tap(column + vec2(0.0, step1.y)), t.y), vec3(1.0/2.2));
+    }
     vec3 a = aa_tap(at);
     vec3 b = aa_tap(at + vec2(step1.x, 0.0));
     vec3 c = aa_tap(at + vec2(0.0, step1.y));
