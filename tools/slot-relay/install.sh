@@ -104,11 +104,12 @@ reply="$(timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT; printf 'SLRY\001H'
 if [ "$reply" = "C" ]; then echo "slot-relay answers on port $PORT."; else
     echo "slot-relay runs but did not answer as expected." >&2; fi
 ip="$(curl -fsS -4 --max-time 5 https://ifconfig.me 2>/dev/null || true)"
+[ -n "$ip" ] || ip="this server's public IP"
 
 cat <<EOF
 
 Done. slot-relay is running and starts with the server.
-  Public address : ${ip:-<this server's public IP>}
+  Public address : $ip
   Port           : $PORT (TCP)
   Logs           : journalctl -u slot-relay -f
 
@@ -116,6 +117,6 @@ Still to do:
   1. Cloud VM: open TCP $PORT for 0.0.0.0/0 in the provider's network rules
      (Oracle: Networking > Virtual cloud networks > your VCN > Security
      Lists > Default > Add Ingress Rule, Destination port $PORT).
-  2. GitHub: set the Actions variable SLOT_RELAY_ADDR to ${ip:-the address above}
+  2. GitHub: set the Actions variable SLOT_RELAY_ADDR to $ip
      and re-run the APK build.
 EOF
