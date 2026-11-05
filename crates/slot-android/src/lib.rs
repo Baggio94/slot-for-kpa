@@ -58,6 +58,9 @@ mod link_kind;
 // Fork's LAN/mDNS wire format remains interoperable across devices.
 mod link_mdns;
 mod link_lan;
+// Internet Multiplayer: both consoles dial slot.'s room-code relay.
+mod link_relay;
+mod link_internet;
 mod multiplayer;
 mod link_rom;
 mod link_compat;

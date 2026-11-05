@@ -179,6 +179,8 @@ class MainActivity : Activity() {
     // touches WifiManager, Android UI or permissions from the GL thread.
     external fun nativeLinkPeerRomDecision(choice: Int)
     external fun nativeLinkPeerLabel(): String?
+    // Internet Multiplayer: the room-code message to hand to the share sheet.
+    external fun nativeLinkShareText(): String?
     external fun nativeLinkNetworkReady(ipv4: String)
     external fun nativeLinkNetworkError(reason: String)
     external fun nativeLinkNeedsMulticast(): Boolean
@@ -518,6 +520,31 @@ class MainActivity : Activity() {
      * before this UI appears. A14 never trusts IPs or legacy lab flags.
      * Keys are remembered only by Rust after a verified ROM exchange.
      */
+    /** Internet host: hand the room code to WhatsApp, SMS or anything else.
+     *  The code is also copied, so it can be pasted by hand. The room stays
+     *  open while slot. is in the background (see Rust Input::Suspend). */
+    private fun shareLinkCode() {
+        val text = nativeLinkShareText() ?: return
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("slot. room code", text))
+        } catch (error: Exception) {
+            Log.w(TAG, "Cannot copy the room code", error)
+        }
+        try {
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            startActivity(Intent.createChooser(send, "Send the room code"))
+        } catch (error: Exception) {
+            Log.w(TAG, "No app can share the room code", error)
+            SlotToast.makeText(this, "Code copied. Paste it in a message to your friend.",
+                Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun showPeerCartridgeConsent() {
         if (!resumed || isDestroyed || isFinishing) {
             nativeLinkPeerRomDecision(0)
@@ -696,6 +723,7 @@ class MainActivity : Activity() {
                 16 -> requestLinkWifi()
                 17 -> toggleShareGbaSaves()
                 18 -> showPeerCartridgeConsent()
+                23 -> shareLinkCode()
                 19 -> slotUpdater.check(true)
                 20 -> slotUpdater.openNotes()
                 21 -> {

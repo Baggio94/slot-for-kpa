@@ -8,6 +8,10 @@ use slot_retro::ButtonMask;
 pub const DELAY: u64 = 3;
 pub const MIN_DELAY: u64 = 1;
 pub const MAX_DELAY: u64 = 5;
+/// Over the Internet a round trip can be 100 ms and more: let the delay
+/// climb further rather than stall every frame. Still below
+/// link_sync::RESYNC_LEAD, which must stay ahead of any input delay.
+pub const INTERNET_MAX_DELAY: u64 = 10;
 
 // Two input stalls inside two seconds mean inputs travel slower than the
 // current delay. Ten calm seconds earn one frame back; after a raise, wait
@@ -69,6 +73,7 @@ pub fn state_packets(state: &[u8]) -> Vec<Vec<u8>> {
 #[derive(Clone, Debug)]
 pub struct AdaptiveDelay {
     delay: u64,
+    ceiling: u64,
     stalls: u32,
     window: u32,
     calm: u32,
@@ -77,7 +82,19 @@ pub struct AdaptiveDelay {
 
 impl AdaptiveDelay {
     pub fn new(delay: u64) -> Self {
-        AdaptiveDelay { delay: delay.clamp(MIN_DELAY, MAX_DELAY), stalls: 0, window: 0, calm: 0, hold: 0 }
+        AdaptiveDelay::with_ceiling(delay, MAX_DELAY)
+    }
+
+    pub fn with_ceiling(delay: u64, ceiling: u64) -> Self {
+        let ceiling = ceiling.max(MIN_DELAY);
+        AdaptiveDelay { delay: delay.clamp(MIN_DELAY, ceiling), ceiling,
+            stalls: 0, window: 0, calm: 0, hold: 0 }
+    }
+
+    /// Let this link climb to `ceiling` (Internet play). Never lowers the
+    /// delay in use.
+    pub fn raise_ceiling(&mut self, ceiling: u64) {
+        self.ceiling = self.ceiling.max(ceiling);
     }
 
     pub fn delay(&self) -> u64 {
@@ -100,7 +117,7 @@ impl AdaptiveDelay {
             if self.stalls >= RAISE_STALLS {
                 self.stalls = 0;
                 self.window = 0;
-                if self.delay < MAX_DELAY {
+                if self.delay < self.ceiling {
                     self.delay += 1;
                     self.hold = HOLD_AFTER_RAISE;
                 }
@@ -254,6 +271,11 @@ impl Cable {
         self.stalled = 0;
     }
 
+    /// Internet play: the input delay may climb to INTERNET_MAX_DELAY.
+    pub fn allow_internet_delay(&mut self) {
+        self.adaptive.raise_ceiling(INTERNET_MAX_DELAY);
+    }
+
     /// Advances and lets the adaptive delay react to this frame's wait.
     pub fn advance_adaptive(&mut self, stalled: bool) {
         self.advance();
@@ -269,6 +291,19 @@ pub const QUIET_FRAMES: u32 = 60;
 
 #[cfg(test)]
 mod adaptive_tests {
+    #[test]
+    fn internet_delay_climbs_further_but_stays_behind_the_resync_lead() {
+        assert!(INTERNET_MAX_DELAY > MAX_DELAY);
+        assert!(INTERNET_MAX_DELAY < crate::link_sync::RESYNC_LEAD);
+        let mut a = AdaptiveDelay::new(DELAY);
+        a.raise_ceiling(INTERNET_MAX_DELAY);
+        for _ in 0..200 { a.observe(true); }
+        assert_eq!(a.delay(), INTERNET_MAX_DELAY);
+        let mut lan = AdaptiveDelay::new(DELAY);
+        for _ in 0..200 { lan.observe(true); }
+        assert_eq!(lan.delay(), MAX_DELAY, "Wi-Fi links keep their ceiling");
+    }
+
     use super::*;
 
     fn frames(adaptive: &mut AdaptiveDelay, count: u32, stalled: bool) {

@@ -286,6 +286,8 @@ static LINK_NEEDS_MULTICAST: AtomicBool = AtomicBool::new(false);
 static LINK_ACTIVE: AtomicBool = AtomicBool::new(false);
 // Authenticated peer key fingerprint, never a user-supplied device name.
 static LINK_PEER_LABEL: Mutex<Option<String>> = Mutex::new(None);
+// Internet Multiplayer: the message Kotlin's share sheet sends (UI action 23).
+static LINK_SHARE_TEXT: Mutex<Option<String>> = Mutex::new(None);
 
 #[derive(Clone)]
 struct SystemStatus {
@@ -814,6 +816,11 @@ struct Engine {
     link_entry: LinkEntry,
     link_worked_at: u64,
     link_starter: Option<LinkStarter>,
+    // Internet tab, typed room code and relayed attempt (link_internet.rs),
+    // and the one heading face it draws instead of the stock ones.
+    link_inet: crate::link_internet::InternetUi,
+    link_inet_face: Option<(slot_gfx::TexId, u32, u32)>,
+    link_inet_face_text: String,
     link_art: Option<LinkSprites>,
     link_marks: Marks,
     // A single account-scoped engine outlives individual games, allowing
@@ -915,12 +922,14 @@ struct Engine {
     // Same centered role, progress and failure faces as original slot.
     link_role_faces: [(slot_gfx::TexId, u32, u32); 2],
     link_step_faces: [(slot_gfx::TexId, u32, u32); 2],
-    link_fail_faces: [(slot_gfx::TexId, u32, u32); 3],
+    link_fail_faces: [(slot_gfx::TexId, u32, u32); 4],
     link_connected_face: (slot_gfx::TexId, u32, u32),
     link_hints: [[(slot_gfx::TexId, u32); 3]; 2],
     link_switch_hints: [[(slot_gfx::TexId, u32); 4]; 2],
     link_connected_hints: [[(slot_gfx::TexId, u32); 2]; 2],
     link_failed_hints: [[(slot_gfx::TexId, u32); 1]; 2],
+    // R1 Internet, L1 Local, Y Share, UP Digit, arrows Move, A Join.
+    link_inet_hints: [[(slot_gfx::TexId, u32); 6]; 2],
     board_texture: Option<slot_gfx::TexId>,
     picker: Option<CorePicker>,
     socket_textures: [slot_gfx::TexId; Core::ALL.len()],
@@ -1251,6 +1260,9 @@ impl Engine {
         let link_connected_hints = inks.map(|ink| [("B","Back"), ("A","End Link")]
             .map(|(k,v)| link_hint(k,v,ink)));
         let link_failed_hints = inks.map(|ink| [link_hint("A","OK",ink)]);
+        let link_inet_hints = inks.map(|ink| [("R1","Internet"), ("L1","Local"),
+            ("Y","Share"), ("UP","Digit"), ("SWAP","Move"), ("A","Join")]
+            .map(|(k,v)| link_hint(k,v,ink)));
         let setting_values = SETTING_VALUE_NAMES
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
@@ -1389,6 +1401,9 @@ impl Engine {
             link_entry: LinkEntry::GameMenu,
             link_worked_at: 0,
             link_starter: None,
+            link_inet: Default::default(),
+            link_inet_face: None,
+            link_inet_face_text: String::new(),
             link_art: None,
             link_marks,
             ra_service: None,
@@ -1474,6 +1489,7 @@ impl Engine {
             link_switch_hints,
             link_connected_hints,
             link_failed_hints,
+            link_inet_hints,
             board_texture: None,
             picker: None,
             socket_textures,
@@ -1894,6 +1910,128 @@ impl Engine {
     fn cancel_link_discovery(&mut self) {
         if let Some(starter) = self.link_starter.take() { starter.cancel(); }
         LINK_NEEDS_MULTICAST.store(false, Ordering::Release);
+        self.link_inet.end_attempt();
+    }
+
+    /// Keys of the Internet tab. True when the key was used here.
+    fn internet_link_key(&mut self, code: i32) -> bool {
+        use crate::link_internet as inet;
+        if let Some(entry) = self.link_inet.entry.as_mut() {
+            if !matches!(self.link_phase, LinkMenu::Pick(_)) {
+                self.link_inet.entry = None;
+                return false;
+            }
+            match code {
+                inet::KEY_UP => entry.up(),
+                inet::KEY_DOWN => entry.down(),
+                inet::KEY_LEFT => entry.left(),
+                inet::KEY_RIGHT => entry.right(),
+                inet::KEY_0..=inet::KEY_9 => entry.type_digit((code - inet::KEY_0) as u8),
+                96 => {
+                    let typed = entry.code();
+                    self.link_inet.entry = None;
+                    self.link_inet.last_code = Some(typed.clone());
+                    self.start_internet_link(Some(typed));
+                }
+                97 | 108 => self.link_inet.entry = None,
+                _ => {}
+            }
+            return true;
+        }
+        match self.link_phase {
+            LinkMenu::Pick(role) => match code {
+                inet::KEY_L1 => { self.link_inet.internet = false; true }
+                inet::KEY_R1 => { self.link_inet.internet = true; true }
+                96 if self.link_inet.internet => {
+                    if role == LinkRow::Host {
+                        self.start_internet_link(None);
+                    } else {
+                        self.link_inet.entry = Some(inet::CodeEntry::new(
+                            self.link_inet.last_code.as_deref()));
+                    }
+                    true
+                }
+                _ => false,
+            },
+            LinkMenu::Working { .. } if code == inet::KEY_Y
+                && self.link_inet.can_share(self.link_phase) => {
+                self.share_room_code();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Internet Multiplayer: both consoles dial the relay. Host gets a room
+    /// code to share; Join brings the code it was sent.
+    fn start_internet_link(&mut self, code: Option<String>) {
+        if !matches!(self.overlay, ShelfOverlay::Multiplayer) { return; }
+        if matches!(self.link_phase, LinkMenu::Working {..} | LinkMenu::Linked {..}) { return; }
+        if self.game.as_ref().is_some_and(|g| g.core_kind() == Core::Gambatte) {
+            set_message("Game Boy Link over the Internet isn't ready yet. Press L1 for Local.".into());
+            return;
+        }
+        let storage = PATHS.lock().unwrap_or_else(|e| e.into_inner())
+            .clone().map(|(storage, _)| storage);
+        let Some(relay) = crate::link_internet::relay_address(storage.as_deref()) else {
+            set_message("Internet Multiplayer isn't set up in this build.".into());
+            return;
+        };
+        if let Err(error) = self.ensure_gpsp_link_serial() {
+            self.link_worked_at = self.link_millis();
+            self.fail_multiplayer(&error, LinkFail::Radio);
+            return;
+        }
+        let config = match self.link_config() {
+            Ok(config) => config,
+            Err(error) => {
+                self.link_worked_at = self.link_millis();
+                self.fail_multiplayer(&error, LinkFail::Radio);
+                return;
+            }
+        };
+        self.cancel_link_discovery();
+        let now = self.link_millis();
+        self.link_worked_at = now;
+        self.link_phase = LinkMenu::Working {
+            role: self.link_role, step: LinkStep::Waiting, since: now,
+        };
+        let role = if self.link_role == LinkRow::Host { LinkRole::Host } else { LinkRole::Join };
+        let network = crate::multiplayer::Network::Internet { relay, code: code.clone() };
+        match LinkStarter::spawn_on(role, network, config) {
+            Ok(starter) => {
+                self.link_starter = Some(starter);
+                self.link_inet.session = true;
+                self.link_inet.joining = code;
+            }
+            Err(error) => self.fail_multiplayer(&error.to_string(), LinkFail::Radio),
+        }
+    }
+
+    /// Y on a waiting Internet host: Android's share sheet (WhatsApp, SMS...).
+    fn share_room_code(&mut self) {
+        let Some(code) = self.link_inet.room.clone() else { return };
+        let game = self.game.as_ref().map(|g| {
+            let stem = g.rom_stem();
+            stem.split(" (").next().unwrap_or(stem).trim().to_owned()
+        }).unwrap_or_default();
+        *LINK_SHARE_TEXT.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(crate::link_internet::share_text(&code, &game));
+        UI_ACTION.lock().unwrap_or_else(|e| e.into_inner()).push_back(23);
+    }
+
+    /// The Internet heading face follows the text it should show; it is
+    /// rendered here, on the GL thread, only when that text changes.
+    fn refresh_internet_heading(&mut self) {
+        let Some(text) = self.link_inet.heading(self.link_phase) else { return };
+        if text == self.link_inet_face_text && self.link_inet_face.is_some() { return; }
+        let face = menu_face(&text);
+        let tex = match self.link_inet_face {
+            Some((tex, _, _)) => { self.gpu.update_face(tex, &face); tex }
+            None => self.gpu.create_face(&face),
+        };
+        self.link_inet_face = Some((tex, face.w, face.h));
+        self.link_inet_face_text = text;
     }
 
     fn enter_multiplayer_menu(&mut self) {
@@ -2315,9 +2453,16 @@ impl Engine {
     fn poll_multiplayer(&mut self) {
         if !matches!(self.overlay, ShelfOverlay::Multiplayer) { return; }
         self.prepare_link_art();
+        self.refresh_internet_heading();
+        let internet = self.link_inet.session;
         let event = self.link_starter.as_mut().and_then(LinkStarter::poll);
         if let Some(event) = event {
             match event {
+                LinkProgress::RoomCode(code) => {
+                    set_message(format!("Room code {}. Press Y to share it with your friend.",
+                        crate::link_relay::display_code(&code)));
+                    self.link_inet.room = Some(code);
+                }
                 LinkProgress::Looking => {
                     self.link_phase = LinkMenu::Working {
                         role: self.link_role, step: LinkStep::Waiting,
@@ -2332,6 +2477,7 @@ impl Engine {
                 }
                 LinkProgress::Ready(wire, peer_rom, peer_bios) => {
                     self.cancel_link_discovery();
+                    crate::link_play::set_internet_profile(internet);
                     let role = if self.link_role == LinkRow::Host {
                         LinkRole::Host
                     } else { LinkRole::Join };
@@ -2357,9 +2503,19 @@ impl Engine {
                         crate::multiplayer::Failure::IncompatiblePeer => LinkFail::PeerVanished,
                         crate::multiplayer::Failure::Cancelled => LinkFail::Cancelled,
                         crate::multiplayer::Failure::PeerVanished => LinkFail::PeerVanished,
+                        crate::multiplayer::Failure::WrongCode => LinkFail::WrongCode,
+                        crate::multiplayer::Failure::NoRelay => LinkFail::Radio,
                     };
                     let details = if reason == crate::multiplayer::Failure::IncompatiblePeer {
                         "The other console refused. Use the same game, core and slot. version."
+                    } else if internet {
+                        match reason {
+                            crate::multiplayer::Failure::WrongCode => "No room has this code. Check it with your friend.",
+                            crate::multiplayer::Failure::NoRelay => "Couldn't reach the slot. Internet server. Check your connection.",
+                            crate::multiplayer::Failure::NobodyCame => "Nobody joined in time. Open a new room and share the code again.",
+                            crate::multiplayer::Failure::Cancelled => "Connection cancelled.",
+                            _ => "Connection lost with the other console.",
+                        }
                     } else {
                         match reason {
                             crate::multiplayer::Failure::NobodyCame => "No host found. Make sure it's waiting on the same Wi-Fi.",
@@ -2583,6 +2739,17 @@ impl Engine {
                 for shelf in &mut self.shelves {
                     shelf.release_hold();
                 }
+            }
+            Input::Suspend if matches!(self.overlay, ShelfOverlay::Multiplayer)
+                && self.link_inet.keeps_room_in_background(self.link_phase) => {
+                // The host is away sending its room code (WhatsApp, SMS):
+                // the relay connection lives on a worker thread, so keep
+                // the room and pick up where it is when slot. returns.
+                if let Some(session) = self.game.as_mut() {
+                    let _ = session.save(true);
+                }
+                self.buttons = 0;
+                AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
             }
             Input::Suspend => {
                 self.cancel_link_discovery();
@@ -2862,6 +3029,7 @@ impl Engine {
                     return;
                 }
                 if self.game.is_some() && matches!(self.overlay, ShelfOverlay::Multiplayer) {
+                    if pressed && self.internet_link_key(code) { return; }
                     if pressed {
                         match self.link_phase {
                             LinkMenu::Pick(_) => match code {
@@ -5025,14 +5193,17 @@ impl Engine {
         let Some(art) = &self.link_art else { return };
         link_screen::draw_link_art(self.link_phase, self.link_millis(), art, &self.link_marks, out);
         let ink = usize::from(art.key.dark_ink());
-        let text = match self.link_phase {
+        let internet_heading = self.link_inet.heading(self.link_phase)
+            .filter(|text| *text == self.link_inet_face_text)
+            .and(self.link_inet_face);
+        let text = if internet_heading.is_some() { internet_heading } else { match self.link_phase {
             LinkMenu::Pick(role) => Some(self.link_role_faces[role.index()]),
             LinkMenu::Working { step, .. } => Some(self.link_step_faces[step.index()]),
             LinkMenu::Linked { .. } => Some(self.link_connected_face),
             LinkMenu::Failed { fail, .. } => fail.shown()
                 .and_then(|i| self.link_fail_faces.get(i).copied()),
             LinkMenu::Unplug { .. } => None,
-        };
+        } };
         if let Some((tex, w, h)) = text {
             out.push(Draw::Tex {
                 x: link_heading_x(w),
@@ -5040,7 +5211,7 @@ impl Engine {
                 tex, alpha: 1.0,
             });
         }
-        let hints: &[(slot_gfx::TexId, u32)] =
+        let stock: &[(slot_gfx::TexId, u32)] =
             match link_legend_profile(self.link_phase, self.link_mode_switchable()) {
                 LinkLegendProfile::PickerWithMode => &self.link_switch_hints[ink],
                 LinkLegendProfile::Picker => &self.link_hints[ink],
@@ -5049,6 +5220,19 @@ impl Engine {
                 LinkLegendProfile::Failed => &self.link_failed_hints[ink],
                 LinkLegendProfile::None => &[],
             };
+        let inet = &self.link_inet_hints[ink];
+        let mut hints: Vec<(slot_gfx::TexId, u32)> = stock.to_vec();
+        if self.link_inet.entry.is_some() {
+            // B Back | UP Digit | arrows Move | A Join
+            hints = vec![self.link_connected_hints[ink][0], inet[3], inet[4], inet[5]];
+        } else if matches!(self.link_phase, LinkMenu::Pick(_)) {
+            // Right after B Cancel: the tab the shoulder button switches to.
+            let tab = if self.link_inet.internet { inet[1] } else { inet[0] };
+            hints.insert(1.min(hints.len()), tab);
+        } else if self.link_inet.can_share(self.link_phase) {
+            hints.push(inet[2]);
+        }
+        let hints = hints.as_slice();
         let seen = |w: u32| w.saturating_sub(HINT_EDGE) as f32;
         let mut x = link_legend_start(hints);
         for &(tex, w) in hints {

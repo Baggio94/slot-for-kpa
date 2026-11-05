@@ -297,6 +297,16 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeLinkPeerLabel(
         .map_or(std::ptr::null_mut(), |value| value.into_raw())
 }
 
+/// Internet Multiplayer: the room-code message the host's share sheet sends.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeLinkShareText(
+    env: JNIEnv<'_>, _activity: JObject<'_>,
+) -> jstring {
+    LINK_SHARE_TEXT.lock().unwrap_or_else(|e| e.into_inner())
+        .as_ref().and_then(|value| env.new_string(value).ok())
+        .map_or(std::ptr::null_mut(), |value| value.into_raw())
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeLinkNetworkReady(
     mut env: JNIEnv<'_>, _this: JObject<'_>, ipv4: JString<'_>,

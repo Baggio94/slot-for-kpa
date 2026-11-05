@@ -170,8 +170,12 @@ jobs:
           SCREENSCRAPER_DEV_ID: ${{ secrets.SCREENSCRAPER_DEV_ID }}
           SCREENSCRAPER_DEV_PASSWORD: ${{ secrets.SCREENSCRAPER_DEV_PASSWORD }}
           SCREENSCRAPER_SOFTNAME: ${{ secrets.SCREENSCRAPER_SOFTNAME }}
+          # Internet Multiplayer relay (tools/slot-relay), host[:port].
+          # Set it under Settings > Secrets and variables > Actions > Variables.
+          SLOT_RELAY_ADDR: ${{ vars.SLOT_RELAY_ADDR }}
         run: |
           set -euo pipefail
+          test -n "$SLOT_RELAY_ADDR" || echo "::warning::SLOT_RELAY_ADDR not set: this APK cannot play Internet Multiplayer"
           test -n "$SCREENSCRAPER_DEV_ID" || echo "::warning::ScreenScraper credentials missing: no NES/SNES/MD labels"
           test -n "$SLOT_KEYSTORE_BASE64" || { echo "::error::Configure permanent signing secrets"; exit 1; }
           export SLOT_SIGNING_STORE_FILE="$RUNNER_TEMP/slot-konkr-signing.jks"

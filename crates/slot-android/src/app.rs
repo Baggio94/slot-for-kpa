@@ -39,11 +39,12 @@ impl LinkStep {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum LinkFail { Radio, NobodyCame, PeerVanished, Cancelled }
+pub enum LinkFail { Radio, NobodyCame, PeerVanished, Cancelled, WrongCode }
 
 impl LinkFail {
-    pub const SHOWN: [LinkFail; 3] = [
+    pub const SHOWN: [LinkFail; 4] = [
         LinkFail::Radio, LinkFail::NobodyCame, LinkFail::PeerVanished,
+        LinkFail::WrongCode,
     ];
 
     pub fn shown(self) -> Option<usize> {
@@ -56,6 +57,7 @@ impl LinkFail {
             LinkFail::NobodyCame => "Nobody arrived",
             LinkFail::PeerVanished => "The other player vanished",
             LinkFail::Cancelled => "Cancelled",
+            LinkFail::WrongCode => "No room has this code",
         }
     }
 }
@@ -97,10 +99,11 @@ mod tests {
     fn link_fail_faces_include_only_original_shown_variants() {
         assert_eq!(LinkFail::SHOWN.map(LinkFail::line),
             ["The radio did not come up", "Nobody arrived",
-             "The other player vanished"]);
+             "The other player vanished", "No room has this code"]);
         assert_eq!(LinkFail::Radio.shown(), Some(0));
         assert_eq!(LinkFail::NobodyCame.shown(), Some(1));
         assert_eq!(LinkFail::PeerVanished.shown(), Some(2));
+        assert_eq!(LinkFail::WrongCode.shown(), Some(3));
         assert_eq!(LinkFail::Cancelled.shown(), None);
     }
 }

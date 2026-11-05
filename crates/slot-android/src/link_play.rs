@@ -38,6 +38,22 @@ fn valid_cable_packet_shape(packet: &[u8]) -> bool {
 
 
 const INITIAL_STATE_TIMEOUT: Duration = Duration::from_secs(12);
+/// The first state crosses the Internet on someone's home upload speed.
+const INTERNET_INITIAL_STATE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Set by the runtime just before an Internet (relayed) link begins and
+/// cleared for a Wi-Fi one. Only one link exists at a time; the flag picks
+/// the Internet input-delay ceiling and first-state allowance.
+static INTERNET_PROFILE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_internet_profile(internet: bool) {
+    INTERNET_PROFILE.store(internet, std::sync::atomic::Ordering::Release);
+}
+
+fn internet_profile() -> bool {
+    INTERNET_PROFILE.load(std::sync::atomic::Ordering::Acquire)
+}
 // A delayed Mac AVD can miss 60 GL callbacks in ~1 second while TCP is still
 // healthy. Use wall-clock time, NOT callback count; never invent peer input.
 const CABLE_INPUT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -122,6 +138,7 @@ pub struct LinkPlay {
     bios_checked: bool,
     // mGBA pair: desync check every two seconds, resync from Host's pair.
     sync: Option<Sync>,
+    initial_state_timeout: Duration,
 }
 
 impl LinkPlay {
@@ -154,7 +171,8 @@ impl LinkPlay {
         let cable = match mode {
             LinkKind::Cable if !core.supports_netpacket() => {
                 let player = if role == Role::Host { 0 } else { 1 };
-                let c = Cable::new(player);
+                let mut c = Cable::new(player);
+                if internet_profile() { c.allow_internet_delay(); }
                 // Both devices start with their *own* cartridge progress.
                 // mGBA's private SLK1 pair contains a blank remote GBA;
                 // exchange Join's local half first, then Host combines
@@ -209,6 +227,9 @@ impl LinkPlay {
             stalled_for_input: false,
             bios_checked: true,
             sync,
+            initial_state_timeout: if internet_profile() {
+                INTERNET_INITIAL_STATE_TIMEOUT
+            } else { INITIAL_STATE_TIMEOUT },
         })
     }
 
@@ -396,7 +417,7 @@ impl LinkPlay {
                     self.awaiting_join_seed = false;
                 }
                 if self.awaiting_join_seed {
-                    if self.started.elapsed() >= INITIAL_STATE_TIMEOUT {
+                    if self.started.elapsed() >= self.initial_state_timeout {
                         return self.fail(LinkError::Timeout);
                     }
                     return Frame::Waiting;
@@ -419,7 +440,7 @@ impl LinkPlay {
             // Host is primed at construction but MUST NOT advance until
             // Join acknowledges the final combined SLK1 restore.
             if !cable.armed() {
-                if self.started.elapsed() >= INITIAL_STATE_TIMEOUT {
+                if self.started.elapsed() >= self.initial_state_timeout {
                     return self.fail(LinkError::Timeout);
                 }
                 return Frame::Waiting;

@@ -46,6 +46,8 @@ jobs:
         run: |
           c++ -std=c++17 -O2 -Wall -Wextra -Werror -pthread -Icores/gambatte tools/gambatte/test_net_serial_io.cpp -o "$RUNNER_TEMP/gambatte-serial-test"
           "$RUNNER_TEMP/gambatte-serial-test"
+      - name: Test the Internet Multiplayer relay against the app's client
+        run: cargo test --locked --manifest-path tools/slot-relay/Cargo.toml
       - name: Test libretro and RetroAchievements contracts
         run: cargo test --locked -p slot-retro -p slot-achievements --lib
       - name: Test capture tools and report parsers
