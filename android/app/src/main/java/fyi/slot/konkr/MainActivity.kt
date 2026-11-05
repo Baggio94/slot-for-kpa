@@ -1019,6 +1019,8 @@ class MainActivity : Activity() {
                     var kind = nativePollCartSfx()
                     while (kind != 0) {
                         cartSounds.play(kind)
+                        val haptic = kind
+                        uiHandler.post { cartHaptic(haptic) }
                         kind = nativePollCartSfx()
                     }
                 } else {
@@ -1691,6 +1693,26 @@ class MainActivity : Activity() {
         if (sensorsListening == 0) return
         sensorManager?.unregisterListener(sensorListener)
         sensorsListening = 0
+    }
+
+    /** Felt with the insert/eject click: a firm seat when the cartridge goes
+     *  in, a spring's two short knocks when it comes out. Posted to the UI
+     *  thread so the vibrator call never holds up the GL frame. */
+    private fun cartHaptic(kind: Int) {
+        val device = vibrator ?: return
+        if (!device.hasVibrator()) return
+        val effect = when (kind) {
+            CartSounds.INSERT -> VibrationEffect.createWaveform(
+                longArrayOf(0L, 14L, 22L, 34L), intArrayOf(0, 90, 0, 230), -1)
+            CartSounds.EJECT -> VibrationEffect.createWaveform(
+                longArrayOf(0L, 26L, 46L, 16L), intArrayOf(0, 200, 0, 110), -1)
+            else -> return
+        }
+        try {
+            device.vibrate(effect)
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "KONKR cartridge haptic unavailable", error)
+        }
     }
 
     private fun pollRumble() {
