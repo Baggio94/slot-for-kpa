@@ -9,7 +9,21 @@ The relay never looks inside the link: ROM, core and BIOS checks, the
 cartridge exchange and the game itself are slot.'s own KMLB protocol, exactly
 as on Wi-Fi. Protocol details: `crates/slot-android/src/link_relay.rs`.
 
-## Run it
+## Install on a server (one command)
+
+On the server (Oracle Cloud VM, Raspberry Pi, any Linux VPS), over SSH:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Baggio94/slot-for-kpa/beta/internet-multiplayer/tools/slot-relay/install.sh | sudo bash
+```
+
+It builds the relay, installs it as a service on TCP 7212, opens the port in
+the server's firewall and prints the public address. Run it again to update.
+On a cloud VM, also open TCP 7212 in the provider's network rules (Oracle:
+the VCN's Security List, Ingress Rule, source 0.0.0.0/0, destination port
+7212).
+
+## Run it by hand
 
 Standard library only, no dependencies.
 
