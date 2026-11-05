@@ -1936,6 +1936,7 @@ impl Engine {
                 97 | 108 => self.link_inet.entry = None,
                 _ => {}
             }
+            self.refresh_internet_heading();
             return true;
         }
         match self.link_phase {
@@ -1948,6 +1949,7 @@ impl Engine {
                     } else {
                         self.link_inet.entry = Some(inet::CodeEntry::new(
                             self.link_inet.last_code.as_deref()));
+                        self.refresh_internet_heading();
                     }
                     true
                 }
@@ -2003,6 +2005,8 @@ impl Engine {
                 self.link_starter = Some(starter);
                 self.link_inet.session = true;
                 self.link_inet.joining = code;
+                // Ready before the next draw: never a frame of Local text.
+                self.refresh_internet_heading();
             }
             Err(error) => self.fail_multiplayer(&error.to_string(), LinkFail::Radio),
         }
@@ -2023,7 +2027,7 @@ impl Engine {
     /// The Internet heading face follows the text it should show; it is
     /// rendered here, on the GL thread, only when that text changes.
     fn refresh_internet_heading(&mut self) {
-        let Some(text) = self.link_inet.heading(self.link_phase) else { return };
+        let Some(text) = self.link_inet.heading(self.link_phase, self.link_millis()) else { return };
         if text == self.link_inet_face_text && self.link_inet_face.is_some() { return; }
         let face = menu_face(&text);
         let tex = match self.link_inet_face {
@@ -2461,6 +2465,7 @@ impl Engine {
                 LinkProgress::RoomCode(code) => {
                     // The heading shows the code; Y Share is in the legend.
                     self.link_inet.room = Some(code);
+                    self.refresh_internet_heading();
                 }
                 LinkProgress::Looking => {
                     self.link_phase = LinkMenu::Working {
@@ -5204,10 +5209,13 @@ impl Engine {
         link_screen::draw_link_art_with(self.link_phase, self.link_millis(), art, &self.link_marks,
             self.link_inet.entry.is_none(), out);
         let ink = usize::from(art.key.dark_ink());
-        let internet_heading = self.link_inet.heading(self.link_phase)
-            .filter(|text| *text == self.link_inet_face_text)
+        // While the Internet tab has its own heading, never fall back to the
+        // Local text: if its face is not rendered yet, draw no heading.
+        let wanted = self.link_inet.heading(self.link_phase, self.link_millis());
+        let internet_heading = wanted.as_ref()
+            .filter(|text| **text == self.link_inet_face_text)
             .and(self.link_inet_face);
-        let text = if internet_heading.is_some() { internet_heading } else { match self.link_phase {
+        let text = if wanted.is_some() { internet_heading } else { match self.link_phase {
             LinkMenu::Pick(role) => Some(self.link_role_faces[role.index()]),
             LinkMenu::Working { step, .. } => Some(self.link_step_faces[step.index()]),
             LinkMenu::Linked { .. } => Some(self.link_connected_face),

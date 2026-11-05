@@ -9,6 +9,7 @@
 use std::path::Path;
 
 use crate::app::{GameMenu, LinkRow};
+use slot_ui::Millis;
 use crate::link_relay::{display_code, normalize_code, CODE_LEN};
 
 /// The relay this build talks to, from `SLOT_RELAY_ADDR` at build time.
@@ -85,6 +86,9 @@ pub const KEY_L1: i32 = 102;
 pub const KEY_R1: i32 = 103;
 pub const KEY_Y: i32 = 100;
 
+/// A room code normally comes back from the relay in well under this.
+const SLOW_ROOM_MS: Millis = 1000;
+
 #[derive(Clone, Debug, Default)]
 pub struct InternetUi {
     /// The Internet tab is selected (L1/R1).
@@ -112,16 +116,19 @@ impl InternetUi {
     /// The heading to show instead of the stock Host/Join/progress face, or
     /// `None` for the stock one (everything on the Local tab, and any state
     /// the Internet tab does not change).
-    pub fn heading(&self, menu: GameMenu) -> Option<String> {
+    /// `now` is the link clock: a host whose code has not come back within
+    /// a second says it is still opening the room, so it never looks frozen.
+    pub fn heading(&self, menu: GameMenu, now: Millis) -> Option<String> {
         if let Some(entry) = &self.entry {
             return Some(format!("Code {}", entry.text()));
         }
         // The picker keeps its stock Host/Join faces on both tabs: the
         // legend's L1 Local / R1 Internet says which tab is selected.
         match menu {
-            GameMenu::Working { role, .. } if self.session => Some(match role {
+            GameMenu::Working { role, since, .. } if self.session => Some(match role {
                 LinkRow::Host => match &self.room {
                     Some(code) => format!("Code {}", display_code(code)),
+                    None if now.saturating_sub(since) < SLOW_ROOM_MS => "Host".into(),
                     None => "Opening a room".into(),
                 },
                 LinkRow::Join => match &self.joining {
@@ -139,10 +146,12 @@ impl InternetUi {
             && matches!(menu, GameMenu::Working { role: LinkRow::Host, .. })
     }
 
-    /// An Internet host waiting for its friend keeps its room while slot.
-    /// is in the background: that is when the code is being sent.
+    /// The Internet screen survives slot. going to the background: a host
+    /// away sending its code keeps its room, a friend away copying the code
+    /// comes back to the digits it was typing, a join in flight goes on.
     pub fn keeps_room_in_background(&self, menu: GameMenu) -> bool {
-        self.session && matches!(menu, GameMenu::Working { role: LinkRow::Host, .. })
+        (self.entry.is_some() && matches!(menu, GameMenu::Pick(_)))
+            || (self.session && matches!(menu, GameMenu::Working { .. }))
     }
 }
 
@@ -180,19 +189,25 @@ mod tests {
     #[test]
     fn headings_follow_the_tab_and_the_attempt() {
         let mut ui = InternetUi::default();
-        assert_eq!(ui.heading(GameMenu::Pick(LinkRow::Host)), None, "Local keeps stock faces");
+        assert_eq!(ui.heading(GameMenu::Pick(LinkRow::Host), 0), None, "Local keeps stock faces");
         ui.internet = true;
-        assert_eq!(ui.heading(GameMenu::Pick(LinkRow::Join)), None, "Host/Join stay as they are");
+        assert_eq!(ui.heading(GameMenu::Pick(LinkRow::Join), 0), None, "Host/Join stay as they are");
+        assert!(!ui.keeps_room_in_background(GameMenu::Pick(LinkRow::Join)));
+        ui.entry = Some(CodeEntry::new(None));
+        assert!(ui.keeps_room_in_background(GameMenu::Pick(LinkRow::Join)),
+            "a friend away copying the code comes back to the digits");
+        ui.entry = None;
         ui.session = true;
         let waiting = GameMenu::Working { role: LinkRow::Host, step: LinkStep::Waiting, since: 0 };
-        assert_eq!(ui.heading(waiting).as_deref(), Some("Opening a room"));
+        assert_eq!(ui.heading(waiting, 200).as_deref(), Some("Host"), "no message in between");
+        assert_eq!(ui.heading(waiting, 1500).as_deref(), Some("Opening a room"), "only when slow");
         assert!(!ui.can_share(waiting));
         ui.room = Some("4829".into());
-        assert_eq!(ui.heading(waiting).as_deref(), Some("Code 4829"));
+        assert_eq!(ui.heading(waiting, 200).as_deref(), Some("Code 4829"));
         assert!(ui.can_share(waiting));
         assert!(ui.keeps_room_in_background(waiting));
         ui.end_attempt();
-        assert_eq!(ui.heading(waiting), None);
+        assert_eq!(ui.heading(waiting, 200), None);
         assert!(!ui.keeps_room_in_background(waiting));
     }
 
