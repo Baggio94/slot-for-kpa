@@ -1,6 +1,7 @@
 package fyi.slot.konkr
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.graphics.Color
@@ -32,6 +33,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Uses a restricted indexed-library SAF bridge, not a browser SD-card picker.
  */
 class CartStudioActivity : Activity() {
+    // dp/sp follow the screen height so Android screens keep the KONKR's look.
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(newBase)
+        SlotUi.panelDensityOverride(newBase)?.let(::applyOverrideConfiguration)
+    }
+
     companion object {
         const val EXTRA_ROM = "cart_studio_rom_uri"
         const val RESULT_CHANGED = Activity.RESULT_OK
@@ -142,7 +149,11 @@ class CartStudioActivity : Activity() {
                 // Native same-origin fetch avoids CORS restrictions from the
                 // official art CDN when the Studio runs under appassets.
                 if (path.startsWith("art/")) {
-                    return officialArt.intercept(path.removePrefix("art/"))
+                    val art = path.removePrefix("art/")
+                    if (art.startsWith("konkr-home/") && art.count { it == '/' } == 2)
+                        return officialArt.interceptChosenHome(art,
+                            url.getQueryParameter("name"), url.getQueryParameter("crcs"))
+                    return officialArt.intercept(art)
                 }
                 if (path.startsWith("dat/") && path.endsWith(".dat")) {
                     return noIntro.intercept(path.removePrefix("dat/").removeSuffix(".dat"))

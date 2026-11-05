@@ -46,7 +46,7 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
             val u = runCatching { URL(raw) }.getOrNull() ?: return false
             return u.protocol == "https" &&
                 u.host.equals("github.com", true) &&
-                u.path.startsWith("/Baggio94/slot-for-kpa/releases/download/") &&
+                SlotUpdatePolicy.assetPath(u.path) &&
                 !u.path.contains("..") && u.query == null && u.ref == null
         }
 
@@ -57,7 +57,7 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
                 connectTimeout = 8_000
                 readTimeout = 12_000
                 instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "slot-konkr-update")
+                setRequestProperty("User-Agent", "slot-update")
             }
             return try {
                 val status = connection.responseCode
@@ -117,7 +117,7 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
             val apk = prefs.getString("apk", "").orEmpty()
             val sha = prefs.getString("sha", "").orEmpty()
             if (SlotUpdatePolicy.newer(name, version()) &&
-                page.startsWith(RELEASES) && allowedAsset(apk) &&
+                SlotUpdatePolicy.releasePage(page) && allowedAsset(apk) &&
                 sha.matches(Regex("[0-9a-fA-F]{64}"))) {
                 latest = Release(name, page, apk, sha)
             }
@@ -196,25 +196,26 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
             val release = all.optJSONObject(i) ?: continue
             if (release.optBoolean("draft")) continue
             val tag = release.optString("tag_name")
-            if (!tag.matches(Regex("""konkr-v\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?"""))) continue
-            val next = tag.removePrefix("konkr-v")
+            val next = SlotUpdatePolicy.tagVersion(tag) ?: continue
             if (!SlotUpdatePolicy.eligible(version(), next,
                     release.optBoolean("prerelease"))) continue
             if (best != null && !SlotUpdatePolicy.newer(next, best.version)) continue
             val page = release.optString("html_url")
-            if (!page.startsWith(RELEASES)) continue
+            if (!SlotUpdatePolicy.releasePage(page)) continue
             val assets = release.optJSONArray("assets") ?: continue
             var apk = ""
             var checksumUrl = ""
             var digest = ""
+            var rank = 0
             for (j in 0 until assets.length()) {
                 val asset = assets.optJSONObject(j) ?: continue
                 val name = asset.optString("name")
                 val uri = asset.optString("browser_download_url")
                 if (!allowedAsset(uri)) continue
                 if (name == "SHA256SUMS.txt") checksumUrl = uri
-                if (name.startsWith("slot-for-konkr-") &&
-                    name.endsWith("-arm64.apk") && name.contains(next)) {
+                val r = SlotUpdatePolicy.apkRank(name, next)
+                if (r > rank) {
+                    rank = r
                     apk = uri
                     digest = asset.optString("digest").removePrefix("sha256:").lowercase()
                 }
@@ -258,7 +259,7 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
                     connectTimeout = 10_000
                     readTimeout = 20_000
                     instanceFollowRedirects = true
-                    setRequestProperty("User-Agent", "slot-konkr-update")
+                    setRequestProperty("User-Agent", "slot-update")
                 }
                 try {
                     require(conn.responseCode == 200)

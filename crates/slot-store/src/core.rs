@@ -12,16 +12,34 @@ pub enum Core {
     Mgba,
     Gpsp,
     Gambatte,
+    Fceumm,
+    Nestopia,
+    Snes9x,
+    Bsnes,
+    GenesisPlusGx,
+    Picodrive,
 }
 
 impl Core {
-    pub const ALL: [Core; 3] = [Core::Mgba, Core::Gpsp, Core::Gambatte];
+    pub const ALL: [Core; 9] = [
+        Core::Mgba, Core::Gpsp, Core::Gambatte,
+        Core::Fceumm, Core::Nestopia, Core::Snes9x, Core::Bsnes,
+        Core::GenesisPlusGx, Core::Picodrive,
+    ];
 
+    /// libretro's own core name: lib{as_str}_libretro.so, and the key
+    /// written to the ini files.
     pub fn as_str(&self) -> &'static str {
         match self {
             Core::Mgba => "mgba",
             Core::Gpsp => "gpsp",
             Core::Gambatte => "gambatte",
+            Core::Fceumm => "fceumm",
+            Core::Nestopia => "nestopia",
+            Core::Snes9x => "snes9x",
+            Core::Bsnes => "bsnes",
+            Core::GenesisPlusGx => "genesis_plus_gx",
+            Core::Picodrive => "picodrive",
         }
     }
 
@@ -29,51 +47,70 @@ impl Core {
         self as usize
     }
 
+    /// A home console core that plays Multiplayer like RetroArch netplay:
+    /// one console on both devices, the second player on port 2. bsnes keeps
+    /// its own save file and cannot hand a session to another device.
+    pub fn netplay(self) -> bool {
+        matches!(self, Core::Fceumm | Core::Nestopia | Core::Snes9x
+            | Core::GenesisPlusGx | Core::Picodrive)
+    }
+
+    /// The name RetroArch gives the core, also its save folder name.
     pub fn text(self) -> &'static str {
         match self {
             Core::Mgba => "mGBA",
             Core::Gpsp => "gpSP",
             Core::Gambatte => "Gambatte",
+            Core::Fceumm => "FCEUmm",
+            Core::Nestopia => "Nestopia",
+            Core::Snes9x => "Snes9x",
+            Core::Bsnes => "bsnes",
+            Core::GenesisPlusGx => "Genesis Plus GX",
+            Core::Picodrive => "PicoDrive",
         }
     }
 
     pub fn parse(s: &str) -> Option<Core> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "mgba" => Some(Core::Mgba),
-            "gpsp" => Some(Core::Gpsp),
-            "gambatte" => Some(Core::Gambatte),
-            _ => None,
-        }
+        let s = s.trim();
+        Core::ALL.into_iter().find(|core| s.eq_ignore_ascii_case(core.as_str()))
     }
 
     pub fn runs(self, platform: Platform) -> bool {
-        match self {
-            Core::Mgba => true,
-            Core::Gpsp => platform == Platform::Gba,
-            Core::Gambatte => platform != Platform::Gba,
+        self == Core::primary_for(platform) || self == Core::alternate_for(platform)
+    }
+
+    /// The first socket on the board, and the system's default core.
+    pub fn primary_for(platform: Platform) -> Core {
+        match platform {
+            Platform::Gba | Platform::Gb | Platform::Gbc => Core::Mgba,
+            Platform::Nes => Core::Fceumm,
+            Platform::Snes => Core::Snes9x,
+            Platform::Md => Core::GenesisPlusGx,
         }
     }
 
-    /// The second socket on the board: gpSP for GBA, Gambatte for GB/GBC.
+    /// The second socket on the board: gpSP for GBA, Gambatte for GB/GBC,
+    /// Nestopia for NES, bsnes for SNES, PicoDrive for Mega Drive.
     pub fn alternate_for(platform: Platform) -> Core {
         match platform {
             Platform::Gba => Core::Gpsp,
             Platform::Gb | Platform::Gbc => Core::Gambatte,
+            Platform::Nes => Core::Nestopia,
+            Platform::Snes => Core::Bsnes,
+            Platform::Md => Core::Picodrive,
         }
     }
 
     /// Which of the board's two sockets this core sits in.
     pub fn socket(self) -> usize {
         match self {
-            Core::Mgba => 0,
-            Core::Gpsp | Core::Gambatte => 1,
+            Core::Mgba | Core::Fceumm | Core::Snes9x | Core::GenesisPlusGx => 0,
+            Core::Gpsp | Core::Gambatte | Core::Nestopia | Core::Bsnes | Core::Picodrive => 1,
         }
     }
 
     pub fn default_for(platform: Platform) -> Core {
-        match platform {
-            Platform::Gba | Platform::Gb | Platform::Gbc => Core::Mgba,
-        }
+        Core::primary_for(platform)
     }
 }
 
@@ -104,6 +141,9 @@ fn default_key(platform: Platform) -> &'static str {
         Platform::Gba => "gba",
         Platform::Gb => "gb",
         Platform::Gbc => "gbc",
+        Platform::Nes => "nes",
+        Platform::Snes => "snes",
+        Platform::Md => "md",
     }
 }
 

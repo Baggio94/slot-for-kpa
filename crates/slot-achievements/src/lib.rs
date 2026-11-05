@@ -20,7 +20,15 @@ use slot_retro::RetroCore;
 use storage::{Config, Store, Unlock};
 
 const RAM_SIZE: usize = 0x58000;
-const GB_COVERAGE_SIZE: usize = 0x17000;
+// Address-space coverage for every console but the GBA: which bytes of
+// the snapshot a core actually mapped (GB/GBC 0x17000, SNES 0x40000).
+const COVERAGE_SIZE: usize = 0x40000;
+
+/// RetroAchievements console IDs slot. evaluates: Mega Drive 1, SNES 3,
+/// GB 4, GBA 5, GBC 6, NES 7.
+pub fn supported_console(console: u32) -> bool {
+    matches!(console, 1 | 3 | 4..=7)
+}
 // RetroArch evaluates every real frame. Here a frame the worker cannot take
 // is lost and resets all progress ("Achievement tracking interrupted"), so
 // the queue must absorb an unlock's fsync or a Fast Forward burst: about
@@ -264,7 +272,7 @@ impl Service {
     }
 
     pub fn prefetch_rom_hash_for_console(&self, hash: &str, console: u32) -> bool {
-        if !matches!(console, 4..=6)
+        if !supported_console(console)
             || hash.len() != 32 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
             return false;
         }
@@ -307,9 +315,10 @@ impl Service {
         self.wrap_for_console(core, 5)
     }
 
-    /// GB=4, GBA=5, GBC=6; original rcheevos worker shared without forks.
+    /// MD=1, SNES=3, GB=4, GBA=5, GBC=6, NES=7; original rcheevos worker
+    /// shared without forks.
     pub fn wrap_for_console(&self, core: Box<dyn RetroCore>, console: u32) -> Box<dyn RetroCore> {
-        assert!(matches!(console, 4..=6));
+        assert!(supported_console(console));
         Box::new(core::Tracked::new(core, self, console))
     }
 
@@ -469,7 +478,7 @@ fn run(
                                     &dir.join(format!("{hash}.json")),
                                 )
                             {
-                                if matches!(game.console, 4..=6) {
+                                if supported_console(game.console) {
                                     let _ = cached_prepared.send(network::Prepared {
                                         generation,
                                         hash,
@@ -656,7 +665,14 @@ fn evaluate(
             if !game.warned_gap {
                 let _ = notices.send(Notice::status(
                     game.generation,
-                    "Core does not expose achievement RAM",
+                    if frame.console == 3 {
+                        // Pinned bsnes exposes neither system RAM nor libretro
+                        // memory maps; achievements are impossible on that core.
+                        // Snes9x is the compatible SNES alternative.
+                        "SNES core has no achievement RAM; use Snes9x"
+                    } else {
+                        "Core does not expose achievement RAM"
+                    },
                 ));
                 game.warned_gap = true;
             }
@@ -730,7 +746,7 @@ pub fn artwork_title(root: &std::path::Path, rom: &std::path::Path) -> Option<St
     let hash = library::content_hash(rom).ok()?;
     let (game, _): (storage::Game, std::collections::BTreeSet<u32>) =
         storage::read(&dir.join(format!("{hash}.json"))).ok()?;
-    (matches!(game.console, 4..=6)
+    (supported_console(game.console)
         && game.id != 0
         && !game.title.trim().is_empty()
         && !game.title.starts_with("Unsupported Game Version"))

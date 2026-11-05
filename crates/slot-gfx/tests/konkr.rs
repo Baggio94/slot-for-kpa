@@ -1,11 +1,17 @@
-use slot_gfx::{blit_rect, canvas_size, OUT_H, OUT_W};
+use slot_gfx::{blit_rect, canvas_size, OUT_H, out_w};
 
 #[test]
 fn konkr_960x640_fills_the_entire_panel() {
-    assert_eq!(OUT_W, 720);
+    assert_eq!(out_w(), 720);
     assert_eq!(OUT_H, 480);
     assert_eq!(blit_rect((960, 640), 0.0), (0, 0, 960, 640));
     assert_eq!(canvas_size((960, 640)), (960, 640));
+}
+
+#[test]
+fn whole_multiples_get_a_canvas_their_own_size() {
+    assert_eq!(canvas_size((1440, 960)), (1440, 960));
+    assert_eq!(canvas_size((720, 480)), (720, 480));
 }
 
 #[test]

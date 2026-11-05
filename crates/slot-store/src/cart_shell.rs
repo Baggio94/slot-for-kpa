@@ -10,6 +10,56 @@ pub enum Outline {
     Auto,
     Notched,
     Rounded,
+    // NES, Super Nintendo and Mega Drive shells: the region's own mould or
+    // a publisher's (Namco and Konami Famicom carts, Electronic Arts).
+    Nes,
+    Famicom,
+    FamicomNamco,
+    FamicomKonami,
+    Snes,
+    SnesUs,
+    MegaDrive,
+    MegaDriveJp,
+    MegaDriveEa,
+}
+
+impl Outline {
+    pub const NAMES: [(Outline, &'static str); 12] = [
+        (Outline::Auto, "auto"),
+        (Outline::Notched, "notched"),
+        (Outline::Rounded, "rounded"),
+        (Outline::Nes, "nes"),
+        (Outline::Famicom, "famicom"),
+        (Outline::FamicomNamco, "famicom-namco"),
+        (Outline::FamicomKonami, "famicom-konami"),
+        (Outline::Snes, "snes"),
+        (Outline::SnesUs, "snes-us"),
+        (Outline::MegaDrive, "megadrive"),
+        (Outline::MegaDriveJp, "megadrive-jp"),
+        (Outline::MegaDriveEa, "megadrive-ea"),
+    ];
+
+    pub fn name(self) -> &'static str {
+        Outline::NAMES.iter().find(|(o, _)| *o == self).map_or("auto", |(_, n)| n)
+    }
+
+    pub fn parse(name: &str) -> Option<Outline> {
+        Outline::NAMES.iter().find(|(_, n)| *n == name).map(|(o, _)| *o)
+    }
+
+    /// The system whose carts this outline belongs to; None for auto.
+    pub fn platform(self) -> Option<crate::Platform> {
+        use crate::Platform;
+        match self {
+            Outline::Auto => None,
+            Outline::Notched | Outline::Rounded => Some(Platform::Gb),
+            Outline::Nes | Outline::Famicom | Outline::FamicomNamco | Outline::FamicomKonami => {
+                Some(Platform::Nes)
+            }
+            Outline::Snes | Outline::SnesUs => Some(Platform::Snes),
+            Outline::MegaDrive | Outline::MegaDriveJp | Outline::MegaDriveEa => Some(Platform::Md),
+        }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -29,12 +79,7 @@ pub struct ShellChoice {
 impl ShellChoice {
     pub fn parse(value: &str) -> Option<ShellChoice> {
         let mut words = value.split_whitespace();
-        let outline = match words.next()? {
-            "auto" => Outline::Auto,
-            "notched" => Outline::Notched,
-            "rounded" => Outline::Rounded,
-            _ => return None,
-        };
+        let outline = Outline::parse(words.next()?)?;
         let hex = words.next()?;
         if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
@@ -54,11 +99,7 @@ impl ShellChoice {
     }
 
     pub fn to_value(&self) -> String {
-        let outline = match self.outline {
-            Outline::Auto => "auto",
-            Outline::Notched => "notched",
-            Outline::Rounded => "rounded",
-        };
+        let outline = self.outline.name();
         let finish = match self.finish {
             ShellFinish::Solid => "solid",
             ShellFinish::Clear => "clear",

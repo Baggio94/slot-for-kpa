@@ -14,7 +14,18 @@ pub fn key(uri: &str) -> String {
 }
 
 pub fn selected(storage: &Path, uri: &str) -> Core {
-    core_for(storage, &key(uri))
+    match platform_of(uri) {
+        Some(platform) => selected_for(storage, uri, platform),
+        None => core_for(storage, &key(uri)),
+    }
+}
+
+/// The system of a shelf cart, from the library Android handed over.
+fn platform_of(uri: &str) -> Option<Platform> {
+    let library = crate::library::LIBRARY.lock().unwrap_or_else(|e| e.into_inner());
+    library.entries.as_ref()?.iter()
+        .find(|entry| entry.uri == uri)
+        .and_then(|entry| Platform::parse(&entry.platform))
 }
 
 /// The core this cart actually runs on: a stale choice the platform

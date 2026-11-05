@@ -56,7 +56,59 @@ internal class CartStudioArtProxy(private val context: Context) {
             }, mapOf("Cache-Control" to "no-store"),
             ByteArrayInputStream(bytes))
 
+    /** The scanned NES / Super Nintendo / Mega Drive labels slot. keeps
+     *  (HomeCartLabels), offered to Cart Studio as those carts' "Real label":
+     *  the art set itself only holds Game Boy and GBA carts. */
+    private val homeDir = File(context.filesDir, HomeCartLabels.REAL_DIR)
+    private val homeName = Regex("[0-9A-F]{8}\\.png")
+
     fun intercept(path: String): WebResourceResponse {
+        val official = interceptOfficial(path)
+        if (path != "index.json" || official.statusCode != 200) return official
+        val names = homeDir.list { _, name -> homeName.matches(name) }.orEmpty()
+        if (names.isEmpty()) return official
+        val bytes = official.data.use { it.readBytes() }
+        if (bytes.isEmpty() || bytes[0] != '{'.code.toByte()) return response(200, "application/json", bytes)
+        // Spliced in front, so an entry the art set has for the same checksum
+        // (read later by JSON.parse) still wins.
+        val extra = names.joinToString(",") { name ->
+            val key = name.removeSuffix(".png")
+            "\"$key\":{\"support-texture\":\"konkr-home/$name\"}"
+        }
+        val rest = String(bytes, 1, bytes.size - 1, Charsets.UTF_8).trimStart()
+        val merged = "{" + extra + (if (rest.startsWith("}")) "" else ",") + rest
+        return response(200, "application/json", merged.toByteArray(Charsets.UTF_8))
+    }
+
+    private val chosenPath = Regex("konkr-home/(NES|SNES|MD)/([0-9A-F]{8})\\.png")
+    private val crcText = Regex("[0-9A-F]{8}")
+
+    /** A home game picked by hand in Cart Studio: konkr-home/<platform>/<CRC>.png,
+     *  with its No-Intro name and every checksum it is known by. */
+    fun interceptChosenHome(path: String, name: String?, crcs: String?): WebResourceResponse {
+        val match = chosenPath.matchEntire(path)
+            ?: return response(404, "text/plain", "Not found".toByteArray())
+        val (platform, crc) = match.destructured
+        val all = (listOf(crc) + crcs.orEmpty().split(',').filter { crcText.matches(it) })
+            .distinct().take(8)
+        val png = try {
+            HomeCartLabels.studioLabel(context, platform, name.orEmpty().take(200), all)
+        } catch (error: Exception) {
+            Log.w(TAG, "Chosen home label failed: $platform $crc", error)
+            null
+        }
+        return if (png != null) response(200, "image/png", png)
+        else response(404, "text/plain", "Not found".toByteArray())
+    }
+
+    private fun interceptOfficial(path: String): WebResourceResponse {
+        if (path.startsWith("konkr-home/")) {
+            val name = path.removePrefix("konkr-home/")
+            val file = File(homeDir, name)
+            return if (homeName.matches(name) && file.isFile && file.length() in 8L..MAX_IMAGE_BYTES.toLong())
+                response(200, "image/png", file.readBytes())
+            else response(404, "text/plain", "Not found".toByteArray())
+        }
         val allowed = safePath.matches(path) &&
             !path.startsWith("/") &&
             !path.split('/').contains("..") &&

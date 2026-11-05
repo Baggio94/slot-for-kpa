@@ -13,7 +13,7 @@ fn cart(stem: &str, code: &str) -> Cart {
         rom: format!("Games/GBA/{stem}.gba").into(),
         label: None,
         code: code.into(),
-        shell: None,
+        shell: None, battery: false,
         title: stem.to_uppercase(),
     }
 }
@@ -117,7 +117,8 @@ fn an_empty_pak_footprint_names_its_core() {
 
 #[test]
 fn the_cell_carries_no_print() {
-    let face = board_face(&cart(EMERALD, "BPEE"));
+    // Emerald keeps its clock on a battery, so its board has the cell.
+    let face = board_face(&Cart { battery: true, ..cart(EMERALD, "BPEE") });
     let dark = (50..69)
         .flat_map(|y| (307..326).map(move |x| (x, y)))
         .filter(|&(x, y)| (x as i32 - 316).pow(2) + (y as i32 - 59).pow(2) <= 81)
@@ -368,4 +369,15 @@ fn the_seated_chips_name_is_antialiased_against_the_body() {
             "{core:?}'s name has only {soft} antialiased pixels"
         );
     }
+}
+
+#[test]
+fn a_cart_without_a_battery_shows_bare_pads_where_the_cell_sits() {
+    let face = board_face(&cart(EMERALD, "BPEE"));
+    let silver = (50..69)
+        .flat_map(|y| (307..326).map(move |x| (x, y)))
+        .filter(|&(x, y)| (x as i32 - 316).pow(2) + (y as i32 - 59).pow(2) <= 81)
+        .filter(|&(x, y)| { let [r, g, b] = rgb(&face, x, y); r > 170 && g > 170 && b > 170 })
+        .count();
+    assert!(silver < 40, "a cart without a battery still shows the cell ({silver} silver pixels)");
 }

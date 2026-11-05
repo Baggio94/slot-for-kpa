@@ -7,8 +7,8 @@ use crate::art::decode_png_bytes;
 use crate::density::{self, Canvas};
 use crate::plate::UndoFace;
 
-/// Drawn height inside the 24px hint band. The 58px art is box-filtered,
-/// straight to panel density, so the KONKR gets 2x rather than 2.6x.
+/// Drawn height inside the 24px hint band. The art (174px, 3x of slot.'s
+/// 58px) is box-filtered straight to panel density.
 pub const BUTTON_H: u32 = 22;
 const COMBO_GAP: u32 = 2;
 
@@ -80,7 +80,11 @@ fn single(key: &str) -> Option<UndoFace> {
     let entry = cache.entry(key).or_insert_with(|| {
         let (rgba, w, h) = decode_png_bytes(bytes)?;
         let lw = ((w as f32 * BUTTON_H as f32 / h as f32).round() as u32).max(1);
-        let face = shrink(&rgba, w, h, density::px(lw), density::px(BUTTON_H));
+        let (dw, dh) = (density::px(lw), density::px(BUTTON_H));
+        // Past the art's own 58px (a 3x panel) it is Mitchell-filtered up.
+        let face = if dh > h {
+            UndoFace { rgba: crate::native_assets::resample(&rgba, w, h, dw, dh), w: dw, h: dh }
+        } else { shrink(&rgba, w, h, dw, dh) };
         Some((face.rgba, lw, BUTTON_H))
     });
     entry.clone().map(|(rgba, w, h)| UndoFace { rgba, w, h })

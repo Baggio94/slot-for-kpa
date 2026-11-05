@@ -1,9 +1,10 @@
-use slot_gfx::OUT_W;
+use slot_gfx::out_w;
 use slot_store::{Cart, Core, Platform};
 
 use crate::art;
 use crate::bitmaps::{GB_CART_H, GB_CART_W};
-use crate::cart::{cart_box, cut_to_shell, is_clear, clean_label, gb_shell_of, CartFace, CART_H, CART_W};
+use crate::cart::{body_box, body_of, cut_to_body, cut_to_shell, is_clear, clean_label, gb_shell_of, platform_body, Body, CartFace, CART_H, CART_W};
+use crate::home::{self, HomeMould};
 use crate::silhouette::GbShell;
 use crate::density::Face as _;
 use crate::density::{self, px, Canvas};
@@ -16,6 +17,10 @@ const BOARD_SVG: &str = include_str!("../assets/board.svg");
 // The Game Boy pak board and its back shells, drawn in board.svg's style by
 // tools/pak-board/gen.py from the layout of assets/gb_board.png.
 const GB_BOARD_SVG: &str = include_str!("../assets/gb_board.svg");
+// The same boards for a cart that keeps no save on a battery: the cell is
+// gone, its two pads stay bare (Siham 2026-11-02, as the home carts).
+const GB_BOARD_BARE_SVG: &str = include_str!("../assets/gb_board_bare.svg");
+const BOARD_BARE_SVG: &str = include_str!("../assets/board_bare.svg");
 const GB_SHELL_SVG: &str = include_str!("../assets/gb_shell.svg");
 const GBC_SHELL_SVG: &str = include_str!("../assets/gbc_shell.svg");
 const GB_CHIP_SVG: &str = include_str!("../assets/gb_chip.svg");
@@ -96,6 +101,14 @@ fn marking_face(title: &[String], w: u32, h: u32, pad: u32, px: f32, min_px: f32
 }
 
 pub fn board_face(cart: &Cart) -> CartFace {
+    if let Body::Home(_) = body_of(cart) {
+        // An opened NES / Super Nintendo / Mega Drive cart: its back shell
+        // in the game's colour with the board seated in it.
+        let alpha = if is_clear(cart) { CLEAR_BACK } else { 255 };
+        let mut face = home_shell_face(cart, alpha);
+        over(&mut face, &home_board_face(cart), 0, 0);
+        return face;
+    }
     if gb_shell_of(cart).is_some() {
         // An opened Game Boy / Game Boy Color pak: its own back shell in the
         // game's colour with the pak board seated in it, the same board a
@@ -106,7 +119,8 @@ pub fn board_face(cart: &Cart) -> CartFace {
         over(&mut face, &pak_board_face(cart), 0, 0);
         return face;
     }
-    let mut face = svg_face(&shaded(BOARD_SVG, shell_for(cart).colour), BOARD_W, BOARD_H);
+    let board = if cart.battery { BOARD_SVG } else { BOARD_BARE_SVG };
+    let mut face = svg_face(&shaded(board, shell_for(cart).colour), BOARD_W, BOARD_H);
     over(&mut face, &rom_marking_face(&cart.stem), ROM_X, ROM_Y);
     face
 }
@@ -138,10 +152,87 @@ pub(crate) fn pak_shell_face(cart: &Cart, alpha: u8) -> CartFace {
     face
 }
 
+/// A home cart's back shell in the game's colour, cut to its outline.
+pub(crate) fn home_shell_face(cart: &Cart, alpha: u8) -> CartFace {
+    let body = body_of(cart);
+    let Body::Home(m) = body else { return pak_shell_face(cart, alpha) };
+    let (w, h) = m.size();
+    let mut face = svg_face(&shaded(m.art().shell_svg, shell_for(cart).colour), w, h);
+    cut_to_body(&mut face, body);
+    if alpha < 255 {
+        for px in face.rgba.chunks_exact_mut(4) {
+            px[3] = ((u32::from(px[3]) * u32::from(alpha) + 127) / 255) as u8;
+        }
+    }
+    face
+}
+
+/// A home cart's board: the battery only when the cart keeps its save on
+/// one, the cores' names in the two big-chip footprints and the title on
+/// the small chip.
+fn home_board_face(cart: &Cart) -> CartFace {
+    let Body::Home(m) = body_of(cart) else { return pak_board_face(cart) };
+    let (w, h) = m.size();
+    let mut face = CartFace { rgba: home::board_rgba(m, cart.battery), w, h };
+    let art = m.art();
+    let cores = [Core::primary_for(cart.platform), Core::alternate_for(cart.platform)];
+    for (core, (x, y, fw, fh)) in cores.into_iter().zip(art.footprints) {
+        over(&mut face, &home_footprint_face(core, fw as u32, fh as u32), x as u32, y as u32);
+    }
+    let (tx, ty, tw, th) = art.title;
+    let line_px = (th / 3.4).clamp(5.0, PAK_MARK_PX);
+    let title = marking(&cart.stem, ((tw / (line_px * 0.62)) as usize).max(6));
+    over(&mut face, &marking_face(&title, tw as u32, th as u32, 2, line_px, PAK_MARK_MIN_PX), tx as u32, ty as u32);
+    face
+}
+
+/// What a clear home cart shows through its plastic: the board with a chip
+/// seated in the first footprint.
+pub(crate) fn home_shelf_board(cart: &Cart) -> CartFace {
+    let mut face = home_board_face(cart);
+    if let Body::Home(m) = body_of(cart) {
+        let (x, y, w, h) = m.art().footprints[0];
+        over(&mut face, &home_chip_body(m, w as u32, h as u32), x as u32, y as u32);
+    }
+    face
+}
+
+fn home_footprint_face(core: Core, w: u32, h: u32) -> CartFace {
+    let mut face = Canvas::new(w, h).into_cart();
+    if let Some(layout) = name_layout(core, (w as f32 - 18.0).max(8.0)) {
+        let band = h.min(34);
+        ink_band(&mut face, (h - band) / 2, band, &layout, SOCKET_INK, 0.5);
+    }
+    face
+}
+
+fn home_chip_body(m: HomeMould, w: u32, h: u32) -> CartFace {
+    svg_face(m.art().chip_svg, w, h)
+}
+
+/// The system a home console core runs, None for the handheld cores.
+fn home_platform(core: Core) -> Option<Platform> {
+    [Platform::Nes, Platform::Snes, Platform::Md].into_iter().find(|p| core.runs(*p))
+}
+
+/// The big chip a home console core's name is printed on, at the size of
+/// that system's footprints.
+pub fn home_chip_face(platform: Platform, core: Option<Core>) -> CartFace {
+    let Body::Home(m) = platform_body(platform) else { return pak_chip_face(core) };
+    let (_, _, w, h) = m.art().footprints[0];
+    let mut face = home_chip_body(m, w as u32, h as u32);
+    if let Some(layout) = core.and_then(|c| name_layout(c, (w - 16.0).max(8.0))) {
+        let band = (h as u32).min(34);
+        ink_band(&mut face, (h as u32 - band) / 2, band, &layout, CHIP_INK, 0.9);
+    }
+    padded(&face, TURN_PAD)
+}
+
 /// The pak board with both big-chip footprints empty. Like a GBA board, the
 /// footprints keep the cores' names and the title is printed on a chip.
 fn pak_board_face(cart: &Cart) -> CartFace {
-    let mut face = svg_face(GB_BOARD_SVG, GB_CART_W, GB_CART_H);
+    let board = if cart.battery { GB_BOARD_SVG } else { GB_BOARD_BARE_SVG };
+    let mut face = svg_face(board, GB_CART_W, GB_CART_H);
     for (core, u) in [Core::Mgba, Core::alternate_for(cart.platform)].into_iter().zip(PAK_FOOTPRINTS) {
         over(&mut face, &pak_footprint_face(core), pak_chip_x(u), pak_chip_y());
     }
@@ -251,7 +342,10 @@ fn shade(c: [u8; 3], f: f32) -> [u8; 3] {
 const SOCKET_SVG: &str = include_str!("../assets/socket.svg");
 const CHIP_SVG: &str = include_str!("../assets/chip.svg");
 
-pub const BOARD_X: f32 = 174.0;
+/// Board centred on the canvas (174 on Slot's 720).
+pub fn board_x() -> f32 {
+    (out_w() - BOARD_W) as f32 / 2.0
+}
 pub const BOARD_Y: f32 = 150.0;
 
 pub const TURN_PAD: u32 = 2;
@@ -289,12 +383,10 @@ const NAME_MIN_PX: f32 = 8.0;
 const SOCKET_INK: [u8; 3] = [0xee, 0xf5, 0xe6];
 const CHIP_INK: [u8; 3] = [0xf2, 0xf2, 0xf2];
 
-const LID_REST: Placed = Placed {
-    x: 288.0,
-    y: 30.0,
-    w: 144.0,
-    h: 81.0,
-};
+/// The GBA lid, centred above the board (x 288 on Slot's 720).
+fn lid_rest_gba() -> Placed {
+    Placed { x: (out_w() as f32 - 144.0) / 2.0, y: 30.0, w: 144.0, h: 81.0 }
+}
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct Placed {
@@ -305,7 +397,7 @@ pub struct Placed {
 }
 
 pub fn shelf_cart() -> Placed {
-    shelf_cart_at((OUT_W - CART_W) as f32 / 2.0, 1.0)
+    shelf_cart_at((out_w() - CART_W) as f32 / 2.0, 1.0)
 }
 
 pub fn shelf_cart_at(x: f32, scale: f32) -> Placed {
@@ -321,21 +413,56 @@ pub fn shelf_cart_at(x: f32, scale: f32) -> Placed {
 /// The selected cart as the shelf draws it: GB/GBC carts keep their own
 /// taller box, so the lid that lifts off is the same shape as the cart.
 pub fn shelf_cart_for(platform: Platform, x: f32, scale: f32) -> Placed {
-    let (cw, ch) = cart_box(platform);
-    let (w, h) = (cw as f32 * scale, ch as f32 * scale);
-    Placed { x, y: foot_y(ch as f32) - h, w, h }
+    shelf_cart_body(platform_body(platform), x, scale)
+}
+
+pub fn shelf_cart_body(body: Body, x: f32, scale: f32) -> Placed {
+    let (cw, ch) = crate::cart::shelf_box(body);
+    let (w, h) = (cw * scale, ch * scale);
+    Placed { x, y: crate::shelf::body_foot_y(body) - h, w, h }
 }
 
 /// Where the lid is held above the board. A GB/GBC lid keeps its aspect and
 /// stays clear of the board, centred where the GBA lid rests.
 pub fn lid_rest(platform: Platform) -> Placed {
-    if platform == Platform::Gba { return LID_REST; }
+    lid_rest_body(platform_body(platform))
+}
+
+/// A cart wider than it is tall (GBA, and every home cart but the NES's)
+/// opens like the GBA: its front lifts off upward and the board rests
+/// centred under it (Siham 2026-11-02). Taller carts open like a book.
+fn opens_upward(body: Body) -> bool {
+    match body {
+        Body::Gba => true,
+        Body::Home(m) => { let (w, h) = m.size(); w > h }
+        _ => false,
+    }
+}
+
+/// Room for a home cart that opens upward: its front above, no taller than
+/// the GBA's lid (81), and its board under it from the GBA board's top, so
+/// the front's shadow falls in the same gap as the GBA's (Siham 2026-11-02).
+const UP_LID: (f32, f32) = (160.0, 81.0);
+const UP_BOARD: (f32, f32) = (372.0, 220.0);
+const UP_BOARD_Y: f32 = BOARD_Y;
+
+fn fit_in((cw, ch): (u32, u32), (w, h): (f32, f32)) -> (f32, f32) {
+    let k = (w / cw as f32).min(h / ch as f32);
+    (cw as f32 * k, ch as f32 * k)
+}
+
+pub fn lid_rest_body(body: Body) -> Placed {
+    if body == Body::Gba { return lid_rest_gba(); }
+    if opens_upward(body) {
+        let (w, h) = fit_in(body_box(body), UP_LID);
+        return Placed { x: (out_w() as f32 - w) / 2.0, y: 30.0, w, h };
+    }
     // A pak opens like a book: its front rests beside the board.
-    let (cw, ch) = cart_box(platform);
+    let (cw, ch) = body_box(body);
     let w = PAK_LID_W;
     let h = w * ch as f32 / cw as f32;
-    let board_w = PAK_REST_H * cw as f32 / ch as f32;
-    let x = (OUT_W as f32 - w - PAK_GAP - board_w) / 2.0;
+    let (board_w, _) = pak_rest_size(cw, ch);
+    let x = (out_w() as f32 - w - PAK_GAP - board_w) / 2.0;
     Placed { x, y: (480.0 - 120.0 - h) / 2.0 + 40.0, w, h }
 }
 
@@ -354,7 +481,7 @@ pub fn board_at(progress: f32) -> Placed {
 
 pub fn board_from(shelf: Placed, progress: f32) -> Placed {
     let rest = Placed {
-        x: BOARD_X,
+        x: board_x(),
         y: BOARD_Y,
         w: BOARD_W as f32,
         h: BOARD_H as f32,
@@ -367,7 +494,7 @@ pub fn lid_at(progress: f32) -> (Placed, f32) {
 }
 
 pub fn lid_from(shelf: Placed, progress: f32) -> (Placed, f32) {
-    lid_toward(shelf, LID_REST, progress)
+    lid_toward(shelf, lid_rest_gba(), progress)
 }
 
 const UNITS_W: f32 = 240.0;
@@ -416,13 +543,25 @@ const PAK_FOOTPRINTS: [f32; 2] = [99.0, 219.0];
 const PAK_FOOTPRINT_Y: f32 = 213.5;
 const PAK_CHIP: (f32, f32) = (70.0, 91.0);
 const PAK_REST_H: f32 = 300.0;
+const PAK_REST_W: f32 = 360.0;
 const PAK_GAP: f32 = 40.0;
 const PAK_LID_W: f32 = 168.0;
 
+/// An opened pak's board size: 300 high, or 360 wide for the squat
+/// Super Nintendo and Mega Drive boards.
+fn pak_rest_size(cw: u32, ch: u32) -> (f32, f32) {
+    let k = (PAK_REST_H / ch as f32).min(PAK_REST_W / cw as f32);
+    (cw as f32 * k, ch as f32 * k)
+}
+
 pub fn board_layout(platform: Platform) -> BoardLayout {
-    if platform == Platform::Gba {
+    board_layout_body(platform_body(platform))
+}
+
+pub fn board_layout_body(body: Body) -> BoardLayout {
+    if body == Body::Gba {
         return BoardLayout {
-            rest: Placed { x: BOARD_X, y: BOARD_Y, w: BOARD_W as f32, h: BOARD_H as f32 },
+            rest: Placed { x: board_x(), y: BOARD_Y, w: BOARD_W as f32, h: BOARD_H as f32 },
             native: (BOARD_W as f32, BOARD_H as f32),
             sockets: true,
             socket_u: SOCKET_U,
@@ -435,12 +574,33 @@ pub fn board_layout(platform: Platform) -> BoardLayout {
             shadow: (SHADOW_W as f32, SHADOW_H as f32),
         };
     }
-    let (cw, ch) = cart_box(platform);
-    let h = PAK_REST_H;
-    let w = h * cw as f32 / ch as f32;
-    let lid = lid_rest(platform);
+    let (cw, ch) = body_box(body);
+    let (w, h) = pak_rest_size(cw, ch);
+    let lid = lid_rest_body(body);
     let x = lid.x + lid.w + PAK_GAP;
     let unit = |px: f32| px / UNIT_PX;
+    if let Body::Home(m) = body {
+        let [(x0, y0, fw, fh), (x1, _, _, _)] = m.art().footprints;
+        let rest = if opens_upward(body) {
+            let (w, h) = fit_in((cw, ch), UP_BOARD);
+            Placed { x: (out_w() as f32 - w) / 2.0, y: UP_BOARD_Y, w, h }
+        } else {
+            Placed { x, y: (480.0 - 120.0 - h) / 2.0 + 30.0, w, h }
+        };
+        return BoardLayout {
+            rest,
+            native: (cw as f32, ch as f32),
+            sockets: false,
+            socket_u: [unit(x0), unit(x1)],
+            socket_v: unit(y0),
+            chip_u: [unit(x0), unit(x1)],
+            chip_v: unit(y0),
+            chip: (fw, fh),
+            hop: unit(22.0),
+            shadow_at: (unit(fw / 2.0), unit(fh + 4.0)),
+            shadow: (SHADOW_W as f32 * fw / CHIP_W as f32, SHADOW_H as f32 * 1.5),
+        };
+    }
     let (chip_w, chip_h) = PAK_CHIP;
     BoardLayout {
         rest: Placed { x, y: (480.0 - 120.0 - h) / 2.0 + 30.0, w, h },
@@ -478,6 +638,21 @@ impl BoardLayout {
 
 pub fn board_toward(shelf: Placed, rest: Placed, progress: f32) -> Placed {
     lerp(shelf, rest, lift_of(progress))
+}
+
+/// The screen columns the opening picker covers: its lid (tilted) and its
+/// board, from the selected cart on the shelf toward where they rest. The
+/// shelf keeps the other carts out of them on narrow screens.
+pub fn picker_span(platform: Platform, shelf: Placed, progress: f32) -> [f32; 2] {
+    picker_span_body(platform_body(platform), shelf, progress)
+}
+
+pub fn picker_span_body(body: Body, shelf: Placed, progress: f32) -> [f32; 2] {
+    let (lid, turn) = lid_toward(shelf, lid_rest_body(body), progress);
+    let half = (lid.w * turn.cos().abs() + lid.h * turn.sin().abs()) / 2.0;
+    let mid = lid.x + lid.w / 2.0;
+    let board = board_toward(shelf, board_layout_body(body).rest, progress);
+    [(mid - half).min(board.x), (mid + half).max(board.x + board.w)]
 }
 
 pub fn grown(p: Placed, by: f32) -> Placed {
@@ -540,6 +715,9 @@ fn pak_chip_body() -> CartFace {
 
 /// The big pak chip carrying the core's name, as it sits on a GB/GBC board.
 pub fn pak_chip_face(core: Option<Core>) -> CartFace {
+    if let Some(platform) = core.and_then(home_platform) {
+        return home_chip_face(platform, core);
+    }
     let mut face = pak_chip_body();
     if let Some(layout) = core.and_then(|c| name_layout(c, (PAK_CHIP.0 - 26.0).max(8.0))) {
         ink_band(&mut face, (PAK_CHIP.1 as u32 - 34) / 2, 34, &layout, CHIP_INK, 0.9);

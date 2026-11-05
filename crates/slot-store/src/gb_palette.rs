@@ -1,4 +1,8 @@
-const NAMES: [&str; 48] = [
+/// mGBA's 48 palettes in its order, then the TWB64 one slot. adds to mGBA
+/// (scripts/patch-mgba-twb64.py) and Gambatte ships in its TWB64 Pack 1.
+pub const TWB64_GAME_COM: &str = "TWB64 028 Game.com Ver.";
+
+const NAMES: [&str; 49] = [
     "Grayscale",
     "DMG Green",
     "GB Pocket",
@@ -47,6 +51,7 @@ const NAMES: [&str; 48] = [
     "SGB 4-F",
     "SGB 4-G",
     "SGB 4-H",
+    TWB64_GAME_COM,
 ];
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -70,6 +75,7 @@ impl GbPalette {
 
     pub fn label(self) -> &'static str {
         let name = self.core_name();
+        if name == TWB64_GAME_COM { return "TWB64 Game.com"; }
         match name.find(['↑', '↓', '←', '→']) {
             Some(at) => name[..at].trim_end(),
             None => name,

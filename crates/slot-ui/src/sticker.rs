@@ -14,6 +14,8 @@ const WORDMARK_SVG: &str = include_str!("../assets/wordmark.svg");
 // supplied specifically for this Android device, not substitute type.
 const KONKR_SVG: &str = include_str!("../assets/konkr-logo.svg");
 const POCKET_ADVANCE_SVG: &str = include_str!("../assets/pocket-advance-logo.svg");
+// slot.'s own wordmark, the boot logo's vector, for every other handheld.
+const SLOT_WORDMARK_SVG: &str = include_str!("../assets/slot-wordmark.svg");
 
 const WORDMARK_W: u32 = 250;
 
@@ -224,37 +226,93 @@ impl Canvas {
 }
 
 pub fn sticker_face(f: &StickerFields) -> UndoFace {
-    sticker_face_custom(f, &CREDITS, &ORIGIN, COPYRIGHT, HOME, "MODEL NO. AGS-102")
+    sticker_face_custom(f, &CREDITS, &ORIGIN, COPYRIGHT, HOME, "MODEL NO. AGS-102", Lower::Original)
+}
+
+/// Credits shared by the KONKR and every other Android handheld, after the
+/// two lines that name the device.
+const PORT_CREDITS_TAIL: [&str; 8] = [
+    "BY BRANDON T. KOWALSKI.",
+    "ANDROID PORT BY BAGGIO94.",
+    "EMULATION: LIBRETRO CORES",
+    "(MGBA, GPSP, GAMBATTE ETC.)",
+    "ORIGINAL UI & CART ART BY",
+    "BRANDON T. KOWALSKI. HOME",
+    "CART ART: SCREENSCRAPER.FR",
+    "TYPE: OPEN SANS, NERD FONTS",
+];
+
+/// What sits under the barcode panel, above the copyright and version.
+#[derive(Clone, Copy)]
+enum Lower<'a> {
+    /// Original Slot: its wordmark.
+    Original,
+    /// The KONKR Pocket Advance: the KONKR and POCKET ADVANCE logos.
+    Konkr,
+    /// Any other Android handheld: slot.'s wordmark and the device's name.
+    Handheld(&'a str),
 }
 
 /// The KONKR port uses the *same* SVG backing, Code39 barcode, typography,
 /// dimensions and logo as original Slot, with truthful port credits.
 pub fn sticker_face_konkr(f: &StickerFields) -> UndoFace {
-    const PORT_CREDITS: [&str; 10] = [
-        "SLOT. FOR KONKR POCKET",
-        "ADVANCE. ORIGINAL SLOT.",
-        "BY BRANDON T. KOWALSKI.",
-        "ANDROID PORT BY BAGGIO94.",
-        "EMULATION POWERED BY MGBA",
-        "AND GPSP LIBRETRO CORES.",
-        "ORIGINAL UI & CART ART BY",
-        "BRANDON T. KOWALSKI.",
-        "TYPE: OPEN SANS / NERD",
-        "FONTS. OPEN SOURCE SOFTWARE.",
-    ];
+    let mut all = [""; 10];
+    all[..2].copy_from_slice(&["SLOT. FOR ANDROID", "HANDHELDS. ORIGINAL SLOT."]);
+    all[2..].copy_from_slice(&PORT_CREDITS_TAIL);
     sticker_face_custom(
-        f, &PORT_CREDITS, &["S/LOT-KONKR", "ANDROID EDITION"],
+        f, &all, &["S/LOT-KONKR", ""],
         "2026 SLOT. COMMUNITY",
         option_env!("SLOT_KONKR_VERSION").unwrap_or("DEV BUILD"),
-        "MODEL NO. KONKR ADV",
+        "MODEL NO. KONKR ADV", Lower::Konkr,
     )
+}
+
+/// Any Android handheld other than the KONKR: slot.'s wordmark and the
+/// device's name where the KONKR has its logos, its model on the first row.
+/// `name` is what the device calls itself ("RETROID POCKET CLASSIC"),
+/// `model` its Android model ("Retroid Pocket Classic").
+pub fn sticker_face_handheld(f: &StickerFields, name: &str, model: &str) -> UndoFace {
+    let mut all = [""; 10];
+    all[..2].copy_from_slice(&["SLOT. FOR ANDROID", "HANDHELDS. ORIGINAL SLOT."]);
+    all[2..].copy_from_slice(&PORT_CREDITS_TAIL);
+    let name = name.trim().to_uppercase();
+    let model = model_row(&model.trim().to_uppercase());
+    sticker_face_custom(
+        f, &all, &["S/LOT-ANDROID", ""],
+        "2026 SLOT. COMMUNITY",
+        option_env!("SLOT_KONKR_VERSION").unwrap_or("DEV BUILD"),
+        &model, Lower::Handheld(if name.is_empty() { "ANDROID HANDHELD" } else { name.as_str() }),
+    )
+}
+
+/// "MODEL NO. " and as much of the model as fits the left column: the whole
+/// model, else without its first word (the brand), else cut short.
+fn model_row(model: &str) -> String {
+    const ROOM: f32 = 186.0;
+    if model.is_empty() { return "MODEL NO. ANDROID".into(); }
+    let fits = |s: &str| measure(s, HEAD_PX) <= ROOM;
+    let full = format!("MODEL NO. {model}");
+    if fits(&full) { return full; }
+    if let Some((_, rest)) = model.split_once(' ') {
+        let short = format!("MODEL NO. {rest}");
+        if fits(&short) { return short; }
+    }
+    let mut out = full;
+    while out.chars().count() > 10 && !fits(&out) { out.pop(); }
+    out.trim_end().to_string()
+}
+
+fn measure(s: &str, px: f32) -> f32 {
+    let Some(font) = text::label_font() else { return 0.0 };
+    let layout = text::fit(font, s, f32::MAX, 1, px, px);
+    layout.lines.first().map(|l| text::line_width(font, l, px, layout.tracking)).unwrap_or(0.0)
 }
 
 fn sticker_face_custom(f: &StickerFields, credits: &[&str; 10],
                        origin: &[&str; 2], copyright: &str,
-                       home: &str, model: &str) -> UndoFace {
+                       home: &str, model: &str, mark: Lower) -> UndoFace {
     let mut c = Canvas::shape(
-        if model == "MODEL NO. KONKR ADV" { STICKER_KONKR_SVG } else { STICKER_SVG },
+        if matches!(mark, Lower::Original) { STICKER_SVG } else { STICKER_KONKR_SVG },
         STICKER_W, STICKER_H
     );
     let panel_x = (PANEL_FX * STICKER_W as f32).round() as u32;
@@ -285,8 +343,10 @@ fn sticker_face_custom(f: &StickerFields, credits: &[&str; 10],
     y += 3.0;
     let col_right = panel_x as f32 - MARGIN;
     c.print(left, y, origin[0], BODY_PX, WHITE);
-    let maker_w = c.print_measure(origin[1], BODY_PX);
-    c.print(col_right - maker_w, y, origin[1], BODY_PX, WHITE);
+    if !origin[1].is_empty() {
+        let maker_w = c.print_measure(origin[1], BODY_PX);
+        c.print(col_right - maker_w, y, origin[1], BODY_PX, WHITE);
+    }
 
     let bars_y = panel_y + 14;
     let bars_h = 62;
@@ -333,7 +393,25 @@ fn sticker_face_custom(f: &StickerFields, credits: &[&str; 10],
 
     let mut ry = panel_y as f32 + panel_h as f32 + 10.0;
     let right_edge = (panel_x + panel_w) as f32;
-    if model == "MODEL NO. KONKR ADV" {
+    if let Lower::Handheld(name) = mark {
+        // The KONKR layout's four rows: slot.'s wordmark where the KONKR
+        // logo is, the device's name where POCKET ADVANCE is, sized to its
+        // width, then the copyright and version.
+        ry = panel_y as f32 + panel_h as f32 + 3.0;
+        if let Some((logo, (w, h), (tw, th))) = vector_mark(SLOT_WORDMARK_SVG, 120) {
+            c.blit((right_edge - w as f32 - 14.0) as u32, ry as u32, &logo, tw, th);
+            ry += h as f32 + 2.0;
+        }
+        let mut px = 20.0;
+        while px > 8.0 && c.print_measure(name, px) > 290.0 { px -= 0.5; }
+        let nw = c.print_measure(name, px);
+        ry = c.print(right_edge - nw - 14.0, ry, name, px, WHITE) + 1.0;
+        for line in [copyright, home] {
+            let px = SMALL_PX * 0.88;
+            let lw = c.print_measure(line, px);
+            ry = c.print(right_edge - lw - 14.0, ry, line, px, WHITE);
+        }
+    } else if matches!(mark, Lower::Konkr) {
         // The original 217 px KONKR mark used 56 px of the 92 px lower
         // zone, leaving the edition and version printed beyond the sticker.
         // Reserve explicit space for all four rows. Keep the source artwork
@@ -401,7 +479,7 @@ pub fn draw_sticker(face: Option<TexId>, out: &mut Vec<Draw>) {
         return;
     };
     out.push(Draw::Tex {
-        x: (slot_gfx::OUT_W as f32 - STICKER_W as f32) / 2.0,
+        x: (slot_gfx::out_w() as f32 - STICKER_W as f32) / 2.0,
         y: (slot_gfx::OUT_H as f32 - STICKER_H as f32) / 2.0,
         w: STICKER_W as f32,
         h: STICKER_H as f32,

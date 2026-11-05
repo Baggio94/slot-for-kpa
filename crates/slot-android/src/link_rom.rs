@@ -93,8 +93,31 @@ pub(crate) fn test_gb_rom(title: &str, japan: bool, size: usize, seed: u8) -> Ve
 }
 
 pub fn is_gb_code(code: &[u8]) -> bool {
-    code.first().is_some_and(u8::is_ascii_digit)
+    matches!(code.first(), Some(b'0' | b'1'))
 }
+
+/// A NES, SNES or Mega Drive cartridge: "2" and three base-36 digits of its
+/// image. The two consoles still compare the whole ROM's SHA-256 before
+/// playing; this code only lets them find each other.
+pub fn identify_home(path: &Path) -> io::Result<GbaIdentity> {
+    let mut file = File::open(path)?;
+    let size = file.metadata()?.len();
+    let mut head = Vec::with_capacity(HOME_SAMPLE);
+    file.by_ref().take(HOME_SAMPLE as u64).read_to_end(&mut head)?;
+    if head.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "empty cartridge"));
+    }
+    let hash = head.iter().chain(size.to_le_bytes().iter())
+        .fold(0x811c_9dc5u32, |h, b| (h ^ u32::from(*b)).wrapping_mul(0x0100_0193));
+    let digit = |n: u32| BASE36[(n % 36) as usize] as char;
+    let title = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(GbaIdentity {
+        code: format!("2{}{}{}", digit(hash), digit(hash / 36), digit(hash / 1296)),
+        title, clean_header: true,
+    })
+}
+
+const HOME_SAMPLE: usize = 256 * 1024;
 
 pub fn identify_gb(path: &Path) -> io::Result<GbaIdentity> {
     let mut head = [0u8; GB_HEADER];
@@ -179,5 +202,20 @@ mod tests {
         assert!(gb_code(&bad).is_none(), "wrong header checksum");
         assert!(gb_code(&[0u8; 0x100]).is_none(), "too short");
         assert!(gb_code(&gb_head("", false)).is_none(), "no title");
+    }
+
+    #[test]
+    fn home_cartridges_have_their_own_codes() {
+        let dir = std::env::temp_dir().join(format!("slot-home-code-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.sfc"), dir.join("b.sfc"));
+        std::fs::write(&a, vec![1u8; 4096]).unwrap();
+        std::fs::write(&b, vec![2u8; 4096]).unwrap();
+        let (x, y) = (identify_home(&a).unwrap(), identify_home(&b).unwrap());
+        assert!(x.code.starts_with('2') && game_code(&x.code).is_some());
+        assert_ne!(x.code, y.code);
+        assert_eq!(x.code, identify_home(&a).unwrap().code);
+        assert!(!is_gb_code(x.code.as_bytes()));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

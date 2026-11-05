@@ -56,7 +56,7 @@ fn shelf_of(names: &[&str]) -> Shelf {
                 rom: format!("Games/GBA/{n}.gba").into(),
                 label: None,
                 code: String::new(),
-                shell: None,
+                shell: None, battery: false,
                 title: n.to_uppercase(),
             })
             .collect(),
@@ -143,4 +143,29 @@ fn a_row_of_one_letter_stays_put() {
     );
     s.jump_prev_letter();
     assert_eq!(s.carts[s.index].stem, "Metroid");
+}
+
+#[test]
+fn holding_a_letter_jump_never_empties_the_shelf() {
+    let names: Vec<String> = ('A'..='Z')
+        .flat_map(|l| (0..4).map(move |i| format!("{l} Game {i}")))
+        .collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut s = shelf_of(&refs);
+    let mid = slot_ui::out_w() as f32 / 2.0;
+    for frame in 0..120 {
+        if frame % 3 == 0 {
+            s.jump_next_letter();
+        }
+        s.update(1.0 / 60.0);
+        let mut out = Vec::new();
+        s.draw_row(None, 0.0, 0.0, 1.0, &mut out);
+        let covered = out.iter().any(|d| match *d {
+            slot_ui::Draw::Rect { x, w, .. } | slot_ui::Draw::Tex { x, w, .. } => {
+                x <= mid && x + w >= mid
+            }
+            _ => false,
+        });
+        assert!(covered, "frame {frame}: nothing drawn at the middle of the shelf");
+    }
 }

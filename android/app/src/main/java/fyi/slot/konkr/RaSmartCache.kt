@@ -29,24 +29,45 @@ internal object RaSmartCache {
             cached.size == size && cached.modified == modified &&
             cached.md5.length == 32 && cached.md5.all { it in '0'..'9' || it in 'a'..'f' }
 
-    private fun hashRom(context: Context, uri: Uri, filename: String): String {
+    private fun hashRom(context: Context, uri: Uri, filename: String, console: Int): String {
         val digest = MessageDigest.getInstance("MD5") // RA's ROM identity, not for security
+        // RetroAchievements hashes NES carts without their iNES header and Super
+        // Nintendo carts without a 512-byte copier header, as the native rcheevos
+        // hash at launch does; every other cart whole. Whether a Super Nintendo
+        // dump carries a copier header is only known from its unpacked size, so
+        // that cart is hashed both ways and the right one kept at the end.
+        val copier = if (console == 3) MessageDigest.getInstance("MD5") else null
         var consumed = 0L
         context.contentResolver.openInputStream(uri)?.use { source ->
             RomSource.useRom(source, filename) { input, _ ->
+                var skip = 0
                 val buffer = ByteArray(64 * 1024)
+                var first = true
                 while (true) {
                     if (Thread.currentThread().isInterrupted) throw InterruptedException()
                     val length = input.read(buffer)
                     if (length < 0) break
+                    if (first && length > 0) {
+                        first = false
+                        if (console == 7 && length > 16 && buffer[0] == 'N'.code.toByte() &&
+                            buffer[1] == 'E'.code.toByte() && buffer[2] == 'S'.code.toByte() &&
+                            buffer[3] == 0x1a.toByte()) skip = 16
+                    }
+                    if (copier != null) {
+                        val drop = (512 - consumed).coerceIn(0, length.toLong()).toInt()
+                        if (length > drop) copier.update(buffer, drop, length - drop)
+                    }
                     consumed += length
-                    require(consumed <= MAX_ROM_BYTES) { "GBA ROM is too large" }
-                    digest.update(buffer, 0, length)
+                    require(consumed <= MAX_ROM_BYTES) { "ROM is too large" }
+                    val from = minOf(skip, length)
+                    skip -= from
+                    if (length > from) digest.update(buffer, from, length - from)
                 }
             }
         } ?: error("Cannot open ROM through Android SAF")
-        require(consumed >= 0x150) { "GBA ROM is too small" }
-        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        require(consumed >= 0x150) { "ROM is too small" }
+        val chosen = if (copier != null && consumed % 1024 == 512L) copier else digest
+        return chosen.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
     private fun loadIndex(root: File, tree: String): Map<String, Fingerprint> {
@@ -121,6 +142,9 @@ internal object RaSmartCache {
                 "GB" -> 4
                 "GBA" -> 5
                 "GBC" -> 6
+                Systems.NES -> 7
+                Systems.SNES -> 3
+                Systems.MD -> 1
                 else -> continue
             }
             val uriText = item.optString("uri")
@@ -133,7 +157,7 @@ internal object RaSmartCache {
                 }?.md5 ?: hashRom(context, Uri.parse(uriText),
                     item.optString("filename").ifBlank {
                         Uri.parse(uriText).lastPathSegment.orEmpty()
-                    }).also {
+                    }, console).also {
                     updated[uriText] = Fingerprint(size, modified, it)
                     fresh++
                 }

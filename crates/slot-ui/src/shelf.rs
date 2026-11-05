@@ -1,8 +1,9 @@
-use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
+use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_store::{Cart, Platform};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::cart::{cart_box, gb_shell_of, label_panel, gb_label_panel, GBC_LABEL_X, GBC_LABEL_Y, GBC_LABEL_W, CART_H, CART_W};
+use crate::cart::{body_of, label_rect, shelf_box, shelf_box_for, shelf_grow, Body, CART_H, CART_W};
+use crate::home::HomeMould;
 use crate::hud::Millis;
 use crate::silhouette::GbShell;
 use crate::slot_chrome::{draw_empty_slot, MOUTH_H};
@@ -38,8 +39,22 @@ pub fn rest_y(h: f32) -> f32 {
 pub fn foot_y(h: f32) -> f32 {
     rest_y(h) + h
 }
+
+/// Where a cart of this body stands. A NES / Super Nintendo / Mega Drive cart
+/// stands on its system's own baseline, the foot of that system's usual
+/// shell, so a US SNES, a Famicom or an EA cart lines up at the bottom with
+/// the rest of its shelf instead of being centred on its own height.
+pub fn body_foot_y(body: Body) -> f32 {
+    let h = match body {
+        Body::Home(m) => shelf_box(Body::Home(HomeMould::default_of(m.system()))).1,
+        _ => shelf_box(body).1,
+    };
+    foot_y(h)
+}
 const OMEGA: f32 = 16.0;
 const PART: f32 = 130.0;
+/// Least room between a side cart and the open core picker.
+const CLEAR_GAP: f32 = 6.0;
 
 const SLOTS: i32 = 3;
 
@@ -54,7 +69,8 @@ pub struct Shelf {
     shadow: Option<TexId>,
     gb_shadow: Option<TexId>,
     gbc_shadow: Option<TexId>,
-    shells: Vec<Option<GbShell>>,
+    home_shadows: [Option<TexId>; 9],
+    shells: Vec<Body>,
     starred: Vec<bool>,
     star: Option<(TexId, f32, f32)>,
     ride: f32,
@@ -70,7 +86,8 @@ impl Shelf {
         Shelf {
             starred: vec![false; carts.len()],
             star: None,
-            shells: carts.iter().map(gb_shell_of).collect(),
+            shells: carts.iter().map(body_of).collect(),
+            home_shadows: [None; 9],
             faces: vec![None; carts.len()],
             carts,
             index: 0,
@@ -93,7 +110,7 @@ impl Shelf {
         let faces = std::mem::take(&mut self.faces);
         let previously_selected = before.get(self.index).map(|c| c.rom.clone());
         self.faces = vec![None; self.carts.len()];
-        self.shells = self.carts.iter().map(gb_shell_of).collect();
+        self.shells = self.carts.iter().map(body_of).collect();
         self.starred = vec![false; self.carts.len()];
         let mut moves = Vec::new();
         for (old, cart) in before.iter().enumerate() {
@@ -133,6 +150,10 @@ impl Shelf {
             GbShell::Notched => self.gb_shadow = Some(face),
             GbShell::Rounded => self.gbc_shadow = Some(face),
         }
+    }
+
+    pub fn set_home_shadow(&mut self, mould: HomeMould, face: TexId) {
+        self.home_shadows[mould.index()] = Some(face);
     }
 
     pub fn set_faces(&mut self, faces: Vec<TexId>) {
@@ -247,6 +268,8 @@ impl Shelf {
         };
         self.index = target;
         self.ride += delta as f32;
+        let to = self.scroll_target();
+        self.scroll = to - (to - self.scroll).clamp(-1.0, 1.0);
     }
 
     pub fn hold_left(&mut self, now: Millis) {
@@ -366,9 +389,9 @@ impl Shelf {
     // Upstream slot. v1.7 positions a mixed GBA/GB/GBC rack by pairwise
     // widths. In particular, the GB/GBC shells are not as wide as GBA carts.
     fn slot_width(&self, slot: i32) -> (f32, bool) {
-        match self.cart_at_offset(slot).map(|i| self.carts[i].platform) {
-            Some(Platform::Gba) | None => (CART_W as f32, true),
-            Some(platform) => (cart_box(platform).0 as f32, false),
+        match self.cart_at_offset(slot).map(|i| &self.carts[i]) {
+            Some(cart) if cart.platform != Platform::Gba => (shelf_box_for(cart).0, false),
+            _ => (CART_W as f32, true),
         }
     }
 
@@ -377,13 +400,13 @@ impl Shelf {
             (self.slot_width(a), self.slot_width(a + 1));
         let (sa, sb) = (shrink(a as f32 - u), shrink((a + 1) as f32 - u));
         let gap_of = if gba_a || gba_b { CART_W as f32 } else { wa };
-        wa * sa / 2.0 + gap_of * (1.0 - (sa + sb) / 2.0) + wb * sb / 2.0
+        fit() * (wa * sa / 2.0 + gap_of * (1.0 - (sa + sb) / 2.0) + wb * sb / 2.0)
     }
 
     fn centre(&self, slot: i32) -> f32 {
         let u = self.scroll - self.scroll_target();
         let a = u.floor() as i32;
-        let mut centre = OUT_W as f32 / 2.0 - (u - a as f32) * self.pitch(a, u);
+        let mut centre = out_w() as f32 / 2.0 - (u - a as f32) * self.pitch(a, u);
         if slot >= a {
             for s in a..slot { centre += self.pitch(s, u); }
         } else {
@@ -394,7 +417,7 @@ impl Shelf {
 
     pub fn selected_at(&self) -> (f32, f32) {
         let (w, _) = self.slot_width(0);
-        let scale = shrink(self.scroll_target() - self.scroll);
+        let scale = fit() * shrink(self.scroll_target() - self.scroll);
         (self.centre(0) - w * scale / 2.0, scale)
     }
 
@@ -422,6 +445,21 @@ impl Shelf {
         dim: f32,
         out: &mut Vec<Draw>,
     ) {
+        self.draw_row_clear_of(hidden, shake, recede, dim, None, out);
+    }
+
+    /// `draw_row`, with the side carts kept out of the screen columns
+    /// `clear` (the core picker's span). On the KONKR they already are; on
+    /// a narrower screen they are pushed out further as the picker opens.
+    pub fn draw_row_clear_of(
+        &self,
+        hidden: Option<&str>,
+        shake: f32,
+        recede: f32,
+        dim: f32,
+        clear: Option<[f32; 2]>,
+        out: &mut Vec<Draw>,
+    ) {
         let recede = recede.clamp(0.0, 1.0);
         let dim = dim.clamp(0.0, 1.0);
         let target = self.scroll_target();
@@ -435,21 +473,30 @@ impl Shelf {
             }
             let offset = target + slot as f32 - self.scroll;
             let t = offset.abs().min(1.0);
-            let scale = shrink(offset);
+            let scale = fit() * shrink(offset);
             let alpha = (1.0 + (SIDE_ALPHA - 1.0) * t) * (1.0 - recede);
-            let (cw, ch) = cart_box(cart.platform);
-            let (w, h) = (cw as f32 * scale, ch as f32 * scale);
+            let (cw, ch) = shelf_box_for(cart);
+            let (w, h) = (cw * scale, ch * scale);
             let away = offset.signum() * (1.0 + offset.abs());
-            let x = self.centre(slot) - w / 2.0 + away * PART * recede;
-            if x + w <= 0.0 || x >= OUT_W as f32 || alpha <= 0.0 {
+            let mut x = self.centre(slot) - w / 2.0 + away * PART * recede;
+            if let Some([left, right]) = clear {
+                if offset < 0.0 {
+                    x -= (x + w - (left - CLEAR_GAP)).max(0.0);
+                } else if offset > 0.0 {
+                    x += (right + CLEAR_GAP - x).max(0.0);
+                }
+            }
+            if x + w <= 0.0 || x >= out_w() as f32 || alpha <= 0.0 {
                 continue;
             }
             let x = x + shake;
-            let y = foot_y(ch as f32) - h;
-            let backing = match self.shells.get(i).copied().flatten() {
-                None => self.shadow,
-                Some(GbShell::Notched) => self.gb_shadow,
-                Some(GbShell::Rounded) => self.gbc_shadow,
+            let body = self.shells.get(i).copied().unwrap_or_else(|| body_of(cart));
+            let y = body_foot_y(body) - h;
+            let backing = match body {
+                Body::Gba => self.shadow,
+                Body::Gb(GbShell::Notched) => self.gb_shadow,
+                Body::Gb(GbShell::Rounded) => self.gbc_shadow,
+                Body::Home(m) => self.home_shadows[m.index()],
             };
             if alpha < 1.0 && self.face(i).is_some() {
                 if let Some(tex) = backing {
@@ -475,18 +522,9 @@ impl Shelf {
             });
             // Faithful original v1.7 pixel-star with label-relative geometry.
             if let (Some(true), Some((tex, sw, sh))) = (self.starred.get(i), self.star) {
-                let (lx, ly, lw) = match cart.platform {
-                    slot_store::Platform::Gba => {
-                        let (x,y,right,_) = label_panel(cw,ch);
-                        (x as f32,y as f32,(right-x) as f32)
-                    },
-                    slot_store::Platform::Gb => {
-                        let (x,y,right,_) = gb_label_panel(cw,ch);
-                        (x as f32,y as f32,(right-x) as f32)
-                    },
-                    slot_store::Platform::Gbc =>
-                        (GBC_LABEL_X as f32,GBC_LABEL_Y as f32,GBC_LABEL_W as f32),
-                };
+                let (lx, ly, lw, _) = label_rect(cart);
+                let k = shelf_grow(body);
+                let (lx, ly, lw) = (lx as f32 * k, ly as f32 * k, lw as f32 * k);
                 out.push(Draw::Tex {
                     x: (x + (lx + lw) * scale - sw - STAR_INSET).round(),
                     y: (y + ly * scale + STAR_INSET).round(),
@@ -495,6 +533,12 @@ impl Shelf {
             }
         }
     }
+}
+
+/// Narrower screens than the KONKR's 3:2 (4:3, the Retroid Pocket Classic)
+/// show the rack a little smaller, so the side carts keep their room.
+fn fit() -> f32 {
+    (out_w() as f32 / slot_gfx::BASE_W as f32).clamp(0.85, 1.0)
 }
 
 fn shrink(offset: f32) -> f32 {
@@ -515,7 +559,7 @@ mod konkr_navigation_tests {
             stem: name.to_string(),
             title: String::new(), code: String::new(),
             rom: std::path::PathBuf::from(format!("{name}.gba")),
-            label: None, shell: None,
+            label: None, shell: None, battery: false,
         }
     }
 
@@ -553,5 +597,23 @@ mod konkr_navigation_tests {
         assert!(!shelf.tick(449));
         assert!(shelf.tick(450));
         assert_eq!(shelf.carts[shelf.index].stem, "Apple");
+    }
+}
+
+#[cfg(test)]
+mod home_fit_tests {
+    use super::*;
+    use crate::home::HomeMould;
+
+    /// The centre cart, at full size, keeps its top on screen: EA's tall
+    /// Mega Drive carts once ran off it (Siham 2026-11-04).
+    #[test]
+    fn every_home_cart_stands_inside_the_screen() {
+        for m in HomeMould::ALL {
+            let body = Body::Home(m);
+            let (_, h) = shelf_box(body);
+            let top = body_foot_y(body) - h;
+            assert!(top >= 0.0, "{m:?} top at {top}");
+        }
     }
 }

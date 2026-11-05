@@ -256,3 +256,24 @@ fn the_first_default_frees_carts_that_only_recorded_mgba() {
     assert_eq!(core_for_platform(d.path(), "Zelda", Platform::Gb), Core::Gambatte);
     assert_eq!(core_for_platform(d.path(), "Emerald", Platform::Gba), Core::Gpsp);
 }
+
+#[test]
+fn each_home_console_board_holds_its_two_cores() {
+    use slot_store::{Core, Platform};
+    for (platform, first, second) in [
+        (Platform::Nes, Core::Fceumm, Core::Nestopia),
+        (Platform::Snes, Core::Snes9x, Core::Bsnes),
+        (Platform::Md, Core::GenesisPlusGx, Core::Picodrive),
+    ] {
+        assert_eq!(Core::default_for(platform), first);
+        assert_eq!(Core::alternate_for(platform), second);
+        assert_eq!((first.socket(), second.socket()), (0, 1));
+        assert!(first.runs(platform) && second.runs(platform));
+        assert!(!Core::Mgba.runs(platform));
+    }
+    assert!(!Core::Snes9x.runs(Platform::Gba));
+    for core in Core::ALL {
+        assert_eq!(Core::parse(core.as_str()), Some(core));
+    }
+    assert_eq!(Core::parse("genesis_plus_gx"), Some(Core::GenesisPlusGx));
+}

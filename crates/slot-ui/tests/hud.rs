@@ -1,6 +1,6 @@
 use slot_ui::{
     ff_badge, icon_box, icon_face, Badge, Draw, FfState, Hud, HudKind, Icon, LinkBadge, TexId,
-    HUD_ICON_PX, LINK_HOST_INK, LINK_JOIN_INK, OUT_H, OUT_W,
+    HUD_ICON_PX, LINK_HOST_INK, LINK_JOIN_INK, OUT_H, out_w,
 };
 
 fn bottom_edge(d: &Draw) -> Option<f32> {
@@ -67,7 +67,7 @@ fn the_hud_draws_a_dark_plate_behind_itself() {
     let Draw::Rect { w, colour, .. } = plate else {
         panic!("first draw is not the plate")
     };
-    assert_eq!(*w, OUT_W as f32, "the plate does not span the screen");
+    assert_eq!(*w, out_w() as f32, "the plate does not span the screen");
     assert!(
         colour[0] < 0.2 && colour[1] < 0.2 && colour[2] < 0.2,
         "the plate is not dark"
@@ -148,7 +148,7 @@ fn the_badge_outlives_the_bar_timer_without_a_plate() {
     h.draw(60_000, &mut out);
     assert!(
         !out.iter()
-            .any(|d| matches!(d, Draw::Rect { w, .. } if *w == OUT_W as f32)),
+            .any(|d| matches!(d, Draw::Rect { w, .. } if *w == out_w() as f32)),
         "the badge dragged the full width plate up with it"
     );
     assert!(
@@ -171,7 +171,7 @@ fn the_badge_leaves_when_fast_forward_stops() {
 fn the_ff_badge_draws_no_plate_but_the_bar_still_does() {
     let full = |out: &Vec<Draw>| {
         out.iter()
-            .filter(|d| matches!(d, Draw::Rect { w, .. } if *w == OUT_W as f32))
+            .filter(|d| matches!(d, Draw::Rect { w, .. } if *w == out_w() as f32))
             .count()
     };
 
@@ -206,7 +206,7 @@ fn the_link_badge_takes_the_fast_forward_corner_without_a_plate() {
     assert_eq!(out.len(), 1, "the badge came with company: {out:?}");
     let (w, _) = icon_box(HUD_ICON_PX);
     assert!(matches!(out[0], Draw::Tex { tex, x, .. }
-        if tex == TexId::from_raw(900) && x == OUT_W as f32 - 12.0 - w as f32));
+        if tex == TexId::from_raw(900) && x == out_w() as f32 - 12.0 - w as f32));
 }
 
 #[test]

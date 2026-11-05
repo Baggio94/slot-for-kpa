@@ -14,20 +14,35 @@ use crate::rumble::Rumble;
 use crate::sensors;
 
 const VIDEO_BYTES: usize = (GBA_W * GBA_H * 4) as usize;
+/// Largest frame a home console core hands over (SNES hi-res interlaced,
+/// PAL Mega Drive interlaced): 512x512 is ample.
+const NATIVE_MAX: u32 = 512;
 
 static LIVE: AtomicBool = AtomicBool::new(false);
 // Run-Ahead "second instance": one private prediction copy of the core,
 // loaded from a separate file so it owns its own globals.
 static SECONDARY_LIVE: AtomicBool = AtomicBool::new(false);
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+// Libretro's implicit pixel format is 0RGB1555, not XRGB8888.
+// Pinned bsnes emits this 16-bit format without SET_PIXEL_FORMAT.
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
 enum PixelFormat {
+    #[default]
+    Rgb1555,
     Xrgb8888,
     Rgb565,
 }
 
 struct Host {
     video: Vec<u8>,
+    /// false: frames are centred in the 240x160 Game Boy Advance canvas.
+    /// true: each frame keeps the size the core gave it (home consoles).
+    native: bool,
+    frame: (u32, u32),
+    /// The core's display aspect, from its geometry (0: not reported).
+    aspect: f32,
+    /// Timing the core changed with SET_SYSTEM_AV_INFO, not yet read.
+    timing: Option<(f64, f64)>,
     format: PixelFormat,
     audio: Vec<i16>,
     inputs: [u16; 2],
@@ -120,6 +135,7 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
                 return false;
             }
             let want = match *(data as *const c_uint) {
+                PIXEL_FORMAT_0RGB1555 => PixelFormat::Rgb1555,
                 PIXEL_FORMAT_XRGB8888 => PixelFormat::Xrgb8888,
                 PIXEL_FORMAT_RGB565 => PixelFormat::Rgb565,
                 _ => return false,
@@ -140,6 +156,23 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
                 true
             })
             .unwrap_or(false)
+        }
+        SET_GEOMETRY => {
+            if data.is_null() {
+                return false;
+            }
+            let geometry = &*(data as *const GameGeometry);
+            with_host(|h| h.aspect = display_aspect(geometry)).is_some()
+        }
+        SET_SYSTEM_AV_INFO => {
+            if data.is_null() {
+                return false;
+            }
+            let av = &*(data as *const SystemAvInfo);
+            with_host(|h| {
+                h.aspect = display_aspect(&av.geometry);
+                h.timing = Some((av.timing.fps, av.timing.sample_rate));
+            }).is_some()
         }
         GET_VARIABLE => {
             if data.is_null() {
@@ -364,6 +397,21 @@ unsafe fn report_audio_status(skip: bool) {
     status(true, if skip { 0 } else { 100 }, skip);
 }
 
+// Copy libretro's default 16-bit 0RGB1555 pixels into Slot's
+// blue/green/red/unused 32-bit framebuffer, preserving the row pitch.
+unsafe fn copy_rgb1555(src: *const u8, dst: &mut [u8]) {
+    for (x, out) in dst.chunks_exact_mut(4).enumerate() {
+        let pixel = unsafe { ptr::read_unaligned((src as *const u16).add(x)) };
+        let red = ((pixel >> 10) & 31) as u8;
+        let green = ((pixel >> 5) & 31) as u8;
+        let blue = (pixel & 31) as u8;
+        out[0] = (blue << 3) | (blue >> 2);
+        out[1] = (green << 3) | (green >> 2);
+        out[2] = (red << 3) | (red >> 2);
+        out[3] = 0;
+    }
+}
+
 unsafe extern "C" fn video_refresh(
     data: *const c_void,
     width: c_uint,
@@ -374,6 +422,10 @@ unsafe extern "C" fn video_refresh(
         return;
     }
     with_host(|h| {
+        if h.native {
+            copy_native_frame(h, data, width, height, pitch);
+            return;
+        }
         let cols = width.min(GBA_W) as usize;
         let rows = height.min(GBA_H) as usize;
         let ox = (GBA_W as usize - cols) / 2;
@@ -385,6 +437,9 @@ unsafe extern "C" fn video_refresh(
             let src = (data as *const u8).add(y * pitch);
             let row = ((y + oy) * GBA_W as usize + ox) * 4;
             match h.format {
+                PixelFormat::Rgb1555 => {
+                    copy_rgb1555(src, &mut h.video[row..row + cols * 4]);
+                }
                 PixelFormat::Xrgb8888 => {
                     ptr::copy_nonoverlapping(src, h.video.as_mut_ptr().add(row), cols * 4);
                 }
@@ -404,6 +459,55 @@ unsafe extern "C" fn video_refresh(
             }
         }
     });
+}
+
+/// libretro's aspect_ratio, or the frame's own shape when it gives none.
+fn display_aspect(geometry: &GameGeometry) -> f32 {
+    if geometry.aspect_ratio > 0.0 {
+        geometry.aspect_ratio
+    } else if geometry.base_height > 0 {
+        geometry.base_width as f32 / geometry.base_height as f32
+    } else {
+        0.0
+    }
+}
+
+/// A home console frame at its own size, packed as XRGB8888 rows.
+unsafe fn copy_native_frame(h: &mut Host, data: *const c_void, width: c_uint, height: c_uint,
+    pitch: usize)
+{
+    let cols = width.min(NATIVE_MAX) as usize;
+    let rows = height.min(NATIVE_MAX) as usize;
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    h.frame = (cols as u32, rows as u32);
+    h.video.resize(cols * rows * 4, 0);
+    for y in 0..rows {
+        let src = (data as *const u8).add(y * pitch);
+        let row = y * cols * 4;
+        match h.format {
+            PixelFormat::Rgb1555 => {
+                copy_rgb1555(src, &mut h.video[row..row + cols * 4]);
+            }
+            PixelFormat::Xrgb8888 => {
+                ptr::copy_nonoverlapping(src, h.video.as_mut_ptr().add(row), cols * 4);
+            }
+            PixelFormat::Rgb565 => {
+                let out = &mut h.video[row..row + cols * 4];
+                for (x, o) in out.chunks_exact_mut(4).enumerate() {
+                    let p = ptr::read_unaligned((src as *const u16).add(x));
+                    let r = ((p >> 11) & 0x1f) as u8;
+                    let g = ((p >> 5) & 0x3f) as u8;
+                    let b = (p & 0x1f) as u8;
+                    o[0] = (b << 3) | (b >> 2);
+                    o[1] = (g << 2) | (g >> 4);
+                    o[2] = (r << 3) | (r >> 2);
+                    o[3] = 0;
+                }
+            }
+        }
+    }
 }
 
 // F9: return the last committed PCM Vec to libretro for the next frame.
@@ -465,6 +569,7 @@ type ActiveBatteryFn = unsafe extern "C" fn(*mut c_void, usize, *mut usize) -> b
 type GpspBackendFn = unsafe extern "C" fn() -> c_int;
 // KPA mGBA: the solar sensor's light, 0..=255 (scripts/patch-mgba-sun.py).
 type SetSunFn = unsafe extern "C" fn(c_int);
+type MgbaGbLinkFaultFn = unsafe extern "C" fn() -> u32;
 struct AudioSidecar {
     transfer: AudioSidecarFn,
     snapshot: Vec<u8>,
@@ -483,6 +588,7 @@ pub struct LibretroCore {
     mgba_audio: Option<AudioSidecar>,
     mgba_active_battery: Option<ActiveBatteryFn>,
     mgba_set_sun: Option<SetSunFn>,
+    mgba_gb_link_fault: Option<MgbaGbLinkFaultFn>,
     // mGBA's retro_serialize_size() serializes the whole core internally;
     // skip this duplicate work on stable-sized speculative snapshots.
     mgba_runahead_size_age: u16,
@@ -562,6 +668,20 @@ impl LibretroCore {
         });
     }
 
+    /// Keep each frame at the size the core produced, instead of centring
+    /// it in the Game Boy Advance canvas. Set before the game loads.
+    pub fn set_native_video(&mut self, native: bool) {
+        self.host.native = native;
+        if !native {
+            self.host.frame = (GBA_W, GBA_H);
+            self.host.video = vec![0; VIDEO_BYTES];
+        }
+    }
+
+    pub fn native_video(&self) -> bool {
+        self.host.native
+    }
+
     pub fn reported_system_dir(&self) -> String {
         self.host.system_dir.to_string_lossy().into_owned()
     }
@@ -636,6 +756,10 @@ impl LibretroCore {
         let mgba_set_sun = if is_mgba {
             unsafe { lib.get::<SetSunFn>(b"slot_mgba_set_sun\0") }.ok().map(|v| *v)
         } else { None };
+        let mgba_gb_link_fault = if is_mgba {
+            unsafe { lib.get::<MgbaGbLinkFaultFn>(b"slot_mgba_gb_link_fault\0") }
+                .ok().map(|v| *v)
+        } else { None };
         let gpsp_backend = if is_gpsp {
             unsafe { lib.get::<GpspBackendFn>(b"slot_gpsp_backend_is_interpreter\0") }
                 .ok().map(|v| *v)
@@ -669,7 +793,11 @@ impl LibretroCore {
         }
         let mut host = Box::new(Host {
             video: vec![0; VIDEO_BYTES],
-            format: PixelFormat::Xrgb8888,
+            native: false,
+            frame: (GBA_W, GBA_H),
+            aspect: 0.0,
+            timing: None,
+            format: PixelFormat::default(),
             audio: Vec::new(),
             inputs: [0; 2],
             memory: Vec::new(),
@@ -711,6 +839,7 @@ impl LibretroCore {
             mgba_audio: None,
             mgba_active_battery,
             mgba_set_sun,
+            mgba_gb_link_fault,
             mgba_runahead_size_age: 0,
             host,
             rom: Vec::new(),
@@ -842,6 +971,75 @@ fn copy_gb_achievement_map(
     filled
 }
 
+/// Where RetroAchievements reads the home consoles (rcheevos console maps):
+/// the work RAM from 0 and the cart's battery RAM after it. NES: 2 KiB RAM
+/// mirrored up to 0x2000, cart RAM at 0x6000. SNES: 128 KiB WRAM, cart RAM
+/// at 0x20000. Mega Drive: 64 KiB 68000 RAM, cart RAM at 0x10000.
+struct HomeMap {
+    ram: usize,
+    mirror_to: usize,
+    save_at: usize,
+    save_max: usize,
+    /// The work RAM's address on the console bus, for cores that only
+    /// describe it through a memory map.
+    bus: usize,
+}
+
+fn home_map(console: u32) -> Option<HomeMap> {
+    match console {
+        7 => Some(HomeMap { ram: 0x800, mirror_to: 0x2000, save_at: 0x6000, save_max: 0x2000, bus: 0 }),
+        3 => Some(HomeMap { ram: 0x20000, mirror_to: 0x20000, save_at: 0x20000, save_max: 0x20000, bus: 0x7e0000 }),
+        1 => Some(HomeMap { ram: 0x10000, mirror_to: 0x10000, save_at: 0x10000, save_max: 0x10000, bus: 0xff0000 }),
+        _ => None,
+    }
+}
+
+/// Copy `len` bytes to `at`, marking them as mapped. Returns newly covered bytes.
+fn cover(src: *const u8, len: usize, at: usize, ram: &mut [u8], coverage: &mut [u8]) -> usize {
+    let end = (at + len).min(ram.len()).min(coverage.len());
+    if src.is_null() || end <= at { return 0; }
+    unsafe { std::ptr::copy_nonoverlapping(src, ram[at..end].as_mut_ptr(), end - at); }
+    let mut filled = 0;
+    for flag in &mut coverage[at..end] {
+        if *flag == 0 { filled += 1; }
+        *flag = 1;
+    }
+    filled
+}
+
+impl LibretroCore {
+    fn copy_home_achievement_map(&self, map: &HomeMap, ram: &mut [u8], coverage: &mut [u8]) -> usize {
+        let limit = map.save_at + map.save_max;
+        if ram.len() < limit || coverage.len() < limit { return 0; }
+        coverage[..limit].fill(0);
+        let mut source = unsafe { (self.api.get_memory_data)(MEMORY_SYSTEM_RAM) } as *const u8;
+        let mut size = unsafe { (self.api.get_memory_size)(MEMORY_SYSTEM_RAM) };
+        if source.is_null() || size == 0 {
+            // bsnes and others may only describe the work RAM in a memory map.
+            if let Some(desc) = self.host.memory.iter().find(|d| {
+                !d.ptr.is_null() && d.start == map.bus && d.len >= map.ram
+            }) {
+                source = unsafe { (desc.ptr as *const u8).add(desc.offset) };
+                size = map.ram;
+            }
+        }
+        if source.is_null() || size == 0 { return 0; }
+        let size = size.min(map.ram);
+        let mut filled = 0;
+        let mut at = 0;
+        while at < map.mirror_to {
+            filled += cover(source, size, at, ram, coverage);
+            at += map.ram;
+        }
+        let save = unsafe { (self.api.get_memory_data)(MEMORY_SAVE_RAM) } as *const u8;
+        let save_size = unsafe { (self.api.get_memory_size)(MEMORY_SAVE_RAM) }.min(map.save_max);
+        if save_size > 0 {
+            filled += cover(save, save_size, map.save_at, ram, coverage);
+        }
+        filled
+    }
+}
+
 impl RetroCore for LibretroCore {
     fn achievement_memory_for_console(
         &self, ram: &mut [u8], coverage: &mut [u8], console: u32
@@ -851,6 +1049,11 @@ impl RetroCore for LibretroCore {
             let filled = copy_gb_achievement_map(&self.host.memory, ram, coverage);
             // An actual mapped WRAM window is required, not merely ROM/VRAM.
             return [if filled > 0 && coverage.get(0xc000) == Some(&1) { filled } else { 0 }, 0, 0];
+        }
+        if let Some(map) = home_map(console) {
+            // Valid only with the work RAM itself mapped at address 0.
+            let filled = self.copy_home_achievement_map(&map, ram, coverage);
+            return [if coverage.first() == Some(&1) { filled } else { 0 }, 0, 0];
         }
         self.achievement_memory(ram)
     }
@@ -913,12 +1116,27 @@ impl RetroCore for LibretroCore {
             fps: av.timing.fps,
             sample_rate: av.timing.sample_rate,
         };
-        unsafe { (self.api.set_controller_port_device)(0, DEVICE_JOYPAD) };
+        self.host.aspect = display_aspect(&av.geometry);
+        self.host.timing = None;
+        if self.host.native && av.geometry.base_width > 0 && av.geometry.base_height > 0 {
+            let (w, h) = (av.geometry.base_width.min(NATIVE_MAX), av.geometry.base_height.min(NATIVE_MAX));
+            self.host.frame = (w, h);
+            self.host.video = vec![0; (w * h * 4) as usize];
+        }
+        unsafe {
+            (self.api.set_controller_port_device)(0, DEVICE_JOYPAD);
+            // Home console Multiplayer plays the second player on port 2.
+            if self.host.native { (self.api.set_controller_port_device)(1, DEVICE_JOYPAD); }
+        }
         Ok(())
     }
 
     fn run_frame(&mut self, input: ButtonMask) {
         self.run_frame_linked(input, ButtonMask::default());
+    }
+
+    fn link_step_fault(&self) -> bool {
+        self.mgba_gb_link_fault.is_some_and(|probe| unsafe { probe() != 0 })
     }
 
     fn run_frame_linked(&mut self, p1: ButtonMask, p2: ButtonMask) {
@@ -971,6 +1189,14 @@ impl RetroCore for LibretroCore {
 
     fn video_xrgb8888(&self) -> &[u8] {
         &self.host.video
+    }
+
+    fn video_size(&self) -> (u32, u32) {
+        self.host.frame
+    }
+
+    fn display_aspect(&self) -> f32 {
+        if self.host.native { self.host.aspect } else { 0.0 }
     }
 
     fn take_audio(&mut self) -> Vec<i16> {
@@ -1177,7 +1403,10 @@ impl RetroCore for LibretroCore {
     }
 
     fn av_info(&self) -> AvInfo {
-        self.av
+        match self.host.timing {
+            Some((fps, sample_rate)) if fps > 0.0 && sample_rate > 0.0 => AvInfo { fps, sample_rate },
+            _ => self.av,
+        }
     }
 
     fn rumble(&self) -> Rumble {
@@ -1223,6 +1452,10 @@ mod tests {
     fn host_with(options: HashMap<String, CString>, options_dirty: bool) -> Box<Host> {
         Box::new(Host {
             video: vec![0; VIDEO_BYTES],
+            native: false,
+            frame: (GBA_W, GBA_H),
+            aspect: 0.0,
+            timing: None,
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
             inputs: [0; 2],
@@ -2467,4 +2700,60 @@ mod tests {
             "the picture was blanked or moved where a duplicate should have kept it"
         );
     }
+    #[test]
+    fn libretro_default_and_explicit_0rgb1555_are_supported() {
+        assert!(matches!(PixelFormat::default(), PixelFormat::Rgb1555));
+        let mut host = host_with(HashMap::new(), false);
+        {
+            let _active = Active::bind(&mut host);
+            let mut format = PIXEL_FORMAT_0RGB1555;
+            assert!(unsafe {
+                environment(SET_PIXEL_FORMAT, &mut format as *mut _ as *mut c_void)
+            });
+        }
+        assert!(matches!(host.format, PixelFormat::Rgb1555));
+    }
+
+    #[test]
+    fn bsnes_rgb1555_native_video_copies_complete_rows_and_correct_colours() {
+        let mut host = host_with(HashMap::new(), false);
+        host.native = true;
+        host.format = PixelFormat::Rgb1555;
+        // 3 pixels, one padding pixel per row. The padding cannot become
+        // part of either rendered row even when pitch > width * 2.
+        let frame: [u16; 8] = [
+            0x7c00, 0x03e0, 0x001f, 0x1111,
+            0x7fff, 0x0000, 0x4210, 0x2222,
+        ];
+        {
+            let _active = Active::bind(&mut host);
+            unsafe { video_refresh(frame.as_ptr().cast(), 3, 2, 8); }
+        }
+        assert_eq!(host.frame, (3, 2));
+        assert_eq!(host.video.len(), 3 * 2 * 4);
+        assert_eq!(&host.video[0..4], &[0, 0, 255, 0]); // red
+        assert_eq!(&host.video[4..8], &[0, 255, 0, 0]); // green
+        assert_eq!(&host.video[8..12], &[255, 0, 0, 0]); // blue
+        assert_eq!(&host.video[12..16], &[255, 255, 255, 0]); // second row white
+        assert_eq!(&host.video[16..20], &[0, 0, 0, 0]);
+        assert_eq!(&host.video[20..24], &[132, 132, 132, 0]); // 0x4210
+    }
+
+    #[test]
+    fn rgb1555_handheld_canvas_keeps_centered_pixels_and_black_margins() {
+        let mut host = host_with(HashMap::new(), false);
+        host.format = PixelFormat::Rgb1555;
+        let frame = [0x7c00u16, 0x001fu16];
+        {
+            let _active = Active::bind(&mut host);
+            unsafe { video_refresh(frame.as_ptr().cast(), 2, 1, 4); }
+        }
+        let x = (GBA_W as usize - 2) / 2;
+        let y = (GBA_H as usize - 1) / 2;
+        let offset = (y * GBA_W as usize + x) * 4;
+        assert_eq!(&host.video[offset..offset + 4], &[0, 0, 255, 0]);
+        assert_eq!(&host.video[offset + 4..offset + 8], &[255, 0, 0, 0]);
+        assert_eq!(&host.video[0..4], &[0, 0, 0, 0]);
+    }
+
 }

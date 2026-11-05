@@ -13,6 +13,31 @@ def checked_replace(text, old, new):
         raise RuntimeError("Official Studio changed; review Android adapter: " + old[:90])
     return text.replace(old, new)
 
+KONKR_OUTLINES_JS = """// KONKR: a home cart's outline is its mould, by system.
+const KONKR_OUTLINES = {
+  NES: [['nes', 'NES'], ['famicom', 'Famicom'], ['famicom-namco', 'Namco'], ['famicom-konami', 'Konami']],
+  SNES: [['snes', 'PAL / Japan'], ['snes-us', 'USA']],
+  MD: [['megadrive', 'Mega Drive'], ['megadrive-jp', 'Japan'], ['megadrive-ea', 'EA']],
+};
+let konkrGameBoy = null;
+function konkrOutlines(platform) {
+  const seg = document.getElementById('ed-outline');
+  konkrGameBoy ??= [...seg.querySelectorAll('button')].map((b) => [b.dataset.value, b.textContent]);
+  const key = KONKR_OUTLINES[platform] ? platform : 'GB';
+  if (seg.dataset.konkr === key) return;
+  seg.dataset.konkr = key;
+  seg.replaceChildren(...(KONKR_OUTLINES[platform] ?? konkrGameBoy).map(([value, text]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.value = value;
+    b.textContent = text;
+    return b;
+  }));
+}
+
+"""
+
+
 def package(root: Path, built: Path):
     source = root / "third_party/slot-cart-studio/web"
     target = root / "android/app/src/main/assets/studio"
@@ -272,6 +297,11 @@ function observeAndroidCarts(s) {
     ed = checked_replace(ed,
         "    renderTiles(c);\n\n    const bg = api.background(c);",
         "    renderTiles(c);\n    if (window.AndroidStudio && !$('ed-games').hidden) showGames();\n\n    const bg = api.background(c);")
+    # KONKR home carts: each system's moulds in place of Notched / Rounded.
+    ed = checked_replace(ed, "export function createEditor(api) {", KONKR_OUTLINES_JS + "export function createEditor(api) {")
+    ed = checked_replace(ed,
+        "    $('ed-outline-row').hidden = c.platform === 'GBA';\n",
+        "    $('ed-outline-row').hidden = c.platform === 'GBA';\n    konkrOutlines(c.platform);\n")
     editorFile.write_text(ed, encoding="utf-8")
     # Original libretro DAT URLs via native cache on Android only.
     datFile = target / "libretro.js"
@@ -279,8 +309,56 @@ function observeAndroidCarts(s) {
     dat = checked_replace(dat,
         "  const r = await fetch(`${DAT}${encodeURIComponent(NAMES[platform])}.dat`);",
         "  const r = await fetch(window.AndroidStudio ? '/studio/dat/' + platform + '.dat' : `${DAT}${encodeURIComponent(NAMES[platform])}.dat`);")
+    dat = checked_replace(dat, "  GBC: 'Nintendo - Game Boy Color',\n};",
+        "  GBC: 'Nintendo - Game Boy Color',\n"
+        "  NES: 'Nintendo - Nintendo Entertainment System',\n"
+        "  SNES: 'Nintendo - Super Nintendo Entertainment System',\n"
+        "  MD: 'Sega - Mega Drive - Genesis',\n};")
     datFile.write_text(dat, encoding="utf-8")
+    cardFile = target / "card.js"
+    card = cardFile.read_text("utf-8")
+    card = checked_replace(card, "export const PLATFORMS = ['GBA', 'GBC', 'GB'];",
+                           "export const PLATFORMS = ['GBA', 'GBC', 'GB', 'NES', 'SNES', 'MD'];")
+    cardFile.write_text(card, encoding="utf-8")
 
+
+    # KONKR home carts (NES, Super Nintendo, Mega Drive): the staged wasm
+    # draws them (scripts/stage-konkr-cart-studio.py). A label is made at its
+    # mould's well, which the platform names after a colon.
+    js = checked_replace(js, "  auto_shell,\n", "  auto_shell,\n  home_auto_shell,\n  home_outline,\n")
+    js = checked_replace(js,
+        "const boxOf = (platform) => faceBox.get(platform) ?? faceBox.get('GBA');",
+        """const boxOf = (platform) => faceBox.get(platform) ?? faceBox.get('GBA');
+const KONKR_HOME = new Set(['NES', 'SNES', 'MD']);
+const facePlatform = (c) => KONKR_HOME.has(c.platform)
+  ? `${c.platform}:${home_outline(c.platform, c.stem, c.head ?? new Uint8Array(0), c.shell ?? '')}`
+  : c.platform;""")
+    # A home game picked by hand has no label in the art set (Game Boy and
+    # GBA only) nor, unless it is in the library, among slot.'s scraped ones:
+    # ask slot. for it, which fetches it from ScreenScraper (Siham 2026-11-02).
+    js = checked_replace(js,
+        "const realPathOf = (c) => {\n  const key = c.rejected ? null : artKey(c);\n  return (key && artIndex?.[key]?.['support-texture']) || null;\n};",
+        """const realPathOf = (c) => {
+  const key = c.rejected ? null : artKey(c);
+  const indexed = (key && artIndex?.[key]?.['support-texture']) || null;
+  if (indexed || c.rejected || !window.AndroidStudio || !KONKR_HOME.has(c.platform) || !c.game) return indexed;
+  const crcs = Array.from(dats.get(c.platform)?.crcs_for(c.game) ?? [], crcHex);
+  if (!crcs.length) return null;
+  return `konkr-home/${c.platform}/${crcs[0]}.png?name=${encodeURIComponent(c.game)}&crcs=${crcs.join(',')}`;
+};""")
+    js = checked_replace(js, "    const label = Label.full(bytes, c.platform);",
+                         "    const label = Label.full(bytes, facePlatform(c));")
+    js = checked_replace(js, "  return withLabel(bytes, deep, c.platform, use, look?.band ?? null);",
+                         "  return withLabel(bytes, deep, facePlatform(c), use, look?.band ?? null);")
+    js = checked_replace(js, "    const label = Label.full(BLANK, c.platform);",
+                         "    const label = Label.full(BLANK, facePlatform(c));")
+    js = checked_replace(js,
+        "(c.shell || auto_shell(c.platform, c.code, c.head))",
+        "(c.shell || home_auto_shell(c.platform, c.stem, c.head ?? new Uint8Array(0)) || auto_shell(c.platform, c.code, c.head))")
+    js = checked_replace(js,
+        "const PLATFORM_NAMES = { GBA: 'Game Boy Advance', GB: 'Game Boy', GBC: 'Game Boy Color' };",
+        # Short tab names so six tabs fit on one row (Siham 2026-11-02).
+        "const PLATFORM_NAMES = { GBA: 'GBA', GBC: 'GBC', GB: 'GB', NES: 'NES', SNES: 'SNES', MD: 'MEGADRIVE' };")
 
     js = js.replace("'Write to card'", "'Save to slot.'")
     jsfile.write_text(js, encoding="utf-8")
@@ -302,6 +380,7 @@ function observeAndroidCarts(s) {
         '<link rel="stylesheet" href="studio.css">\n<link rel="stylesheet" href="embedded.css">')
     htmlfile.write_text(html, encoding="utf-8")
     assert 'editor.open(selected)' in js
+    assert 'home_outline' in js
     assert 'embedded.css' in html
     assert (target / 'embedded.css').is_file()
     print("Original Cart Studio packaged:", target,

@@ -1,14 +1,13 @@
 use std::sync::OnceLock;
 
-use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
+use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_store::Cart;
 use slot_store::Theme;
 
-use crate::cart::{cart_box, label_colour, label_text, seated_box, SEATED_W};
+use crate::cart::{label_colour, label_text, seated_box_for, SEATED_W};
 use crate::footer::Printed;
 use crate::icon::icon_box;
 use crate::plate::HINT_H;
-use crate::shelf::foot_y;
 
 pub const ALERT_PX: f32 = 44.0;
 
@@ -21,13 +20,13 @@ const SLOT_NAME_Y: f32 = OUT_H as f32 - MOUTH_H - HINT_H as f32 - SLOT_NAME_GAP;
 
 pub const MOUTH_W: f32 = SEATED_W as f32 + 14.0;
 const SLIT_H: f32 = 9.0;
-const MOUTH_X: f32 = (OUT_W as f32 - MOUTH_W) / 2.0;
+fn mouth_x() -> f32 { (out_w() as f32 - MOUTH_W) / 2.0 }
 const SLIT_Y: f32 = BAY_Y + 5.0;
 
 pub const LIP_H: f32 = 2.0;
 
 const BAY_W: f32 = MOUTH_W + 18.0;
-const BAY_X: f32 = (OUT_W as f32 - BAY_W) / 2.0;
+fn bay_x() -> f32 { (out_w() as f32 - BAY_W) / 2.0 }
 const BAY_Y: f32 = BAND_Y + LIP_H;
 const SCOOP_W: f32 = MOUTH_W * 0.88;
 const SCOOP_D: f32 = RECESS_H - (SCOOP_Y - BAY_Y);
@@ -35,7 +34,7 @@ const SCOOP_Y: f32 = SLIT_Y + SLIT_H;
 
 const RECESS_H: f32 = 42.0;
 const RIM_W: f32 = 2.0;
-const CX: f32 = OUT_W as f32 / 2.0;
+fn cx() -> f32 { out_w() as f32 / 2.0 }
 const SCOOP_FLAT: f32 = 4.0;
 
 // A user-imported theme can replace the default without restarting Android.
@@ -107,6 +106,89 @@ pub struct SlotChrome<'a> {
     pub slot_faces: Option<(TexId, TexId)>,
 }
 
+/// What closes a home console's slot hole (fente/maquette.py, validated v3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloserKind {
+    /// Famicom: an open slot; the cart pops up as it ejects.
+    Open,
+    /// NES: one flap hinged at the back, tipped down by the cart.
+    Flap,
+    /// Super Nintendo: two flaps meeting in the middle, pushed apart; the
+    /// cart pops up as it ejects.
+    Flaps,
+    /// Mega Drive: two doors sliding apart.
+    Doors,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SlotCloser {
+    pub kind: CloserKind,
+    /// Flap: [flap, -]; Flaps: [top, bottom]; Doors: [left, right].
+    pub tex: [Option<TexId>; 2],
+}
+
+impl SlotCloser {
+    /// The hole it closes, in the 720 px band (slots.py HOLE).
+    fn hole(self) -> (f32, f32, f32, f32) {
+        match self.kind {
+            CloserKind::Flaps => (238.0, 2.0, 482.0, 28.0),
+            _ => (236.0, 2.0, 484.0, 28.0),
+        }
+    }
+
+    fn pops(self) -> bool {
+        matches!(self.kind, CloserKind::Open | CloserKind::Flaps)
+    }
+
+    /// Closed at 0, out of the way at 1. The band's centre keeps its pixels
+    /// on every screen width (native_assets::refit_band).
+    fn draw(self, opening: f32, alpha: f32, out: &mut Vec<Draw>) {
+        let s = 1.0 - opening.clamp(0.0, 1.0);
+        if s <= 0.01 || alpha <= 0.0 {
+            return;
+        }
+        let (hx0, hy0, hx1, hy1) = self.hole();
+        let (x, y) = (out_w() as f32 / 2.0 + hx0 - 360.0, BAND_Y + hy0);
+        let (w, h) = (hx1 - hx0, hy1 - hy0);
+        let mut tex = |i: usize, x: f32, y: f32, w: f32, h: f32| {
+            if let Some(tex) = self.tex[i] {
+                out.push(Draw::Tex { x, y, w, h, tex, alpha });
+            }
+        };
+        match self.kind {
+            CloserKind::Open => {}
+            CloserKind::Flap => tex(0, x, y, w, h * s),
+            CloserKind::Flaps => {
+                let half = h / 2.0 * s;
+                tex(0, x, y, w, half);
+                tex(1, x, y + h - half, w, half);
+            }
+            CloserKind::Doors => {
+                let half = w / 2.0 * s;
+                tex(0, x, y, half, h);
+                tex(1, x + w - half, y, half, h);
+            }
+        }
+    }
+}
+
+/// How far the cart's foot opens the closer: shut until the cart touches
+/// the band, fully open 16 px further down.
+fn closer_opening(foot: f32) -> f32 {
+    ((foot - (BAND_Y + 2.0)) / 16.0).clamp(0.0, 1.0)
+}
+
+/// A Super Nintendo or Famicom cart kicked up by the eject spring at the
+/// start of its way out: `seat` runs 1 -> 0 while ejecting.
+fn eject_pop(seat: f32) -> f32 {
+    let u = 1.0 - seat;
+    if u < 0.25 {
+        12.0 * (std::f32::consts::PI * u / 0.25).sin()
+    } else {
+        0.0
+    }
+}
+
 impl SlotChrome<'_> {
     pub fn draw(&self, out: &mut Vec<Draw>) {
         self.draw_with_material(out,[None,None],None)
@@ -119,13 +201,23 @@ impl SlotChrome<'_> {
         &self, out: &mut Vec<Draw>,
         behind: [Option<TexId>; 2], transparent_front: Option<TexId>,
     ) {
+        self.draw_with_closer(out, behind, transparent_front, None, false)
+    }
+
+    /// draw_with_material with a home console's slot closer, which the cart
+    /// opens as it goes in and lets shut as it comes out.
+    pub fn draw_with_closer(
+        &self, out: &mut Vec<Draw>,
+        behind: [Option<TexId>; 2], transparent_front: Option<TexId>,
+        closer: Option<SlotCloser>, ejecting: bool,
+    ) {
         let seat = self.seat.clamp(0.0, 1.0);
         let dim = self.dim.clamp(0.0, 1.0);
         if dim > 0.0 {
             out.push(Draw::Rect {
                 x: 0.0,
                 y: 0.0,
-                w: OUT_W as f32,
+                w: out_w() as f32,
                 h: OUT_H as f32,
                 colour: [0.0, 0.0, 0.0, dim],
             });
@@ -139,21 +231,26 @@ impl SlotChrome<'_> {
 
         draw_slot_back_with(self.slot_faces.map(|faces| faces.0), slot_alpha, out);
 
-        let (cw, ch) = cart_box(self.cart.platform);
-        let (cw, ch) = (cw as f32, ch as f32);
+        let (cw, ch) = crate::cart::shelf_box_for(self.cart);
 
         let scale = self.scale.clamp(0.0, 1.0);
         let (w0, h0) = (cw * scale, ch * scale);
-        let (sw, sh) = seated_box(self.cart.platform);
+        let (sw, sh) = seated_box_for(self.cart);
         let (sw, sh) = (sw as f32, sh as f32);
-        let (foot0, seated_foot) = (foot_y(ch), SEATED_Y + sh);
+        let (foot0, seated_foot) = (crate::shelf::body_foot_y(crate::cart::body_of(self.cart)), SEATED_Y + sh);
         let catch = catch_at(foot0, seated_foot);
         let travel = travel(seat, catch);
         let k = (travel / catch).min(1.0);
         let (cw, ch) = (w0 + (sw - w0) * k, h0 + (sh - h0) * k);
         let centre = self.rest + w0 / 2.0;
-        let x = centre + (CX - centre) * k - cw / 2.0;
-        let y = foot0 + (seated_foot - foot0) * travel - ch;
+        let x = centre + (cx() - centre) * k - cw / 2.0;
+        let mut y = foot0 + (seated_foot - foot0) * travel - ch;
+        if let Some(closer) = closer {
+            if ejecting && closer.pops() {
+                y -= eject_pop(seat);
+            }
+            closer.draw(closer_opening(y + ch), slot_alpha, out);
+        }
         let cart_alpha = if seat >= 1.0 && !held { chrome } else { 1.0 };
         for tex in behind.into_iter().flatten() {
             out.push(Draw::Tex { x, y, w: cw, h: ch, tex, alpha: cart_alpha });
@@ -224,7 +321,7 @@ fn band(x: f32, y: f32, w: f32, h: f32, c: [f32; 4], alpha: f32) -> Draw {
 fn draw_slot_back_with(texture: Option<TexId>, alpha: f32, out: &mut Vec<Draw>) {
     if let Some(tex) = texture {
         out.push(Draw::Tex {
-            x: 0.0, y: BAND_Y, w: OUT_W as f32, h: MOUTH_H,
+            x: 0.0, y: BAND_Y, w: out_w() as f32, h: MOUTH_H,
             tex, alpha,
         });
         return;
@@ -235,7 +332,7 @@ fn draw_slot_back_with(texture: Option<TexId>, alpha: f32, out: &mut Vec<Draw>) 
 fn draw_slot_front_with(texture: Option<TexId>, alpha: f32, out: &mut Vec<Draw>) {
     if let Some(tex) = texture {
         out.push(Draw::Tex {
-            x: 0.0, y: BAND_Y, w: OUT_W as f32, h: MOUTH_H,
+            x: 0.0, y: BAND_Y, w: out_w() as f32, h: MOUTH_H,
             tex, alpha,
         });
         return;
@@ -244,10 +341,10 @@ fn draw_slot_front_with(texture: Option<TexId>, alpha: f32, out: &mut Vec<Draw>)
 }
 
 fn draw_slot_back(alpha: f32, out: &mut Vec<Draw>) {
-    out.push(band(BAY_X, BAND_Y, BAY_W, LIP_H, housing(), alpha));
-    out.push(band(MOUTH_X, BAND_Y, MOUTH_W, LIP_H, edge(), alpha));
-    out.push(band(BAY_X, BAY_Y, BAY_W, RECESS_H, recess(), alpha));
-    out.push(band(MOUTH_X, SLIT_Y, MOUTH_W, SLIT_H, opening(), alpha));
+    out.push(band(bay_x(), BAND_Y, BAY_W, LIP_H, housing(), alpha));
+    out.push(band(mouth_x(), BAND_Y, MOUTH_W, LIP_H, edge(), alpha));
+    out.push(band(bay_x(), BAY_Y, BAY_W, RECESS_H, recess(), alpha));
+    out.push(band(mouth_x(), SLIT_Y, MOUTH_W, SLIT_H, opening(), alpha));
     for_each_scoop_span(|x, w, depth| {
         out.push(band(x, SCOOP_Y, w, depth, opening(), alpha));
     });
@@ -260,7 +357,7 @@ fn draw_slot_front(alpha: f32, out: &mut Vec<Draw>) {
     // Android-only strips were the visible horizontal artefact on KONKR.
     #[cfg(target_os = "android")]
     if alpha > 0.0 {
-        let shoulders = [(0.0, BAY_X), (BAY_X + BAY_W, OUT_W as f32 - BAY_X - BAY_W)];
+        let shoulders = [(0.0, bay_x()), (bay_x() + BAY_W, out_w() as f32 - bay_x() - BAY_W)];
         for (x, w) in shoulders {
             for (offset, opacity) in [(2.0, 0.21), (3.0, 0.13), (4.0, 0.07)] {
                 out.push(band(x, BAND_Y + offset, w, 1.0,
@@ -273,15 +370,15 @@ fn draw_slot_front(alpha: f32, out: &mut Vec<Draw>) {
 }
 
 fn front_bands(mut band: impl FnMut(f32, f32, f32, f32, [f32; 4])) {
-    let w = OUT_W as f32;
-    let right = BAY_X + BAY_W;
+    let w = out_w() as f32;
+    let right = bay_x() + BAY_W;
     let floor = SCOOP_Y + SCOOP_D + RIM_W;
-    band(0.0, BAND_Y, BAY_X, MOUTH_H, housing());
+    band(0.0, BAND_Y, bay_x(), MOUTH_H, housing());
     band(right, BAND_Y, w - right, MOUTH_H, housing());
 
-    let near = CX - SCOOP_W / 2.0;
-    band(BAY_X, SCOOP_Y, near - BAY_X, floor - SCOOP_Y, housing());
-    let far = CX + SCOOP_W / 2.0;
+    let near = cx() - SCOOP_W / 2.0;
+    band(bay_x(), SCOOP_Y, near - bay_x(), floor - SCOOP_Y, housing());
+    let far = cx() + SCOOP_W / 2.0;
     band(far, SCOOP_Y, right - far, floor - SCOOP_Y, housing());
 
     for_each_scoop_span(|x, w, depth| {
@@ -304,7 +401,7 @@ fn for_each_scoop_span(mut span: impl FnMut(f32, f32, f32)) {
         while x < hw && depth(x + 0.5).round() == d {
             x += 1.0;
         }
-        span(CX + start, x - start, d);
+        span(cx() + start, x - start, d);
     }
 }
 
@@ -314,7 +411,7 @@ fn draw_slot_name_at_scale(name: Printed, alpha: f32, scale: f32, out: &mut Vec<
     };
     let (w, h) = (name.w as f32 / scale, HINT_H as f32);
     out.push(Draw::Tex {
-        x: CX - w / 2.0,
+        x: cx() - w / 2.0,
         y: SLOT_NAME_Y,
         w,
         h,
@@ -333,7 +430,7 @@ pub fn draw_slot_title(title: Printed, alpha: f32, out: &mut Vec<Draw>) {
     let (Some(tex), true) = (title.face, alpha > 0.0) else { return };
     let (w, h) = (title.w as f32, crate::plate::TITLE_LINE_H as f32);
     out.push(Draw::Tex {
-        x: CX - w / 2.0,
+        x: cx() - w / 2.0,
         y: SLOT_NAME_Y + HINT_H as f32 - h,
         w, h, tex, alpha,
     });
@@ -349,7 +446,15 @@ pub fn draw_empty_slot(out: &mut Vec<Draw>) {
 }
 
 pub fn draw_empty_slot_with(faces: Option<(TexId, TexId)>, out: &mut Vec<Draw>) {
+    draw_empty_slot_closed(faces, None, out);
+}
+
+/// The empty slot with its closer shut.
+pub fn draw_empty_slot_closed(faces: Option<(TexId, TexId)>, closer: Option<SlotCloser>, out: &mut Vec<Draw>) {
     draw_slot_back_with(faces.map(|pair| pair.0), 1.0, out);
+    if let Some(closer) = closer {
+        closer.draw(0.0, 1.0, out);
+    }
     draw_slot_front_with(faces.map(|pair| pair.1), 1.0, out);
 }
 

@@ -16,6 +16,8 @@ pub const GET_RUMBLE_INTERFACE: c_uint = 23;
 pub const GET_SENSOR_INTERFACE: c_uint = 25 | 0x10000;
 pub const GET_LOG_INTERFACE: c_uint = 27;
 pub const GET_SAVE_DIRECTORY: c_uint = 31;
+pub const SET_SYSTEM_AV_INFO: c_uint = 32;
+pub const SET_GEOMETRY: c_uint = 37;
 // Libretro memory descriptors are borrowed pointers owned by the native core.
 pub const SET_MEMORY_MAPS: c_uint = 36 | 0x10000;
 
@@ -53,11 +55,13 @@ pub struct SensorInterface {
 pub const RUMBLE_STRONG: c_uint = 0;
 pub const RUMBLE_WEAK: c_uint = 1;
 
+pub const PIXEL_FORMAT_0RGB1555: c_uint = 0;
 pub const PIXEL_FORMAT_XRGB8888: c_uint = 1;
 pub const PIXEL_FORMAT_RGB565: c_uint = 2;
 pub const DEVICE_JOYPAD: c_uint = 1;
 pub const MEMORY_SAVE_RAM: c_uint = 0;
 pub const MEMORY_RTC: c_uint = 1;
+pub const MEMORY_SYSTEM_RAM: c_uint = 2;
 pub const JOYPAD_MASK: c_uint = 256;
 
 pub const NETPACKET_UNRELIABLE: i32 = 0;

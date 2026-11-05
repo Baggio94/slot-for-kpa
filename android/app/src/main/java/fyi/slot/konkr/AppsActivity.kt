@@ -1,6 +1,7 @@
 package fyi.slot.konkr
 
 import android.app.Activity
+import android.content.Context
 import android.app.role.RoleManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -35,9 +36,22 @@ import java.util.concurrent.Executors
  * Touch taps and Android's standard B/Back behavior still work.
  */
 class AppsActivity : Activity() {
+    // dp/sp follow the screen height so Android screens keep the KONKR's look.
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(newBase)
+        SlotUi.panelDensityOverride(newBase)?.let(::applyOverrideConfiguration)
+    }
+
     companion object {
         private const val TAG = "SlotApps"
-        private const val COLUMNS = 5
+        /** Five columns on the KONKR's 3:2 screen, as many per width elsewhere. */
+        private fun columnsFor(context: Context): Int {
+            val bounds = context.getSystemService(android.view.WindowManager::class.java)
+                .maximumWindowMetrics.bounds
+            val ratio = maxOf(bounds.width(), bounds.height()).toFloat() /
+                minOf(bounds.width(), bounds.height()).coerceAtLeast(1)
+            return Math.round(5f * ratio / 1.5f).coerceIn(3, 7)
+        }
         // A reopened Apps activity in the same slot. process can show the
         // previous list immediately. Every opening refreshes it in the worker
         // so installation/uninstallation changes are still picked up.
@@ -45,6 +59,23 @@ class AppsActivity : Activity() {
         // Drawable constant states carry no Activity views. Reopening Apps
         // keeps decoded launcher artwork rather than flashing placeholders.
         private val lastIconStates = LinkedHashMap<String, Drawable.ConstantState>()
+    }
+
+    private var columns = 5
+
+    /** A square app card: the icon and a two-line title share its side. */
+    private inner class SquareTile : LinearLayout(this@AppsActivity) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val side = View.MeasureSpec.getSize(widthMeasureSpec)
+            val inner = side - paddingTop - paddingBottom
+            getChildAt(0)?.layoutParams?.let {
+                it.width = inner * 46 / 100
+                it.height = it.width
+            }
+            getChildAt(1)?.layoutParams?.let { it.height = inner * 44 / 100 }
+            val exact = View.MeasureSpec.makeMeasureSpec(side, View.MeasureSpec.EXACTLY)
+            super.onMeasure(exact, exact)
+        }
     }
 
     private data class Entry(val label: String, val packageName: String, val launch: Intent)
@@ -148,8 +179,9 @@ class AppsActivity : Activity() {
         root.addView(View(this), LinearLayout.LayoutParams(-1,
             SlotUi.menuPixel(this, 18)))
 
+        columns = columnsFor(this)
         grid = GridView(this).apply {
-            numColumns = COLUMNS
+            numColumns = columns
             horizontalSpacing = dp(12)
             verticalSpacing = dp(12)
             stretchMode = GridView.STRETCH_COLUMN_WIDTH
@@ -175,11 +207,10 @@ class AppsActivity : Activity() {
                     root = convertView
                     tile = root.tag as Tile
                 } else {
-                    root = LinearLayout(this@AppsActivity).apply {
+                    root = SquareTile().apply {
                         orientation = LinearLayout.VERTICAL
                         gravity = Gravity.CENTER
-                        minimumHeight = dp(110)
-                        setPadding(dp(5), dp(9), dp(5), dp(7))
+                        setPadding(dp(5), dp(9), dp(5), dp(5))
                     }
                     val icon = ImageView(this@AppsActivity).apply {
                         scaleType = ImageView.ScaleType.FIT_CENTER
@@ -189,8 +220,15 @@ class AppsActivity : Activity() {
                         gravity = Gravity.CENTER
                         maxLines = 2
                         ellipsize = android.text.TextUtils.TruncateAt.END
+                        // Long names shrink to fit their two lines.
+                        setAutoSizeTextTypeUniformWithConfiguration(
+                            SlotUi.menuPixel(this@AppsActivity, 8),
+                            SlotUi.menuPixel(this@AppsActivity, 12), 1,
+                            TypedValue.COMPLEX_UNIT_PX)
                     }
-                    root.addView(title, LinearLayout.LayoutParams(-1, dp(42)))
+                    root.addView(title, LinearLayout.LayoutParams(-1, dp(42)).apply {
+                        topMargin = dp(4)
+                    })
                     tile = Tile(icon, title)
                     root.tag = tile
                 }
@@ -304,7 +342,7 @@ class AppsActivity : Activity() {
         val maxFaceHeight = faces.values.maxOf { it.height }.coerceAtLeast(1)
         val availableHeight = (dp(35) - dp(4)).coerceAtLeast(1)
         val scale = minOf(
-            resources.displayMetrics.widthPixels.toFloat() / 720f / SlotUi.LEGEND_DENSITY,
+            SlotUi.canvasScale(this) / SlotUi.LEGEND_DENSITY,
             availableHeight.toFloat() / maxFaceHeight.toFloat()
         )
         fun hint(asset: String): ImageView {
@@ -380,7 +418,7 @@ class AppsActivity : Activity() {
                 return@post
             val item = grid.getChildAt(requested - grid.firstVisiblePosition)
             if (item == null) {
-                val firstOfRow = requested / COLUMNS * COLUMNS
+                val firstOfRow = requested / columns * columns
                 grid.smoothScrollToPositionFromTop(firstOfRow, dp(9), 165)
                 return@post
             }
@@ -406,12 +444,12 @@ class AppsActivity : Activity() {
                 KeyEvent.KEYCODE_DPAD_LEFT -> (selectedIndex - 1).coerceAtLeast(0)
                 KeyEvent.KEYCODE_DPAD_RIGHT -> (selectedIndex + 1).coerceAtMost(entries.lastIndex)
                 KeyEvent.KEYCODE_DPAD_DOWN ->
-                    (selectedIndex + COLUMNS).coerceAtMost(entries.lastIndex)
+                    (selectedIndex + columns).coerceAtMost(entries.lastIndex)
                 KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (selectedIndex < COLUMNS) {
+                    if (selectedIndex < columns) {
                         homeSelected = true
                         selectedIndex
-                    } else selectedIndex - COLUMNS
+                    } else selectedIndex - columns
                 }
                 else -> selectedIndex
             }

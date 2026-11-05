@@ -17,6 +17,8 @@ internal object RomWarmCache {
     private const val TAG = "SlotRomWarm"
     private const val MAX_ROM = 64L * 1024 * 1024
     private const val MAX_TOTAL = 256L * 1024 * 1024
+    // Home-console ROMs share the same 256 MiB eviction budget as GB/GBA.
+    private val CACHE_NAME = Regex("[a-f0-9]{64}\\.(${Systems.ROM_EXTENSIONS.joinToString("|")})")
 
     fun prepare(context: Context, rawUri: String, shouldContinue: () -> Boolean) {
         if (!rawUri.startsWith("content://") || !shouldContinue()) return
@@ -79,7 +81,7 @@ internal object RomWarmCache {
 
     private fun trim(dir: File, selected: File) {
         val files = dir.listFiles()?.filter {
-            it.isFile && it.name.matches(Regex("[a-f0-9]{64}\\.(gba|gbc|gb)"))
+            it.isFile && CACHE_NAME.matches(it.name)
         }?.sortedByDescending { it.lastModified() } ?: return
         var kept = 0L
         for (file in files) {

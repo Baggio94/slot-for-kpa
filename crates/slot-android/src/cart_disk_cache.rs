@@ -25,7 +25,7 @@ impl DiskCache {
     pub fn key(&self, cart: &Cart) -> String {
         // Rust Cart debug covers URI, platform, name, code, label and shell.
         // The revision invalidates old faces when rendering algorithms change.
-        let mut input = format!("KONKR-cart-r102-v5-dense:{cart:?}").into_bytes();
+        let mut input = format!("KONKR-cart-r102-v8-hd3:{cart:?}").into_bytes();
         input.extend_from_slice(&self.theme);
         for path in [Some(cart.rom.as_path()), cart.label.as_deref()].into_iter().flatten() {
             if let Ok(metadata)=fs::metadata(path) {
@@ -115,7 +115,7 @@ mod tests {
             title:"Metroid Fusion".into(),
             code:"AMTE".into(),
             rom:"content://roms/metroid.gba".into(),
-            shell:None,label:None,
+            shell:None, battery: false,label:None,
         }
     }
     #[test]

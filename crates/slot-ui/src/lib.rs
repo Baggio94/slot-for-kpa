@@ -1,8 +1,11 @@
 mod art;
 pub mod bitmaps;
+pub mod fit_overlay;
+pub mod watomsk;
 mod native_assets;
-pub use native_assets::{native_rgba, NATIVE_W, NATIVE_H};
+pub use native_assets::{native_png, native_rgba, native_w, native_h, refit_band, NATIVE_W, NATIVE_H};
 pub use art::cover;
+pub use art::decode_png_bytes as decode_png;
 mod backdrop;
 mod barcode;
 mod battery;
@@ -12,9 +15,12 @@ mod clock;
 pub mod density;
 mod draw;
 mod footer;
+mod home;
+mod home_art;
 mod hud;
 mod icon;
 mod link_art;
+pub mod link_hardware;
 mod plate;
 mod polaroids;
 mod power_menu;
@@ -34,21 +40,22 @@ pub use backdrop::{bezel_face, blur_background, blur_background_native, default_
 pub use barcode::{code39, CODE39_NARROW, CODE39_WIDE};
 pub use battery::{draw_gauge, BOLT_PX, GAUGE_H, GAUGE_W, WALL};
 pub use board::{
-    board_at, board_face, pak_chip_face, board_layout, board_toward, BoardLayout, board_from, board_zoom, chip_face, chip_shadow_face, grown, lid_at,
-    lid_from, lid_rest, lid_toward, lift_of, on_board, padded, pak_marking_face, rom_marking, rom_marking_face, shelf_cart, shelf_cart_at, shelf_cart_for,
-    slide_of, socket_face, Placed, BOARD_H, BOARD_W, BOARD_X, BOARD_Y, CHIP_H, CHIP_TIP, CHIP_U,
+    board_at, board_face, pak_chip_face, home_chip_face, board_layout_body, lid_rest_body, picker_span_body, shelf_cart_body, board_layout, board_toward, BoardLayout, board_from, board_zoom, chip_face, chip_shadow_face, grown, lid_at,
+    lid_from, lid_rest, lid_toward, lift_of, on_board, padded, pak_marking_face, picker_span, rom_marking, rom_marking_face, shelf_cart, shelf_cart_at, shelf_cart_for,
+    slide_of, socket_face, Placed, BOARD_H, BOARD_W, board_x, BOARD_Y, CHIP_H, CHIP_TIP, CHIP_U,
     CHIP_V, CHIP_W, HOP_LIFT, LID_TURN, ROM_H, ROM_W, ROM_X, ROM_Y, SHADOW_H, SHADOW_W,
     SLIDE_SHARE, SLIDE_UP, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
 };
 pub use cart::{
-    cart_box, cart_face, cart_face_with, cart_face_with_material, cart_interior, cart_backing, is_clear, cart_shadow, clean_label, gb_cart_shadow, gb_label_panel,
-    gb_shell_of, label_colour, label_panel, label_size, label_tags, label_text, seated_box,
+    cart_box, cart_box_for, body_box, body_of, body_seated_box, platform_body, seated_box_for, home_cart_shadow, Body, cart_face, cart_face_with, cart_face_with_material, cart_interior, cart_backing, is_clear, cart_shadow, clean_label, gb_cart_shadow, gb_label_panel,
+    gb_shell_of, label_colour, label_panel, label_rect, label_size, label_tags, label_text, seated_box,
     CartFace, CART_H, CART_W, GB_CART_H, GB_CART_W, GB_LABEL_H, GB_LABEL_W, GB_LABEL_X, GB_LABEL_Y,
     LABEL_H, LABEL_W, LABEL_X, LABEL_Y,
 };
+pub use home::{home_mould_of, home_shell, title_key, HomeMould, HOME_CART_W};
 pub use clock::{clock_label, date_time_text, hhmm, set_clock_hint_face, ClockPicker, Field};
 pub use density::Face;
-pub use draw::{Draw, TexId, OUT_H, OUT_W};
+pub use draw::{Draw, TexId, OUT_H, out_w};
 pub use footer::{draw_footer, draw_footer_with_ink, footer_ink, Printed};
 pub use hud::{
     badge_at, ff_badge, FfState, Hud, HudKind, LinkBadge, Millis, HUD_ICON_PX, HUD_INK, HUD_MS,
@@ -56,14 +63,14 @@ pub use hud::{
 };
 pub use icon::{badge_face, icon_box, icon_face, star_face, Badge, Icon};
 pub use link_art::{
-    link_art, LinkArt, ADAPTER_BASE_X, ADAPTER_BASE_Y, ADAPTER_H, ADAPTER_W, ARCS, ARROW_H,
+    link_art, link_marks, LinkArt, LinkMarks, ADAPTER_BASE_X, ADAPTER_BASE_Y, ADAPTER_H, ADAPTER_W, ARCS, ARROW_H,
     ARROW_LEFT_X, ARROW_RIGHT_X, ARROW_W, ARROW_Y, CLICKS_H, CLICKS_W, CLICKS_X, CLICKS_Y, PLUG_H,
     PLUG_TIP_X, PLUG_W, PORT_H, PORT_W, PORT_Y,
 };
 pub use plate::{
-    arrows_hint_face, arrows_hint_width, cap_width, centred_hints, hint_face, hint_quad, hint_row,
+    arrows_hint_face, arrows_hint_face_ink, hint_face_ink, arrows_hint_width, cap_width, centred_hints, hint_face, hint_quad, hint_row,
     hint_width, title_face, title_line_face, word_face, word_ink, word_width, platform_name_face, PLATFORM_NAME_SCALE,
-    onboarding_instruction_face, onboarding_note_face, ONBOARDING_MAX_W,
+    onboarding_instruction_face, onboarding_note_face, onboarding_max_w,
     Hint, UndoFace, ARROW_GAP, CAP, CAP_GAP,
     HINT_EDGE, HINT_GAP, HINT_H, LEGEND_GAP, TITLE_H, TITLE_W,
 };
@@ -85,12 +92,12 @@ pub use shell::{
 };
 pub use silhouette::{gb_silhouette, silhouette, GbShell};
 pub use slot_chrome::{
-    draw_empty_slot, draw_empty_slot_with, draw_slot_name, draw_slot_title, draw_platform_name, ease, edge, housing, opening, recess,
-    set_theme, SlotChrome,
+    draw_empty_slot, draw_empty_slot_closed, draw_empty_slot_with, draw_slot_name, draw_slot_title, draw_platform_name, ease, edge, housing, opening, recess,
+    set_theme, CloserKind, SlotChrome, SlotCloser,
     ALERT_PX, LIP_H, MOUTH_H, MOUTH_W,
 };
 pub use sticker::{
-    draw_sticker, head_rows, sticker_face, sticker_face_konkr, sticker_lines, StickerFields, COPYRIGHT, CREDITS, DC,
+    draw_sticker, head_rows, sticker_face, sticker_face_handheld, sticker_face_konkr, sticker_lines, StickerFields, COPYRIGHT, CREDITS, DC,
     HOME, ORIGIN, STICKER_H, STICKER_W,
 };
 pub use toast::{toast_box, toast_face, toast_rect, Toast};

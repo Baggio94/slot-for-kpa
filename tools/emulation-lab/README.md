@@ -38,7 +38,7 @@ NOT a count of AudioTrack underruns.
 
 ---
 
-# slot. for KONKR — Emulation Lab (1.2.2-beta3)
+# slot. for Android — Emulation Lab (1.2.2-beta3)
 
 An opt-in diagnostics build for the established **Mac Apple Silicon ARM64
 Android 12L** AVD `Slot_KONKR_API32` (960×640 / 3:2), and a KONKR ARM64

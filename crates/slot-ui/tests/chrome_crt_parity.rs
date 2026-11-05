@@ -9,7 +9,7 @@ fn game_cart() -> Cart {
         rom: "test.gba".into(),
         label: None,
         code: String::new(),
-        shell: None,
+        shell: None, battery: false,
         title: "TEST".into(),
     }
 }

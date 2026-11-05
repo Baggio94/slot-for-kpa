@@ -18,7 +18,7 @@ function encode(bytes) {
   return btoa(chunks.join(''));
 }
 
-const PLATFORMS = new Set(['GB', 'GBC', 'GBA']);
+const PLATFORMS = new Set(['GB', 'GBC', 'GBA', 'NES', 'SNES', 'MD']);
 
 function loadFile(bridge, cart) {
   // The original Studio asks for file.slice(header) and CRC32. Android

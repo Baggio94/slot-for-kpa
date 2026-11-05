@@ -1,4 +1,4 @@
-use crate::surface::{GfxError, Surface, OUT_H, OUT_W};
+use crate::surface::{GfxError, Surface, OUT_H, out_w};
 use libloading::Library;
 use std::ffi::{c_void, CString};
 
@@ -71,7 +71,7 @@ impl Surface for HeadlessSurface {
     }
 
     fn window_size(&self) -> (u32, u32) {
-        (OUT_W, OUT_H)
+        (out_w(), OUT_H)
     }
 
     fn swap(&mut self) -> Result<(), GfxError> {

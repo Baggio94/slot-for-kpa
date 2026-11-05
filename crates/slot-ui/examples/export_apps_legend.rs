@@ -2,8 +2,8 @@
 //! Android Apps drawer. Reuse the upstream drawing/font code, not an Android
 //! imitation with different fonts or Unicode arrow glyphs.
 //!
-//! Faces are drawn at the KONKR's 960/720 panel density, so each PNG is 4/3
-//! of Slot's logical size; Android divides by `SlotUi.LEGEND_DENSITY`.
+//! Faces are drawn at 3x, so each PNG is three times Slot's logical size and
+//! stays sharp on 3x panels; Android divides by `SlotUi.LEGEND_DENSITY`.
 use slot_ui::density::{self, Face};
 use slot_ui::{arrows_hint_face, hint_face, quick_value_face, UndoFace};
 use std::{fs::{self, File}, io::BufWriter, path::PathBuf};
@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("Usage: cargo run -p slot-ui --example export_apps_legend -- <output-dir>")?;
     let destination = PathBuf::from(destination);
     fs::create_dir_all(&destination)?;
-    density::with_scale(960.0 / 720.0, || export(&destination))
+    density::with_scale(3.0, || export(&destination))
 }
 
 fn export(destination: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {

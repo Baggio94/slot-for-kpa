@@ -52,17 +52,52 @@ pub struct LinkArt {
 }
 
 pub fn link_art() -> LinkArt {
-    let arcs_right = [arc_face(0), arc_face(1), arc_face(2)];
+    let marks = marks_with_arcs([arc_face(0), arc_face(1), arc_face(2)]);
+    LinkArt {
+        port: {
+            // The port strip spans the canvas, socket centred, at any width.
+            let w = slot_gfx::out_w();
+            let svg = PORT_SVG
+                .replace("0 0 720 92", &format!("0 0 {w} 92"))
+                .replace("width=\"720\"", &format!("width=\"{w}\""))
+                .replace("translate(360 0)", &format!("translate({} 0)", w / 2));
+            svg_face(&svg, w, PORT_H)
+        },
+        plug_host: svg_face(PLUG_HOST_SVG, PLUG_W, PLUG_H),
+        plug_join: svg_face(PLUG_JOIN_SVG, PLUG_W, PLUG_H),
+        adapter: adapter_face(),
+        arcs_right: marks.arcs_right,
+        arcs_left: marks.arcs_left,
+        clicks: marks.clicks,
+        arrow_left: marks.arrow_left,
+        arrow_right: marks.arrow_right,
+    }
+}
+
+pub struct LinkMarks {
+    pub arcs_right: [CartFace; 3],
+    pub arcs_left: [CartFace; 3],
+    pub clicks: CartFace,
+    pub arrow_left: CartFace,
+    pub arrow_right: CartFace,
+}
+
+pub fn link_marks() -> LinkMarks {
+    let arcs = [(13, 36, 15), (17, 54, 23), (21, 72, 31)].map(|(w, h, bow)| {
+        let half = (h - 4) / 2;
+        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}"><path d="M2 2q{bow} {half} 0 {}" fill="none" stroke="{ARC_INK}" stroke-width="3.25" stroke-linecap="round"/></svg>"#, 2 * half);
+        svg_face(&svg, w, h)
+    });
+    marks_with_arcs(arcs)
+}
+
+fn marks_with_arcs(arcs_right: [CartFace; 3]) -> LinkMarks {
     let arcs_left = [
         mirror(&arcs_right[0]),
         mirror(&arcs_right[1]),
         mirror(&arcs_right[2]),
     ];
-    LinkArt {
-        port: svg_face(PORT_SVG, PORT_W, PORT_H),
-        plug_host: svg_face(PLUG_HOST_SVG, PLUG_W, PLUG_H),
-        plug_join: svg_face(PLUG_JOIN_SVG, PLUG_W, PLUG_H),
-        adapter: adapter_face(),
+    LinkMarks {
         arcs_right,
         arcs_left,
         clicks: svg_face(
@@ -77,7 +112,7 @@ pub fn link_art() -> LinkArt {
     }
 }
 
-fn svg_face(svg: &str, w: u32, h: u32) -> CartFace {
+pub(crate) fn svg_face(svg: &str, w: u32, h: u32) -> CartFace {
     let (tw, th) = (density::px(w), density::px(h));
     let rgba = render_svg(svg, tw, th).unwrap_or_else(|| vec![0; (tw * th * 4) as usize]);
     CartFace { rgba, w, h }
@@ -102,7 +137,7 @@ fn arc_face(ring: usize) -> CartFace {
     )
 }
 
-fn mirror(face: &CartFace) -> CartFace {
+pub(crate) fn mirror(face: &CartFace) -> CartFace {
     let (tw, th) = face.texels();
     let mut rgba = vec![0u8; face.rgba.len()];
     for y in 0..th {
@@ -233,4 +268,8 @@ fn stamp(
             face.rgba[d + 3] = face.rgba[d + 3].max(a as u8);
         }
     }
+}
+
+pub(crate) fn port_number(face: &mut CartFace, x: f32, label: &str, ink: [u8; 3]) {
+    stamp(face, x, 13.8, label, 10.0, ink, Align::Centre);
 }

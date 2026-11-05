@@ -1,6 +1,33 @@
-# Changelog — slot. for KONKR Pocket Advance
+# Changelog — slot. for Android
 
-This changelog covers the public releases of the dedicated KONKR Pocket Advance Android port. Earlier development experiments are preserved in Git history.
+This changelog covers the public releases of slot. for Android, an Android port born on the KONKR Pocket Advance (formerly slot. for KONKR Pocket Advance). Earlier development experiments are preserved in Git history.
+
+## v2.0.0 — 5 November 2026
+
+Renamed slot. for Android; the installed app is called "slot.". Package name, signature, saves and settings unchanged.
+
+- NES/Famicom, Super Nintendo and Mega Drive: scan (.nes .fc .unf .unif, .sfc .smc, .md .gen .smd .bin, ZIP), shelves, Recents/Favorites, home cart shells (Famicom, Japanese and EA Mega Drive moulds), console slot bars, ScreenScraper labels (automatic and Cart Studio), RetroAchievements (not on bsnes), RetroArch-style netplay (bsnes refused, use Snes9x).
+- Cores built for arm64: FCEUmm, Nestopia, Snes9x, bsnes (0RGB1555 conversion), Genesis Plus GX, PicoDrive; default core per system.
+- CRT shaders for the home consoles: zfast-crt (default), fakelottes, crt-aperture, CRT GDV Trinitron, CRT Geom Deluxe without curvature, crt-pi.
+- Any screen: canvas 480 high with the panel's width (1:1 to 21:9) at native density; game laid out on the real panel off the 3:2 KONKR; bezels refitted per ratio; About sticker with slot.'s wordmark and the device name off the KONKR.
+- First-install defaults per device: RESPONSIVE frame pacing except on the KONKR (panel 960x640 or model GT78-VN), Original Ratio, Watomsk overlays where the screen has room; Retroid Pocket Classic recognised by its model.
+- Retroid centre key is the slot. button; SELECT+X taps it and SELECT+START saves and ejects on any handheld.
+- Multiplayer screen: console-specific connectors (GB, GBC and GBA Link Cables, GBA Wireless Adapter, NES/SNES/Mega Drive controller ports 1 and 2) following the real session state.
+- mGBA GBA Link with any BIOS: per-player BIOS exchange (same, built-in or file).
+- mGBA Game Boy Link: direct cable between the two Game Boys (byte exchange on the master's internal-clock transfer) instead of thread lockstep; GB hooks only while two Game Boys are linked; interrupted transfers restarted on state load. Host build test in CI.
+- Link desync detection every 120 frames (pair hash without the GB's screen colours) and resync from Host's pair state.
+- Gambatte Link: exact two-byte TCP packet framing. Wi-Fi kept out of power save during a Link session. Live Wi-Fi interface chosen, VPN/stale IPv4 rejected.
+- Share Saves renamed Share Core Saves; battery carried between mGBA and Gambatte (GB/GBC), FCEUmm and Nestopia, Snes9x and bsnes, Genesis Plus GX and PicoDrive (battery SRAM only, not EEPROM carts); mGBA/gpSP as before.
+- Pixel AA in the LCD shaders (fewer taps, same picture); Simpletex LCD for GB/GBC and GBA; LCD3x default for GBA/GB/GBC; Watomsk overlays for every system.
+- TWB64 028 Game.com Ver. palette, new Game Boy default on mGBA and Gambatte; SELECT+L2/R2 palettes only on Game Boy carts.
+- Artwork at 3x from masters at panel density (shells, slot bars, bezels, wood wallpaper, button art); Dark, Light and Original console bars; Shelf wallpaper following the current shelf.
+- Real shell colours: Classic NES Series, Famicom Mini, Donkey Kong Land, European Pokémon Pinball.
+- Boktai: AUTO sun following the time of day.
+- SELECT+Up/Down screen size, SELECT+Left/Right Run-Ahead; game menu Color Correction and GBC Shader rows fixed; no Color Correction row for the Game Boy.
+- Save states kept in step with RetroArch both ways; Gambatte states converted between RetroArch core versions.
+- Faster scan (ES-DE folders of other systems skipped) and label fetching.
+- First Game Boy frame after the LCD turns on kept blank on mGBA; shelf kept drawn during a held letter jump; battery and clock 12 px from the edges on narrow screens; charging icon whenever plugged in.
+- Updater accepts the slot-for-kpa and slot-for-android repositories, konkr-v and v tags, slot-for-konkr and slot-for-android APK names.
 
 ## v1.3.4 — 27 October 2026
 

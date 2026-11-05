@@ -1,14 +1,15 @@
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
-use slot_gfx::OUT_W;
 
 use crate::art::decode_png_bytes;
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum Mould {
     Gba,
     Notched,
     Rounded,
+    Home(crate::home::HomeMould),
 }
 
 pub const GBA_CART_W: u32 = 360;
@@ -21,9 +22,9 @@ pub const SOCKET_W: u32 = 64;
 pub const SOCKET_H: u32 = 46;
 pub const CHIP_W: u32 = 59;
 pub const CHIP_H: u32 = 41;
-pub const SLOT_W: u32 = OUT_W;
+pub const SLOT_W: u32 = slot_gfx::BASE_W;
 pub const SLOT_H: u32 = 58;
-pub const PORT_W: u32 = OUT_W;
+pub const PORT_W: u32 = slot_gfx::BASE_W;
 pub const PORT_H: u32 = SLOT_H;
 pub const PLUG_W: u32 = 92;
 pub const PLUG_H: u32 = 244;
@@ -67,7 +68,7 @@ fn load(bytes: &'static [u8], w: u32, h: u32, slot: &'static OnceLock<Vec<u8>>) 
         if sh == h && sw > w {
             rgba = crop_centre(&rgba, sw, sh, w);
         } else if (sw, sh) != (w, h) {
-            rgba = scale(&rgba, sw, sh, w, h);
+            rgba = crate::native_assets::resample(&rgba, sw, sh, w, h);
         }
         // Transparent pixels are often stored as white. The cart is sampled with a linear
         // filter, which would pull that white in along every edge.
@@ -107,20 +108,6 @@ fn crop_centre(src: &[u8], sw: u32, sh: u32, w: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity((w * sh * 4) as usize);
     for row in src.chunks_exact(sw as usize * 4) {
         out.extend_from_slice(&row[left * 4..(left + w as usize) * 4]);
-    }
-    out
-}
-
-fn scale(src: &[u8], sw: u32, sh: u32, w: u32, h: u32) -> Vec<u8> {
-    let mut out = vec![0u8; (w * h * 4) as usize];
-    for y in 0..h {
-        let sy = y * sh / h;
-        for x in 0..w {
-            let sx = x * sw / w;
-            let from = ((sy * sw + sx) * 4) as usize;
-            let to = ((y * w + x) * 4) as usize;
-            out[to..to + 4].copy_from_slice(&src[from..from + 4]);
-        }
     }
     out
 }
@@ -181,14 +168,19 @@ pub fn chip() -> &'static [u8] {
     load(CHIP_PNG, CHIP_W, CHIP_H, &P)
 }
 
-/// Official Slot v1.7 full-panel transparent bezels, native source 720x480.
+/// The slot. bezels' 3x masters (2160x1440), for drawing at panel density.
+pub fn bezel_master(gbc: bool) -> &'static [u8] {
+    if gbc { BEZEL_GBC_PNG } else { BEZEL_GB_PNG }
+}
+
+/// Official Slot v1.7 full-panel transparent bezels, at their 720x480.
 pub fn bezel_gb() -> &'static [u8] {
     static P: OnceLock<Vec<u8>>=OnceLock::new();
-    load(BEZEL_GB_PNG,OUT_W,480,&P)
+    load(BEZEL_GB_PNG,720,480,&P)
 }
 pub fn bezel_gbc() -> &'static [u8] {
     static P: OnceLock<Vec<u8>>=OnceLock::new();
-    load(BEZEL_GBC_PNG,OUT_W,480,&P)
+    load(BEZEL_GBC_PNG,720,480,&P)
 }
 
 /// Watomsk full-panel overlays, already at the native 960x640.
@@ -223,6 +215,99 @@ pub fn slot_front() -> &'static [u8] {
 pub fn slot_front_light() -> &'static [u8] {
     static P: OnceLock<Vec<u8>> = OnceLock::new();
     load(SLOT_FRONT_LIGHT_PNG, SLOT_W, SLOT_H, &P)
+}
+
+/// A console's slot bar (`family`: 0 Famicom, 1 NES, 2 Super Nintendo,
+/// 3 Mega Drive, 4 Game Boy, 5 Game Boy Color, 6 GBA) in a bar theme: 0
+/// the console's own colours, 1 dark (black and grey), 2 light (light
+/// versions of its colours) (Siham 2026-11-03).
+/// A console's slot bar masters, PNG bytes at 3x (`family`, `theme` as `home_slot`).
+pub fn home_slot_png(family: usize, theme: usize) -> (&'static [u8], &'static [u8]) {
+    macro_rules! bars {
+        ($part:literal, $suffix:literal) => {[
+            include_bytes!(concat!("../../../assets/home/slot_", $part, "_fc", $suffix, ".png")).as_slice(),
+            include_bytes!(concat!("../../../assets/home/slot_", $part, "_nes", $suffix, ".png")).as_slice(),
+            include_bytes!(concat!("../../../assets/home/slot_", $part, "_snes", $suffix, ".png")).as_slice(),
+            include_bytes!(concat!("../../../assets/home/slot_", $part, "_md", $suffix, ".png")).as_slice(),
+            include_bytes!(concat!("../../../assets/slot_", $part, "_gb", $suffix, ".png")).as_slice(),
+            include_bytes!(concat!("../../../assets/slot_", $part, "_gbc", $suffix, ".png")).as_slice(),
+            include_bytes!(concat!("../../../assets/slot_", $part, "_gba", $suffix, ".png")).as_slice(),
+        ]};
+    }
+    const BACK: [[&[u8]; CONSOLE_SLOTS]; BAR_THEMES] = [bars!("back", ""), bars!("back", "_dark"), bars!("back", "_light")];
+    const FRONT: [[&[u8]; CONSOLE_SLOTS]; BAR_THEMES] = [bars!("front", ""), bars!("front", "_dark"), bars!("front", "_light")];
+    let (t, i) = (theme.min(BAR_THEMES - 1), family.min(CONSOLE_SLOTS - 1));
+    (BACK[t][i], FRONT[t][i])
+}
+
+/// A console's slot bar at its logical 720x58 (see `home_slot_png`).
+pub fn home_slot(family: usize, theme: usize) -> (&'static [u8], &'static [u8]) {
+    static B: [[OnceLock<Vec<u8>>; CONSOLE_SLOTS]; BAR_THEMES] = [const { [const { OnceLock::new() }; CONSOLE_SLOTS] }; BAR_THEMES];
+    static F: [[OnceLock<Vec<u8>>; CONSOLE_SLOTS]; BAR_THEMES] = [const { [const { OnceLock::new() }; CONSOLE_SLOTS] }; BAR_THEMES];
+    let (t, i) = (theme.min(BAR_THEMES - 1), family.min(CONSOLE_SLOTS - 1));
+    let (back, front) = home_slot_png(family, theme);
+    (load(back, SLOT_W, SLOT_H, &B[t][i]), load(front, SLOT_W, SLOT_H, &F[t][i]))
+}
+
+/// slot.'s own bar masters (back, front), dark or light, at 3x.
+pub fn slot_bar_png(light: bool) -> (&'static [u8], &'static [u8]) {
+    if light { (SLOT_BACK_LIGHT_PNG, SLOT_FRONT_LIGHT_PNG) } else { (SLOT_BACK_DARK_PNG, SLOT_FRONT_DARK_PNG) }
+}
+
+/// How many colour themes the console slot bars come in (see `home_slot`).
+pub const BAR_THEMES: usize = 3;
+
+/// How many console slot bars `home_slot` draws.
+pub const CONSOLE_SLOTS: usize = 7;
+
+/// Which console bar a cart goes into (see `home_slot`).
+pub fn console_slot_family(cart: &slot_store::Cart) -> usize {
+    home_slot_family(cart).unwrap_or(match cart.platform {
+        slot_store::Platform::Gb => 4,
+        slot_store::Platform::Gbc => 5,
+        _ => 6,
+    })
+}
+
+/// Whether the clock and battery printed on a console's bar are black or
+/// white: white on the dark bars, black on the light ones, and in the
+/// consoles' own colours black on light plastic, white on the GBA's indigo
+/// and the Mega Drive's black (Siham 2026-11-02).
+pub fn console_slot_takes_dark_ink(family: usize, theme: usize) -> bool {
+    match theme {
+        1 => false,
+        2 => true,
+        _ => !matches!(family, 3 | 6),
+    }
+}
+
+/// What closes a home slot's hole, at its logical size: the NES flap
+/// (family 1), the Super Nintendo's two flaps (2), the Mega Drive's two
+/// doors (3). The Famicom's slot (0) is open.
+pub fn home_closer(family: usize) -> Vec<(&'static [u8], u32, u32)> {
+    const NES: &[u8] = include_bytes!("../../../assets/home/closer_nes.png");
+    const SNES_TOP: &[u8] = include_bytes!("../../../assets/home/closer_snes_top.png");
+    const SNES_BOTTOM: &[u8] = include_bytes!("../../../assets/home/closer_snes_bottom.png");
+    const MD_LEFT: &[u8] = include_bytes!("../../../assets/home/closer_md_left.png");
+    const MD_RIGHT: &[u8] = include_bytes!("../../../assets/home/closer_md_right.png");
+    static C: [OnceLock<Vec<u8>>; 5] = [const { OnceLock::new() }; 5];
+    match family {
+        1 => vec![(load(NES, 248, 26, &C[0]), 248, 26)],
+        2 => vec![(load(SNES_TOP, 244, 13, &C[1]), 244, 13), (load(SNES_BOTTOM, 244, 13, &C[2]), 244, 13)],
+        3 => vec![(load(MD_LEFT, 124, 26, &C[3]), 124, 26), (load(MD_RIGHT, 124, 26, &C[4]), 124, 26)],
+        _ => Vec::new(),
+    }
+}
+
+/// Which home slot bar a cart goes into, None for the GBA / Game Boy bar.
+pub fn home_slot_family(cart: &slot_store::Cart) -> Option<usize> {
+    use crate::home::HomeMould as M;
+    Some(match crate::home::home_mould_of(cart)? {
+        M::Famicom | M::FamicomNamco | M::FamicomKonami => 0,
+        M::Nes => 1,
+        M::Snes | M::SnesUs => 2,
+        M::MegaDrive | M::MegaDriveJp | M::MegaDriveEa => 3,
+    })
 }
 
 pub fn link_port() -> &'static [u8] {
@@ -264,6 +349,46 @@ const GBA_CLEAR_PNG: &[u8] = include_bytes!("../../../assets/gba_clear.png");
 const GB_CLEAR_PNG: &[u8] = include_bytes!("../../../assets/gb_neutral.png");
 const GBC_CLEAR_PNG: &[u8] = include_bytes!("../../../assets/gbc_clear.png");
 
+/// A bundled PNG master at panel density: `px(w)` x `px(h)` texels for a
+/// `w` x `h` logical layer, filtered once from the master's own pixels
+/// (reduced from a 3x master, enlarged from a 1x one) and kept.
+pub(crate) fn dense_png(bytes: &'static [u8], w: u32, h: u32) -> Arc<Vec<u8>> {
+    type Cache = Mutex<HashMap<(usize, u32, u32, u32), Arc<Vec<u8>>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let key = (bytes.as_ptr() as usize, w, h, crate::density::scale().to_bits());
+    if let Some(hit) = CACHE.get_or_init(Mutex::default).lock()
+        .unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return hit.clone();
+    }
+    let (tw, th) = (crate::density::px(w), crate::density::px(h));
+    let rgba = Arc::new(crate::native_assets::png_at(bytes, tw, th));
+    CACHE.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
+        .insert(key, rgba.clone());
+    rgba
+}
+
+/// The inside of a GBA cart at panel density.
+pub(crate) fn dense_gba_interior() -> Arc<Vec<u8>> {
+    dense_png(GBA_INTERIOR_PNG, BOARD_W, BOARD_H)
+}
+
+/// The neutral shell for a mould at panel density, from its master.
+pub(crate) fn dense_shell(mould: Mould, clear: bool) -> Arc<Vec<u8>> {
+    let (bytes, w, h) = match (mould, clear) {
+        (Mould::Gba, false) => (GBA_SHELL_PNG, GBA_CART_W, GBA_CART_H),
+        (Mould::Notched, false) => (GB_SHELL_PNG, GB_CART_W, GB_CART_H),
+        (Mould::Rounded, false) => (GBC_SHELL_PNG, GB_CART_W, GB_CART_H),
+        (Mould::Gba, true) => (GBA_CLEAR_PNG, GBA_CART_W, GBA_CART_H),
+        (Mould::Notched, true) => (GB_CLEAR_PNG, GB_CART_W, GB_CART_H),
+        (Mould::Rounded, true) => (GBC_CLEAR_PNG, GB_CART_W, GB_CART_H),
+        (Mould::Home(m), _) => {
+            let (w, h) = m.size();
+            (m.art().neutral, w, h)
+        }
+    };
+    dense_png(bytes, w, h)
+}
+
 /// The neutral shell asset for a mould, opaque or the separate clear one. The game's colour is
 /// blended onto it by the caller.
 pub fn shell_asset(mould: Mould, clear: bool) -> &'static [u8] {
@@ -280,6 +405,8 @@ pub fn shell_asset(mould: Mould, clear: bool) -> &'static [u8] {
         (Mould::Gba, true) => (GBA_CLEAR_PNG, GBA_CART_W, GBA_CART_H, &GBA_CLEAR),
         (Mould::Notched, true) => (GB_CLEAR_PNG, GB_CART_W, GB_CART_H, &GB_CLEAR),
         (Mould::Rounded, true) => (GBC_CLEAR_PNG, GB_CART_W, GB_CART_H, &GBC_CLEAR),
+        // No clear home shells are drawn: a clear one is the neutral at 80%.
+        (Mould::Home(m), _) => return crate::home::neutral(m),
     };
     load(bytes, w, h, slot)
 }

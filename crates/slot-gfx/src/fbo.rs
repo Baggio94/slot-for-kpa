@@ -3,7 +3,7 @@ use crate::grade::blue_light_gain;
 use crate::pipeline::GamePass;
 use crate::quad::Quad;
 use crate::shaders::{BEZEL_FRAG, BLIT_FRAG, BLIT_VERT};
-use crate::surface::{blit_rect, GfxError, Surface, OUT_H, OUT_W};
+use crate::surface::{blit_rect, GfxError, Surface, OUT_H, out_w};
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -73,7 +73,7 @@ impl Compositor {
                 return Err(error);
             }
         };
-        let tex = crate::gl::texture(OUT_W, OUT_H, gl::NEAREST, gl::CLAMP_TO_EDGE, gl::RGBA, None);
+        let tex = crate::gl::texture(out_w(), OUT_H, gl::NEAREST, gl::CLAMP_TO_EDGE, gl::RGBA, None);
         unsafe {
             let mut fbo = 0;
             gl::GenFramebuffers(1, &mut fbo);
@@ -115,7 +115,7 @@ impl Compositor {
                 context_lost: false,
                 fbo,
                 tex,
-                size: (OUT_W, OUT_H),
+                size: (out_w(), OUT_H),
                 blit,
                 u_gain,
                 u_blit_uv,
@@ -179,6 +179,19 @@ impl Compositor {
 
     pub fn upload_game(&mut self, xrgb8888: &[u8]) {
         self.game.upload(xrgb8888);
+    }
+
+    /// A frame of any size (home consoles); 240x160 is the usual canvas.
+    pub fn upload_game_sized(&mut self, xrgb8888: &[u8], size: (u32, u32)) {
+        self.game.upload_sized(xrgb8888, size);
+    }
+
+    pub fn set_game_fit(&mut self, fit: crate::Fit) {
+        self.game.set_fit(fit);
+    }
+
+    pub fn set_game_top(&mut self, top: bool) {
+        self.game.set_top(top);
     }
 
     pub fn draw_game(&mut self) {
@@ -281,6 +294,11 @@ impl Compositor {
         self.game.set_power(t);
     }
 
+    /// Canvas rect the whole 240x160 game texture is drawn to.
+    pub fn set_game_area(&mut self, area: [f32; 4]) {
+        self.game.set_area(area);
+    }
+
     pub fn set_game_source_rect(&mut self, rect: [f32; 4]) {
         self.game.set_source_rect(rect);
     }
@@ -315,7 +333,7 @@ impl Compositor {
 
     pub fn begin_frame(&mut self) {
         self.game.set_fbo_scale(
-            self.size.0 as f32 / OUT_W as f32,
+            self.size.0 as f32 / out_w() as f32,
             self.size.1 as f32 / OUT_H as f32,
         );
         unsafe {
@@ -467,14 +485,12 @@ impl Compositor {
     }
 }
 
+/// The framebuffer is the panel's own size, whole multiples included: the
+/// interface is drawn at panel density (3x masters, text, SVG), so a 2x or 3x
+/// panel (1280x960, 1920x1440) must not get a 1x canvas blown up.
 pub fn canvas_size(window: (u32, u32)) -> (u32, u32) {
     let (_, _, w, h) = blit_rect(window, 0.0);
-    let (w, h) = (w.max(1) as u32, h.max(1) as u32);
-    if w % OUT_W == 0 && h % OUT_H == 0 && w / OUT_W == h / OUT_H {
-        (OUT_W, OUT_H)
-    } else {
-        (w, h)
-    }
+    (w.max(1) as u32, h.max(1) as u32)
 }
 
 impl Drop for Compositor {

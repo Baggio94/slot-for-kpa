@@ -13,6 +13,7 @@ usvg = { workspace = true }
 slot-gfx = { path = "../slot-gfx", default-features = false }
 slot-power = { path = "../slot-power" }
 slot-store = { path = "../slot-store" }
+unicode-normalization = { workspace = true }
 
 [dev-dependencies]
 slot-gfx = { path = "../slot-gfx", features = ["test-support"] }

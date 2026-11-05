@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use crate::cable::{self, Cable};
 use crate::link_kind::LinkKind;
 use crate::link_state;
+use crate::link_sync::{self, Sync};
 use crate::multiplayer::Role;
 
 const MAX_RECEIVE_PER_FRAME: usize = 256;
@@ -18,6 +19,13 @@ const MAX_FUTURE_FRAMES: u64 = 256;
 // TCP frame (plus one kind byte). Reject larger or malformed packets before
 // they reach Cable::accept, which tolerates duplicate *old input frames*.
 const MAX_STATE_CHUNK_PACKET: usize = 60_001;
+
+fn report(detail: &str) {
+    #[cfg(target_os = "android")]
+    crate::game::log_launch_timing(detail);
+    #[cfg(not(target_os = "android"))]
+    eprintln!("SlotKONKR: {detail}");
+}
 
 fn valid_cable_packet_shape(packet: &[u8]) -> bool {
     match packet.first() {
@@ -108,9 +116,22 @@ pub struct LinkPlay {
     // Cable starts at upstream's 3-frame delay, then adapts (cable.rs).
     // Wireless passes bytes through the core's registered netpacket ABI.
     stalled_for_input: bool,
+    // A GBA state carries its BIOS checksum; other consoles' states don't,
+    // and in an mGBA Cable pair with two different BIOS each GBA carries
+    // its own player's.
+    bios_checked: bool,
+    // mGBA pair: desync check every two seconds, resync from Host's pair.
+    sync: Option<Sync>,
 }
 
 impl LinkPlay {
+    /// For a console whose state has no GBA BIOS checksum to compare, or an
+    /// mGBA Cable pair whose two GBAs each keep their own player's BIOS.
+    pub fn without_bios_check(mut self) -> Self {
+        self.bios_checked = false;
+        self
+    }
+
     /// Host sends the authoritative core state before receiving frame inputs.
     /// The guest restores this state before running any linked frame.
     pub fn begin(
@@ -129,6 +150,7 @@ impl LinkPlay {
         // Keep the original Cable simulation only for upstream mock tests;
         // GameSession rejects any unsupported real core before reaching here.
         let mut awaiting_join_seed = false;
+        let mut sync = None;
         let cable = match mode {
             LinkKind::Cable if !core.supports_netpacket() => {
                 let player = if role == Role::Host { 0 } else { 1 };
@@ -143,6 +165,7 @@ impl LinkPlay {
                     return Err("Link state exceeds the safe transport limit".into());
                 }
                 if link_state::is_pair(&state) {
+                    sync = Some(Sync::new(role == Role::Host));
                     if role == Role::Host {
                         if link_state::local(&state, 0).is_none() {
                             return Err("Invalid mGBA Host SLK1 state".into());
@@ -159,6 +182,10 @@ impl LinkPlay {
                         }
                     }
                 } else if role == Role::Host {
+                    // Host starts from a load of what it sends, as Join does:
+                    // a load also resets what a state leaves out, such as
+                    // Genesis Plus GX's pads, on both consoles alike.
+                    core.unserialize(&state).map_err(|e| e.to_string())?;
                     for packet in cable::state_packets(&state) {
                         wire.send(NETPACKET_RELIABLE, &packet);
                     }
@@ -180,6 +207,8 @@ impl LinkPlay {
             waiting_for_input_since: None,
             last_poll_at: Instant::now(),
             stalled_for_input: false,
+            bios_checked: true,
+            sync,
         })
     }
 
@@ -297,6 +326,13 @@ impl LinkPlay {
             let Some(packet) = self.wire.try_recv() else { break };
             self.pacing.packets += 1;
             if let Some(cable) = self.cable.as_mut() {
+                if link_sync::is_sync_packet(&packet) {
+                    let current = cable.frame();
+                    let accepted = self.sync.as_mut()
+                        .is_some_and(|sync| sync.accept(&packet, current));
+                    if !accepted { return self.fail(LinkError::InvalidState); }
+                    continue;
+                }
                 // A bad kind, empty chunk, trailing bytes on READY, or an
                 // oversized state fragment is a protocol error, not a
                 // packet to ignore while the emulators drift apart.
@@ -342,7 +378,7 @@ impl LinkPlay {
                         Ok(state) => state,
                         Err(_) => return self.fail(LinkError::InvalidState),
                     };
-                    if !link_state::same_bios(&host_state, &join_state) {
+                    if self.bios_checked && !link_state::same_bios(&host_state, &join_state) {
                         return self.fail(LinkError::BiosMismatch);
                     }
                     let combined = match link_state::combine_players(&host_state, &join_state) {
@@ -371,7 +407,7 @@ impl LinkPlay {
                     Ok(local) => local,
                     Err(_) => return self.fail(LinkError::InvalidState),
                 };
-                if !link_state::same_bios(&state, &local) {
+                if self.bios_checked && !link_state::same_bios(&state, &local) {
                     return self.fail(LinkError::BiosMismatch);
                 }
                 if core.unserialize(&state).is_err() {
@@ -399,15 +435,69 @@ impl LinkPlay {
                 }
                 if self.wire.is_closed() { return self.fail(LinkError::Disconnected); }
             }
+            if let Some(sync) = self.sync.as_mut() {
+                let frame = cable.frame();
+                if sync.resync_now(frame) {
+                    if sync.host() {
+                        let Ok(state) = core.serialize() else {
+                            return self.fail(LinkError::InvalidState);
+                        };
+                        for packet in link_sync::resync_packets(&state) {
+                            self.wire.send(NETPACKET_RELIABLE, &packet);
+                        }
+                        sync.resynced(frame);
+                        report(&format!("Link resync: sent the pair at frame {frame} ({} bytes)", state.len()));
+                    } else if let Some(state) = sync.take_state() {
+                        if core.unserialize(&state).is_err() {
+                            return self.fail(LinkError::InvalidState);
+                        }
+                        sync.resynced(frame);
+                        report(&format!("Link resync: took Host's pair at frame {frame}"));
+                    } else {
+                        // Wait at this frame until Host's whole pair is here.
+                        let since = *self.waiting_for_input_since.get_or_insert_with(Instant::now);
+                        if since.elapsed() >= CABLE_INPUT_TIMEOUT {
+                            return self.fail(LinkError::Timeout);
+                        }
+                        return Frame::Waiting;
+                    }
+                }
+            }
             if let Some((p0, p1)) = cable.ready() {
                 self.waiting_for_input_since = None;
                 let core_started = Instant::now();
                 core.run_frame_linked(p0, p1);
+                // Do not advance remote input counters after the native GB
+                // serial scheduler aborted a partially completed paired frame.
+                if core.link_step_fault() {
+                    let detail = "mGBA GB/GBC Link: incomplete native frame; ending unsafe lockstep session";
+                    #[cfg(target_os = "android")]
+                    crate::game::log_launch_timing(detail);
+                    #[cfg(not(target_os = "android"))]
+                    eprintln!("SlotKONKR: {detail}");
+                    return self.fail(LinkError::InvalidState);
+                }
                 let us = core_started.elapsed().as_micros().min(u64::MAX as u128) as u64;
                 self.pacing.core_calls += 1;
                 self.pacing.core_total_us = self.pacing.core_total_us.saturating_add(us);
                 self.pacing.core_max_us = self.pacing.core_max_us.max(us);
                 cable.advance_adaptive(std::mem::take(&mut self.stalled_for_input));
+                let frame = cable.frame();
+                if let Some(sync) = self.sync.as_mut() {
+                    if sync.due(frame) {
+                        if let Ok(state) = core.serialize() {
+                            let packet = sync.record(frame, link_sync::pair_hash(&state));
+                            self.wire.send(NETPACKET_RELIABLE, &packet);
+                        }
+                    }
+                    if let Some(at) = sync.mismatch() {
+                        report(&format!("Link desync: the two consoles' pairs differ at frame {at} (resyncs before: {})",
+                            sync.resyncs()));
+                        if let Some(packet) = sync.plan(frame) {
+                            self.wire.send(NETPACKET_RELIABLE, &packet);
+                        }
+                    }
+                }
                 Frame::Advanced
             } else {
                 self.stalled_for_input = true;
@@ -892,6 +982,63 @@ mod tests {
         assert_eq!(h.frame(&mut host, ButtonMask(0)), Frame::Failed(LinkError::BiosMismatch));
         assert_eq!(host.state, before);
         assert_eq!(host.steps, 0);
+    }
+
+    #[test]
+    fn a_pair_that_drifts_apart_is_brought_back_to_hosts() {
+        let (host_wire, guest_wire) = pair();
+        let (mut host, mut guest) = (PairedCore::new(0x11, 0xBAAE187F),
+                                      PairedCore::new(0x22, 0xBAAE187F));
+        let mut h = LinkPlay::begin(&mut host, Role::Host, LinkKind::Cable, host_wire).unwrap();
+        let mut g = LinkPlay::begin(&mut guest, Role::Join, LinkKind::Cable, guest_wire).unwrap();
+        let mut drifted = false;
+        for _ in 0..4000 {
+            let a = h.frame(&mut host, ButtonMask(1));
+            let b = g.frame(&mut guest, ButtonMask(2));
+            assert!(!matches!(a, Frame::Failed(_)), "Host failed: {a:?}");
+            assert!(!matches!(b, Frame::Failed(_)), "Join failed: {b:?}");
+            if !drifted && guest.steps == 50 {
+                // Something only Join's pair has: a silent desync.
+                let last = guest.state.len() - 1;
+                guest.state[last] ^= 0x5A;
+                drifted = true;
+            }
+            if h.sync.as_ref().unwrap().resyncs() == 1 && g.sync.as_ref().unwrap().resyncs() == 1 {
+                break;
+            }
+        }
+        assert!(drifted);
+        assert_eq!(h.sync.as_ref().unwrap().resyncs(), 1, "Host resent its pair once");
+        assert_eq!(g.sync.as_ref().unwrap().resyncs(), 1, "Join took it once");
+        assert_eq!(host.state, guest.state, "both hold Host's pair again");
+        // And they stay together: no second resync.
+        for _ in 0..600 {
+            h.frame(&mut host, ButtonMask(1));
+            g.frame(&mut guest, ButtonMask(2));
+        }
+        assert_eq!(g.sync.as_ref().unwrap().resyncs(), 1);
+        assert_eq!(host.state, guest.state);
+    }
+
+    #[test]
+    fn mga_link_pairs_two_bios_when_each_gba_keeps_its_own_players() {
+        // One console with the official BIOS, the other with a DS dump (or
+        // none): each GBA's state carries its own player's BIOS checksum.
+        let (host_wire, guest_wire) = pair();
+        let (mut host, mut guest) = (PairedCore::new(0x11, 0xBAAE187F),
+                                      PairedCore::new(0x22, 0xA6473709));
+        let mut h = LinkPlay::begin(&mut host, Role::Host, LinkKind::Cable, host_wire)
+            .unwrap().without_bios_check();
+        assert_eq!(h.frame(&mut host, ButtonMask(1)), Frame::Waiting);
+        let mut g = LinkPlay::begin(&mut guest, Role::Join, LinkKind::Cable, guest_wire)
+            .unwrap().without_bios_check();
+        assert_eq!(h.frame(&mut host, ButtonMask(2)), Frame::Waiting);
+        assert_eq!(link_state::local(&host.state, 0).unwrap()[12], 0x11);
+        assert_eq!(link_state::local(&host.state, 1).unwrap()[12], 0x22);
+        assert_eq!(g.frame(&mut guest, ButtonMask(3)), Frame::Advanced);
+        assert_eq!(h.frame(&mut host, ButtonMask(4)), Frame::Advanced);
+        assert_eq!(host.state, guest.state);
+        assert_eq!((host.steps, guest.steps), (1, 1));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use crate::quad::Quad;
 use crate::shaders::{SPRITE_FRAG, SPRITE_VERT};
-use crate::surface::{GfxError, OUT_H, OUT_W};
+use crate::surface::{GfxError, OUT_H, out_w};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct TexId(usize);
@@ -113,7 +113,7 @@ impl Sprites {
             gl::Uniform1i(crate::gl::uniform_location(prog, "u_tex"), 0);
             gl::Uniform2f(
                 crate::gl::uniform_location(prog, "u_target"),
-                OUT_W as f32,
+                out_w() as f32,
                 OUT_H as f32,
             );
             u_rect = crate::gl::uniform_location(prog, "u_rect");
@@ -191,7 +191,7 @@ impl Sprites {
 
     /// Framebuffer pixels per canvas unit, e.g. 4/3 on a 960x640 panel.
     pub(crate) fn set_grid(&mut self, fbo: (u32, u32)) {
-        self.grid = [fbo.0 as f32 / OUT_W as f32, fbo.1 as f32 / OUT_H as f32];
+        self.grid = [fbo.0 as f32 / out_w() as f32, fbo.1 as f32 / OUT_H as f32];
     }
 
     pub fn source(&self, id: TexId) -> Option<gl::types::GLuint> {

@@ -1,6 +1,7 @@
 package fyi.slot.konkr
 
 import android.app.Activity
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -8,6 +9,7 @@ import android.media.AudioTimestamp
 import android.media.PlaybackParams
 import android.os.Handler
 import android.os.Looper
+import android.os.Build
 import android.os.SystemClock
 import android.os.BatteryManager
 import android.os.VibrationEffect
@@ -63,6 +65,12 @@ import javax.microedition.khronos.opengles.GL10
 
 /** Android owns EGL, lifecycle and physical input; Rust owns Slot rendering. */
 class MainActivity : Activity() {
+    // dp/sp follow the screen height so Android screens keep the KONKR's look.
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(newBase)
+        SlotUi.panelDensityOverride(newBase)?.let(::applyOverrideConfiguration)
+    }
+
     companion object {
         init { System.loadLibrary("slot_android") }
         private const val TAG = "SlotKonkr"
@@ -76,6 +84,7 @@ class MainActivity : Activity() {
         private const val STATE_REQUEST = 4704
         private const val THEME_REQUEST = 4705
         private const val WALLPAPER_REQUEST = 4706
+        private val WALLPAPER_TARGET_NAME = Regex("[A-Za-z]{1,16}\\.png")
         private const val LABEL_REQUEST = 4707
         private const val CART_STUDIO_REQUEST = 4708
         private const val PREFS = "slot_konkr_library"
@@ -103,6 +112,8 @@ class MainActivity : Activity() {
 
     external fun nativeSurfaceCreated(): Boolean
     external fun nativeSurfaceChanged(width: Int, height: Int)
+    external fun nativeSetPanelSize(width: Int, height: Int)
+    external fun nativeSetDevice(name: String, model: String)
     external fun nativeDrawFrame(vsyncFrameNs: Long)
     // Beta9 optional actual display present timestamp via EGL. Read-only.
     external fun nativeEglPresentationReset()
@@ -116,7 +127,8 @@ class MainActivity : Activity() {
     external fun nativeShelfIndicatorFlags(): Int
     external fun nativeSetShelfStatus(code: Int)
     external fun nativeSetLibrary(json: String): Int
-    external fun nativeConfigure(dataDir: String, libraryDir: String)
+    external fun nativeConfigure(dataDir: String, libraryDir: String,
+        isRetroidPocketClassic: Boolean)
     external fun nativePollLaunchUri(): String?
     external fun nativeGameReady(uri: String, path: String)
     external fun nativeGameError(uri: String, message: String)
@@ -152,6 +164,7 @@ class MainActivity : Activity() {
     external fun nativeUpdateStatus(status: Int, installed: String, available: String, automatic: Boolean)
     external fun nativeReloadVisualAssets()
     external fun nativePollCartLabelUri(): String?
+    external fun nativeWallpaperTarget(): String?
     external fun nativeReloadCartLabel(uri: String)
     external fun nativePollCartSfx(): Int
     external fun nativePollRumbleStrength(): Int
@@ -169,6 +182,7 @@ class MainActivity : Activity() {
     external fun nativeLinkNetworkReady(ipv4: String)
     external fun nativeLinkNetworkError(reason: String)
     external fun nativeLinkNeedsMulticast(): Boolean
+    external fun nativeLinkActive(): Boolean
 
     private var pendingCartLabelUri: String? = null
     private var pendingCartStudioUri: String? = null
@@ -198,6 +212,10 @@ class MainActivity : Activity() {
     }
     private val autoLabelsRunning = AtomicBoolean(false)
     private val autoLabelsRestartRequested = AtomicBoolean(false)
+    /** Labels saved before this run of passes, for its "N LABELS ADDED". */
+    @Volatile private var autoLabelsChainBase = -1
+    /** Last pulse's game state: leaving a game resumes the label passes. */
+    private var autoLabelsWasPlaying = false
     @Volatile private var cartStudioOpening = false
     // Paint fresh labels only when all moving carts and pending GPU uploads
     // have settled. The renderer's manual reload path is synchronous.
@@ -422,16 +440,41 @@ class MainActivity : Activity() {
         val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return null
         for (network in cm.allNetworks) {
             val capabilities = cm.getNetworkCapabilities(network) ?: continue
-            if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+            if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
             val links = cm.getLinkProperties(network) ?: continue
+            val interfaceName = links.interfaceName ?: continue
+            val iface = try {
+                java.net.NetworkInterface.getByName(interfaceName)
+            } catch (error: java.net.SocketException) {
+                Log.w(TAG, "Link Wi-Fi could not inspect interface $interfaceName", error)
+                null
+            } ?: continue
+            val addresses = try {
+                if (!iface.isUp) continue
+                val values = mutableSetOf<String>()
+                val registered = iface.inetAddresses
+                while (registered.hasMoreElements()) {
+                    val address = registered.nextElement()
+                    if (address is Inet4Address) values.add(address.hostAddress)
+                }
+                values
+            } catch (error: java.net.SocketException) {
+                Log.w(TAG, "Link Wi-Fi interface $interfaceName unavailable", error)
+                continue
+            }
             for (address in links.linkAddresses) {
                 val ip = address.address
                 if (ip is Inet4Address && !ip.isLoopbackAddress &&
-                    !ip.isLinkLocalAddress && !ip.isMulticastAddress && !ip.isAnyLocalAddress) {
+                    !ip.isLinkLocalAddress && !ip.isMulticastAddress &&
+                    !ip.isAnyLocalAddress && addresses.contains(ip.hostAddress)) {
+                    Log.i(TAG, "Link Wi-Fi selected: interface=$interfaceName ipv4=${ip.hostAddress}")
                     return ip.hostAddress
                 }
             }
+            Log.w(TAG, "Link Wi-Fi skipped stale address on interface=$interfaceName")
         }
+        Log.w(TAG, "Link Wi-Fi could not find a live interface with a matching IPv4 address")
         return null
     }
 
@@ -440,6 +483,35 @@ class MainActivity : Activity() {
         linkMulticastLock = null
         try { if (current?.isHeld == true) current.release() }
         catch (error: RuntimeException) { Log.w(TAG, "Link multicast release failed", error) }
+        releaseLinkLowLatency()
+    }
+
+    private var linkLowLatencyLock: WifiManager.WifiLock? = null
+
+    /** Wi-Fi power save holds packets for the next beacon (~100 ms), which
+     *  stalls a lockstep link and pushes its input delay up. Keep the radio
+     *  awake only while a Link session plays. */
+    private fun holdLinkLowLatency(active: Boolean) {
+        if (!active) { releaseLinkLowLatency(); return }
+        if (linkLowLatencyLock != null) return
+        try {
+            val manager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            val lock = manager.createWifiLock(
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "slot-konkr-link")
+            lock.setReferenceCounted(false)
+            lock.acquire()
+            linkLowLatencyLock = lock
+            Log.i(TAG, "Link Wi-Fi low latency on")
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Link Wi-Fi low latency unavailable", error)
+        }
+    }
+
+    private fun releaseLinkLowLatency() {
+        val current = linkLowLatencyLock ?: return
+        linkLowLatencyLock = null
+        try { if (current.isHeld) current.release() }
+        catch (error: RuntimeException) { Log.w(TAG, "Link Wi-Fi lock release failed", error) }
     }
 
     /** The peer has proven possession of an installation-bound Ed25519 key
@@ -545,6 +617,13 @@ class MainActivity : Activity() {
             updateDisplaySyncMode()
             updateCarouselPacing()
             publishAutoLabelsWhenIdle()
+            val labelsPlaying = nativeIsPlaying()
+            if (autoLabelsWasPlaying && !labelsPlaying) {
+                // Back on the carousel after a game: carry on where the
+                // label passes stopped (Siham 2026-11-04).
+                startAutoCartLabels()
+            }
+            autoLabelsWasPlaying = labelsPlaying
             if (::autoLabelIndicator.isInitialized) {
                 if (nativeIsPlaying() || cartStudioOpening) {
                     autoLabelIndicator.hide()
@@ -646,6 +725,7 @@ class MainActivity : Activity() {
             if (linkMulticastLock != null && !nativeLinkNeedsMulticast()) {
                 releaseLinkMulticast()
             }
+            if (resumed) holdLinkLowLatency(nativeLinkActive())
             val nowPerf = android.os.SystemClock.uptimeMillis()
             if (resumed && nowPerf - lastEmulationReportPollAt >= 1_000L) {
                 lastEmulationReportPollAt = nowPerf
@@ -752,17 +832,16 @@ class MainActivity : Activity() {
             try {
                 val payload = JSONObject(completed)
                 val uri = payload.getString("uri")
-                val core = when (payload.getString("core")) {
-                    "gpsp" -> "gpSP"
-                    "gambatte" -> "Gambatte"
-                    else -> "mGBA"
-                }
+                val core = Systems.folderForKey(payload.getString("core"))
                 val target = activeTargets[uri]
                 if (target != null && target.core == core) {
                     gameLoader.execute {
                         val stamp = payload.optString("manual_stamp", "")
+                        val deleted = payload.optString("deleted_stamp", "")
                         val failures = if (stamp.isNotEmpty()) {
                             RetroArchStorage.exportManualState(this@MainActivity, target, stamp)
+                        } else if (deleted.isNotEmpty()) {
+                            RetroArchStorage.deleteManualState(this@MainActivity, target, deleted)
                         } else {
                             RetroArchStorage.exportAfterSave(this@MainActivity, target)
                         }
@@ -809,7 +888,21 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         // A staged sign-out must finish before any native HTTP worker is started.
         val cleanSignOut = RaAccount.finishPendingSignOut(filesDir)
-        nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir)
+        // Device-specific *initial preference* only. Existing persisted
+        // global/per-cartridge choices are never rewritten.
+        // The Retroid Pocket Classic reports its maker as "Moorechip"
+        // (getprop ro.product.manufacturer, Siham 2026-11-04): go by the model.
+        val retroidPocketClassic = Build.MODEL.contains("Retroid Pocket Classic", ignoreCase = true)
+        Log.i(TAG, "Device: model=${Build.MODEL} manufacturer=${Build.MANUFACTURER} " +
+            "retroid_pocket_classic=$retroidPocketClassic")
+        nativeConfigure(filesDir.absolutePath, applicationInfo.nativeLibraryDir, retroidPocketClassic)
+        nativeSetDevice(SlotDevice.displayName(Build.MANUFACTURER, Build.MODEL), Build.MODEL)
+        // The slot. canvas takes the display's shape (3:2 on the KONKR, 16:9,
+        // 4:3...) before the renderer builds its first face.
+        windowManager.maximumWindowMetrics.bounds.let { panel ->
+            Log.i(TAG, "Panel ${panel.width()}x${panel.height()}")
+            nativeSetPanelSize(panel.width(), panel.height())
+        }
         // App-private A12 A/B marker; no save or ROM folders are touched.
         val a12Recovery = !File(filesDir, "a12-mgba-legacy-pacing.flag").exists()
         nativeSetMgbaLinkRecoveryEnabled(a12Recovery)
@@ -1151,6 +1244,18 @@ class MainActivity : Activity() {
             }
             return true
         }
+        if (isRetroidSlotKey(keyCode, event)) {
+            // The Retroid's round centre key sends BACK: there it is the
+            // slot. button, with the KONKR top key's exact behaviour.
+            if (event.repeatCount == 0) {
+                EmulationDiagnostics.input(keyCode, true, event, KeyEvent.KEYCODE_BUTTON_MODE)
+                warmedCandidate.set(null)
+                // Stage the key before waking a dozing shelf: no stale frame.
+                nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, true)
+                wakeCarouselRender()
+            }
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             onBackPressed()
             return true
@@ -1247,6 +1352,13 @@ class MainActivity : Activity() {
             nativeKey(button, false)
             return true
         }
+        if (isRetroidSlotKey(keyCode, event)) {
+            EmulationDiagnostics.input(keyCode, false, event, KeyEvent.KEYCODE_BUTTON_MODE)
+            warmedCandidate.set(null)
+            wakeCarouselRender()
+            nativeKey(KeyEvent.KEYCODE_BUTTON_MODE, false)
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK) return true
         if (keyCode == KeyEvent.KEYCODE_BUTTON_MODE) {
             Log.i(TAG, "KONKR MENU BTN_MODE up: Android code=" + keyCode)
@@ -1257,6 +1369,13 @@ class MainActivity : Activity() {
         wakeCarouselRender()
         nativeKey(keyCode, false)
         return true
+    }
+
+    /** BACK from a Retroid's built-in controller, not the navigation bar. */
+    private fun isRetroidSlotKey(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode != KeyEvent.KEYCODE_BACK) return false
+        val device = event.device ?: return false
+        return !device.isVirtual && device.name.contains("Retroid", ignoreCase = true)
     }
 
     @Deprecated("Android 12 back key")
@@ -1366,7 +1485,7 @@ class MainActivity : Activity() {
                         RomSource.inspect(input, name).extension
                     } ?: error("Cannot inspect cartridge ZIP")
                 } else name.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
-                require(ext in setOf("gba", "gbc", "gb")) { "Unsupported ROM type" }
+                require(ext in Systems.ROM_EXTENSIONS) { "Unsupported ROM type" }
                 val digest = MessageDigest.getInstance("SHA-256")
                     .digest(rawUri.toByteArray(Charsets.UTF_8))
                     .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
@@ -1400,11 +1519,8 @@ class MainActivity : Activity() {
                 }
                 val romReadyAt = SystemClock.elapsedRealtime()
                 val savedCore = nativeCoreForUri(rawUri)
-                val core = when {
-                    savedCore == "gpsp" && ext == "gba" -> "gpSP"
-                    savedCore == "gambatte" && ext != "gba" -> "Gambatte"
-                    else -> "mGBA"
-                }
+                // The native pick when it runs this system, else its default core.
+                val core = Systems.coreFolder(savedCore, ext)
                 val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
                 val storage = SlotBuildBehavior.storagePolicy(
                     packageName,
@@ -1955,8 +2071,13 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Label passes run on the carousel and while Cart Studio is open over
+     * it (its labels are then on the shelf on return), never in a game. */
+    private fun autoLabelsMayRun(): Boolean =
+        (resumed || cartStudioOpening) && !isDestroyed && !nativeIsPlaying()
+
     private fun startAutoCartLabels() {
-        if (!resumed || isDestroyed || nativeIsPlaying() || cartStudioOpening) return
+        if (!autoLabelsMayRun()) return
         if (!autoLabelsRunning.compareAndSet(false, true)) {
             // A short Studio visit may return before the previous worker exits.
             autoLabelsRestartRequested.set(true)
@@ -1966,7 +2087,9 @@ class MainActivity : Activity() {
         try {
             autoLabelsWorker.execute {
                 var anotherBatch = false
-                AutoCartLabelDiagnostics.clear()
+                if (autoLabelsChainBase < 0) {
+                    autoLabelsChainBase = AutoCartLabelDiagnostics.snapshot().saved
+                }
                 try {
                     val manager = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
                     val caps = manager?.getNetworkCapabilities(manager.activeNetwork)
@@ -1977,15 +2100,22 @@ class MainActivity : Activity() {
                     // Exactly the production 1.2.0 callback: enqueue a
                     // successful saved label for an idle carousel repaint.
                     // Status/UI snapshots are completely separate.
+                    val keepGoing = { autoLabelsMayRun() }
                     anotherBatch = AutoCartLabels.fill(applicationContext,
-                        shouldContinue = { resumed && !isDestroyed && !nativeIsPlaying() && !cartStudioOpening },
+                        shouldContinue = keepGoing,
                         onSaved = { uri -> autoLabelUpdates.add(uri) })
+                    // NES, Super Nintendo and Mega Drive labels from ScreenScraper.
+                    anotherBatch = HomeCartLabels.fill(applicationContext,
+                        shouldContinue = keepGoing,
+                        onSaved = { uri -> autoLabelUpdates.add(uri) }) || anotherBatch
                 } catch (error: Exception) {
                     Log.w("SlotAutoLabels", "Automatic artwork deferred", error)
                 } finally {
                     autoLabelsRunning.set(false)
                     val recheck = autoLabelsRestartRequested.getAndSet(false)
                     val report = AutoCartLabelDiagnostics.snapshot()
+                    val added = (report.saved - autoLabelsChainBase.coerceAtLeast(0)).coerceAtLeast(0)
+                    if (!anotherBatch && !recheck) autoLabelsChainBase = -1
                     if (!anotherBatch && !recheck && report.total > 0) {
                         Log.i("SlotAutoLabels",
                             "ART_SUMMARY examined=${report.checked}/${report.total} " +
@@ -1996,7 +2126,7 @@ class MainActivity : Activity() {
                         uiHandler.post {
                             if (::autoLabelIndicator.isInitialized) {
                                 if (resumed && !isDestroyed && !nativeIsPlaying() &&
-                                    !cartStudioOpening) autoLabelIndicator.finished(report.saved)
+                                    !cartStudioOpening) autoLabelIndicator.finished(added)
                                 else autoLabelIndicator.hide()
                             }
                         }
@@ -2007,13 +2137,12 @@ class MainActivity : Activity() {
                             if (::autoLabelIndicator.isInitialized) autoLabelIndicator.hide()
                         }
                     }
-                    if ((anotherBatch || recheck) && resumed && !isDestroyed &&
-                        !nativeIsPlaying() && !cartStudioOpening) {
+                    if ((anotherBatch || recheck) && autoLabelsMayRun()) {
                         // A pause between bounded batches prevents continuous
                         // ROM reads and leaves the carousel's render thread free.
                         // Wait until the earliest bounded network/DAT
-                        // retry is due. Fresh unchecked ROMs still use the
-                        // original gentle 4s spacing between small batches.
+                        // retry is due. Fresh unchecked ROMs follow one
+                        // second after the previous batch.
                         uiHandler.postDelayed({ startAutoCartLabels() },
                             AutoCartLabels.nextBatchDelayMs())
                     }
@@ -2299,8 +2428,11 @@ class MainActivity : Activity() {
         val percent = if (level >= 0 && scale > 0) (100 * level / scale).coerceIn(0, 100)
             else -1
         val state = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        // Some handhelds (the Retroid Pocket Classic) report NOT_CHARGING or
+        // DISCHARGING while on a weak USB port: plugged in counts as charging.
+        val plugged = battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
         val charging = state == BatteryManager.BATTERY_STATUS_CHARGING ||
-            state == BatteryManager.BATTERY_STATUS_FULL
+            state == BatteryManager.BATTERY_STATUS_FULL || plugged != 0
         nativeSystemStatus(clock, percent, charging)
 
     }
@@ -2324,8 +2456,8 @@ class MainActivity : Activity() {
         }
         nativeSetShareSaves(enabled)
         SlotToast.makeText(this,
-            if (enabled) "mGBA and gpSP now share the same saves."
-            else "mGBA and gpSP now keep separate saves.",
+            if (enabled) "mGBA, gpSP and Gambatte now share the same saves."
+            else "Each core now keeps its own saves.",
             Toast.LENGTH_LONG).show()
     }
 
@@ -2452,8 +2584,13 @@ class MainActivity : Activity() {
     }
 
     private fun visualFile(kind: Int): File {
-        return if (kind == THEME_REQUEST) File(filesDir, "Config/theme.txt")
-               else File(filesDir, "Wallpapers/user.png")
+        if (kind == THEME_REQUEST) return File(filesDir, "Config/theme.txt")
+        // While the Shelf wallpaper is picked, import/delete acts on the
+        // current shelf's own file (GBA.png, GB.png, GBC.png, Recents.png,
+        // Favorites.png); otherwise on the single custom wallpaper.
+        val target = nativeWallpaperTarget()
+            ?.takeIf { WALLPAPER_TARGET_NAME.matches(it) } ?: "user.png"
+        return File(filesDir, "Wallpapers/$target")
     }
 
     private fun resetVisualFile(kind: Int) {

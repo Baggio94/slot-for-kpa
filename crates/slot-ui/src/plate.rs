@@ -1,6 +1,6 @@
 use crate::density::Face as _;
 use crate::density::{self, Canvas};
-use crate::draw::{Draw, TexId, OUT_W};
+use crate::draw::{Draw, TexId, out_w};
 use crate::text;
 
 pub const HINT_H: u32 = 24;
@@ -74,13 +74,17 @@ pub fn hint_width(key: &str, label: &str) -> u32 {
 }
 
 pub fn hint_face(key: &str, label: &str) -> UndoFace {
+    hint_face_ink(key, label, INK)
+}
+
+pub fn hint_face_ink(key: &str, label: &str, ink: [u8; 3]) -> UndoFace {
     let mut face = Canvas::new(hint_width(key, label), HINT_H);
     let cap_w = cap_width(key);
     stamp_key(&mut face, key, cap_w, 0);
     let text_w = band_width(label);
     if let Some(font) = text::label_font() {
         let layout = text::fit(font, label, text_w as f32, 1, LABEL_PX, LABEL_MIN_PX);
-        face.text_in(cap_w + CAP_GAP, 0, text_w, HINT_H, &layout, INK);
+        face.text_in(cap_w + CAP_GAP, 0, text_w, HINT_H, &layout, ink);
     }
     face.into_undo()
 }
@@ -108,7 +112,7 @@ fn stamp_key(face: &mut Canvas, key: &str, cap_w: u32, x: u32) {
 
 /// Complete first-run instructions must never inherit the 140px footer
 /// hint limit, which dropped the tail of "OPEN MENU TO ADD ROMS".
-pub const ONBOARDING_MAX_W: u32 = OUT_W - 48;
+pub fn onboarding_max_w() -> u32 { out_w() - 48 }
 fn onboarding_text_width(text: &str, px: f32) -> u32 {
     let Some(font)=text::label_font() else {return 8};
     let spacing=(px*0.10).round();
@@ -130,7 +134,7 @@ pub fn onboarding_instruction_face(before: &str, key: &str, after: &str) -> Undo
     let mut px=LABEL_PX;
     while px>LABEL_MIN_PX &&
         onboarding_text_width(before,px)+onboarding_text_width(after,px)
-            +cap_w+2*GAP>ONBOARDING_MAX_W {
+            +cap_w+2*GAP>onboarding_max_w() {
         px-=1.0;
     }
     let before=onboarding_band(before,px);
@@ -223,7 +227,7 @@ pub fn centred_hints(hints: &[(TexId, u32)], gap: f32) -> Vec<(TexId, u32, f32)>
     let seen = |w: u32| w.saturating_sub(HINT_EDGE) as f32;
     let total = hints.iter().map(|&(_, w)| seen(w)).sum::<f32>()
         + gap * hints.len().saturating_sub(1) as f32;
-    let mut x = ((OUT_W as f32 - total) / 2.0).round();
+    let mut x = ((out_w() as f32 - total) / 2.0).round();
     hints
         .iter()
         .map(|&(tex, w)| {
@@ -291,6 +295,10 @@ pub fn arrows_hint_width(label: &str) -> u32 {
 }
 
 pub fn arrows_hint_face(label: &str) -> UndoFace {
+    arrows_hint_face_ink(label, INK)
+}
+
+pub fn arrows_hint_face_ink(label: &str, ink: [u8; 3]) -> UndoFace {
     let mut face = Canvas::new(arrows_hint_width(label), HINT_H);
     if let Some(art) = arrows_art() {
         let (aw, ah) = art.texels();
@@ -307,7 +315,7 @@ pub fn arrows_hint_face(label: &str) -> UndoFace {
     let text_w = band_width(label);
     if let Some(font) = text::label_font() {
         let layout = text::fit(font, label, text_w as f32, 1, LABEL_PX, LABEL_MIN_PX);
-        face.text_in(arrows_w() + CAP_GAP, 0, text_w, HINT_H, &layout, INK);
+        face.text_in(arrows_w() + CAP_GAP, 0, text_w, HINT_H, &layout, ink);
     }
     face.into_undo()
 }
@@ -350,14 +358,14 @@ mod onboarding_tests {
             ("PRESS","START","TO SELECT YOUR ROM FOLDER"),
         ] {
             let face=onboarding_instruction_face(before,key,after);
-            assert!(face.w<=ONBOARDING_MAX_W,"hint clips: {after}");
+            assert!(face.w<=onboarding_max_w(),"hint clips: {after}");
             assert_eq!(face.h,HINT_H);
             assert!(face.rgba.chunks_exact(4).any(|p|p[3]!=0));
-            assert!(onboarding_text_width(after,LABEL_PX)<ONBOARDING_MAX_W);
+            assert!(onboarding_text_width(after,LABEL_PX)<onboarding_max_w());
         }
         let note=onboarding_note_face("(ZIP ROMS SUPPORTED)");
-        assert!(note.w<=ONBOARDING_MAX_W);
+        assert!(note.w<=onboarding_max_w());
         assert!(note.rgba.chunks_exact(4).any(|p|p[3]!=0));
-        assert!(hint_width("START","Open Library")<=ONBOARDING_MAX_W);
+        assert!(hint_width("START","Open Library")<=onboarding_max_w());
     }
 }

@@ -10,6 +10,9 @@ use slot_store::GbPalette;
 pub enum WallpaperPick {
     None,
     Random,
+    /// Upstream Slot v1.13: Wallpapers/GBA.png, GB.png, GBC.png,
+    /// Recents.png or Favorites.png follow the shelf on screen.
+    Shelf,
     #[default]
     Default,
     Blur,
@@ -17,13 +20,13 @@ pub enum WallpaperPick {
 }
 impl WallpaperPick {
     pub fn choices(root: &Path) -> Vec<Self> {
-        let mut choices=vec![Self::None, Self::Random, Self::Default, Self::Blur];
+        let mut choices=vec![Self::None, Self::Random, Self::Shelf, Self::Default, Self::Blur];
         choices.extend(crate::wallpaper::list(root).into_iter().map(Self::File));
         choices
     }
     pub fn step(&self, root: &Path, right: bool) -> Self {
         let choices=Self::choices(root);
-        let at=choices.iter().position(|v| v==self).unwrap_or(2);
+        let at=choices.iter().position(|v| v==self).unwrap_or(3);
         let n=choices.len();
         choices[if right {(at+1)%n}else{(at+n-1)%n}].clone()
     }
@@ -31,6 +34,7 @@ impl WallpaperPick {
         match self {
             Self::None=>"None".into(),
             Self::Random=>"Random".into(),
+            Self::Shelf=>"Shelf".into(),
             Self::Default=>"Default".into(),
             Self::Blur=>"DEFAULT BLUR".into(),
             Self::File(name)=>name.rsplit_once('.').map(|(a,_)|a).unwrap_or(name).into()
@@ -56,9 +60,17 @@ impl WallpaperTint {
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Appearance { #[default] Dark, Light }
+pub enum Appearance { #[default] Dark, Light, Original }
 impl Appearance {
-    pub fn toggle(self)->Self { if self==Self::Dark {Self::Light}else{Self::Dark} }
+    /// Dark, Light, then Original: the dark interface with every console
+    /// bar in its console's own colours (Siham 2026-11-03).
+    pub fn toggle(self)->Self {
+        match self { Self::Dark=>Self::Light, Self::Light=>Self::Original, Self::Original=>Self::Dark }
+    }
+    /// Which set of console bars `slot_ui::bitmaps::home_slot` draws.
+    pub fn bar_theme(self)->usize {
+        match self { Self::Original=>0, Self::Dark=>1, Self::Light=>2 }
+    }
 }
 
 /// Original PR #2 by Its-TroyM: persisted optional 12/24-hour shelf clock.
@@ -101,23 +113,74 @@ pub enum Bezel {
     None,
     #[default]
     Default,
-    // Watomsk's Game Boy, Game Boy Pocket and Game Boy Color overlays
-    // (github.com/Watomsk/Overlays, used with permission), cut for 3:2.
-    Gb, Pocket, Color,
+    // Watomsk's overlays (github.com/Watomsk/Overlays, used with his
+    // permission), recomposed for each screen shape. His dark grey versions
+    // were dropped (Siham, 2026-11-04): a saved grey reads as the black one.
+    #[serde(alias="gb_grey")] Gb,
+    #[serde(alias="pocket_grey")] Pocket,
+    #[serde(alias="color_grey")] Color,
+    #[serde(alias="gba_classic_grey")] GbaClassic,
+    #[serde(alias="gba_grey")] Gba,
+    #[serde(alias="gba_sp_grey")] GbaSp,
+    #[serde(alias="gba_alt_grey")] GbaAlt,
+    #[serde(alias="nes_grey")] Nes,
+    #[serde(alias="nes_gray_logo_grey")] NesGrayLogo,
+    #[serde(alias="snes_grey")] Snes,
+    #[serde(alias="snes_alt_grey")] SnesAlt,
+    #[serde(alias="snes_gray_logo_grey")] SnesGrayLogo,
+    #[serde(alias="snes_gray_logo_alt_grey")] SnesGrayLogoAlt,
+    #[serde(alias="genesis_classic_grey")] GenesisClassic,
+    #[serde(alias="genesis_grey")] Genesis,
+    #[serde(alias="mega_drive_grey")] MegaDrive,
 }
 impl Bezel {
-    /// GBA keeps ON/OFF; GB adds Watomsk's Game Boy and Pocket, GBC his Color.
+    /// GB and GBC also keep the slot. bezel; every system's own Watomsk
+    /// designs follow, the classic one first (Siham, 2026-11-03).
     pub const GB: [Bezel; 4] = [Bezel::None, Bezel::Default, Bezel::Gb, Bezel::Pocket];
     pub const GBC: [Bezel; 3] = [Bezel::None, Bezel::Default, Bezel::Color];
-    pub fn step(self)->Self {
-        match self {Self::None=>Self::Default,_=>Self::None}
+    pub const GBA: [Bezel; 5] = [Bezel::None, Bezel::GbaClassic, Bezel::Gba, Bezel::GbaSp,
+        Bezel::GbaAlt];
+    pub const NES: [Bezel; 3] = [Bezel::None, Bezel::Nes, Bezel::NesGrayLogo];
+    pub const SNES: [Bezel; 5] = [Bezel::None, Bezel::Snes, Bezel::SnesAlt,
+        Bezel::SnesGrayLogo, Bezel::SnesGrayLogoAlt];
+    pub const MD: [Bezel; 4] = [Bezel::None, Bezel::GenesisClassic, Bezel::Genesis,
+        Bezel::MegaDrive];
+    pub fn list(platform: slot_store::Platform) -> &'static [Bezel] {
+        use slot_store::Platform;
+        match platform {
+            Platform::Gb => &Self::GB,
+            Platform::Gbc => &Self::GBC,
+            Platform::Gba => &Self::GBA,
+            Platform::Nes => &Self::NES,
+            Platform::Snes => &Self::SNES,
+            Platform::Md => &Self::MD,
+        }
     }
     pub fn step_in(self,list:&[Bezel],right:bool)->Self {
         let n=list.len();
-        let at=list.iter().position(|b| *b==self).unwrap_or(1);
+        let at=list.iter().position(|b| *b==self).unwrap_or(0);
         list[if right {(at+1)%n} else {(at+n-1)%n}]
     }
+    /// Which Watomsk design.
+    pub fn watomsk(self) -> Option<slot_ui::watomsk::Design> {
+        use slot_ui::watomsk::Design as D;
+        Some(match self {
+            Bezel::None | Bezel::Default => return None,
+            Bezel::Gb => D::Gb, Bezel::Pocket => D::Pocket, Bezel::Color => D::Color,
+            Bezel::GbaClassic => D::GbaClassic, Bezel::Gba => D::Gba,
+            Bezel::GbaSp => D::GbaSp, Bezel::GbaAlt => D::GbaAlt,
+            Bezel::Nes => D::Nes, Bezel::NesGrayLogo => D::NesGrayLogo,
+            Bezel::Snes => D::Snes, Bezel::SnesAlt => D::SnesAlt,
+            Bezel::SnesGrayLogo => D::SnesGrayLogo, Bezel::SnesGrayLogoAlt => D::SnesGrayLogoAlt,
+            Bezel::GenesisClassic => D::GenesisClassic, Bezel::Genesis => D::Genesis,
+            Bezel::MegaDrive => D::MegaDrive,
+        })
+    }
 }
+
+fn bezel_nes_default() -> Bezel { Bezel::Nes }
+fn bezel_snes_default() -> Bezel { Bezel::Snes }
+fn bezel_md_default() -> Bezel { Bezel::GenesisClassic }
 
 pub const REWIND_SPEEDS: [u8; 4] = [1, 2, 3, 5];
 
@@ -139,8 +202,11 @@ fn cycle_rewind_setting(enabled: &mut bool, speed: &mut u8, right: bool) {
     if *enabled { *speed = REWIND_SPEEDS[next-1]; }
 }
 
-/// Index of "GBC Green" in slot_store's palette list.
+/// Index of "GBC Green" in slot_store's palette list (the default before
+/// TWB64 Game.com).
 const GB_PALETTE_GBC_GREEN: u8 = 13;
+/// Index of "TWB64 028 Game.com Ver.", the Game Boy default since 1.3.5.
+const GB_PALETTE_TWB64_GAME_COM: u8 = 48;
 
 /// Original Slot 1.8.1 (#123): 0 means Fast Forward Off.
 pub const SPEEDS: [u8; 5] = [0, 2, 3, 4, 6];
@@ -152,6 +218,10 @@ pub enum Shader {
     Off, Lcd3x, Grid, Dot, Simpletex,
     LcdGridV2, LcdGridV2Gba, ZfastLcd, Lcd1x, SimpletexGba,
     Agb001, Ags001, SharpBilinear,
+    // NES, Super Nintendo and Mega Drive (Siham 2026-11-04).
+    ZfastCrt, CrtGdvTrinitron, CrtGeomDeluxe, CrtPi,
+    // Light ones for the weaker GPUs (Siham 2026-11-05).
+    Fakelottes, CrtAperture,
 }
 impl Shader {
     // Exactly ten GBA RetroArch shaders plus Off, preserving the backward
@@ -161,8 +231,17 @@ impl Shader {
         Self::ZfastLcd, Self::Lcd1x, Self::SimpletexGba,
         Self::Agb001, Self::Ags001, Self::SharpBilinear, Self::Dot,
     ];
-    // GB/GBC options remain unchanged.
-    pub const GB: [Self; 4] = [Self::Off, Self::Lcd3x, Self::Grid, Self::Simpletex];
+    // GB/GBC: their own four, then the GBA presets without GBA colours.
+    pub const GB: [Self; 9] = [
+        Self::Off, Self::Lcd3x, Self::Grid, Self::Simpletex,
+        Self::ZfastLcd, Self::Lcd1x, Self::LcdGridV2, Self::SharpBilinear, Self::Dot,
+    ];
+    /// NES / Super Nintendo / Mega Drive: Off, then Siham's CRT list with
+    /// zfast-crt first (the default), fakelottes second, crt-aperture third.
+    pub const HOME: [Self; 7] = [
+        Self::Off, Self::ZfastCrt, Self::Fakelottes, Self::CrtAperture,
+        Self::CrtGdvTrinitron, Self::CrtGeomDeluxe, Self::CrtPi,
+    ];
     pub fn effect(self) -> ScreenEffect {
         match self {
             Self::Off => ScreenEffect::None,
@@ -178,6 +257,12 @@ impl Shader {
             Self::Agb001 => ScreenEffect::Agb001,
             Self::Ags001 => ScreenEffect::Ags001,
             Self::SharpBilinear => ScreenEffect::SharpBilinear,
+            Self::ZfastCrt => ScreenEffect::ZfastCrt,
+            Self::CrtGdvTrinitron => ScreenEffect::CrtGdvMiniUltra,
+            Self::CrtGeomDeluxe => ScreenEffect::CrtGeomDeluxe,
+            Self::CrtPi => ScreenEffect::CrtPi,
+            Self::Fakelottes => ScreenEffect::Fakelottes,
+            Self::CrtAperture => ScreenEffect::CrtAperture,
         }
     }
     pub fn includes_gba_color(self) -> bool {
@@ -195,18 +280,47 @@ impl Shader {
     }
 }
 
+/// What a fresh install's defaults depend on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Device {
+    /// The KONKR Pocket Advance's 960x640 panel.
+    pub konkr: bool,
+    pub retroid_pocket_classic: bool,
+    /// A 3:2 panel (the KONKR's and others): NES, SNES and Mega Drive start
+    /// at Original Ratio there, with no overlay (Siham, 2026-11-04).
+    pub three_two: bool,
+}
+
+impl Device {
+    pub const KONKR: Device = Device { konkr: true, retroid_pocket_classic: false, three_two: true };
+    pub const RPC: Device = Device { konkr: false, retroid_pocket_classic: true, three_two: false };
+    /// Whether a panel is 3:2, within 1%.
+    pub fn is_three_two(panel: (u32, u32)) -> bool {
+        let a = panel.0.max(1) as f32 / panel.1.max(1) as f32;
+        (a / 1.5 - 1.0).abs() < 0.01
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub ff_speed: u8, pub ff_sound: bool, pub colour_correction: bool,
     pub rumble: bool, pub shader_gba: Shader, pub shader_gb: Shader,
     pub shader_gbc: Shader,
+    /// The home consoles' CRT shaders (new in 1.3.5: zfast-crt by default).
+    pub shader_nes: Shader, pub shader_snes: Shader, pub shader_md: Shader,
     // Retain legacy field for old RC1 Settings.json and old desktop Link code;
     // the three platform fields below are authoritative after migration.
     pub colour_correction_gba: bool,
     pub colour_correction_gb: bool,
     pub colour_correction_gbc: bool,
     pub bezel_gba: Bezel, pub bezel_gbc: Bezel, pub bezel_gb: Bezel,
+    #[serde(default="bezel_nes_default")]
+    pub bezel_nes: Bezel,
+    #[serde(default="bezel_snes_default")]
+    pub bezel_snes: Bezel,
+    #[serde(default="bezel_md_default")]
+    pub bezel_md: Bezel,
     pub gb_palettes: bool, pub gb_palette: u8, pub rewind: bool,
     // Number of historical rewind snapshots restored per 100 ms of game time.
     // Prior Android builds captured 10/s and replayed 10/s (1x). Original
@@ -238,6 +352,15 @@ pub struct Settings {
     /// Slot v1.7 GENERAL: Recents is off by default; persist its list regardless.
     pub show_recents: bool,
     pub show_titles: bool,
+    /// Set once the home consoles' 3:2 default (no overlay) was applied.
+    #[serde(default)]
+    pub home_bezel_three_two: bool,
+    /// One-time move of the old GBC Green default to TWB64 Game.com.
+    #[serde(default)]
+    pub gb_palette_twb64: bool,
+    /// One-time move of GB/GBC overlays left OFF to Watomsk's frames.
+    #[serde(default)]
+    pub gb_overlays_watomsk: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -246,9 +369,12 @@ impl Default for Settings {
         Self { ff_speed: 2, ff_sound: true, colour_correction: false,
             rumble: true, shader_gba: Shader::Off, shader_gb: Shader::Off,
             shader_gbc: Shader::Off,
+            shader_nes: Shader::ZfastCrt, shader_snes: Shader::ZfastCrt,
+            shader_md: Shader::ZfastCrt,
             colour_correction_gba: false, colour_correction_gb: false,
             colour_correction_gbc: false,
             bezel_gba: Bezel::None, bezel_gbc: Bezel::Default, bezel_gb: Bezel::Default,
+            bezel_nes: Bezel::Nes, bezel_snes: Bezel::Snes, bezel_md: Bezel::GenesisClassic,
             gb_palettes: false, gb_palette: 1, rewind: true,
             rewind_speed: 2,
             turbo: true, eject_save: true,
@@ -258,7 +384,8 @@ impl Default for Settings {
             time_format: TimeFormat::TwentyFourHour,
             status_opt_in_v2: true, wallpaper: WallpaperPick::Default,
             wallpaper_tint: WallpaperTint::Off, appearance: Appearance::Dark,
-            show_recents: false, show_titles: false }
+            show_recents: false, show_titles: false, home_bezel_three_two: false,
+            gb_palette_twb64: false, gb_overlays_watomsk: false }
     }
 }
 impl Settings {
@@ -271,10 +398,14 @@ impl Settings {
             shader_gba: Shader::Lcd3x,
             shader_gbc: Shader::Lcd3x,
             shader_gb: Shader::Lcd3x,
-            bezel_gbc: Bezel::None,
-            bezel_gb: Bezel::None,
+            // Watomsk's frames, wherever the screen leaves room beside the
+            // picture (3:2, 4:3, 16:9; Siham 2026-11-04).
+            bezel_gbc: Bezel::Color,
+            bezel_gb: Bezel::Gb,
+            // Shown only where the GBA picture leaves room (not the KONKR).
+            bezel_gba: Bezel::GbaClassic,
             gb_palettes: true,
-            gb_palette: GB_PALETTE_GBC_GREEN,
+            gb_palette: GB_PALETTE_TWB64_GAME_COM,
             ff_speed: 3,
             rewind_speed: 3,
             turbo: false,
@@ -282,10 +413,32 @@ impl Settings {
             // itself on the KONKR (1.2.3 beta22 captures).
             responsive_loop: false,
             run_ahead_frames: 0,
+            home_bezel_three_two: true,
+            gb_palette_twb64: true,
+            gb_overlays_watomsk: true,
             ..Self::default()
         }
     }
-    pub fn load(dir: &Path) -> Self {
+    /// Device-local first-install defaults: LCD3x on every screen (Siham
+    /// 2026-11-04); Frame Pacing RESPONSIVE everywhere but on the KONKR,
+    /// which keeps NATIVE (Siham 2026-11-05): with RESPONSIVE every shader
+    /// keeps up on the weaker GPUs (Retroid Pocket Classic and others).
+    pub fn first_install_defaults_for_device(device: Device) -> Self {
+        let mut defaults = Self::first_install_defaults();
+        defaults.responsive_loop = !device.konkr;
+        if device.three_two { defaults.home_bezels_off(); }
+        defaults
+    }
+    /// NES, SNES and Mega Drive without an overlay.
+    fn home_bezels_off(&mut self) {
+        self.bezel_nes = Bezel::None;
+        self.bezel_snes = Bezel::None;
+        self.bezel_md = Bezel::None;
+    }
+    /// Existing Settings.json always wins, including an explicit NATIVE choice.
+    /// Only a missing or unreadable first-install configuration gets a
+    /// model-specific default; never rewrite the file just to apply a default.
+    pub fn load_for_device(dir: &Path, device: Device) -> Self {
         fs::read(dir.join(NAME)).ok()
             .and_then(|b| {
                 let old_json=serde_json::from_slice::<serde_json::Value>(&b).ok();
@@ -324,7 +477,10 @@ impl Settings {
                 if !Shader::GBA.contains(&s.shader_gba) { s.shader_gba = Shader::Off; }
                 if !Shader::GB.contains(&s.shader_gb) { s.shader_gb = Shader::Off; }
                 if !Shader::GB.contains(&s.shader_gbc) { s.shader_gbc = Shader::Off; }
-                if s.gb_palette >= 48 { s.gb_palette = 1; }
+                for shader in [&mut s.shader_nes, &mut s.shader_snes, &mut s.shader_md] {
+                    if !Shader::HOME.contains(shader) { *shader = Shader::ZfastCrt; }
+                }
+                if s.gb_palette as usize >= GbPalette::COUNT { s.gb_palette = 1; }
                 if !REWIND_SPEEDS.contains(&s.rewind_speed) { s.rewind_speed = 2; }
                 if s.run_ahead_frames > 2 { s.run_ahead_frames = 0; }
                 // Before this version all three toggles defaulted ON.
@@ -337,8 +493,32 @@ impl Settings {
                     s.show_integrations = false;
                     s.status_opt_in_v2 = true;
                 }
+                // Once: on 3:2 the home consoles' overlays were on by
+                // default in the betas; they now start without one.
+                if !s.home_bezel_three_two {
+                    if device.three_two { s.home_bezels_off(); }
+                    s.home_bezel_three_two = true;
+                }
+                // Once: Game Boy carts that still wore the old default
+                // (GBC Green) move to the new one, TWB64 Game.com.
+                if !s.gb_palette_twb64 {
+                    if s.gb_palette == GB_PALETTE_GBC_GREEN {
+                        s.gb_palette = GB_PALETTE_TWB64_GAME_COM;
+                    }
+                    s.gb_palette_twb64 = true;
+                }
+                // Once: GB/GBC overlays left OFF take Watomsk's frames, the
+                // new default; a later OFF is kept.
+                if !s.gb_overlays_watomsk {
+                    if s.bezel_gb == Bezel::None { s.bezel_gb = Bezel::Gb; }
+                    if s.bezel_gbc == Bezel::None { s.bezel_gbc = Bezel::Color; }
+                    s.gb_overlays_watomsk = true;
+                }
                 s
-            }).unwrap_or_else(Self::first_install_defaults)
+            }).unwrap_or_else(|| Self::first_install_defaults_for_device(device))
+    }
+    pub fn load(dir: &Path) -> Self {
+        Self::load_for_device(dir, Device::KONKR)
     }
     pub fn save(&self, dir: &Path) -> io::Result<()> {
         fs::create_dir_all(dir)?;
@@ -352,6 +532,9 @@ impl Settings {
             slot_store::Platform::Gba=>self.shader_gba,
             slot_store::Platform::Gbc=>self.shader_gbc,
             slot_store::Platform::Gb=>self.shader_gb,
+            slot_store::Platform::Nes=>self.shader_nes,
+            slot_store::Platform::Snes=>self.shader_snes,
+            slot_store::Platform::Md=>self.shader_md,
         }
     }
     pub fn set_shader_for(&mut self,platform:slot_store::Platform,shader:Shader) {
@@ -359,6 +542,18 @@ impl Settings {
             slot_store::Platform::Gba=>self.shader_gba=shader,
             slot_store::Platform::Gbc=>self.shader_gbc=shader,
             slot_store::Platform::Gb=>self.shader_gb=shader,
+            slot_store::Platform::Nes=>self.shader_nes=shader,
+            slot_store::Platform::Snes=>self.shader_snes=shader,
+            slot_store::Platform::Md=>self.shader_md=shader,
+        }
+    }
+    /// The Shader row's key of a home console (47 NES, 48 SNES, 49 MD).
+    pub fn home_shader_key(platform:slot_store::Platform)->Option<usize> {
+        match platform {
+            slot_store::Platform::Nes=>Some(47),
+            slot_store::Platform::Snes=>Some(48),
+            slot_store::Platform::Md=>Some(49),
+            _=>None,
         }
     }
     pub fn colour_for(&self,platform:slot_store::Platform)->bool {
@@ -366,6 +561,7 @@ impl Settings {
             slot_store::Platform::Gba=>self.colour_correction_gba,
             slot_store::Platform::Gbc=>self.colour_correction_gbc,
             slot_store::Platform::Gb=>self.colour_correction_gb,
+            _=>false,
         }
     }
     pub fn set_colour_for(&mut self,platform:slot_store::Platform,value:bool) {
@@ -376,13 +572,20 @@ impl Settings {
             },
             slot_store::Platform::Gbc=>self.colour_correction_gbc=value,
             slot_store::Platform::Gb=>self.colour_correction_gb=value,
+            _=>{}
         }
     }
     pub fn bezel_for(&self,platform:slot_store::Platform)->Bezel {
         match platform {
-            slot_store::Platform::Gba=>self.bezel_gba,
+            // GBA's old ON is its classic Watomsk frame.
+            slot_store::Platform::Gba=>match self.bezel_gba {
+                Bezel::Default=>Bezel::GbaClassic, bezel=>bezel,
+            },
             slot_store::Platform::Gbc=>self.bezel_gbc,
             slot_store::Platform::Gb=>self.bezel_gb,
+            slot_store::Platform::Nes=>self.bezel_nes,
+            slot_store::Platform::Snes=>self.bezel_snes,
+            slot_store::Platform::Md=>self.bezel_md,
         }
     }
     pub fn set_bezel_for(&mut self,platform:slot_store::Platform,value:Bezel) {
@@ -390,7 +593,22 @@ impl Settings {
             slot_store::Platform::Gba=>self.bezel_gba=value,
             slot_store::Platform::Gbc=>self.bezel_gbc=value,
             slot_store::Platform::Gb=>self.bezel_gb=value,
+            slot_store::Platform::Nes=>self.bezel_nes=value,
+            slot_store::Platform::Snes=>self.bezel_snes=value,
+            slot_store::Platform::Md=>self.bezel_md=value,
         }
+    }
+    /// The Bezel row's settings key for each system.
+    pub fn bezel_key(platform:slot_store::Platform)->usize {
+        match platform {
+            slot_store::Platform::Gba=>25, slot_store::Platform::Gbc=>26,
+            slot_store::Platform::Gb=>27, slot_store::Platform::Nes=>44,
+            slot_store::Platform::Snes=>45, slot_store::Platform::Md=>46,
+        }
+    }
+    fn step_bezel(&mut self,platform:slot_store::Platform,right:bool) {
+        let next=self.bezel_for(platform).step_in(Bezel::list(platform),right);
+        self.set_bezel_for(platform,next);
     }
     // Screen: 0 GBA shader, 1 GB shader, 2 legacy GBA correction, 3 palettes.
     // 21 GBC shader, 22/23/24 independent corrections, 25/26/27 bezels.
@@ -408,9 +626,15 @@ impl Settings {
             24 => self.set_colour_for(slot_store::Platform::Gb,
                 !self.colour_correction_gb),
             21 => self.shader_gbc=self.shader_gbc.step(&Shader::GB,right),
-            25 => self.bezel_gba=self.bezel_gba.step(),
-            26 => self.bezel_gbc=self.bezel_gbc.step_in(&Bezel::GBC,right),
-            27 => self.bezel_gb=self.bezel_gb.step_in(&Bezel::GB,right),
+            25 => self.step_bezel(slot_store::Platform::Gba,right),
+            26 => self.step_bezel(slot_store::Platform::Gbc,right),
+            27 => self.step_bezel(slot_store::Platform::Gb,right),
+            44 => self.step_bezel(slot_store::Platform::Nes,right),
+            45 => self.step_bezel(slot_store::Platform::Snes,right),
+            46 => self.step_bezel(slot_store::Platform::Md,right),
+            47 => self.shader_nes=self.shader_nes.step(&Shader::HOME,right),
+            48 => self.shader_snes=self.shader_snes.step(&Shader::HOME,right),
+            49 => self.shader_md=self.shader_md.step(&Shader::HOME,right),
             3 => step_palette(&mut self.gb_palettes, &mut self.gb_palette, right),
             4 => {
                 let at = SPEEDS.iter().position(|x| *x == self.ff_speed).unwrap_or(0);
@@ -598,10 +822,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("user.png"), b"placeholder").unwrap();
         std::fs::write(dir.join("another.png"), b"placeholder").unwrap();
+        std::fs::write(dir.join("GBA.png"), b"placeholder").unwrap();
         let choices=WallpaperPick::choices(&root);
-        assert_eq!(choices, vec![None,Random,Default,Blur,
+        assert_eq!(choices, vec![None,Random,Shelf,Default,Blur,
             File("another.png".into()),File("user.png".into())]);
         assert_eq!(None.step(&root,true), Random);
+        assert_eq!(Random.step(&root,true), Shelf);
+        assert_eq!(Shelf.step(&root,true), Default);
         assert_eq!(None.step(&root,false), File("user.png".into()));
         assert_eq!(Default.step(&root,true), Blur);
         assert_eq!(Blur.step(&root,true), File("another.png".into()));
@@ -626,6 +853,11 @@ mod tests {
         assert_eq!(restored.appearance,Appearance::Light);
         assert_eq!(restored.run_ahead_frames,2);
         assert!(restored.show_wifi && restored.status_opt_in_v2);
+        settings.wallpaper=WallpaperPick::Shelf;
+        let saved=serde_json::to_string(&settings).unwrap();
+        assert!(saved.contains(r#""wallpaper":"shelf""#), "{saved}");
+        let restored:Settings=serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.wallpaper,WallpaperPick::Shelf);
     }
 
     #[test]
@@ -651,7 +883,8 @@ mod tests {
         assert_eq!(WallpaperTint::ALL.map(WallpaperTint::alpha),
             [0.0,0.25,0.45,0.65]);
         assert_eq!(Appearance::Dark.toggle(),Appearance::Light);
-        assert_eq!(Appearance::Light.toggle(),Appearance::Dark);
+        assert_eq!(Appearance::Light.toggle(),Appearance::Original);
+        assert_eq!(Appearance::Original.toggle(),Appearance::Dark);
     }
 
     #[test]
@@ -727,11 +960,15 @@ mod tests {
             assert_eq!(s.shader_for(platform),Shader::Lcd3x);
             assert!(!s.colour_for(platform));
         }
-        assert_eq!(s.bezel_gba,Bezel::None);
-        assert_eq!(s.bezel_gbc,Bezel::None);
-        assert_eq!(s.bezel_gb,Bezel::None);
+        // GBA's classic Watomsk frame is shown only off the KONKR.
+        assert_eq!(s.bezel_gba,Bezel::GbaClassic);
+        // GB/GBC: Watomsk's frames where the screen has room (2026-11-04).
+        assert_eq!(s.bezel_gbc,Bezel::Color);
+        assert_eq!(s.bezel_gb,Bezel::Gb);
+        assert_eq!((s.bezel_nes,s.bezel_snes,s.bezel_md),
+            (Bezel::Nes,Bezel::Snes,Bezel::GenesisClassic));
         assert!(s.gb_palettes);
-        assert_eq!(s.palette_label(),"GBC Green");
+        assert_eq!(s.palette_label(),"TWB64 Game.com");
         // GAMEPLAY: Fast Forward 3x, Rewind 3x, X/Y Buttons A/B.
         assert_eq!(s.ff_speed,3);
         assert!(s.rewind);
@@ -746,6 +983,66 @@ mod tests {
         assert_eq!(s.run_ahead_frames,0);
     }
     #[test]
+    fn gb_and_gbc_overlays_left_off_move_to_watomsk_once() {
+        let root=std::env::temp_dir().join(format!("slot-gb-watomsk-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let old=Settings { bezel_gb: Bezel::None, bezel_gbc: Bezel::None, bezel_gba: Bezel::None,
+            ..Settings::default() };
+        old.save(&root).unwrap();
+        let mut s=Settings::load_for_device(&root, Device::KONKR);
+        assert_eq!((s.bezel_gb, s.bezel_gbc), (Bezel::Gb, Bezel::Color));
+        assert_eq!(s.bezel_gba, Bezel::None, "GBA keeps its choice");
+        // Turned OFF again afterwards: kept.
+        s.bezel_gb=Bezel::None;
+        s.save(&root).unwrap();
+        assert_eq!(Settings::load_for_device(&root, Device::KONKR).bezel_gb, Bezel::None);
+        // The slot. bezel someone picked is kept too.
+        let picked=Settings { bezel_gb: Bezel::Default, ..Settings::default() };
+        picked.save(&root).unwrap();
+        assert_eq!(Settings::load_for_device(&root, Device::KONKR).bezel_gb, Bezel::Default);
+        let _=std::fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn every_screen_starts_with_lcd3x_on_a_fresh_install() {
+        let konkr=Settings::first_install_defaults_for_device(Device::KONKR);
+        let mut plain=Settings::first_install_defaults();
+        plain.home_bezels_off();
+        assert_eq!(konkr, plain);
+        let other=Settings::first_install_defaults_for_device(
+            Device { konkr: false, retroid_pocket_classic: false, three_two: false });
+        for shader in [other.shader_gba, other.shader_gb, other.shader_gbc] {
+            assert_eq!(shader, Shader::Lcd3x);
+        }
+        assert!(other.responsive_loop, "RESPONSIVE everywhere but on the KONKR");
+        assert!(Settings::first_install_defaults_for_device(Device::RPC).responsive_loop);
+        assert!(!konkr.responsive_loop, "the KONKR keeps NATIVE");
+    }
+    #[test]
+    fn responsive_by_default_but_native_on_the_konkr_preserving_saved_pacing() {
+        let root=std::env::temp_dir().join(format!(
+            "slot-rpc-responsive-default-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        assert!(Settings::load_for_device(&root, Device::RPC).responsive_loop);
+        assert!(!Settings::load_for_device(&root, Device::KONKR).responsive_loop);
+        assert!(!Settings::first_install_defaults_for_device(Device::KONKR).responsive_loop);
+        assert!(Settings::first_install_defaults_for_device(Device::RPC).responsive_loop);
+        assert!(!root.join(NAME).exists(), "defaults must never auto-save");
+        let mut native=Settings::first_install_defaults_for_device(Device::RPC);
+        native.responsive_loop=false;
+        native.save(&root).unwrap();
+        assert!(!Settings::load_for_device(&root, Device::RPC).responsive_loop,
+            "a user's explicit persisted NATIVE choice must survive");
+        native.responsive_loop=true;
+        native.save(&root).unwrap();
+        assert!(Settings::load_for_device(&root, Device::RPC).responsive_loop);
+        assert!(Settings::load_for_device(&root, Device::KONKR).responsive_loop,
+            "a saved RESPONSIVE choice must also survive other models");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn missing_settings_file_gets_new_defaults_but_existing_json_is_untouched() {
         let root=std::env::temp_dir().join(format!(
             "slot-konkr-first-install-{}-{}",
@@ -754,7 +1051,7 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&root).unwrap();
         let fresh=Settings::load(&root);
-        assert_eq!(fresh,Settings::first_install_defaults());
+        assert_eq!(fresh,Settings::first_install_defaults_for_device(Device::KONKR));
         assert!(!root.join(NAME).exists(), "loading must not write settings");
         // Saved existing settings MUST survive upgrading from 0.2.0.
         let mut customised=fresh.clone();
@@ -793,7 +1090,7 @@ mod tests {
     #[test]
     fn gba_has_ten_unique_serde_roundtripping_presets_plus_off() {
         assert_eq!(Shader::GBA.len(),11);
-        assert_eq!(Shader::GB.len(),4);
+        assert_eq!(Shader::GB.len(),9);
         for shader in Shader::GBA {
             assert_eq!(Shader::GBA.iter().filter(|s| **s == shader).count(),1);
             let json=serde_json::to_string(&shader).unwrap();
@@ -864,7 +1161,7 @@ mod tests {
     fn screen_gameplay_original_choices_cycle() {
         let mut s = Settings::default();
         s.change(0, false); assert_eq!(s.shader_gba, Shader::Dot);
-        s.change(1, false); assert_eq!(s.shader_gb, Shader::Simpletex);
+        s.change(1, false); assert_eq!(s.shader_gb, Shader::Dot);
         // 2x wraps left to Off (original Slot 1.8.1), then back to 6x.
         s.change(4, false); assert_eq!(s.ff_speed, 0);
         s.change(4, false); assert_eq!(s.ff_speed, 6);
@@ -948,7 +1245,9 @@ mod tests {
     #[test]
     fn roundtrip_and_invalid_values() {
         let dir = std::env::temp_dir().join(format!("slot-konkr-dev14-{}", std::process::id()));
-        let mut s = Settings::default();
+        // Already past the one-time 3:2 home overlay change.
+        let mut s = Settings { home_bezel_three_two: true, gb_palette_twb64: true,
+            gb_overlays_watomsk: true, ..Settings::default() };
         s.change(0, true); s.change(6, true); s.gb_palette = 47;
         s.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), s);
@@ -957,6 +1256,23 @@ mod tests {
         assert_eq!(s.ff_speed, 2);
         assert_eq!(s.shader_gba, Shader::Off);
         assert_eq!(s.gb_palette, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_old_gbc_green_default_moves_to_twb64_game_com_once() {
+        let dir = std::env::temp_dir().join(format!("slot-konkr-twb64-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(NAME), r#"{"gb_palettes":true,"gb_palette":13}"#).unwrap();
+        let mut s = Settings::load(&dir);
+        assert_eq!(s.palette_name(), "TWB64 028 Game.com Ver.");
+        assert!(s.gb_palette_twb64);
+        // A palette picked afterwards, GBC Green included, is kept.
+        s.gb_palette = 13;
+        s.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).gb_palette, 13);
+        fs::write(dir.join(NAME), r#"{"gb_palettes":true,"gb_palette":2}"#).unwrap();
+        assert_eq!(Settings::load(&dir).palette_name(), "GB Pocket");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -970,7 +1286,7 @@ mod tests {
         assert!(!s.gb_palettes, "left from the first palette is OFF");
         assert!(s.change(3, false));
         assert_eq!((s.gb_palettes, s.gb_palette as usize), (true, GbPalette::COUNT - 1));
-        assert_eq!(s.palette_label(), "SGB 4-H");
+        assert_eq!(s.palette_label(), "TWB64 Game.com");
         assert!(s.change(3, true));
         assert!(!s.gb_palettes, "right from the last palette is OFF");
         s.change(3, true);
@@ -980,6 +1296,7 @@ mod tests {
 
     #[test]
     fn each_bezel_row_offers_only_its_own_watomsk_overlays() {
+        use slot_store::Platform;
         let mut s=Settings::default();
         for want in [Bezel::Gb,Bezel::Pocket,Bezel::None,Bezel::Default] {
             s.change(27,true);
@@ -990,9 +1307,57 @@ mod tests {
             assert_eq!(s.bezel_gbc,want);
         }
         assert_eq!(serde_json::to_string(&Bezel::Pocket).unwrap(),"\"pocket\"");
+        // GBA: OFF, then the classic frame first (an old ON reads as it).
         s.change(25,true);
-        assert_eq!(s.bezel_gba,Bezel::Default);
-        s.change(25,true);
+        assert_eq!(s.bezel_gba,Bezel::GbaClassic);
+        s.change(25,false);
         assert_eq!(s.bezel_gba,Bezel::None);
+        s.bezel_gba=Bezel::Default;
+        assert_eq!(s.bezel_for(Platform::Gba),Bezel::GbaClassic);
+        s.change(25,true);
+        assert_eq!(s.bezel_gba,Bezel::Gba);
+        // The home consoles start on their classic frame.
+        assert_eq!(s.bezel_for(Platform::Md),Bezel::GenesisClassic);
+        s.change(46,true);
+        assert_eq!(s.bezel_md,Bezel::Genesis);
+        s.change(44,false);
+        assert_eq!(s.bezel_nes,Bezel::None);
+        s.change(45,false);
+        assert_eq!(s.bezel_snes,Bezel::None);
+        for bezel in Bezel::list(Platform::Snes).iter().skip(1) {
+            assert!(bezel.watomsk().is_some());
+        }
+        // Old settings files without the new fields keep the defaults.
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.bezel_nes,Bezel::Nes);
+        // A grey overlay saved by an earlier beta reads as the black one.
+        let grey: Settings = serde_json::from_str(
+            r#"{"bezel_gb":"pocket_grey","bezel_gba":"gba_sp_grey","bezel_md":"mega_drive_grey","bezel_snes":"snes_gray_logo_alt_grey"}"#).unwrap();
+        assert_eq!((grey.bezel_gb,grey.bezel_gba,grey.bezel_md,grey.bezel_snes),
+            (Bezel::Pocket,Bezel::GbaSp,Bezel::MegaDrive,Bezel::SnesGrayLogoAlt));
+    }
+
+    #[test]
+    fn home_consoles_start_without_an_overlay_on_three_two_screens() {
+        assert!(Device::is_three_two((960, 640)) && Device::is_three_two((1620, 1080)));
+        assert!(!Device::is_three_two((1240, 1080)) && !Device::is_three_two((1920, 1080)));
+        let konkr=Settings::first_install_defaults_for_device(Device::KONKR);
+        assert_eq!((konkr.bezel_nes,konkr.bezel_snes,konkr.bezel_md),
+            (Bezel::None,Bezel::None,Bezel::None));
+        let rpc=Settings::first_install_defaults_for_device(Device::RPC);
+        assert_eq!((rpc.bezel_nes,rpc.bezel_snes,rpc.bezel_md),
+            (Bezel::Nes,Bezel::Snes,Bezel::GenesisClassic));
+        // A beta's saved overlays go off once on 3:2; a later choice stays.
+        let root=std::env::temp_dir().join(format!("slot-home-bezel-{}",std::process::id()));
+        let _=fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(NAME), r#"{"bezel_nes":"nes","bezel_md":"genesis"}"#).unwrap();
+        let mut s=Settings::load_for_device(&root, Device::KONKR);
+        assert_eq!((s.bezel_nes,s.bezel_md),(Bezel::None,Bezel::None));
+        assert_eq!(Settings::load_for_device(&root, Device::RPC).bezel_md,Bezel::Genesis);
+        s.bezel_md=Bezel::MegaDrive;
+        s.save(&root).unwrap();
+        assert_eq!(Settings::load_for_device(&root, Device::KONKR).bezel_md,Bezel::MegaDrive);
+        let _=fs::remove_dir_all(&root);
     }
 }

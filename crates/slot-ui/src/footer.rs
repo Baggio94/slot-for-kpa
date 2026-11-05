@@ -1,4 +1,4 @@
-use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
+use slot_gfx::{Draw, TexId, OUT_H, out_w};
 use slot_power::Battery;
 
 use crate::battery::{draw_gauge_with_ink, GAUGE_H};
@@ -8,6 +8,13 @@ use crate::slot_chrome::MOUTH_H;
 
 const FOOTER_Y: f32 = OUT_H as f32 - MOUTH_H + (MOUTH_H - HINT_H as f32) / 2.0;
 const FOOTER_MARGIN: f32 = 24.0;
+
+/// Battery and clock sit 24 px from the edges; on a canvas narrower than
+/// 4:3 (Retroid Pocket Classic, 551 wide) the slot opening leaves them little
+/// room, so they move out to 12 px (Siham 2026-11-04, preview B).
+fn footer_margin(width: u32) -> f32 {
+    if width < 640 { FOOTER_MARGIN / 2.0 } else { FOOTER_MARGIN }
+}
 
 #[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
 pub struct Printed {
@@ -47,8 +54,9 @@ pub fn draw_footer_with_ink(
     let y = FOOTER_Y + (HINT_H as f32 - GAUGE_H) / 2.0;
     let c=[ink[0] as f32/255.0,ink[1] as f32/255.0,
         ink[2] as f32/255.0,1.0];
-    draw_gauge_with_ink(FOOTER_MARGIN,y,battery,percent,bolt,c,out);
-    printed(OUT_W as f32 - FOOTER_MARGIN - clock.w as f32,clock,out);
+    let margin = footer_margin(out_w());
+    draw_gauge_with_ink(margin,y,battery,percent,bolt,c,out);
+    printed(out_w() as f32 - margin - clock.w as f32,clock,out);
 }
 
 pub(crate) fn draw_printed(x: f32, y: f32, p: Printed, out: &mut Vec<Draw>) {
@@ -86,5 +94,13 @@ mod theme_tests {
     fn upstream_footer_ink_switches_whole_palette() {
         assert_eq!(footer_ink(false), [255, 255, 255]);
         assert_eq!(footer_ink(true), [0, 0, 0]);
+    }
+    #[test]
+    fn narrow_screens_move_battery_and_clock_out_to_the_edges() {
+        assert_eq!(footer_margin(720), 24.0); // KONKR 3:2
+        assert_eq!(footer_margin(640), 24.0); // 4:3
+        assert_eq!(footer_margin(853), 24.0); // 16:9
+        assert_eq!(footer_margin(551), 12.0); // Retroid Pocket Classic
+        assert_eq!(footer_margin(480), 12.0); // 1:1
     }
 }

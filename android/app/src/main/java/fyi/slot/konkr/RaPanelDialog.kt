@@ -203,8 +203,8 @@ internal class RaPanelDialog(
         if (!dialog.isShowing) return
         val previousScroll = scroll.scrollY
         content.removeAllViews()
-        // Player-facing summary only; cache budget, icon metadata and engine
-        // internals stay in RaDiagnostics / logcat.
+        // Player-facing summary plus the cache quota; icon metadata and
+        // engine internals stay in RaDiagnostics / logcat.
         section("ACCOUNT")
         row("Player", username)
         // Android's validated Internet is not proof of a successful RA HTTPS
@@ -227,7 +227,14 @@ internal class RaPanelDialog(
         row("Game Boy Advance", ready(snapshot.cachedGba, snapshot.indexedGba))
         row("Game Boy Color", ready(snapshot.cachedGbc, snapshot.indexedGbc))
         row("Game Boy", ready(snapshot.cachedGb, snapshot.indexedGb))
+        row("NES", ready(snapshot.cachedNes, snapshot.indexedNes))
+        row("Super Nintendo", ready(snapshot.cachedSnes, snapshot.indexedSnes))
+        row("Mega Drive", ready(snapshot.cachedMd, snapshot.indexedMd))
         row("With achievements", snapshot.recognizedGames?.toString() ?: "Checking…")
+        // RetroAchievements allows 100 cache requests per 30 minutes.
+        section("CACHE")
+        row("Requests (30 min)", snapshot.prefetchBudgetUsed?.let { "$it / 100" } ?: "0 / 100")
+        snapshot.nextBatchMinutes?.let { row("Next batch", "In $it min") }
         section("BADGES")
         val badgesDownloaded = snapshot.badgesDownloaded
         val badgesTotal = snapshot.badgesTotal

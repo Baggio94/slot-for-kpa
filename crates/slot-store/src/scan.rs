@@ -13,6 +13,9 @@ pub struct Cart {
     pub title: String,
     pub code: String,
     pub shell: Option<crate::ShellChoice>,
+    /// The cart keeps its save on a battery: its board shows the cell,
+    /// otherwise only the bare pads.
+    pub battery: bool,
 }
 
 #[derive(Debug)]
@@ -83,6 +86,7 @@ pub fn scan(root: &Path) -> Result<Vec<Cart>, StoreError> {
                 shell: shells.get(&crate::cart_shell::key(stem)).copied(),
                 label: label.is_file().then_some(label),
                 rom,
+                battery: false,
             });
         }
     }

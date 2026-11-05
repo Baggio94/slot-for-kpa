@@ -19,7 +19,8 @@ fn gba_three_two_screen_hides_no_op_bezel_but_keeps_gb_gbc() {
     assert_eq!(Engine::screen_rows(Platform::Gba), &[34,29]);
     assert_eq!(Engine::screen_keys(Platform::Gba), &[0,22]);
     assert_eq!(Engine::screen_rows(Platform::Gbc), &[88,29,90]);
-    assert_eq!(Engine::screen_rows(Platform::Gb), &[89,29,36,90]);
+    // No Color Correction row on Game Boy (2026-11-04).
+    assert_eq!(Engine::screen_rows(Platform::Gb), &[89,36,90]);
 }
 #[test]
 fn ordinary_cart_scrolling_does_not_restart_name_fade() {
@@ -59,10 +60,11 @@ fn legacy_multiplayer_heading_helper_mode_and_footer_text_cannot_come_back() {
 
 #[test]
 fn original_slot_link_title_and_bottom_keycaps_use_exact_canvas_geometry() {
-    assert_eq!(OUT_W, 720);
+    assert_eq!(out_w(), 720);
     assert_eq!(OUT_H, 480);
     assert_eq!(LINK_TEXT_Y, 44.0);
-    assert_eq!(LINK_LEGEND_Y, 422.0);
+    assert_eq!(LINK_LEGEND_Y + HINT_H as f32, OUT_H as f32 - 11.0);
+    assert_eq!(LINK_LEGEND_Y - slot_ui::link_hardware::BAR_Y, 23.0);
     assert_eq!(LINK_LEGEND_GAP, 40.0);
     for width in [88, 100, 120, 216, 300] {
         let x = link_heading_x(width);
@@ -118,7 +120,7 @@ fn multiplayer_bottom_legends_match_all_original_slot_screen_states() {
         worked: 100, since: 500,
     }, true), H::Failed);
     assert_eq!(link_legend_profile(LinkMenu::Unplug {
-        role: LinkRow::Join, since: 500,
+        role: LinkRow::Join, since: 500, from: ReleaseFrom::Seated,
     }, true), H::None);
 }
 
@@ -224,7 +226,7 @@ fn linked_reopen_stays_visible_and_unplug_uses_original_timing() {
     assert!(!link_menu_auto_closes(first, 1199));
     assert!(link_menu_auto_closes(first, 1200));
     assert!(!link_menu_auto_closes(reopened, 20000));
-    let unplug = LinkMenu::Unplug { role: LinkRow::Join, since: 500 };
+    let unplug = LinkMenu::Unplug { role: LinkRow::Join, since: 500, from: ReleaseFrom::Seated };
     assert!(!link_unplug_complete(unplug, 919));
     assert!(link_unplug_complete(unplug, 920));
     assert!(!link_unplug_complete(first, 10000));
@@ -236,7 +238,7 @@ fn connected_link_keycaps_fit_konkr_screen() {
         + slot_ui::hint_width("A", "End Link");
     let failed_width = slot_ui::hint_width("A", "OK");
     for width in [linked_width, failed_width] {
-        assert!((width as f32) + 15.0 < OUT_W as f32 - 60.0);
+        assert!((width as f32) + 15.0 < out_w() as f32 - 60.0);
     }
 }
 
@@ -324,7 +326,7 @@ fn in_game_shortcut_keycaps_fit_720x480_without_clipping() {
     let visible = widths.iter()
         .map(|w| w.saturating_sub(HINT_EDGE) as f32)
         .sum::<f32>() + 2.0 * 15.0;
-    assert!(visible < OUT_W as f32 - 2.0 * 30.0,
+    assert!(visible < out_w() as f32 - 2.0 * 30.0,
         "original keycap hints must stay visible on the KONKR 3:2 screen");
 }
 
@@ -453,15 +455,82 @@ fn empty_shelves_are_skipped_in_both_directions() {
     assert_eq!(next_nonempty_shelf(&shelves, 0, 1), 0);
     shelves[0].carts.push(Cart {
         platform: Platform::Gba, stem: "Test".into(), title: "Test".into(),
-        code: String::new(), rom: PathBuf::new(), label: None, shell: None,
+        code: String::new(), rom: PathBuf::new(), label: None, shell: None, battery: false,
     });
     assert_eq!(next_nonempty_shelf(&shelves, 0, 1), 0);
     assert_eq!(next_nonempty_shelf(&shelves, 0, -1), 0);
     shelves[2].carts.push(Cart {
         platform: Platform::Gbc, stem: "Color".into(), title: "Color".into(),
-        code: String::new(), rom: PathBuf::new(), label: None, shell: None,
+        code: String::new(), rom: PathBuf::new(), label: None, shell: None, battery: false,
     });
     assert_eq!(next_nonempty_shelf(&shelves, 0, 1), 2);
     assert_eq!(next_nonempty_shelf(&shelves, 0, -1), 2);
     assert_eq!(next_nonempty_shelf(&shelves, 2, 1), 0);
+}
+
+#[test]
+fn console_connector_and_role_follow_the_inserted_cart_and_actual_link_state() {
+    let face = |id, w, h| Sprite { tex: slot_gfx::TexId::from_raw(id), w, h };
+    let marks = Marks {
+        clicks:face(0,180,30), arrow_left:face(1,16,22), arrow_right:face(2,16,22),
+        arcs_left:[face(3,16,56);3], arcs_right:[face(4,16,56);3]
+    };
+    for family in 0..7 {
+        for radio in [false,true] {
+            for theme in 0..3 {
+                let key = Hardware::new(family,theme,radio);
+                assert_eq!(key.wireless, family == 6 && radio);
+                let w = if key.wireless {240} else if family==0 {244} else {120};
+                let h = if key.wireless {151} else {244};
+                let s = LinkSprites {
+                    key, wall:face(5,720,58), front:face(6,720,58), socket:face(7,100,18),
+                    rim:face(8,100,18), grips:[face(9,w,h),face(10,w,h)], nose:face(11,w,h),
+                    contact:face(12,w,2), buttons:None,
+                };
+                for role in LinkRow::ALL {
+                    let active = s.grips[role.index()].tex;
+                    let all = |menu, now| {
+                        let mut draws = Vec::new();
+                        link_screen::draw_link_art(menu,now,&s,&marks,&mut draws);
+                        draws.into_iter().filter_map(|d| match d {
+                            Draw::Tex { tex,x,.. } => Some((tex,x)),
+                            _ => None,
+                        }).collect::<Vec<_>>()
+                    };
+                    let idle = all(LinkMenu::Pick(role),0);
+                    let seated = all(LinkMenu::Linked { role, worked:0, since:200, opened:false },1000);
+                    let dual = (1..=3).contains(&family);
+                    let offset = if dual { if role==LinkRow::Host {-62.0} else {62.0} } else {0.0};
+                    assert!(idle.contains(&(active,out_w() as f32/2.0 + offset - w as f32/2.0)));
+                    assert_eq!(idle.iter().filter(|(t,_)|*t==s.socket.tex).count(),if dual {2} else {1});
+                    assert!(idle.iter().any(|(t,_)|*t==s.nose.tex));
+                    assert!(seated.iter().any(|(t,_)|*t==s.nose.tex));
+                    for fixed in [s.wall.tex,s.front.tex,s.socket.tex,s.rim.tex] {
+                        let positions = |draws: &Vec<(slot_ui::TexId,f32)>| draws.iter().copied()
+                            .filter(|(t,_)|*t==fixed).collect::<Vec<_>>();
+                        assert_eq!(positions(&idle),positions(&seated),
+                            "the receiver must not disappear or move when seated");
+                    }
+                    let layer = |tex| seated.iter().position(|(t,_)|*t==tex).unwrap();
+                    assert!(layer(s.socket.tex)<layer(s.nose.tex));
+                    assert!(layer(s.nose.tex)<layer(s.front.tex));
+                    assert!(layer(s.front.tex)<layer(s.rim.tex));
+                    assert!(layer(s.rim.tex)<layer(active));
+                    let mut draws = Vec::new();
+                    link_screen::draw_link_art(LinkMenu::Linked { role, worked:0,
+                        since:200, opened:false },1000,&s,&marks,&mut draws);
+                    let y = draws.iter().find_map(|d| match d {
+                        Draw::Tex {tex,y,..} if *tex==active => Some(*y), _=>None
+                    }).unwrap();
+                    assert_eq!(y+key.shoulder(),slot_ui::link_hardware::BAR_Y,
+                        "only the shank passes into the receiver");
+                    assert_eq!(seated.iter().any(|(t,_)|*t==marks.clicks.tex),!key.wireless);
+                    assert_eq!(seated.iter().filter(|(t,_)|*t==marks.arcs_right[0].tex).count(),if key.wireless {3} else {0});
+                    if dual {
+                        assert!(seated.contains(&(s.socket.tex,out_w() as f32/2.0-offset-50.0)));
+                    }
+                }
+            }
+        }
+    }
 }

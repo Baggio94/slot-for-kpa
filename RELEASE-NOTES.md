@@ -1,51 +1,50 @@
-# slot. for KONKR Pocket Advance — v1.3.4
+# slot. for Android — v2.0
 
-A big update: a second core for Game Boy and Game Boy Color, new screen sizes and overlays, sharper visuals at the KONKR's native resolution, and controls that respond like RetroArch.
+slot. for KONKR Pocket Advance becomes **slot. for Android**. The app is now simply called **slot.**, it adapts to any Android handheld, and the **NES**, **Super Nintendo** and **Mega Drive** join the Game Boy family.
 
 ### What's New
 
-- **Game Boy and Game Boy Color multiplayer** — Multiplayer now works in GB and GBC games, with both mGBA and Gambatte.
-- **Gambatte core for Game Boy and Game Boy Color** — GB and GBC games can now run on Gambatte as well as mGBA. Press SELECT on a cartridge to choose the core for that game. Your saves follow you when you switch cores.
-- **Default core per system** — Settings → Systems now has a page for each system (GBA, GBC, GB) with a Default Core option. You can still override it for any game with SELECT.
-- **New GB/GBC screen sizes** — L1 and R1 switch between Integer, Original Ratio and Stretch.
-- **Game Boy overlays** — Game Boy and Game Boy Pocket overlays for GB games, and a Game Boy Color overlay for GBC games. Made by [Watomsk](https://github.com/Watomsk/Overlays), adapted to the KONKR's 3:2 screen.
-- **Live GB Palette** — The palette changes in real time while you browse them, as in slot. 1.8.1.
-- **Sharper visuals** — Cartridges, labels, icons and menus are now rendered at the KONKR's native 960x640 resolution.
-- **More responsive controls** — The D-pad (hat) is read directly with no buffering, quick taps between two frames are no longer lost, and inputs are polled at a steady point in each frame, as in RetroArch. Audio output latency is lower too.
-- **Adaptive Link Cable delay** — The mGBA Link Cable input delay now adjusts automatically to the connection quality between the two consoles.
-- **Faster game launch** — Games start quickly even after idling on the shelf, and the first scroll after ejecting a game is smooth.
+- **NES, Super Nintendo and Mega Drive** — Their own shelves, console slots and cartridge shells, including the Famicom, Japanese Mega Drive and EA carts.
+- **Two cores per home console** — FCEUmm or Nestopia, Snes9x or bsnes, Genesis Plus GX or PicoDrive. Press SELECT on a cartridge to choose.
+- **Automatic labels** — NES, Super Nintendo and Mega Drive carts get their real scanned labels from ScreenScraper, automatically or in Cart Studio.
+- **RetroAchievements** — On NES, Super Nintendo (with Snes9x) and Mega Drive, online and offline.
+- **Home console multiplayer** — Two-player netplay over local Wi-Fi: player 1 on the Host, player 2 on the Join console.
+- **CRT shaders** — zfast-crt (default), fakelottes, crt-aperture, GDV Trinitron, CRT Geom Deluxe and crt-pi for the home consoles.
+- **Every Android handheld** — The interface fits any screen, from square to widescreen, at native resolution, and the About sticker shows your handheld's name.
+- **Defaults per handheld** — Screen size, overlays and frame pacing start with the right settings for each device. Frame Pacing starts on RESPONSIVE, except on the KONKR, which keeps NATIVE.
+- **slot. button everywhere** — The Retroid Pocket's centre key is the slot. button. On every handheld, SELECT + X opens the in-game menu and SELECT + START saves and ejects the cartridge.
+- **New Multiplayer screen** — Each console plugs in its own connector: Link Cable, Wireless Adapter or controller ports.
+- **GBA Link with any BIOS** — Different BIOS files on each console, a BIOS on only one, or none.
+- **Direct Game Boy cable** — On mGBA, the two Game Boys are connected directly: trades and battles are faster and more reliable, including on Game Boy Color.
+- **Automatic resync** — If the two consoles drift apart, slot. brings both back to the same moment.
+- **Share Core Saves on every system** — Renamed from Share Saves. Switch a game to its other core and keep your in-game save.
+- **Pixel AA** — Clean pixels at non-integer scales, now lighter on the GPU.
+- **Simpletex LCD** — A new LCD shader for GB, GBC and GBA. LCD3x is now their default.
+- **Overlays for every system** — [Watomsk](https://github.com/Watomsk/Overlays)'s overlays for GB, GBC, GBA, NES, Super Nintendo and Mega Drive, fitted to each screen.
+- **New Game Boy palette** — TWB64 028 "Game.com Ver." is the default on mGBA and Gambatte.
+- **Sharper artwork** — Cartridges, slot bars, bezels and button art drawn at up to 3x.
+- **Slot bars and wallpaper** — Dark, Light or Original slot bars, and a Shelf wallpaper that follows the current shelf.
+- **Real cartridge colours** — Classic NES Series and Famicom Mini carts, Donkey Kong Land and European Pokémon Pinball.
+- **Boktai** — The Sun setting gets an AUTO mode that follows the time of day.
+- **New shortcuts** — SELECT + Up / Down changes the screen size, SELECT + Left / Right the Run-Ahead.
+- **Faster library** — The scan skips ES-DE folders of systems slot. doesn't run, and labels are fetched faster.
 
-### Fixed in 1.3.4
+### Fixed
 
-- **Stick stuck on a direction** ([#68](https://github.com/Baggio94/slot-for-kpa/issues/68)) — On handhelds whose analog stick also drives the D-pad, a direction could stay held after letting go of the stick. The stick now releases cleanly.
-- **Tilt and gyro games** ([#67](https://github.com/Baggio94/slot-for-kpa/issues/67)) — slot. now passes the handheld's accelerometer and gyroscope to mGBA, as RetroArch does. Yoshi Topsy-Turvy, Koro Koro Puzzle, WarioWare: Twisted! and Kirby Tilt 'n' Tumble are now playable on handhelds with motion sensors.
-- **Boktai solar sensor** ([#69](https://github.com/Baggio94/slot-for-kpa/issues/69)) — Boktai 1, 2 and 3 get a **Sun** setting in the in-game menu (Settings → Emulation), saved per game: each level lights one bar of the gauge (0 to 8 in Boktai 1, 0 to 10 in Boktai 2 and 3). L3 / R3 or SELECT + L2 / R2 change it while playing. On handhelds with a light sensor, SENSOR uses the real light. Sun starts at 0: set it to 0 before the game's solar sensor calibration.
-- **Sensor games on gpSP** — gpSP doesn't emulate cartridge sensors, so these games now always start on mGBA. Kirby Tilt 'n' Tumble starts on mGBA when Gambatte is chosen.
-- **Game Boy boot screen on Gambatte** ([#71](https://github.com/Baggio94/slot-for-kpa/issues/71)) — With gb_bios.bin / gbc_bios.bin in your BIOS folder, the Game Boy boot screen now shows on Gambatte, as on mGBA.
-- **Rumble on Gambatte** — Rumble cartridges such as Pokémon Pinball now vibrate on Gambatte too.
-- **Empty save state** — An empty save state file no longer crashes mGBA: the game starts fresh instead.
-
-### Fixed in 1.3.3
-
-- **Stuck screen after an update** — After updating from inside slot., the "App installed" screen no longer gets stuck. The fix applies to updates installed from 1.3.3 onward.
-
-### Fixed in 1.3.2
-
-- **RetroAchievements on GBA** — Some games, such as Super Mario Advance, showed "Core does not expose achievement RAM" at launch when Run-Ahead was on. Achievements now work with Run-Ahead.
-- **Pokémon Emerald achievements** — Games with a large achievement set, such as Pokémon Emerald, showed "Achievement tracking interrupted" right after launch. Tracking now starts cleanly.
-- **BIOS message at startup** — With slot. as the home app, "Couldn't import BIOS files" no longer appears after restarting the console. Your BIOS files were never lost.
-- **Controls after sleep** — Buttons now respond as soon as the console wakes up, with no 2-second delay or grey screen.
-
-### Fixed in 1.3.1
-
-- **Pokémon save error on exit** — On mGBA, Pokémon FireRed, LeafGreen, Ruby, Sapphire and Emerald showed "Couldn't save" when ejecting a game that had not been saved in-game yet. Save and Eject now works, and an existing in-game save is still protected.
+- Save states are shared with RetroArch both ways, and Gambatte states convert between RetroArch core versions.
+- More reliable Gambatte Link over Wi-Fi, and Wi-Fi stays out of power saving during a Link session.
+- The game menu's Color Correction and GBC Shader rows work again. The Game Boy no longer shows a Color Correction row.
+- Holding Up / Down to jump letters no longer leaves the shelf blank.
+- No more stray tiles when a Game Boy screen turns back on on mGBA.
+- On narrow screens, the battery and clock no longer touch the edges.
+- The charging icon shows whenever the handheld is plugged in.
 
 ### Installation
 
-Download the APK below and install it over your existing version. Your games, saves and settings are preserved.
+Install the APK below over your existing version: your games, saves and settings are kept. On 1.3.4, slot. also offers this update from **START → About**.
 
 ### Credits
 
-An unofficial Android port of [slot.](https://slot-cfw.fyi/) by [Brandon Kowalski](https://github.com/BrandonKowalski/slot) and contributors. Game Boy overlays by [Watomsk](https://github.com/Watomsk/Overlays). Gambatte by Sindre Aamås and contributors.
+An unofficial Android port of [slot.](https://slot-cfw.fyi/) by [Brandon Kowalski](https://github.com/BrandonKowalski/slot) and contributors. Overlays by [Watomsk](https://github.com/Watomsk/Overlays). Emulation by mGBA, gpSP, Gambatte, FCEUmm, Nestopia, Snes9x, bsnes, Genesis Plus GX and PicoDrive. Labels from ScreenScraper.
 
 Licensed under GPL-3.0.

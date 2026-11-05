@@ -10,7 +10,7 @@ fn cartridge(code: &str, name: &str) -> Cart {
         code: code.into(),
         rom: PathBuf::new(),
         label: None,
-        shell: None,
+        shell: None, battery: false,
     }
 }
 

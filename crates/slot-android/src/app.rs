@@ -1,5 +1,5 @@
 //! Minimal Android mirror of upstream Slot's GameMenu transition model.
-//! It exists ONLY to compile the ORIGINAL link_screen.rs renderer unmodified.
+//! Menus and hardware animations consume the same connection transitions.
 //! Network and emulation lifecycle are handled by multiplayer.rs/link_play.rs.
 //! Keep index/face ordering and strings in sync with crates/slot/src/app.rs
 //! and crates/slot/src/link_start.rs, which supply the original Link UI.
@@ -61,12 +61,19 @@ impl LinkFail {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ReleaseFrom {
+    Seated,
+    Search { worked: Millis },
+    Failure { worked: Millis, failed: Millis },
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GameMenu {
     Pick(LinkRow),
     Working { role: LinkRow, step: LinkStep, since: Millis },
     Linked { role: LinkRow, worked: Millis, since: Millis, opened: bool },
     Failed { role: LinkRow, fail: LinkFail, worked: Millis, since: Millis },
-    Unplug { role: LinkRow, since: Millis },
+    Unplug { role: LinkRow, since: Millis, from: ReleaseFrom },
 }
 
 #[cfg(test)]

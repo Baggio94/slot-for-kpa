@@ -4,6 +4,7 @@
 mod library;
 mod cart_disk_cache;
 mod settings;
+mod gambatte_state;
 mod recents;
 mod favorites;
 mod selection;
@@ -65,43 +66,61 @@ mod link_compat;
 mod linked_storage;
 // Single-threaded libretro link session adapter: core never runs from a socket worker.
 mod link_play;
-// Compile Slot's exact mechanical plug and wireless adapter renderer from
-// upstream instead of recreating SVGs, timings, easing or positions.
+// Desync check and resync for an mGBA pair in Cable lockstep.
+mod link_sync;
+// The native Link menu consumes the same transitions as discovery and gameplay.
 mod app;
 mod link_screen;
 
 #[cfg(test)]
-mod original_link_animation_tests {
-    use super::app::{GameMenu, LinkRow, LinkStep, LinkFail};
-    use super::link_screen;
+mod link_animation_tests {
+    use super::app::{GameMenu, LinkRow::Host, LinkStep::Waiting, LinkFail, ReleaseFrom};
+    use super::link_screen::{arc_alphas, clicks_alpha, travel};
 
     #[test]
-    fn original_cable_timings_are_exactly_kept() {
-        let host = LinkRow::Host;
-        let pick = GameMenu::Pick(host);
-        let working = GameMenu::Working { role: host, step: LinkStep::Waiting, since: 0 };
-        let linked = GameMenu::Linked { role: host, worked: 0, since: 200, opened: false };
-        let failed = GameMenu::Failed { role: host, fail: LinkFail::NobodyCame, worked: 0, since: 200 };
-        let unplug = GameMenu::Unplug { role: host, since: 0 };
-        assert_eq!(link_screen::plug_tip(pick, 999), 330.0);
-        assert_eq!(link_screen::plug_tip(working, 0), 330.0);
-        assert_eq!(link_screen::plug_tip(working, 200), 419.0);
-        assert_eq!(link_screen::plug_tip(linked, 360), 419.0);
-        assert_eq!(link_screen::clicks_alpha(linked, 359), 0.0);
-        assert_eq!(link_screen::clicks_alpha(linked, 360), 1.0);
-        assert_eq!(link_screen::plug_tip(failed, 450), 276.0);
-        assert_eq!(link_screen::plug_tip(unplug, 260), 330.0);
+    fn only_an_established_link_shows_connection_marks_and_reopening_keeps_them() {
+        let working = GameMenu::Working { role: Host, step: Waiting, since: 0 };
+        let linked = GameMenu::Linked { role: Host, worked: 0, since: 200, opened: false };
+        let failed = GameMenu::Failed { role: Host, fail: LinkFail::NobodyCame, worked: 0, since: 200 };
+        assert_eq!(travel(working, 200, false), 1.0);
+        assert_eq!(clicks_alpha(working, 20_000), 0.0);
+        assert_eq!(clicks_alpha(linked, 360), 1.0);
+        assert_eq!(clicks_alpha(failed, 450), 0.0);
+        assert!(travel(failed, 450, false) < 0.0);
+        assert_eq!(travel(failed, 450, true), 1.0);
+        let reopened = GameMenu::Linked { role: Host, worked: 25, since: 99, opened: true };
+        assert_eq!(travel(reopened, 99, false), 1.0);
+        assert_eq!(clicks_alpha(reopened, 99), 1.0);
+        assert_eq!(arc_alphas(reopened, 99), [1.0; 3]);
     }
 
     #[test]
-    fn original_wireless_adapter_and_arc_stagger_are_kept() {
-        let working = GameMenu::Working { role: LinkRow::Join,
-            step: LinkStep::Radio, since: 0 };
-        assert_eq!(link_screen::adapter_base(working, 0), 336.0);
-        assert_eq!(link_screen::adapter_base(working, 200), slot_ui::PORT_Y);
-        assert_eq!(link_screen::arc_alphas(working, 199), [0.0; 3]);
-        let visible = link_screen::arc_alphas(working, 800);
-        assert!(visible[0] > visible[1] && visible[1] > visible[2]);
+    fn cancellation_reverses_the_current_motion_and_releases_wireless_buttons_first() {
+        let working = GameMenu::Working { role: Host, step: Waiting, since: 0 };
+        let cancel = GameMenu::Unplug { role: Host, since: 100, from: ReleaseFrom::Search { worked: 0 } };
+        let half = travel(working, 100, false);
+        assert!(half > 0.0 && half < 1.0);
+        assert_eq!(travel(cancel, 100, false), half);
+        assert!(travel(cancel, 170, false) < half);
+        assert_eq!(travel(cancel, 159, true), half);
+        assert_eq!(travel(cancel, 425, true), 0.0);
+        assert_eq!(arc_alphas(cancel, 100), arc_alphas(working, 100));
+        let failed = GameMenu::Failed { role: Host, worked: 0, since: 320, fail: LinkFail::Radio };
+        let back = GameMenu::Unplug { role: Host, since: 410, from: ReleaseFrom::Failure { worked: 0, failed: 320 } };
+        for radio in [false, true] {
+            assert_eq!(travel(failed, 410, radio), travel(back, 410, radio));
+        }
+    }
+
+    #[test]
+    fn radio_waves_follow_the_real_search_and_stop_on_failure() {
+        let working = GameMenu::Working { role: Host, step: Waiting, since: 0 };
+        assert_eq!(arc_alphas(working,199),[0.0;3]);
+        let wave = arc_alphas(working,800);
+        assert!(wave[0] > wave[1] && wave[1] > wave[2]);
+        let failed = GameMenu::Failed { role: Host, fail: LinkFail::PeerVanished, worked: 0, since: 800 };
+        assert_eq!(arc_alphas(failed,800),wave);
+        assert_eq!(arc_alphas(failed,1050),[0.0;3]);
     }
 }
 

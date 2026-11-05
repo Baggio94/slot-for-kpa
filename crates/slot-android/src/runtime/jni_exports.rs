@@ -140,6 +140,15 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePollCartLabelUri(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeWallpaperTarget(
+    env: JNIEnv<'_>, _this: JObject<'_>,
+) -> jstring {
+    let target = WALLPAPER_TARGET.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    target.and_then(|s| env.new_string(s).ok())
+        .map_or(std::ptr::null_mut(), |s| s.into_raw())
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeReloadCartLabel(
     mut env: JNIEnv<'_>, _this: JObject<'_>, uri: JString<'_>,
 ) {
@@ -201,7 +210,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeDrawFrame(
                     ).collect::<Vec<_>>(),
                 ));
             // Destruct old GL resources on the GL thread before recreating them.
-            let size = holder.borrow().as_ref().map(|engine| engine.size).unwrap_or((960, 640));
+            let size = holder.borrow().as_ref().map(|engine| engine.size).unwrap_or_else(panel_size);
             *holder.borrow_mut() = None;
             match Engine::new(version, snapshot.as_deref()) {
                 Ok(mut engine) => {
@@ -315,6 +324,13 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeLinkNeedsMulticast
     LINK_NEEDS_MULTICAST.load(Ordering::Acquire) as jboolean
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeLinkActive(
+    _env: *mut c_void, _this: *mut c_void,
+) -> jboolean {
+    LINK_ACTIVE.load(Ordering::Acquire) as jboolean
+}
+
 /// Called on the GL thread through GLSurfaceView.queueEvent before changing
 /// account. The evaluator must drain its final queued frames, atomically store
 /// all earned awards and confirm none remain only in RAM.
@@ -371,7 +387,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRaAccountConfigure
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeRaPrefetchHash(
     mut env: JNIEnv<'_>, _this: JObject<'_>, hash: JString<'_>, console: jint,
 ) {
-    if !matches!(console, 4..=6) { return; }
+    if !slot_achievements::supported_console(console as u32) { return; }
     let Ok(hash) = env.get_string(&hash) else { return };
     let hash = hash.to_string_lossy().into_owned();
     if hash.len() != 32 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -490,6 +506,16 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetShareSaves(
     _env: *mut c_void, _this: *mut c_void, enabled: jboolean,
 ) {
     SHARE_SAVES_ENABLED.store(enabled != 0, Ordering::Release);
+    crate::gb_core_switch::set_sharing(enabled != 0);
+}
+
+/// The display size, before the first surface: the canvas follows its shape.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetPanelSize(
+    _env: *mut c_void, _this: *mut c_void, width: jint, height: jint,
+) {
+    let (w, h) = (width.max(0) as u64, height.max(0) as u64);
+    PANEL_SIZE.store(w << 32 | h, Ordering::Release);
 }
 
 /// Set only after Android's destination-core Save State dialogue has been
@@ -613,6 +639,7 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSystemStatus(
     let Ok(clock) = env.get_string(&clock) else { return; };
     let clock = clock.to_string_lossy().into_owned();
     if clock.len() > 16 || !clock.chars().all(|c| c.is_ascii_digit() || c == ':') { return; }
+    crate::emulation::set_local_clock(&clock);
     let battery = if (0..=100).contains(&percent) {
         Some(Battery { percent: percent as u8,
             charge: if charging != 0 { Charge::Charging } else { Charge::Discharging } })
@@ -627,11 +654,25 @@ pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSystemStatus(
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeConfigure(
     mut env: JNIEnv<'_>, _this: JObject<'_>, root: JString<'_>, libraries: JString<'_>,
+    is_retroid_pocket_classic: jboolean,
 ) {
+    RPC_DEFAULT_RESPONSIVE.store(is_retroid_pocket_classic != 0, Ordering::Release);
     if let (Ok(root), Ok(libraries)) = (env.get_string(&root), env.get_string(&libraries)) {
         *PATHS.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((PathBuf::from(root.to_string_lossy().as_ref()), PathBuf::from(libraries.to_string_lossy().as_ref())));
     }
+}
+
+/// How the handheld names itself and its Android model, for the About sticker.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeSetDevice(
+    mut env: JNIEnv<'_>, _this: JObject<'_>, name: JString<'_>, model: JString<'_>,
+) {
+    let read = |env: &mut JNIEnv<'_>, value: &JString<'_>| env.get_string(value)
+        .map(|s| s.to_string_lossy().chars().take(64).collect::<String>())
+        .unwrap_or_default();
+    let (name, model) = (read(&mut env, &name), read(&mut env, &model));
+    *DEVICE_NAME.lock().unwrap_or_else(|e| e.into_inner()) = (name, model);
 }
 
 #[unsafe(no_mangle)]

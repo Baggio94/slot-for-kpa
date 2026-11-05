@@ -19,7 +19,7 @@ import java.util.Locale
  */
 internal class SlotAutoLabelIndicator(context: Context, rail: LinearLayout) {
     private val scale =
-        (context.resources.displayMetrics.widthPixels / 720f).coerceIn(1f, 2f)
+        SlotUi.canvasScale(context).coerceIn(1f, 4f)
     private fun dim(n: Int) = (n * scale + .5f).toInt()
     private val root = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL

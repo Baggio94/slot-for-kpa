@@ -30,6 +30,17 @@ pub struct RomEntry {
     pub gb_japan: bool,
     #[serde(default)]
     pub gb_cgb_flag: Option<i32>,
+    // NES / SNES / Mega Drive header facts from the same scan: the
+    // internal title, region (J, U, E or empty) and battery-backed save.
+    #[serde(default)]
+    pub home_title: String,
+    #[serde(default)]
+    pub home_region: String,
+    #[serde(default)]
+    pub home_battery: bool,
+    /// The Mega Drive header's copyright field: "(C)T-50" is Electronic Arts.
+    #[serde(default)]
+    pub home_maker: String,
 }
 
 pub struct LibraryState {
@@ -56,20 +67,19 @@ pub fn next_populated(current: usize, direction: i32, count: &[usize]) -> usize 
     current
 }
 
-pub fn carts_by_platform(entries: &[RomEntry]) -> [Vec<Cart>; 3] {
-    let mut groups: [Vec<Cart>; 3] = std::array::from_fn(|_| Vec::new());
+pub fn carts_by_platform(entries: &[RomEntry]) -> [Vec<Cart>; Platform::ALL.len()] {
+    let mut groups: [Vec<Cart>; Platform::ALL.len()] = std::array::from_fn(|_| Vec::new());
     for entry in entries.iter().take(MAX_ROMS) {
         if entry.title.trim().is_empty() || !entry.uri.starts_with("content://") {
             continue;
         }
-        let (platform, group) = match entry.platform.as_str() {
-            "GBA" => (Platform::Gba, 0),
-            "GB" => (Platform::Gb, 1),
-            "GBC" => (Platform::Gbc, 2),
-            _ => continue,
-        };
+        let Some(platform) = Platform::parse(&entry.platform) else { continue };
+        let group = platform as usize;
         let shell = match platform {
             Platform::Gba => None,
+            // The region's mould, a publisher's, and the game's colour.
+            Platform::Nes | Platform::Snes | Platform::Md => slot_ui::home_shell(
+                platform, entry.title.trim(), &entry.home_region, &entry.home_maker),
             Platform::Gb | Platform::Gbc => {
                 // Cart Studio and the shelf must resolve the same automatic
                 // per-game shell, even for SAF content URIs and zipped ROMs.
@@ -116,6 +126,17 @@ pub fn carts_by_platform(entries: &[RomEntry]) -> [Vec<Cart>; 3] {
         };
         let shell = entry.shell_override.as_deref()
             .and_then(ShellChoice::parse)
+            .map(|mut chosen| {
+                // A Studio colour on a home cart keeps the automatic mould
+                // unless it names one of that system's own.
+                if let Some(auto) = shell.filter(|_| {
+                    matches!(platform, Platform::Nes | Platform::Snes | Platform::Md)
+                        && chosen.outline.platform() != Some(platform)
+                }) {
+                    chosen.outline = auto.outline;
+                }
+                chosen
+            })
             .or(shell);
         groups[group].push(Cart {
             platform,
@@ -127,6 +148,7 @@ pub fn carts_by_platform(entries: &[RomEntry]) -> [Vec<Cart>; 3] {
             rom: PathBuf::from(&entry.uri),
             label: None,
             shell,
+            battery: entry.home_battery,
         });
     }
     for shelf in &mut groups {
@@ -177,7 +199,8 @@ mod tests {
             platform: platform.into(), title: title.into(), uri: uri.into(),
             code: String::new(), color_only: false, shell_override: None,
             gb_title: String::new(), gb_code: String::new(),
-            gb_japan: false, gb_cgb_flag: None
+            gb_japan: false, gb_cgb_flag: None,
+            home_title: String::new(), home_region: String::new(), home_battery: false, home_maker: String::new(),
         };
         let grouped = carts_by_platform(&[
             example("GBA", "Zelda", "content://roms/z"),
@@ -192,6 +215,41 @@ mod tests {
         assert_eq!(grouped[2].len(), 1);
     }
     #[test]
+    fn all_six_platforms_are_available_to_recents_and_favorites() {
+        let entry = |platform: &str, slug: &str| RomEntry {
+            platform: platform.into(), title: slug.into(),
+            uri: format!("content://roms/{slug}"), code: String::new(),
+            color_only: false, shell_override: None,
+            gb_title: String::new(), gb_code: String::new(),
+            gb_japan: false, gb_cgb_flag: None,
+            home_title: String::new(), home_region: String::new(), home_battery: false, home_maker: String::new(),
+        };
+        let grouped = carts_by_platform(&[
+            entry("GBA", "gba"), entry("GB", "gb"), entry("GBC", "gbc"),
+            entry("NES", "nes"), entry("SNES", "snes"), entry("MD", "md"),
+        ]);
+        assert_eq!(grouped.len(), slot_store::Platform::ALL.len());
+        assert!(grouped.iter().all(|shelf| shelf.len() == 1));
+        let sources: Vec<&[Cart]> = grouped.iter().map(|shelf| shelf.as_slice()).collect();
+        let recent = crate::recents::carts(&[
+            "content://roms/nes".into(), "content://roms/snes".into(),
+            "content://roms/md".into(),
+        ], &sources);
+        assert_eq!(recent.iter().map(|c| c.stem.as_str()).collect::<Vec<_>>(),
+            ["nes", "snes", "md"]);
+        let favorites = crate::favorites::carts(&[
+            "content://roms/nes".into(), "content://roms/snes".into(),
+            "content://roms/md".into(),
+        ], &sources);
+        assert_eq!(favorites.len(), 3);
+        assert!(favorites.iter().any(|c| c.platform == Platform::Nes));
+        assert!(favorites.iter().any(|c| c.platform == Platform::Snes));
+        assert!(favorites.iter().any(|c| c.platform == Platform::Md));
+        assert!(grouped.iter().all(|shelf| shelf.len() == 1),
+            "special-rack materialization must not overwrite a system shelf");
+    }
+
+    #[test]
     fn gb_carts_use_studio_header_colours_and_preserve_overrides() {
         let entry = |platform: &str, name: &str, title: &str, code: &str, flag: i32| {
             RomEntry {
@@ -200,6 +258,7 @@ mod tests {
                 color_only: flag == 0xc0, shell_override: None,
                 gb_title: title.into(), gb_code: code.into(),
                 gb_japan: false, gb_cgb_flag: Some(flag),
+                home_title: String::new(), home_region: String::new(), home_battery: false, home_maker: String::new(),
             }
         };
         let mut manual = entry("GB", "Manual", "POKEMON RED", "", 0);

@@ -173,6 +173,46 @@ fn active_state_generation(root: &Path, id: &str, which: Core) -> Result<Option<
     Ok(Some(key))
 }
 
+/// RetroArch's own manual states, staged by Android as <stamp>.rastate and
+/// <stamp>.png, become Polaroids. One that is already a Polaroid (a copy slot.
+/// sent to RetroArch before the two were linked) takes the new stamp rather
+/// than showing twice. A file that cannot be read stays for the next launch.
+fn adopt_retroarch_manual_states(ring: &StateRing, staged: &Path) {
+    let Ok(dir) = std::fs::read_dir(staged) else { return };
+    let mut stamps: Vec<String> = dir.filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str()?.strip_suffix(".rastate").map(str::to_owned))
+        .collect();
+    stamps.sort();
+    for stamp in stamps {
+        let state_path = staged.join(format!("{stamp}.rastate"));
+        let thumb_path = staged.join(format!("{stamp}.png"));
+        let adopted = std::fs::read(&state_path).map_err(|e| e.to_string())
+            .and_then(|bytes| retroarch_state::decode(&bytes))
+            .and_then(|state| {
+                if state.is_empty() { return Err("empty state".into()); }
+                let mut thumb = std::fs::read(&thumb_path).unwrap_or_default();
+                for twin in ring.list().map_err(|e| e.to_string())? {
+                    if std::fs::read(&twin.state).is_ok_and(|b| b == state) {
+                        if thumb.is_empty() {
+                            thumb = std::fs::read(&twin.thumb).unwrap_or_default();
+                        }
+                        ring.remove(&twin.stamp).map_err(|e| e.to_string())?;
+                    }
+                }
+                ring.push(&state, &thumb, &stamp).map_err(|e| e.to_string())
+            });
+        match adopted {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&state_path);
+                let _ = std::fs::remove_file(&thumb_path);
+                log_launch_timing(&format!("RetroArch manual state {stamp} is now a Polaroid"));
+            }
+            Err(error) => log_launch_timing(&format!(
+                "RetroArch manual state {stamp} not adopted: {error}")),
+        }
+    }
+}
+
 fn active_export_filename(root: &Path, id: &str, which: Core) -> Result<String, String> {
     Ok(match active_state_generation(root, id, which)? {
         Some(key) => format!("{key}.retroarch-export.state.auto"),
@@ -213,6 +253,12 @@ pub struct GameSession {
     // A linked mGBA state may contain TWO cores, incompatible with solo
     // RetroArch .state files. Never overwrite solo timeline after link use.
     link_touched: bool,
+    // NES/SNES/Mega Drive netplay: one console, the other player on port 2.
+    // Join keeps its own game here and gets it back when the session ends.
+    home_netplay: Option<HomeNetplay>,
+    // mGBA Cable with two different BIOS: each GBA's state carries its own
+    // player's BIOS checksum, so the two never compare equal.
+    link_peer_bios: bool,
     // Isolated mGBA OR gpSP Link core boot. Apart from app-controlled SRAM,
     // libretro's GET_SAVE_DIRECTORY must itself point into this private root.
     // No running solo gpSP may have its save paths redirected in-place.
@@ -228,12 +274,16 @@ pub struct GameSession {
     manual_export_prefix: PathBuf,
     state: PathBuf,
     retroarch_export: PathBuf,
+    /// RetroArch's Gambatte predates the Sachen items: export its layout.
+    gambatte_legacy_export: bool,
     ring: StateRing,
     rewind: RewindThread,
     rewind_frames: u8,
     frame_count: u32,
     // Presentation-only pixels from speculative frames; save/RA keep the real state.
     runahead_video: Vec<u8>,
+    /// Width and height of `runahead_video`.
+    runahead_size: (u32, u32),
     // Preserve the libretro state allocation across speculative frames.
     runahead_state: Vec<u8>,
     runahead_unavailable: bool,
@@ -256,14 +306,23 @@ pub struct GameSession {
     solar: Option<Solar>,
     // The light handed to a solar cart; None while the light sensor decides.
     sun_luminance: Option<u8>,
+    // AUTO: the minute of day the sun was last set for.
+    sun_auto_minutes: Option<u32>,
     palette_live: bool,
     core_kind: Core,
+    /// SNES / Mega Drive: every face button goes to the core as is.
+    full_pad: bool,
     pending_undo: Option<(Instant, PendingUndo)>,
     last_sram: Instant,
     // F7: owns at most one immutable periodic SRAM/RTC write per solo session.
     battery_writer: Option<BatteryWriter>,
     pub sample_rate: i32,
     pub fps: f64,
+}
+
+struct HomeNetplay {
+    // Join's own game, restored when the session ends; None on Host.
+    own: Option<Vec<u8>>,
 }
 
 /// Testable strict recovery used by both mGBA and gpSP after a Link
@@ -289,6 +348,26 @@ fn xy_buttons(buttons: ButtonMask, turbo: bool, frame: u32) -> ButtonMask {
     ButtonMask(mapped)
 }
 
+/// The cached cart under its game name, for a core that names its own
+/// battery file after the ROM (bsnes). A hard link, or a copy.
+fn named_rom_alias(storage: &Path, rom: &Path, rom_stem: &str) -> Result<PathBuf, String> {
+    let dir = storage.join("RomNames");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot prepare ROM name: {e}"))?;
+    let ext = rom.extension().and_then(|e| e.to_str()).unwrap_or("sfc");
+    let alias = dir.join(format!("{rom_stem}.{ext}"));
+    let _ = std::fs::remove_file(&alias);
+    std::fs::hard_link(rom, &alias)
+        .or_else(|_| std::fs::copy(rom, &alias).map(|_| ()))
+        .map_err(|e| format!("Cannot prepare ROM name: {e}"))?;
+    Ok(alias)
+}
+
+/// SNES and Mega Drive pads use X and Y (and L/R) as real buttons; the
+/// X/Y Buttons setting (turbo or a second A/B) is for the two-button ones.
+fn pad_buttons(full_pad: bool, buttons: ButtonMask, turbo: bool, frame: u32) -> ButtonMask {
+    if full_pad { buttons } else { xy_buttons(buttons, turbo, frame) }
+}
+
 impl GameSession {
     pub fn open(rom: &Path, core_file: &Path, storage: &Path,
                 which: Core, platform: Platform, resume_state: bool,
@@ -296,7 +375,8 @@ impl GameSession {
                 colour_correction: bool,
                 achievements: Option<&slot_achievements::Service>) -> Result<Self, String> {
         Self::open_internal(rom, core_file, storage, which, platform, resume_state,
-            rom_stem, gb_palette, colour_correction, achievements, None, "auto", None, None)
+            rom_stem, gb_palette, colour_correction, achievements, None, "auto", None, None,
+            &crate::link_net::PeerBios::Same)
     }
 
     /// Slot upstream treats GBA Cable/Wireless as a gpSP core option fixed
@@ -310,7 +390,8 @@ impl GameSession {
             return Err("Unsupported gpSP GBA serial mode".into());
         }
         Self::open_internal(rom, core_file, storage, Core::Gpsp, Platform::Gba,
-            true, rom_stem, None, colour_correction, achievements, None, serial, None, None)
+            true, rom_stem, None, colour_correction, achievements, None, serial, None, None,
+            &crate::link_net::PeerBios::Same)
     }
 
     /// A post-Link solo rebuild must not consume an old RetroArch auto-state,
@@ -324,7 +405,8 @@ impl GameSession {
             return Err("Unsupported gpSP solo serial mode".into());
         }
         Self::open_internal(rom, core_file, storage, Core::Gpsp, Platform::Gba,
-            false, rom_stem, None, colour_correction, achievements, None, serial, None, None)
+            false, rom_stem, None, colour_correction, achievements, None, serial, None, None,
+            &crate::link_net::PeerBios::Same)
     }
 
     /// Reopen a *fresh* two-console mGBA instance (two GBAs, or two Game
@@ -335,13 +417,14 @@ impl GameSession {
                             platform: Platform, rom_stem: &str,
                             gb_palette: Option<&str>, colour_correction: bool,
                             role: Role, solo_state: &[u8],
-                            peer_rom: Option<&Path>) -> Result<Self, String> {
+                            peer_rom: Option<&Path>,
+                            peer_bios: &crate::link_net::PeerBios) -> Result<Self, String> {
         // Fail BEFORE any filesystem writes or a dropped solo core if the
         // source state cannot fit as a valid single-console Link seed.
         crate::linked_storage::validate_solo_snapshot(solo_state)?;
         Self::open_internal(rom, core_file, storage, Core::Mgba, platform,
             false, rom_stem, gb_palette, colour_correction, None, Some(role), "auto",
-            Some(solo_state), peer_rom)
+            Some(solo_state), peer_rom, peer_bios)
     }
 
     /// gpSP requires a NEW libretro instance whose GET_SAVE_DIRECTORY is
@@ -358,7 +441,7 @@ impl GameSession {
         crate::linked_storage::validate_solo_snapshot(solo_state)?;
         Self::open_internal(rom, core_file, storage, Core::Gpsp, Platform::Gba,
             false, rom_stem, None, colour_correction, None, Some(role), serial,
-            Some(solo_state), None)
+            Some(solo_state), None, &crate::link_net::PeerBios::Same)
     }
 
     fn open_internal(rom: &Path, core_file: &Path, storage: &Path,
@@ -369,7 +452,8 @@ impl GameSession {
                      linked_boot: Option<Role>,
                      gpsp_serial: &'static str,
                      linked_resume: Option<&[u8]>,
-                     peer_rom: Option<&Path>) -> Result<Self, String> {
+                     peer_rom: Option<&Path>,
+                     peer_bios: &crate::link_net::PeerBios) -> Result<Self, String> {
         let opening_at = Instant::now();
         // gpSP is GBA-only; mGBA also links two Game Boys.
         if linked_boot.is_some() && ((platform != Platform::Gba && which != Core::Mgba) ||
@@ -377,6 +461,10 @@ impl GameSession {
             (linked_boot.is_some() != linked_resume.is_some()) {
             return Err("Invalid isolated Multiplayer boot configuration".into());
         }
+        // The pinned bsnes exposes no game memory, so no achievement can ever
+        // trigger: it runs without RetroAchievements and shows none of its
+        // notices, as RetroArch with that core (Snes9x keeps them).
+        let achievements = achievements.filter(|_| which != Core::Bsnes);
         if peer_rom.is_some() && (linked_boot.is_none() || which != Core::Mgba) {
             return Err("A remote cartridge is only valid inside mGBA Cable Link".into());
         }
@@ -387,6 +475,21 @@ impl GameSession {
                 return Err("Unverified remote ROM cache location".into());
             }
         }
+        // The other player's own BIOS (or none) for its GBA in mGBA Cable.
+        let peer_bios_option = match peer_bios {
+            crate::link_net::PeerBios::Same => None,
+            _ if linked_boot.is_none() || which != Core::Mgba || platform != Platform::Gba =>
+                return Err("A remote BIOS is only valid inside GBA mGBA Cable Link".into()),
+            crate::link_net::PeerBios::BuiltIn => Some("hle".to_owned()),
+            crate::link_net::PeerBios::File(path) => {
+                let sized = path.metadata().is_ok_and(|m|
+                    m.is_file() && m.len() == crate::link_net::GBA_BIOS_SIZE as u64);
+                if !sized || !path.to_string_lossy().contains("/link-peer-cache/") {
+                    return Err("Unverified remote BIOS cache location".into());
+                }
+                Some(path.to_str().ok_or("Remote BIOS path is not UTF-8")?.to_owned())
+            }
+        };
         if !rom.exists() || !core_file.exists() {
             return Err(format!("ROM cache or {} core missing", which.text()));
         }
@@ -470,6 +573,10 @@ impl GameSession {
         let ring = StateRing::new(
             if linked_boot.is_some() { core_root.as_path() } else { storage },
             platform, which, id);
+        if linked_boot.is_none() {
+            adopt_retroarch_manual_states(&ring,
+                &root.join("ManualImports").join(format!("{id}.{}", which.as_str())));
+        }
         // mGBA's libretro core looks for gba_bios.bin / gb_bios.bin /
         // gbc_bios.bin in RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY.
         // Keep the user-selected SAF folder external and read-only: Android
@@ -484,9 +591,14 @@ impl GameSession {
         };
         let mut core = LibretroCore::open_with_options(core_file, &bios, &core_root, &init_options)
             .map_err(|e| e.to_string())?;
+        // Home consoles hand over frames of varying size (SNES hi-res, MD
+        // H32/H40): keep each as it is instead of the GBA canvas.
+        core.set_native_video(!platform.handheld());
         // Exact upstream Slot libretro options for colour and Game Boy palettes.
         // Read only the 336-byte header: never read the entire cached ROM.
-        let dmg_only = platform != Platform::Gba && which != Core::Gpsp
+        // Game Boy carts only: byte 0x143 of a NES, SNES or Mega Drive ROM
+        // is game data and once let SELECT+L2/R2 switch "palettes" there.
+        let dmg_only = matches!(platform, Platform::Gb | Platform::Gbc) && which != Core::Gpsp
             && std::fs::File::open(rom).and_then(|mut file| {
                 let mut header = [0u8; 0x150];
                 file.read_exact(&mut header)?;
@@ -504,6 +616,11 @@ impl GameSession {
                     if let Some(path) = peer_rom {
                         core.set_option("mgba_link_peer_rom", path.to_str()
                             .ok_or("Remote ROM path is not UTF-8")?);
+                    }
+                    // Unset: the other player's GBA uses this console's BIOS
+                    // (the two are the same). See scripts/patch-mgba-link-peer-bios.py.
+                    if let Some(value) = peer_bios_option.as_deref() {
+                        core.set_option("mgba_link_peer_bios", value);
                     }
                 } else {
                     core.set_option("mgba_link", "off");
@@ -553,18 +670,30 @@ impl GameSession {
                     Some(name) => {
                         core.set_option("gambatte_gb_colorization", "internal");
                         core.set_option("gambatte_gb_internal_palette", name);
+                        if let Some(twb64) = gb_palette.and_then(crate::gb_core_switch::gambatte_twb64) {
+                            core.set_option("gambatte_gb_palette_twb64_1", twb64);
+                        }
                     }
                     None => core.set_option("gambatte_gb_colorization", "GBC"),
                 }
                 core.set_option("gambatte_gbc_color_correction",
                     if colour_correction { "GBC only" } else { "disabled" });
             }
+            // The home console cores run on their own defaults, exactly as
+            // RetroArch starts them: region, palette and pads automatic.
+            Core::Fceumm | Core::Nestopia | Core::Snes9x | Core::Bsnes => {}
+            Core::GenesisPlusGx => {
+                // Sega CD and the lock-on adapters are not carts slot. shows.
+                core.set_option("genesis_plus_gx_lock_on", "disabled");
+            }
+            Core::Picodrive => {}
         }
         // rcheevos shares ONE evaluator, protected against cross-console
         // memory reads. GB=4 / GBA=5 / GBC=6 use their own libretro maps.
         // Speculative frames never reach it (including GB/GBC Run-Ahead).
         let console = match platform {
             Platform::Gb => 4, Platform::Gba => 5, Platform::Gbc => 6,
+            Platform::Nes => 7, Platform::Snes => 3, Platform::Md => 1,
         };
         // Second-instance Run-Ahead boots its copy from these, solo only.
         let runahead_secondary_spec = linked_boot.is_none().then(|| crate::runahead_secondary::Spec {
@@ -574,18 +703,26 @@ impl GameSession {
             rom: rom.to_path_buf(),
             options: core.options(),
             primary_id: core.instance_id(),
+            native_video: !platform.handheld(),
         });
         let mut core: Box<dyn RetroCore> = match achievements {
             Some(service) => service.wrap_for_console(Box::new(core), console),
             None => Box::new(core),
         };
-        core.load(rom).map_err(|e| e.to_string())?;
+        // bsnes keeps its battery itself, named after the ROM file and
+        // written to the save directory when the game unloads, as in
+        // RetroArch. Hand it the cart under its own name, so the file is
+        // Saves/bsnes/<game>.srm like every other core's.
+        let named_rom = if which == Core::Bsnes && linked_boot.is_none() {
+            Some(named_rom_alias(storage, rom, rom_stem)?)
+        } else { None };
+        core.load(named_rom.as_deref().unwrap_or(rom)).map_err(|e| e.to_string())?;
         let load_ms = opening_at.elapsed().as_millis();
         let restore_started = Instant::now();
-        // A GB/GBC cart switched between mGBA and Gambatte brings its newer
-        // battery along; that core's older save state must not resume.
-        let carried_battery = linked_boot.is_none() && match
-            crate::gb_core_switch::carry_battery(&root, rom_stem, which, platform) {
+        // With Share Saves, a GB/GBC cart switched between mGBA and Gambatte
+        // brings its newer battery along; that core's older state must not resume.
+        let carried_battery = linked_boot.is_none() && crate::gb_core_switch::sharing() && match
+            crate::gb_core_switch::carry_battery_for(&root, rom_stem, which, platform, Some(rom)) {
             Ok(carried) => carried,
             Err(error) => {
                 eprintln!("slot-konkr: battery carry from the other core skipped: {error}");
@@ -633,9 +770,13 @@ impl GameSession {
         // Neither may silently restart at the title screen on a bad state.
         if let Some(solo) = linked_resume {
             if which == Core::Mgba {
-                let combined = if peer_rom.is_some() {
+                // Another cartridge or another BIOS: this console's state
+                // fits only its own GBA. The other player's GBA starts fresh
+                // and receives that player's own state in the exchange.
+                let own_half_only = peer_rom.is_some() || peer_bios_option.is_some();
+                let combined = if own_half_only {
                     let fresh = core.serialize().map_err(|e|
-                        format!("Cannot capture the two different GBA cartridges: {e}"))?;
+                        format!("Cannot capture the fresh Link pair: {e}"))?;
                     let player = if linked_boot == Some(Role::Host) { 0 } else { 1 };
                     crate::link_state::with_local_player(&fresh, player, solo)
                         .ok_or("Cannot restore own state without modifying peer cartridge")?
@@ -647,8 +788,8 @@ impl GameSession {
                 if !crate::link_state::is_pair(&verified) {
                     return Err("mGBA Link restored without two-GBA SLK1 state".into());
                 }
-                log_launch_timing(if peer_rom.is_some() {
-                    "mGBA Link: distinct ROMs, own solo state only; private peer kept fresh"
+                log_launch_timing(if own_half_only {
+                    "mGBA Link: distinct ROMs or BIOS, own solo state only; private peer kept fresh"
                 } else {
                     "mGBA Link: loaded live solo progress into isolated SLK1 pair"
                 });
@@ -693,12 +834,18 @@ impl GameSession {
                 retroarch_export = root.join(format!("{key}.retroarch-export.state.auto"));
             }
         }
+        let gambatte_legacy_export = which == Core::Gambatte && std::fs::read(&retroarch_import)
+            .ok().and_then(|bytes| retroarch_state::decode(&bytes).ok())
+            .is_some_and(|raw| crate::gambatte_state::lacks_sachen(&raw));
         if resume_state && linked_boot.is_none() && !cross_core_import && !carried_battery {
             // Prefer a successfully decoded RetroArch auto state, then the
             // Slot private state. A compressed/unrecognized external file is
             // kept intact and is NEVER interpreted as raw emulator memory.
             let external = std::fs::read(&retroarch_import)
                 .ok().and_then(|bytes| match retroarch_state::decode(&bytes) {
+                    // An older RetroArch Gambatte's state gets today's layout.
+                    Ok(raw) if gambatte_legacy_export =>
+                        Some(crate::gambatte_state::add_sachen(&raw).unwrap_or(raw)),
                     Ok(raw) => Some(raw),
                     Err(error) => {
                         eprintln!("slot-konkr: external {} savestate skipped: {error}", which.text());
@@ -717,9 +864,12 @@ impl GameSession {
             // RetroArch imports must not silently roll back that timeline.
             let marker = state.with_extension("prefer-solo-after-link.once");
             let prefer_private = marker.is_file();
-            let (chosen, used_private) = if state != root.join(format!("{id}.{}.state", which.as_str())) {
+            let (chosen, used_private) = if state != root.join(format!("{id}.{}.state", which.as_str()))
+                && generation_export_guard.is_file() {
                 // A state deliberately skipped during SharedGBA migration
                 // cannot reappear through an old external RetroArch auto.
+                // Android lifts the guard once that old auto-state is backed
+                // up and the generation's own state has reached RetroArch.
                 (std::fs::read(&state).ok(), false)
             } else if prefer_private {
                 match local() {
@@ -768,13 +918,18 @@ impl GameSession {
             }
         } else { None };
         let mut session = Self {
-            core, link: None, game_link: None, link_touched: false, linked_boot, gpsp_serial,
+            core, link: None, game_link: None, link_touched: false, home_netplay: None,
+            link_peer_bios: peer_bios_option.is_some(), linked_boot, gpsp_serial,
             rom_path: rom.to_path_buf(), rom_stem: rom_stem.to_owned(),
-            save, rtc, manual_export_prefix, state, retroarch_export, ring,
+            save, rtc, manual_export_prefix, state, retroarch_export,
+            gambatte_legacy_export, ring,
             rewind: RewindThread::spawn(REWIND_BYTES), rewind_frames: 0,
             frame_count: 0, palette_live, core_kind: which,
-            runahead_video: Vec::new(), runahead_state: Vec::new(),
-            runahead_unavailable: false,
+            full_pad: matches!(platform, Platform::Snes | Platform::Md),
+            runahead_video: Vec::new(), runahead_size: (0, 0), runahead_state: Vec::new(),
+            // bsnes shows the frame before an unserialize on the first run
+            // after it, so a predicted picture would be stale: no Run-Ahead.
+            runahead_unavailable: which == Core::Bsnes,
             runahead_rollback_failed: false,
             runahead_discard_confirm: false,
             runahead_probe: RunaheadProbe::default(),
@@ -784,7 +939,7 @@ impl GameSession {
             last_step_timings: FrameStepTimings::default(),
             mgba_flash_runahead_guard: flash_guard,
             sma4_runahead_guard: sma4_guard,
-            solar, sun_luminance: None,
+            solar, sun_luminance: None, sun_auto_minutes: None,
             pending_undo: None, last_sram: Instant::now(), battery_writer,
             sample_rate: core_sample_rate(sample_rate),
             fps,
@@ -811,7 +966,7 @@ impl GameSession {
         self.follow_light_sensor();
         if self.link.is_none() && !self.preempt_before_frame(buttons, turbo) { return false; }
         let pressed = ButtonMask(buttons);
-        let mapped = xy_buttons(pressed, turbo, self.frame_count);
+        let mapped = pad_buttons(self.full_pad, pressed, turbo, self.frame_count);
         let core_started = Instant::now();
         let advanced = if let Some(link) = self.link.as_mut() {
             matches!(link.frame(self.core.as_mut(), mapped), LinkFrame::Advanced)
@@ -835,7 +990,7 @@ impl GameSession {
                     capture_started.elapsed().as_micros() as u64;
             }
         } else { self.rewind_frames = 0; }
-        if self.last_sram.elapsed() >= SRAM_PERIOD {
+        if self.last_sram.elapsed() >= SRAM_PERIOD && !self.netplay_guest() {
             let battery_started = Instant::now();
             self.save_sram();
             self.last_step_timings.periodic_battery_us =
@@ -883,9 +1038,10 @@ impl GameSession {
                     return Err("gpSP did not register GBA serial/RFU netpacket callbacks".into());
                 }
             }
-            Core::Gambatte => return Err("Gambatte has no Slot Link support".into()),
+            other => return Err(format!("{} has no Slot Link support", other.text())),
         }
-        let link = LinkPlay::begin(self.core.as_mut(), role, mode, transport)?;
+        let mut link = LinkPlay::begin(self.core.as_mut(), role, mode, transport)?;
+        if self.link_peer_bios { link = link.without_bios_check(); }
         self.link = Some(link);
         self.link_touched = true;
         self.runahead_video.clear();
@@ -912,8 +1068,44 @@ impl GameSession {
         Ok(())
     }
 
+    /// NES, SNES and Mega Drive play like RetroArch netplay: both devices
+    /// run the same console from Host's state, Host's buttons on port 1 and
+    /// Join's on port 2. Host keeps playing its own game; Join's game is
+    /// saved first and comes back when the session ends.
+    pub fn begin_home_netplay(&mut self, role: Role,
+                              transport: Box<dyn LinkChannel>) -> Result<(), String> {
+        if !self.core_kind.netplay() {
+            return Err(format!("{} has no Multiplayer", self.core_kind.text()));
+        }
+        if self.in_multiplayer() || self.link.is_some() { return Err("Already linked".into()); }
+        if self.runahead_rollback_failed { return Err("Unsafe Run-Ahead state; Link blocked".into()); }
+        // Both sides keep a durable copy of their own progress first.
+        self.save_for_eject(true)?;
+        let own = match role {
+            Role::Host => None,
+            Role::Join => Some(self.core.serialize().map_err(|e| e.to_string())?),
+        };
+        let link = LinkPlay::begin(self.core.as_mut(), role, LinkKind::Cable, transport)?
+            .without_bios_check();
+        self.link = Some(link);
+        self.home_netplay = Some(HomeNetplay { own });
+        self.runahead_video.clear();
+        self.preempt.clear();
+        self.rewind_frames = 0;
+        self.pending_undo = None;
+        Ok(())
+    }
+
+    /// Join is playing Host's game: nothing of it may reach Join's saves.
+    fn netplay_guest(&self) -> bool {
+        self.home_netplay.as_ref().is_some_and(|net| net.own.is_some())
+    }
+
+    pub fn home_netplay(&self) -> bool { self.home_netplay.is_some() }
+
     fn in_multiplayer(&self) -> bool {
         self.link_touched || self.linked_boot.is_some() || self.game_link.is_some()
+            || self.home_netplay.is_some()
     }
 
     pub fn link_fault(&self) -> Option<LinkError> {
@@ -1163,6 +1355,20 @@ impl GameSession {
         if let Some(mut link) = self.game_link.take() {
             link.end(self.core.as_mut());
         }
+        if let Some(net) = self.home_netplay.take() {
+            if let Some(own) = net.own {
+                if let Err(error) = self.core.unserialize(&own) {
+                    // The core still holds Host's game: it must never reach
+                    // Join's battery, state or RetroArch files. Stop it as an
+                    // ended Link: no frame runs and nothing is saved until the
+                    // cartridge is relaunched, which resumes Join's own game
+                    // as saved when the session began.
+                    log_launch_timing(&format!(
+                        "Netplay: own game not restored ({error}); eject to resume it"));
+                    self.link_touched = true;
+                }
+            }
+        }
         self.runahead_video.clear();
         self.preempt.clear();
         self.rewind_frames = 0;
@@ -1229,13 +1435,14 @@ impl GameSession {
         // sample its own future phase; reusing one mask for all offsets
         // predicts incorrect key presses across a three-frame boundary.
         for future in 0..frames {
-            let mapped = xy_buttons(pressed, turbo,
+            let mapped = pad_buttons(self.full_pad, pressed, turbo,
                 self.frame_count.wrapping_add(u32::from(future)));
             self.core.run_speculative_frame(mapped);
             // Discard predicted audio without reallocating libretro's buffer.
             self.core.discard_audio();
         }
         self.runahead_video.extend_from_slice(self.core.video_xrgb8888());
+        self.runahead_size = self.core.video_size();
         let speculative_us = predicted.elapsed().as_micros() as u64;
         let restore_started = Instant::now();
         let restored = self.core.restore_speculative_state(&self.runahead_state)
@@ -1308,13 +1515,16 @@ impl GameSession {
         // its own future phase, exactly like the single-instance path.
         let mut inputs = [ButtonMask::default(); 2];
         for future in 0..usize::from(frames) {
-            inputs[future] = xy_buttons(pressed, turbo,
+            inputs[future] = pad_buttons(self.full_pad, pressed, turbo,
                 self.frame_count.wrapping_add(future as u32));
         }
         let copy = self.runahead_secondary.as_deref_mut().expect("booted above");
         match crate::runahead_secondary::predict(copy, &self.runahead_state,
             &inputs[..usize::from(frames)]) {
-            Ok(video) => self.runahead_video.extend_from_slice(video),
+            Ok((video, size)) => {
+                self.runahead_video.extend_from_slice(video);
+                self.runahead_size = size;
+            }
             Err(error) => {
                 // Only the copy is affected: drop it and keep playing.
                 self.runahead_probe.failures += 1;
@@ -1372,7 +1582,7 @@ impl GameSession {
                 if k > 0 { replayed = self.core.serialize_into(self.preempt.state_mut(k)); }
                 if replayed.is_err() { break; }
                 self.core.run_speculative_frame(
-                    xy_buttons(pressed, turbo, first.wrapping_add(k as u32)));
+                    pad_buttons(self.full_pad, pressed, turbo, first.wrapping_add(k as u32)));
                 self.core.discard_audio();
             }
             let elapsed_us = started.elapsed().as_micros() as u64;
@@ -1458,6 +1668,9 @@ impl GameSession {
             match crate::gb_core_switch::gambatte_palette(name).filter(|_| enabled) {
                 Some(palette) => {
                     self.set_core_option("gambatte_gb_colorization", "internal");
+                    if let Some(twb64) = crate::gb_core_switch::gambatte_twb64(name) {
+                        self.set_core_option("gambatte_gb_palette_twb64_1", twb64);
+                    }
                     self.set_core_option("gambatte_gb_internal_palette", palette);
                 }
                 None => self.set_core_option("gambatte_gb_colorization", "GBC"),
@@ -1476,6 +1689,8 @@ impl GameSession {
                 if enabled { "enabled" } else { "disabled" }),
             Core::Gambatte => ("gambatte_gbc_color_correction",
                 if enabled { "GBC only" } else { "disabled" }),
+            // A TV console's colours need no LCD correction.
+            _ => return,
         };
         self.set_core_option(key, value);
     }
@@ -1488,10 +1703,13 @@ impl GameSession {
     }
 
     /// Boktai's sun, live: mGBA reads it the next time the game samples
-    /// its solar sensor. SENSOR follows the light sensor every frame.
+    /// its solar sensor. SENSOR follows the light sensor every frame,
+    /// AUTO the clock.
     pub fn set_sun(&mut self, sun: u8) {
         let Some(solar) = self.solar else { return };
         let luminance = crate::emulation::sun_luminance(sun, solar == Solar::Boktai1);
+        self.sun_auto_minutes = (sun == crate::emulation::SUN_AUTO).then(||
+            crate::emulation::LOCAL_MINUTES.load(std::sync::atomic::Ordering::Relaxed));
         slot_retro::sensors::set_light_wanted(luminance.is_none());
         self.sun_luminance = luminance;
         self.give_sun(luminance.unwrap_or_else(||
@@ -1507,6 +1725,10 @@ impl GameSession {
         if self.solar.is_some() && self.sun_luminance.is_none() {
             self.give_sun(crate::emulation::lux_luminance(slot_retro::sensors::illuminance()));
         }
+        if let Some(minutes) = self.sun_auto_minutes {
+            let now = crate::emulation::LOCAL_MINUTES.load(std::sync::atomic::Ordering::Relaxed);
+            if now != minutes { self.set_sun(crate::emulation::SUN_AUTO); }
+        }
     }
 
     pub fn rumble_strength(&self) -> u16 {
@@ -1520,6 +1742,17 @@ impl GameSession {
     pub fn frame(&self) -> &[u8] {
         if !self.runahead_video.is_empty() { &self.runahead_video }
         else { self.core.video_xrgb8888() }
+    }
+
+    /// Width and height of [`Self::frame`].
+    pub fn frame_size(&self) -> (u32, u32) {
+        if !self.runahead_video.is_empty() { self.runahead_size }
+        else { self.core.video_size() }
+    }
+
+    /// The core's display aspect (0 when it reports none).
+    pub fn display_aspect(&self) -> f32 {
+        self.core.display_aspect()
     }
 
     pub fn take_audio(&mut self) -> Vec<i16> {
@@ -1640,6 +1873,12 @@ impl GameSession {
     /// boolean used OR, so a successful RTC could hide a failed battery write.
     /// Return every attempted file write's error to callers that must retain
     /// the session (Save & Eject); none means the cartridge has no such file.
+    /// The state in the layout of the RetroArch core that will load it.
+    fn for_retroarch(&self, state: Vec<u8>) -> Vec<u8> {
+        if !self.gambatte_legacy_export { return state; }
+        crate::gambatte_state::strip_sachen(&state).unwrap_or(state)
+    }
+
     fn save_sram_checked(&mut self) -> Result<bool, String> {
         // Mandatory suspend/eject: wait for all older periodic generations
         // before writing fresh SRAM/RTC and optionally a matching state.
@@ -1681,6 +1920,17 @@ impl GameSession {
     /// rewrites a corrupt battery over a known-good file. An absent battery
     /// on a ROM that does not implement SRAM is not an I/O failure.
     pub fn save_for_eject(&mut self, with_state: bool) -> Result<bool, String> {
+        // A failed Link's private pair is not a valid solo timeline.
+        // Preserve the immutable pre-Link solo checkpoint rather than
+        // replacing good SRAM/RTC/auto-state with a damaged sandbox.
+        if self.requires_relaunch() {
+            log_launch_timing("Eject after failed Link: discarding private sandbox without native save");
+            return Ok(false);
+        }
+        if self.netplay_guest() {
+            // Join's own game was saved when the session began.
+            return Ok(false);
+        }
         if self.runahead_rollback_failed {
             return Err("Run-Ahead rollback failed; exit without saving instead".into());
         }
@@ -1692,7 +1942,7 @@ impl GameSession {
             .map_err(|e| format!("Auto state capture: {e}"))?;
         atomic_write(&self.state, &data)
             .map_err(|e| format!("Auto state write: {e}"))?;
-        let container = retroarch_state::encode(&data)
+        let container = retroarch_state::encode(&self.for_retroarch(data))
             .map_err(|e| format!("RetroArch state encoding: {e}"))?;
         atomic_write(&self.retroarch_export, &container)
             .map_err(|e| format!("RetroArch state export: {e}"))?;
@@ -1718,7 +1968,8 @@ impl GameSession {
         if self.runahead_rollback_failed { return Err("Unsafe Run-Ahead state; manual save blocked".into()); }
         if self.in_multiplayer() { return Err("Save States unavailable for Multiplayer sessions".into()); }
         let state = self.core.serialize().map_err(|e|e.to_string())?;
-        let preview = thumb::png(self.core.video_xrgb8888()).unwrap_or_default();
+        let preview = thumb::png_fit(self.core.video_xrgb8888(), self.core.video_size(),
+            self.core.display_aspect()).unwrap_or_default();
         let entries = self.ring.list().map_err(|e|e.to_string())?;
         let mut seconds = slot_store::parse_stamp(&stamp_now()).ok_or("Invalid system clock")?;
         let mut stamp = format_stamp(seconds);
@@ -1737,12 +1988,18 @@ impl GameSession {
         }));
         // Keep Slot's Polaroid history private. The Android storage worker
         // publishes a distinct, verified RetroArch .stateN after this returns.
-        let encoded = retroarch_state::encode(&state)?;
+        let encoded = retroarch_state::encode(&self.for_retroarch(state.clone()))?;
         let export = std::path::PathBuf::from(format!(
             "{}.{}.rastate", self.manual_export_prefix.display(), stamp
         ));
         atomic_write(&export, &encoded).map_err(|error|
             format!("Polaroid saved, manual RetroArch export failed: {error}"))?;
+        if !preview.is_empty() {
+            let thumb = PathBuf::from(format!("{}.{}.png", self.manual_export_prefix.display(), stamp));
+            if let Err(error) = atomic_write(&thumb, &preview) {
+                log_launch_timing(&format!("Polaroid picture not staged for RetroArch: {error}"));
+            }
+        }
         Ok(stamp)
     }
 
@@ -1775,7 +2032,8 @@ impl GameSession {
         self.ring.remove(stamp).map_err(|e|e.to_string())
     }
 
-    pub fn undo_manual(&mut self)->Result<(),String> {
+    /// Ok(Some(stamp)) when the undo removed the Polaroid just saved.
+    pub fn undo_manual(&mut self)->Result<Option<String>,String> {
         if self.runahead_rollback_failed { return Err("Run-Ahead state unsafe; restart from disk".into()); }
         if self.in_multiplayer() { return Err("Undo unavailable during Multiplayer".into()); }
         let Some((since,_))=&self.pending_undo else { return Err("Nothing to undo".into())};
@@ -1789,13 +2047,13 @@ impl GameSession {
         self.preempt.clear();
         match pending {
             PendingUndo::Loaded {prior} =>
-                self.core.unserialize(&prior).map_err(|e|e.to_string()),
+                self.core.unserialize(&prior).map(|()| None).map_err(|e|e.to_string()),
             PendingUndo::Saved {stamp,evicted} => {
                 self.ring.remove(&stamp).map_err(|e|e.to_string())?;
                 if let Some((name,state,thumb))=evicted {
                     self.ring.push(&state,&thumb,&name).map_err(|e|e.to_string())?;
                 }
-                Ok(())
+                Ok(Some(stamp))
             }
         }
     }
@@ -1931,6 +2189,32 @@ mod a13r3_generation_rejoin_tests {
                 .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn retroarch_manual_states_become_polaroids_without_twins() {
+        let root = fixture();
+        let ring = StateRing::new(&root, Platform::Gba, Core::Mgba, "game");
+        ring.push(b"slot-made", b"slot-png", "2026-10-30_10-00-00").unwrap();
+        let staged = root.join("ManualImports/game.mgba");
+        fs::create_dir_all(&staged).unwrap();
+        // A copy slot. sent before links existed, and RetroArch's own state.
+        fs::write(staged.join("2026-10-30_10-00-03.rastate"),
+            retroarch_state::encode(b"slot-made").unwrap()).unwrap();
+        fs::write(staged.join("2026-10-31_09-00-00.rastate"),
+            retroarch_state::encode(b"retroarch-made").unwrap()).unwrap();
+        fs::write(staged.join("2026-10-31_09-00-00.png"), b"ra-png").unwrap();
+        fs::write(staged.join("2026-10-31_09-30-00.rastate"), b"#RZIPv2#unreadable").unwrap();
+        adopt_retroarch_manual_states(&ring, &staged);
+        let stamps: Vec<_> = ring.list().unwrap().into_iter().map(|e| e.stamp).collect();
+        assert_eq!(stamps, ["2026-10-31_09-00-00", "2026-10-30_10-00-03"]);
+        assert_eq!(ring.read("2026-10-31_09-00-00").unwrap(),
+            (b"retroarch-made".to_vec(), b"ra-png".to_vec()));
+        assert_eq!(ring.read("2026-10-30_10-00-03").unwrap(),
+            (b"slot-made".to_vec(), b"slot-png".to_vec()));
+        assert!(staged.join("2026-10-31_09-30-00.rastate").is_file(), "kept for a later try");
+        assert!(!staged.join("2026-10-31_09-00-00.rastate").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

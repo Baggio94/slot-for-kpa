@@ -1,4 +1,4 @@
-use slot_gfx::OUT_W;
+use slot_gfx::out_w;
 use slot_store::GbPalette;
 
 use crate::hud::{HUD_INK, PLATE_H};
@@ -31,6 +31,12 @@ pub enum Toast {
     ShaderAgb001,
     ShaderAgs001,
     ShaderSharpBilinear,
+    ShaderZfastCrt,
+    ShaderCrtGdv,
+    ShaderCrtGeomDeluxe,
+    ShaderCrtPi,
+    ShaderFakelottes,
+    ShaderCrtAperture,
     ScreenInteger,
     ScreenRatio,
     ScreenStretch,
@@ -38,6 +44,10 @@ pub enum Toast {
     /// Boktai's sun from L3 / R3, 0..=10.
     Sun(u8),
     SunSensor,
+    SunAuto,
+    RunAheadOff,
+    RunAhead1,
+    RunAhead2,
 }
 
 const SUN_TEXT: [&str; 11] = [
@@ -46,7 +56,7 @@ const SUN_TEXT: [&str; 11] = [
 ];
 
 impl Toast {
-    const FIXED: [Toast; 26] = [
+    const FIXED: [Toast; 36] = [
         Toast::StateSaved,
         Toast::StateLoaded,
         Toast::NeedsGpsp,
@@ -69,10 +79,20 @@ impl Toast {
         Toast::ShaderAgb001,
         Toast::ShaderAgs001,
         Toast::ShaderSharpBilinear,
+        Toast::ShaderZfastCrt,
+        Toast::ShaderCrtGdv,
+        Toast::ShaderCrtGeomDeluxe,
+        Toast::ShaderCrtPi,
+        Toast::ShaderFakelottes,
+        Toast::ShaderCrtAperture,
         Toast::ScreenInteger,
         Toast::ScreenRatio,
         Toast::ScreenStretch,
         Toast::SunSensor,
+        Toast::SunAuto,
+        Toast::RunAheadOff,
+        Toast::RunAhead1,
+        Toast::RunAhead2,
     ];
 
     pub fn all() -> Vec<Toast> {
@@ -116,12 +136,22 @@ impl Toast {
             Toast::ShaderAgb001 => "Shader: AGB-001",
             Toast::ShaderAgs001 => "Shader: AGS-001",
             Toast::ShaderSharpBilinear => "Shader: Sharp Bilinear",
+            Toast::ShaderZfastCrt => "Shader: zfast-crt",
+            Toast::ShaderCrtGdv => "Shader: GDV Trinitron",
+            Toast::ShaderCrtGeomDeluxe => "Shader: CRT Geom Deluxe",
+            Toast::ShaderCrtPi => "Shader: crt-pi",
+            Toast::ShaderFakelottes => "Shader: fakelottes",
+            Toast::ShaderCrtAperture => "Shader: crt-aperture",
             Toast::ScreenInteger => "Screen: Integer",
             Toast::ScreenRatio => "Screen: Original Ratio",
             Toast::ScreenStretch => "Screen: Stretch",
             Toast::Palette(p) => p.label(),
             Toast::Sun(level) => SUN_TEXT[usize::from(level.min(10))],
             Toast::SunSensor => "Sun: Sensor",
+            Toast::SunAuto => "Sun: Auto",
+            Toast::RunAheadOff => "Run-Ahead: Off",
+            Toast::RunAhead1 => "Run-Ahead: 1 Frame",
+            Toast::RunAhead2 => "Run-Ahead: 2 Frames",
         }
     }
 }
@@ -134,7 +164,7 @@ const TOAST_MIN_PX: f32 = 12.0;
 pub fn toast_rect() -> (f32, f32, f32, f32) {
     let (w, h) = toast_box();
     let (w, h) = (w as f32, h as f32);
-    ((OUT_W as f32 - w) / 2.0, (PLATE_H - h) / 2.0, w, h)
+    ((out_w() as f32 - w) / 2.0, (PLATE_H - h) / 2.0, w, h)
 }
 
 pub fn toast_box() -> (u32, u32) {

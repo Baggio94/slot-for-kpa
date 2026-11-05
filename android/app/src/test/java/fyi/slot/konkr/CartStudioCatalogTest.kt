@@ -36,4 +36,19 @@ class CartStudioCatalogTest {
         assertEquals(a.crc, b.crc)
         assertArrayEquals(a.head, b.head)
     }
+
+    @Test fun superNintendoCopierHeadersAreLeftOutAsNoIntroListsThem() {
+        val rom = ByteArray(0x8000) { (it * 7 % 251).toByte() }
+        val crc = java.util.zip.CRC32().apply { update(rom) }.value
+        val headed = ByteArray(512) + rom
+        val chunked = object : ByteArrayInputStream(headed) {
+            override fun read(b: ByteArray, off: Int, len: Int): Int =
+                super.read(b, off, minOf(len, 300))
+        }
+        assertEquals(crc, CartStudioCatalog.fingerprintStream(ByteArrayInputStream(rom), copierHeader = true).crc)
+        assertEquals(crc, CartStudioCatalog.fingerprintStream(chunked, copierHeader = true).crc)
+        // NES and Mega Drive carts are listed whole.
+        assertEquals(java.util.zip.CRC32().apply { update(headed) }.value,
+            CartStudioCatalog.fingerprintStream(ByteArrayInputStream(headed)).crc)
+    }
 }
