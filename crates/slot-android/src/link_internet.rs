@@ -4,7 +4,7 @@
 //!
 //!   L1 / R1     Local / Internet tab (on the Host/Join picker)
 //!   Host, A     the relay opens a room; its code is shown, Y shares it
-//!   Join, A     type the six digits: Up/Down change, Left/Right move, A joins
+//!   Join, A     type the four digits: Up/Down change, Left/Right move, A joins
 
 use std::path::Path;
 
@@ -62,12 +62,11 @@ impl CodeEntry {
         self.digits.iter().map(|d| char::from(b'0' + d)).collect()
     }
 
-    /// "4 8 [2] 9 1 3": the digit being changed is in brackets.
+    /// "4 8 [2] 9": the digit being changed is in brackets.
     pub fn text(&self) -> String {
         let mut out = String::new();
         for (i, d) in self.digits.iter().enumerate() {
             if i > 0 { out.push(' '); }
-            if i == 3 { out.push(' '); }
             if i == self.cursor { out.push_str(&format!("[{d}]")); }
             else { out.push(char::from(b'0' + d)); }
         }
@@ -157,28 +156,27 @@ mod tests {
     #[test]
     fn code_entry_wraps_digits_and_cursor() {
         let mut e = CodeEntry::new(None);
-        assert_eq!(e.code(), "000000");
+        assert_eq!(e.code(), "0000");
         e.down();
-        assert_eq!(e.code(), "900000");
+        assert_eq!(e.code(), "9000");
         e.up(); e.up();
-        assert_eq!(e.code(), "100000");
+        assert_eq!(e.code(), "1000");
         e.left();
         e.up();
-        assert_eq!(e.code(), "100001");
+        assert_eq!(e.code(), "1001");
         e.right(); // back to the first digit
-        e.type_digit(4); e.type_digit(8); e.type_digit(2);
-        e.type_digit(9); e.type_digit(1); e.type_digit(3); e.type_digit(7);
-        assert_eq!(e.code(), "482917", "the last digit is overwritten, never a seventh");
-        assert_eq!(CodeEntry::new(Some("482 913")).code(), "482913");
-        assert_eq!(CodeEntry::new(Some("12")).code(), "000000");
+        e.type_digit(4); e.type_digit(8); e.type_digit(2); e.type_digit(9); e.type_digit(7);
+        assert_eq!(e.code(), "4827", "the last digit is overwritten, never a fifth");
+        assert_eq!(CodeEntry::new(Some("48 29")).code(), "4829");
+        assert_eq!(CodeEntry::new(Some("12")).code(), "0000");
     }
 
     #[test]
     fn the_digit_being_changed_is_bracketed() {
-        let mut e = CodeEntry::new(Some("482913"));
-        assert_eq!(e.text(), "[4] 8 2  9 1 3");
+        let mut e = CodeEntry::new(Some("4829"));
+        assert_eq!(e.text(), "[4] 8 2 9");
         e.left();
-        assert_eq!(e.text(), "4 8 2  9 1 [3]");
+        assert_eq!(e.text(), "4 8 2 [9]");
     }
 
     #[test]
@@ -191,8 +189,8 @@ mod tests {
         let waiting = GameMenu::Working { role: LinkRow::Host, step: LinkStep::Waiting, since: 0 };
         assert_eq!(ui.heading(waiting).as_deref(), Some("Opening a room"));
         assert!(!ui.can_share(waiting));
-        ui.room = Some("482913".into());
-        assert_eq!(ui.heading(waiting).as_deref(), Some("Code 482 913"));
+        ui.room = Some("4829".into());
+        assert_eq!(ui.heading(waiting).as_deref(), Some("Code 4829"));
         assert!(ui.can_share(waiting));
         assert!(ui.keeps_room_in_background(waiting));
         ui.end_attempt();
@@ -202,9 +200,9 @@ mod tests {
 
     #[test]
     fn share_text_names_the_game_and_the_code() {
-        let text = share_text("482913", "Pokémon Emerald");
+        let text = share_text("4829", "Pokémon Emerald");
         assert!(text.contains("Pokémon Emerald"));
-        assert!(text.contains("482 913"));
+        assert!(text.contains("4829"));
     }
 
     #[test]

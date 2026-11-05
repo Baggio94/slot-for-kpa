@@ -3,15 +3,16 @@
 //! On a home network the consoles find each other with mDNS and one of them
 //! listens. Over the Internet neither can listen (home routers, CGNAT), so
 //! both dial out to a small relay instead (`tools/slot-relay`). The host asks
-//! for a room and is given a six-digit code; the player who types that code
+//! for a room and is given a four-digit code; the player who types that code
 //! is paired with it, and from then on the relay copies bytes both ways and
 //! understands none of them. The KMLB greeting, ROM/BIOS exchange and the
 //! game itself run over the relayed socket exactly as they do over Wi-Fi.
 //!
-//! Wire format, version 1. Every client opens with `SLRY`, the version, then
-//!   `H`               host: the relay answers `C` + six ASCII digits, then
+//! Wire format, version 2 (version 1 had six-digit codes). Every client
+//! opens with `SLRY`, the version, then
+//!   `H`               host: the relay answers `C` + four ASCII digits, then
 //!                     `K` every few seconds while nobody has come, then `P`
-//!   `J` + six digits  join: the relay answers `P` (paired) or a refusal
+//!   `J` + 4 digits    join: the relay answers `P` (paired) or a refusal
 //! Refusals are one byte: `N` no such room, `B` too many tries, `F` relay
 //! full, `V` unsupported version. After `P` the socket is the other player's.
 //!
@@ -23,9 +24,9 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 pub const MAGIC: &[u8; 4] = b"SLRY";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 pub const DEFAULT_PORT: u16 = 7212;
-pub const CODE_LEN: usize = 6;
+pub const CODE_LEN: usize = 4;
 
 pub const OP_HOST: u8 = b'H';
 pub const OP_JOIN: u8 = b'J';
@@ -44,20 +45,16 @@ const DIAL: Duration = Duration::from_secs(6);
 /// this long means the relay or the route to it is gone.
 const SILENCE: Duration = Duration::from_secs(45);
 
-/// Six digits, whatever was typed or pasted around them ("482 913",
-/// "482-913", "code: 482913"). Anything else is not a room code.
+/// Four digits, whatever was typed or pasted around them ("48 29",
+/// "48-29", "code: 4829"). Anything else is not a room code.
 pub fn normalize_code(raw: &str) -> Option<String> {
     let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
     (digits.len() == CODE_LEN).then_some(digits)
 }
 
-/// "482913" is shown and shared as "482 913": easier to read out or copy.
+/// Four digits are read out and shared as they are: "4829".
 pub fn display_code(code: &str) -> String {
-    if code.len() == CODE_LEN && code.is_ascii() {
-        format!("{} {}", &code[..3], &code[3..])
-    } else {
-        code.to_owned()
-    }
+    code.to_owned()
 }
 
 /// `host`, `host:port`, `1.2.3.4` or `[::1]:7212`. Port defaults to 7212.
@@ -198,7 +195,7 @@ pub fn host(relay: &str, bound: Duration, cancelled: &dyn Fn() -> bool,
 pub fn join(relay: &str, code: &str, cancelled: &dyn Fn() -> bool)
     -> io::Result<TcpStream> {
     let code = normalize_code(code).ok_or_else(|| io::Error::new(
-        io::ErrorKind::InvalidInput, "a room code is six digits"))?;
+        io::ErrorKind::InvalidInput, "a room code is four digits"))?;
     let mut stream = dial(relay)?;
     stream.set_write_timeout(Some(DIAL))?;
     let mut hello = Vec::with_capacity(6 + CODE_LEN);
@@ -218,13 +215,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codes_are_six_digits_whatever_surrounds_them() {
-        assert_eq!(normalize_code("482913").as_deref(), Some("482913"));
-        assert_eq!(normalize_code(" 482 913 ").as_deref(), Some("482913"));
-        assert_eq!(normalize_code("code: 482-913").as_deref(), Some("482913"));
+    fn codes_are_four_digits_whatever_surrounds_them() {
+        assert_eq!(normalize_code("4829").as_deref(), Some("4829"));
+        assert_eq!(normalize_code(" 48 29 ").as_deref(), Some("4829"));
+        assert_eq!(normalize_code("code: 48-29").as_deref(), Some("4829"));
+        assert_eq!(normalize_code("482"), None);
         assert_eq!(normalize_code("48291"), None);
-        assert_eq!(normalize_code("4829130"), None);
-        assert_eq!(display_code("482913"), "482 913");
+        assert_eq!(display_code("4829"), "4829");
     }
 
     #[test]

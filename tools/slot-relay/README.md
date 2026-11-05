@@ -1,7 +1,7 @@
 # slot-relay
 
 The small server that lets two slot. consoles play Multiplayer over the
-Internet. The host opens a room and gets a six-digit code; the friend types
+Internet. The host opens a room and gets a four-digit code; the friend types
 the code; the relay then copies bytes between the two consoles. Both consoles
 only dial *out*, so home routers, CGNAT and mobile data need no setup.
 
@@ -71,7 +71,7 @@ Variables → New repository variable* `SLOT_RELAY_ADDR`, then re-run the build.
 
 Defaults in `Limits::default()` (`src/main.rs`): a room waits 15 minutes for
 its friend, a linked pair silent for 30 minutes is closed, 4 open rooms per
-address, 2000 rooms, and 12 wrong codes per address per 10 minutes before
+address, 300 rooms, and 12 wrong codes per address per 10 minutes before
 that address is refused for a while.
 
 ## Test

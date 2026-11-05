@@ -1,6 +1,6 @@
 //! slot-relay: lets two slot. consoles meet over the Internet with a room code.
 //!
-//! The host dials in and is given a six-digit code; the friend dials in with
+//! The host dials in and is given a four-digit code; the friend dials in with
 //! that code; from then on the relay copies bytes between the two sockets and
 //! looks at none of them. Both consoles only ever dial *out*, so home routers,
 //! CGNAT and mobile data need no configuration. Protocol: see
@@ -21,8 +21,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MAGIC: &[u8; 4] = b"SLRY";
-const VERSION: u8 = 1;
-const CODE_LEN: usize = 6;
+const VERSION: u8 = 2;
+const CODE_LEN: usize = 4;
 const OP_HOST: u8 = b'H';
 const OP_JOIN: u8 = b'J';
 const REPLY_CODE: u8 = b'C';
@@ -57,7 +57,9 @@ impl Default for Limits {
             keepalive: Duration::from_secs(10),
             idle: Duration::from_secs(30 * 60),
             max_connections: 4000,
-            max_rooms: 2000,
+            // Four digits are 10 000 codes: keep open rooms few enough that
+            // a guessed code is almost never someone's (with the strikes).
+            max_rooms: 300,
             rooms_per_ip: 4,
             strikes: 12,
             strike_window: Duration::from_secs(10 * 60),
@@ -102,8 +104,8 @@ fn random_code() -> String {
         }
         let n = u32::from_le_bytes(bytes);
         // Reject the top sliver so every code is equally likely.
-        if n < u32::MAX - (u32::MAX % 1_000_000) {
-            return format!("{:06}", n % 1_000_000);
+        if n < u32::MAX - (u32::MAX % 10_000) {
+            return format!("{:04}", n % 10_000);
         }
     }
 }
@@ -342,7 +344,7 @@ mod tests {
     fn host_and_join_are_paired_and_bytes_cross_both_ways() {
         let relay = start(Limits::default());
         let (code, host) = open_room(&relay, Duration::from_secs(10));
-        assert_eq!(code.len(), 6);
+        assert_eq!(code.len(), 4);
         assert!(code.bytes().all(|b| b.is_ascii_digit()));
         let mut joiner = client::join(&relay, &client::display_code(&code), &never).unwrap();
         let mut host = host.join().unwrap().unwrap();
@@ -376,10 +378,10 @@ mod tests {
     fn a_wrong_code_is_refused_and_guessing_is_stopped() {
         let relay = start(Limits { strikes: 3, ..Limits::default() });
         for _ in 0..2 {
-            let e = client::join(&relay, "000000", &never).unwrap_err();
+            let e = client::join(&relay, "0000", &never).unwrap_err();
             assert_eq!(e.kind(), io::ErrorKind::NotFound);
         }
-        let e = client::join(&relay, "000001", &never).unwrap_err();
+        let e = client::join(&relay, "0001", &never).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
         // Even a right code is refused while struck out.
         let (code, _host) = open_room(&relay, Duration::from_secs(5));
@@ -452,10 +454,10 @@ mod tests {
     }
 
     #[test]
-    fn codes_are_six_digits() {
+    fn codes_are_four_digits() {
         for _ in 0..1000 {
             let c = random_code();
-            assert_eq!(c.len(), 6);
+            assert_eq!(c.len(), 4);
             assert!(c.bytes().all(|b| b.is_ascii_digit()));
         }
     }

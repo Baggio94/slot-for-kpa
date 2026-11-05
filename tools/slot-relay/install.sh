@@ -100,7 +100,7 @@ fi
 say "Checking"
 sleep 1
 systemctl is-active --quiet slot-relay || { journalctl -u slot-relay -n 20 --no-pager; exit 1; }
-reply="$(timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT; printf 'SLRY\001H' >&3; head -c 1 <&3" 2>/dev/null || true)"
+reply="$(timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT; printf 'SLRY\002H' >&3; head -c 1 <&3" 2>/dev/null || true)"
 if [ "$reply" = "C" ]; then echo "slot-relay answers on port $PORT."; else
     echo "slot-relay runs but did not answer as expected." >&2; fi
 ip="$(curl -fsS -4 --max-time 5 https://ifconfig.me 2>/dev/null || true)"
