@@ -114,6 +114,13 @@ fn tex(out: &mut Vec<Draw>, s: Sprite, x: f32, y: f32, alpha: f32) {
 }
 
 pub fn draw_link_art(menu: GameMenu, now: Millis, s: &LinkSprites, marks: &Marks, out: &mut Vec<Draw>) {
+    draw_link_art_with(menu, now, s, marks, true, out)
+}
+
+/// `arrows`: the Host/Join swap arrows of the picker. Hidden while a room
+/// code is being typed over that same screen.
+pub fn draw_link_art_with(menu: GameMenu, now: Millis, s: &LinkSprites, marks: &Marks,
+                          arrows: bool, out: &mut Vec<Draw>) {
     let role = match menu {
         GameMenu::Pick(role) | GameMenu::Working { role, .. } | GameMenu::Linked { role, .. } |
         GameMenu::Failed { role, .. } | GameMenu::Unplug { role, .. } => role,
@@ -172,7 +179,7 @@ pub fn draw_link_art(menu: GameMenu, now: Millis, s: &LinkSprites, marks: &Marks
             tex(out, marks.clicks, x - marks.clicks.w as f32 / 2.0, y, a);
         }
     }
-    if matches!(menu, GameMenu::Pick(_)) {
+    if arrows && matches!(menu, GameMenu::Pick(_)) {
         let dx = centre - slot_gfx::BASE_W as f32 / 2.0;
         tex(out, marks.arrow_left, ARROW_LEFT_X + dx, ARROW_Y, 0.7);
         tex(out, marks.arrow_right, ARROW_RIGHT_X + dx, ARROW_Y, 0.7);

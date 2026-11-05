@@ -116,11 +116,9 @@ impl InternetUi {
         if let Some(entry) = &self.entry {
             return Some(format!("Code {}", entry.text()));
         }
+        // The picker keeps its stock Host/Join faces on both tabs: the
+        // legend's L1 Local / R1 Internet says which tab is selected.
         match menu {
-            GameMenu::Pick(role) if self.internet => Some(match role {
-                LinkRow::Host => "Host over Internet".into(),
-                LinkRow::Join => "Join over Internet".into(),
-            }),
             GameMenu::Working { role, .. } if self.session => Some(match role {
                 LinkRow::Host => match &self.room {
                     Some(code) => format!("Code {}", display_code(code)),
@@ -184,7 +182,7 @@ mod tests {
         let mut ui = InternetUi::default();
         assert_eq!(ui.heading(GameMenu::Pick(LinkRow::Host)), None, "Local keeps stock faces");
         ui.internet = true;
-        assert_eq!(ui.heading(GameMenu::Pick(LinkRow::Join)).as_deref(), Some("Join over Internet"));
+        assert_eq!(ui.heading(GameMenu::Pick(LinkRow::Join)), None, "Host/Join stay as they are");
         ui.session = true;
         let waiting = GameMenu::Working { role: LinkRow::Host, step: LinkStep::Waiting, since: 0 };
         assert_eq!(ui.heading(waiting).as_deref(), Some("Opening a room"));

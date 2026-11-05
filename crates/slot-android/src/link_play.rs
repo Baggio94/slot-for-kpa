@@ -13,6 +13,8 @@ use crate::link_sync::{self, Sync};
 use crate::multiplayer::Role;
 
 const MAX_RECEIVE_PER_FRAME: usize = 256;
+/// Internet links send a round-trip PING every this many frames.
+const PING_EVERY_FRAMES: u64 = 30;
 const MAX_INITIAL_STATE: usize = 16 * 1024 * 1024;
 const MAX_FUTURE_FRAMES: u64 = 256;
 // Original Slot cable::state_packets emits at most 60,000 state bytes per
@@ -139,6 +141,9 @@ pub struct LinkPlay {
     // mGBA pair: desync check every two seconds, resync from Host's pair.
     sync: Option<Sync>,
     initial_state_timeout: Duration,
+    /// Internet: measure the round trip (PING/PONG) to set the input delay.
+    internet: bool,
+    next_ping_frame: u64,
 }
 
 impl LinkPlay {
@@ -230,6 +235,8 @@ impl LinkPlay {
             initial_state_timeout: if internet_profile() {
                 INTERNET_INITIAL_STATE_TIMEOUT
             } else { INITIAL_STATE_TIMEOUT },
+            internet: internet_profile(),
+            next_ping_frame: 0,
         })
     }
 
@@ -347,6 +354,21 @@ impl LinkPlay {
             let Some(packet) = self.wire.try_recv() else { break };
             self.pacing.packets += 1;
             if let Some(cable) = self.cable.as_mut() {
+                if cable::is_ping_packet(&packet) {
+                    // Internet round-trip probe: answer a PING at once; a
+                    // PONG is ours coming back.
+                    if let Some(pong) = cable::pong_for(&packet) {
+                        self.wire.send(NETPACKET_RELIABLE, &pong);
+                    } else if let Some(stamp) = cable::pong_stamp(&packet) {
+                        let now = self.started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+                        let rtt = Duration::from_micros(now.saturating_sub(stamp));
+                        if let Some(target) = cable.note_rtt(rtt) {
+                            report(&format!("Link Internet: round trip {} ms, input delay target {target} frames",
+                                rtt.as_millis()));
+                        }
+                    }
+                    continue;
+                }
                 if link_sync::is_sync_packet(&packet) {
                     let current = cable.frame();
                     let accepted = self.sync.as_mut()
@@ -455,6 +477,12 @@ impl LinkPlay {
                     self.wire.send(NETPACKET_RELIABLE, packet);
                 }
                 if self.wire.is_closed() { return self.fail(LinkError::Disconnected); }
+            }
+            if self.internet && cable.frame() >= self.next_ping_frame {
+                // Twice a second: the stamp is this side's link clock.
+                self.next_ping_frame = cable.frame() + PING_EVERY_FRAMES;
+                let stamp = self.started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+                self.wire.send(NETPACKET_RELIABLE, &cable::ping_packet(stamp));
             }
             if let Some(sync) = self.sync.as_mut() {
                 let frame = cable.frame();

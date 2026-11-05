@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::time::Duration;
 
 use slot_retro::ButtonMask;
 
@@ -27,6 +28,47 @@ const KIND_MASK: u8 = 0;
 const KIND_STATE: u8 = 1;
 const KIND_STATE_END: u8 = 2;
 const KIND_READY: u8 = 3;
+// 4..=7 are link_sync's. Internet links measure their round trip with a
+// PING carrying the sender's clock, answered by a PONG echoing it. Never
+// sent on Wi-Fi, so Local peers of any version never see them.
+pub const KIND_PING: u8 = 8;
+pub const KIND_PONG: u8 = 9;
+const PING_LEN: usize = 9;
+/// One frame at 60 Hz, in milliseconds.
+const FRAME_MS: f64 = 1000.0 / 60.0;
+/// Round trips remembered; the worst of them sets the delay, which covers
+/// the jitter of a few seconds rather than the average.
+const RTT_SAMPLES: usize = 8;
+/// With a measured round trip, lower one frame after 2 s without a stall
+/// (instead of 10 s), and wait 5 s after the round trip asked for a raise.
+const RTT_LOWER_AFTER_CALM: u32 = 120;
+const RTT_HOLD_AFTER_RAISE: u32 = 300;
+
+pub fn ping_packet(stamp_us: u64) -> [u8; PING_LEN] {
+    let mut out = [0u8; PING_LEN];
+    out[0] = KIND_PING;
+    out[1..].copy_from_slice(&stamp_us.to_le_bytes());
+    out
+}
+
+pub fn is_ping_packet(buf: &[u8]) -> bool {
+    buf.len() == PING_LEN && matches!(buf[0], KIND_PING | KIND_PONG)
+}
+
+/// The answer to a PING: the same stamp, sent straight back.
+pub fn pong_for(buf: &[u8]) -> Option<[u8; PING_LEN]> {
+    if buf.len() != PING_LEN || buf[0] != KIND_PING { return None; }
+    let mut out = [0u8; PING_LEN];
+    out.copy_from_slice(buf);
+    out[0] = KIND_PONG;
+    Some(out)
+}
+
+/// The stamp a PONG carries back: now minus it is the round trip.
+pub fn pong_stamp(buf: &[u8]) -> Option<u64> {
+    if buf.len() != PING_LEN || buf[0] != KIND_PONG { return None; }
+    Some(u64::from_le_bytes(buf[1..].try_into().ok()?))
+}
 
 const CHUNK: usize = 60_000;
 
@@ -74,6 +116,8 @@ pub fn state_packets(state: &[u8]) -> Vec<Vec<u8>> {
 pub struct AdaptiveDelay {
     delay: u64,
     ceiling: u64,
+    /// Internet: the delay the measured round trip calls for.
+    rtt_target: Option<u64>,
     stalls: u32,
     window: u32,
     calm: u32,
@@ -87,8 +131,33 @@ impl AdaptiveDelay {
 
     pub fn with_ceiling(delay: u64, ceiling: u64) -> Self {
         let ceiling = ceiling.max(MIN_DELAY);
-        AdaptiveDelay { delay: delay.clamp(MIN_DELAY, ceiling), ceiling,
+        AdaptiveDelay { delay: delay.clamp(MIN_DELAY, ceiling), ceiling, rtt_target: None,
             stalls: 0, window: 0, calm: 0, hold: 0 }
+    }
+
+    /// Both consoles delay their own inputs, so together they must cover one
+    /// round trip: each takes half of it, plus one frame for jitter and for
+    /// where in its frame each console happens to be.
+    pub fn target_for_rtt(rtt_ms: f64, ceiling: u64) -> u64 {
+        let half = (rtt_ms.max(0.0) / 2.0 / FRAME_MS).ceil() as u64;
+        (half + 1).clamp(MIN_DELAY, ceiling.max(MIN_DELAY))
+    }
+
+    /// A new round-trip target. Below it, the delay rises at once (stalls
+    /// are certain otherwise); above it, it comes down faster than on Wi-Fi
+    /// but never below it.
+    pub fn set_rtt_target(&mut self, target: u64) {
+        let target = target.clamp(MIN_DELAY, self.ceiling);
+        self.rtt_target = Some(target);
+        if self.delay < target {
+            self.delay = target;
+            self.hold = RTT_HOLD_AFTER_RAISE;
+            self.calm = 0;
+        }
+    }
+
+    pub fn rtt_target(&self) -> Option<u64> {
+        self.rtt_target
     }
 
     /// Let this link climb to `ceiling` (Internet play). Never lowers the
@@ -125,7 +194,11 @@ impl AdaptiveDelay {
             return self.delay;
         }
         self.calm = self.calm.saturating_add(1);
-        if self.calm >= LOWER_AFTER_CALM && self.hold == 0 && self.delay > MIN_DELAY {
+        let (after, floor) = match self.rtt_target {
+            Some(target) => (RTT_LOWER_AFTER_CALM, target.max(MIN_DELAY)),
+            None => (LOWER_AFTER_CALM, MIN_DELAY),
+        };
+        if self.calm >= after && self.hold == 0 && self.delay > floor {
             self.delay -= 1;
             self.calm = 0;
         }
@@ -139,6 +212,8 @@ pub struct Cable {
     // First local frame not yet sampled. Frames below it are sent and fixed.
     next_local: u64,
     adaptive: AdaptiveDelay,
+    /// Internet: the last round trips, in milliseconds.
+    rtts: VecDeque<f64>,
     local: BTreeMap<u64, ButtonMask>,
     remote: BTreeMap<u64, ButtonMask>,
     stalled: u32,
@@ -157,6 +232,7 @@ impl Cable {
             frame: 0,
             next_local: DELAY,
             adaptive: AdaptiveDelay::new(DELAY),
+            rtts: VecDeque::new(),
             local: seed.clone(),
             remote: seed,
             stalled: 0,
@@ -271,6 +347,18 @@ impl Cable {
         self.stalled = 0;
     }
 
+    /// Internet: a measured round trip. The worst of the last few sets the
+    /// delay target. Returns the target when it changed (for the log).
+    pub fn note_rtt(&mut self, rtt: Duration) -> Option<u64> {
+        if self.rtts.len() == RTT_SAMPLES { self.rtts.pop_front(); }
+        self.rtts.push_back(rtt.as_secs_f64() * 1000.0);
+        let worst = self.rtts.iter().copied().fold(0.0, f64::max);
+        let target = AdaptiveDelay::target_for_rtt(worst, self.adaptive.ceiling);
+        let changed = self.adaptive.rtt_target() != Some(target);
+        self.adaptive.set_rtt_target(target);
+        changed.then_some(target)
+    }
+
     /// Internet play: the input delay may climb to INTERNET_MAX_DELAY.
     pub fn allow_internet_delay(&mut self) {
         self.adaptive.raise_ceiling(INTERNET_MAX_DELAY);
@@ -291,6 +379,62 @@ pub const QUIET_FRAMES: u32 = 60;
 
 #[cfg(test)]
 mod adaptive_tests {
+    #[test]
+    fn round_trip_sets_each_side_half_plus_a_frame() {
+        // 30 ms: half is 15 ms, under one frame, plus one frame of margin.
+        assert_eq!(AdaptiveDelay::target_for_rtt(30.0, INTERNET_MAX_DELAY), 2);
+        assert_eq!(AdaptiveDelay::target_for_rtt(0.0, INTERNET_MAX_DELAY), 1);
+        // 100 ms: 50 ms is three frames, plus one.
+        assert_eq!(AdaptiveDelay::target_for_rtt(100.0, INTERNET_MAX_DELAY), 4);
+        assert_eq!(AdaptiveDelay::target_for_rtt(900.0, INTERNET_MAX_DELAY), INTERNET_MAX_DELAY);
+    }
+
+    #[test]
+    fn a_measured_round_trip_brings_the_delay_down_fast_but_not_under_it() {
+        let mut a = AdaptiveDelay::with_ceiling(DELAY, INTERNET_MAX_DELAY);
+        for _ in 0..200 { a.observe(true); }
+        assert_eq!(a.delay(), INTERNET_MAX_DELAY);
+        a.set_rtt_target(2);
+        // The stall raises held the delay for 30 s; after that it falls a
+        // frame every 2 s instead of every 10 s, and stops at the target.
+        for _ in 0..HOLD_AFTER_RAISE { a.observe(false); }
+        for _ in 0..(RTT_LOWER_AFTER_CALM * 20) { a.observe(false); }
+        assert_eq!(a.delay(), 2);
+    }
+
+    #[test]
+    fn a_longer_round_trip_raises_the_delay_at_once() {
+        let mut a = AdaptiveDelay::with_ceiling(DELAY, INTERNET_MAX_DELAY);
+        a.set_rtt_target(6);
+        assert_eq!(a.delay(), 6);
+        for _ in 0..RTT_HOLD_AFTER_RAISE { a.observe(false); }
+        for _ in 0..(RTT_LOWER_AFTER_CALM * 10) { a.observe(false); }
+        assert_eq!(a.delay(), 6, "never below what the round trip needs");
+    }
+
+    #[test]
+    fn the_worst_recent_round_trip_counts() {
+        let mut c = Cable::new(0);
+        c.allow_internet_delay();
+        assert_eq!(c.note_rtt(Duration::from_millis(30)), Some(2));
+        assert_eq!(c.note_rtt(Duration::from_millis(100)), Some(4));
+        assert_eq!(c.note_rtt(Duration::from_millis(30)), None, "the 100 ms spike still counts");
+        for _ in 0..RTT_SAMPLES { c.note_rtt(Duration::from_millis(30)); }
+        assert_eq!(c.adaptive.rtt_target(), Some(2), "until it leaves the window");
+    }
+
+    #[test]
+    fn ping_and_pong_carry_the_stamp_back() {
+        let ping = ping_packet(123_456);
+        assert!(is_ping_packet(&ping));
+        assert!(decode(&ping).is_none(), "never mistaken for an input");
+        let pong = pong_for(&ping).unwrap();
+        assert!(is_ping_packet(&pong));
+        assert_eq!(pong_stamp(&pong), Some(123_456));
+        assert_eq!(pong_for(&pong), None);
+        assert!(!crate::link_sync::is_sync_packet(&ping));
+    }
+
     #[test]
     fn internet_delay_climbs_further_but_stays_behind_the_resync_lead() {
         assert!(INTERNET_MAX_DELAY > MAX_DELAY);

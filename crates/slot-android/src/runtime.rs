@@ -2459,8 +2459,7 @@ impl Engine {
         if let Some(event) = event {
             match event {
                 LinkProgress::RoomCode(code) => {
-                    set_message(format!("Room code {}. Press Y to share it with your friend.",
-                        crate::link_relay::display_code(&code)));
+                    // The heading shows the code; Y Share is in the legend.
                     self.link_inet.room = Some(code);
                 }
                 LinkProgress::Looking => {
@@ -2729,8 +2728,11 @@ impl Engine {
                 self.polaroids = None;
                 // Android calls Reset onPause. Retain the *native menu* behind
                 // Apps/Studio while the new Activity animates in, otherwise
-                // the user briefly sees the cartridge carousel again.
-                if !self.external_pending {
+                // the user briefly sees the cartridge carousel again. An
+                // Internet host away sharing its code keeps its room screen.
+                let sharing_room = matches!(self.overlay, ShelfOverlay::Multiplayer)
+                    && self.link_inet.keeps_room_in_background(self.link_phase);
+                if !self.external_pending && !sharing_room {
                     self.overlay = if self.game.as_ref().is_some_and(GameSession::requires_relaunch) {
                         ShelfOverlay::GameMenu { row: 0 }
                     } else { ShelfOverlay::None };
@@ -5191,7 +5193,8 @@ impl Engine {
             colour: opening(),
         });
         let Some(art) = &self.link_art else { return };
-        link_screen::draw_link_art(self.link_phase, self.link_millis(), art, &self.link_marks, out);
+        link_screen::draw_link_art_with(self.link_phase, self.link_millis(), art, &self.link_marks,
+            self.link_inet.entry.is_none(), out);
         let ink = usize::from(art.key.dark_ink());
         let internet_heading = self.link_inet.heading(self.link_phase)
             .filter(|text| *text == self.link_inet_face_text)
