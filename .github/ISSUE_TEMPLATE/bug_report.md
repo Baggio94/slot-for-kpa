@@ -1,6 +1,6 @@
 ---
 name: 🐞 Bug report
-about: Something isn't working in slot. for KONKR Pocket Advance
+about: Something isn't working in slot. for Android
 title: ''
 labels: bug
 assignees: ''
@@ -16,11 +16,11 @@ Describe what you expected, what happened instead, and whether you can reproduce
 2.
 3.
 
-### KONKR / Android / slot. version
+### Device / Android / slot. version
 
-- Device: KONKR Pocket Advance
+- Device (for example KONKR Pocket Advance, Retroid Pocket Classic):
 - Android / firmware:
-- slot. for KONKR version:
+- slot. version:
 - Emulator core (mGBA / gpSP, if relevant):
 
 ### Where does it happen?

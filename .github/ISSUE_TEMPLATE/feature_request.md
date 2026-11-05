@@ -1,6 +1,6 @@
 ---
 name: 🚀 Enhancement
-about: Suggest a feature or improvement for slot. for KONKR Pocket Advance
+about: Suggest a feature or improvement for slot. for Android
 title: ''
 labels: enhancement
 assignees: ''
@@ -12,7 +12,7 @@ Describe the feature or improvement.
 
 ### Why would it be useful?
 
-Explain what it would improve when using slot. on the KONKR Pocket Advance.
+Explain what it would improve when using slot. on your Android handheld.
 
 ### How should it work? (optional)
 

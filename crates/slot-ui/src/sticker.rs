@@ -256,20 +256,11 @@ enum Lower<'a> {
 /// The KONKR port uses the *same* SVG backing, Code39 barcode, typography,
 /// dimensions and logo as original Slot, with truthful port credits.
 pub fn sticker_face_konkr(f: &StickerFields) -> UndoFace {
-    const PORT_CREDITS: [&str; 10] = [
-        "SLOT. FOR KONKR POCKET",
-        "ADVANCE. ORIGINAL SLOT.",
-        "BY BRANDON T. KOWALSKI.",
-        "ANDROID PORT BY BAGGIO94.",
-        "EMULATION: LIBRETRO CORES",
-        "(MGBA, GPSP, GAMBATTE ETC.)",
-        "ORIGINAL UI & CART ART BY",
-        "BRANDON T. KOWALSKI. HOME",
-        "CART ART: SCREENSCRAPER.FR",
-        "TYPE: OPEN SANS, NERD FONTS",
-    ];
+    let mut all = [""; 10];
+    all[..2].copy_from_slice(&["SLOT. FOR ANDROID", "HANDHELDS. ORIGINAL SLOT."]);
+    all[2..].copy_from_slice(&PORT_CREDITS_TAIL);
     sticker_face_custom(
-        f, &PORT_CREDITS, &["S/LOT-KONKR", ""],
+        f, &all, &["S/LOT-KONKR", ""],
         "2026 SLOT. COMMUNITY",
         option_env!("SLOT_KONKR_VERSION").unwrap_or("DEV BUILD"),
         "MODEL NO. KONKR ADV", Lower::Konkr,

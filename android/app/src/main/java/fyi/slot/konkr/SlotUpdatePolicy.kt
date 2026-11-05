@@ -50,6 +50,30 @@ internal object SlotUpdatePolicy {
         return false
     }
 
+    /**
+     * The repository was renamed from slot-for-kpa to slot-for-android, its
+     * tags from konkr-vX.Y.Z to vX.Y.Z and its APKs from slot-for-konkr-* to
+     * slot-for-android-*. Both names are accepted so no install is stranded.
+     */
+    private val REPOS = listOf("slot-for-android", "slot-for-kpa")
+    private val TAG = Regex("""^(?:konkr-)?v(\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)$""")
+
+    fun releasePage(url: String): Boolean =
+        REPOS.any { url.startsWith("https://github.com/Baggio94/$it/releases/") }
+
+    fun assetPath(path: String): Boolean =
+        REPOS.any { path.startsWith("/Baggio94/$it/releases/download/") }
+
+    /** The version a release tag names, or null for any other tag. */
+    fun tagVersion(tag: String): String? = TAG.matchEntire(tag)?.groupValues?.get(1)
+
+    /** 2 for the current APK name, 1 for the old one, 0 for anything else. */
+    fun apkRank(name: String, version: String): Int = when (name) {
+        "slot-for-android-$version-arm64.apk" -> 2
+        "slot-for-konkr-$version-arm64.apk" -> 1
+        else -> 0
+    }
+
     /** Public stable builds never fetch prerelease updates. */
     fun eligible(current: String, candidate: String, prerelease: Boolean): Boolean =
         ((!prerelease && parse(candidate)?.pre == null) || parse(current)?.pre != null) &&

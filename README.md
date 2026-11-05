@@ -1,8 +1,8 @@
-<p align="center"><img src=".github/resources/slot-for-konkr-hero.png" alt="slot. for KONKR Pocket Advance — Android port running on a blue KONKR Pocket Advance" width="100%"></p>
+<p align="center"><img src=".github/resources/slot-for-konkr-hero.png" alt="slot. for Android — running on a blue KONKR Pocket Advance" width="100%"></p>
 
-# slot. for KONKR Pocket Advance
+# slot. for Android
 
-*An unofficial Android port of [slot.](https://slot-cfw.fyi/#hero), made for the KONKR Pocket Advance.*
+*An unofficial Android port of [slot.](https://slot-cfw.fyi/#hero) for Android handhelds — born on the KONKR Pocket Advance.*
 
 ## Why I made this port
 
@@ -20,11 +20,11 @@ Sure, I wish the KONKR's buttons were a little less spongy, but I've gotten used
 
 And that's really what slot. is all about: **less time navigating menus, more time playing games.** Pick a cartridge, pop it in, and start playing. No unnecessary complexity, no distractions — just a simple, natural, cartridge-based experience.
 
-My goal with this port is to preserve everything that makes the original slot. special, while making it feel right at home on the KONKR Pocket Advance.
+My goal with this port is to preserve everything that makes the original slot. special, while making it feel right at home on Android handhelds — starting with the KONKR Pocket Advance.
 
 ## Features
 
-Everything you love about the original slot., now on the KONKR Pocket Advance — with a few extra features that stay true to its original philosophy.
+Everything you love about the original slot., now on Android handhelds — with a few extra features that stay true to its original philosophy.
 
 ### The original slot. experience
 
@@ -39,10 +39,10 @@ Everything you love about the original slot., now on the KONKR Pocket Advance �
 
 ### What's added in this Android port?
 
-Built specifically for the KONKR Pocket Advance
+Built for Android handhelds, with special care for the KONKR Pocket Advance
 
-- **Native Android experience** — Designed for the KONKR's 3:2 display, physical controls and ARM64 hardware.
-- **SLOT button** — Use the KONKR's round top button to insert a cartridge, or hold it while playing to save and eject it. It feels right at home on this handheld.
+- **Native Android experience** — Designed for handheld displays, physical controls and ARM64 hardware, from the KONKR's 3:2 screen to other Android handhelds such as the Retroid Pocket Classic.
+- **SLOT button** — On the KONKR, use the round top button to insert a cartridge, or hold it while playing to save and eject it. It feels right at home on this handheld.
 - **Easy library setup** — Choose your ROM folder directly from Android, with optional BIOS, saves and save states folders.
 - **RetroArch save compatibility** — Share SRAM saves, RTC data and compatible save states with RetroArch, using the same folders and matching emulation cores.
 - **Syncthing-friendly** — Keep your saves synchronized across devices by sharing your RetroArch save and state folders.
@@ -63,8 +63,8 @@ Getting started with slot. is easy. Just point it to your games, pick a cartridg
 
 ### Installation
 
-1. Download the latest APK from [Releases](https://github.com/Baggio94/slot-for-kpa/releases).
-2. Install it on your KONKR Pocket Advance.
+1. Download the latest APK from [Releases](https://github.com/Baggio94/slot-for-kpa/releases/latest).
+2. Install it on your Android handheld (ARM64).
 3. Open **slot.**
 
 ### First-time setup
@@ -152,7 +152,7 @@ The KONKR's round top button is called **slot. cap** in this port. Since it cont
 
 Give your cartridges the artwork they deserve!
 
-slot. for KONKR Pocket Advance includes the original **[Cart Studio](https://studio.slot-cfw.fyi/)**, integrated directly into the app. No computer required.
+slot. for Android includes the original **[Cart Studio](https://studio.slot-cfw.fyi/)**, integrated directly into the app. No computer required.
 
 ### Adding cartridge artwork
 
@@ -202,7 +202,7 @@ slot. supports [RetroAchievements](https://retroachievements.org/) for **GBA, GB
 
 ## Multiplayer
 
-Link up with another KONKR Pocket Advance, just like the good old days!
+Link up with another Android handheld, just like the good old days!
 
 slot. supports multiplayer over local Wi-Fi, with two emulation cores:
 
@@ -221,7 +221,7 @@ slot. supports multiplayer over local Wi-Fi, with two emulation cores:
 
 ## Credits & License
 
-slot. for KONKR Pocket Advance wouldn't exist without the incredible work of the original creators.
+slot. for Android wouldn't exist without the incredible work of the original creators.
 
 Special thanks to:
 
@@ -231,7 +231,7 @@ Special thanks to:
 - **[Watomsk](https://github.com/Watomsk/Overlays)** — The Game Boy, Game Boy Pocket and Game Boy Color overlays, used with permission.
 - **[mGBA](https://mgba.io/), [gpSP](https://github.com/libretro/gpsp), [Gambatte](https://github.com/libretro/gambatte-libretro), [libretro](https://www.libretro.com/) and [RetroAchievements](https://retroachievements.org/)** — The projects and contributors powering emulation and achievements.
 
-This is an **unofficial community port**, not affiliated with or endorsed by the original Slot developers or the KONKR Pocket Advance manufacturer.
+This is an **unofficial community port**, not affiliated with or endorsed by the original Slot developers or any handheld manufacturer.
 
 The Slot-derived source code is distributed under the **[GNU GPL-3.0](LICENSE)**. Third-party components retain their respective licenses and copyright notices.
 

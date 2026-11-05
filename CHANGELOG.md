@@ -1,6 +1,6 @@
-# Changelog — slot. for KONKR Pocket Advance
+# Changelog — slot. for Android
 
-This changelog covers the public releases of the dedicated KONKR Pocket Advance Android port. Earlier development experiments are preserved in Git history.
+This changelog covers the public releases of slot. for Android, an Android port born on the KONKR Pocket Advance (formerly slot. for KONKR Pocket Advance). Earlier development experiments are preserved in Git history.
 
 ## v1.3.4 — 27 October 2026
 
