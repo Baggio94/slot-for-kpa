@@ -2535,11 +2535,19 @@ impl Engine {
         if link_unplug_complete(self.link_phase, self.link_millis()) {
             // A successfully rebuilt solo cartridge resumes *in place*.
             // A failed conversion remains in the fail-closed Eject menu.
+            // A cancelled search or a failure returns to the Host/Join
+            // picker (same role, same Local/Internet tab) to try again;
+            // only B on the picker leaves Multiplayer.
             let relaunch = self.game.as_ref().is_some_and(GameSession::requires_relaunch);
+            let seated = matches!(self.link_phase, LinkMenu::Unplug { from: ReleaseFrom::Seated, .. });
             self.overlay = if relaunch { ShelfOverlay::GameMenu { row: 0 } }
-                else if matches!(self.link_phase, LinkMenu::Unplug { from: ReleaseFrom::Seated, .. }) {
-                    ShelfOverlay::None
-                } else { self.link_entry.back(false, false) };
+                else if seated { ShelfOverlay::None }
+                else {
+                    self.link_phase = LinkMenu::Pick(self.link_role);
+                    self.game_accum = 0.0;
+                    self.buttons = 0;
+                    ShelfOverlay::Multiplayer
+                };
         }
     }
 
