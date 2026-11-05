@@ -74,6 +74,10 @@ class MainActivity : Activity() {
     companion object {
         init { System.loadLibrary("slot_android") }
         private const val TAG = "SlotKonkr"
+        // Haptic-only cart feedback kinds, after CartSounds.INSERT/EJECT
+        // (Rust CART_SEATED_HAPTIC / CART_HOLD_EJECT_HAPTIC).
+        private const val CART_SEATED_HAPTIC = 3
+        private const val CART_HOLD_EJECT_HAPTIC = 4
         // Same bits as slot_retro::sensors.
         private const val SENSOR_ACCELEROMETER = 1
         private const val SENSOR_GYROSCOPE = 2
@@ -1018,7 +1022,7 @@ class MainActivity : Activity() {
                     // Drain on the render thread for frame-accurate insert/eject clicks.
                     var kind = nativePollCartSfx()
                     while (kind != 0) {
-                        cartSounds.play(kind)
+                        cartSounds.play(kind) // ignores the haptic-only kinds
                         val haptic = kind
                         uiHandler.post { cartHaptic(haptic) }
                         kind = nativePollCartSfx()
@@ -1695,21 +1699,22 @@ class MainActivity : Activity() {
         sensorsListening = 0
     }
 
-    /** Felt with the insert/eject click: a firm seat when the cartridge goes
-     *  in, a spring's two short knocks when it comes out. Posted to the UI
-     *  thread so the vibrator call never holds up the GL frame. */
+    /** Short, crisp cartridge feedback using Android's predefined effects,
+     *  which each maker tunes for its own motor: one CLICK when the cartridge
+     *  seats (with the insert clip's click), a lighter TICK when it releases
+     *  (with the eject sound), and a CLICK the moment a held slot. button
+     *  (or SELECT+START) triggers the eject, so the player knows to let go.
+     *  Posted to the UI thread so the vibrator never holds up a GL frame. */
     private fun cartHaptic(kind: Int) {
-        val device = vibrator ?: return
-        if (!device.hasVibrator()) return
         val effect = when (kind) {
-            CartSounds.INSERT -> VibrationEffect.createWaveform(
-                longArrayOf(0L, 14L, 22L, 34L), intArrayOf(0, 90, 0, 230), -1)
-            CartSounds.EJECT -> VibrationEffect.createWaveform(
-                longArrayOf(0L, 26L, 46L, 16L), intArrayOf(0, 200, 0, 110), -1)
+            CART_SEATED_HAPTIC, CART_HOLD_EJECT_HAPTIC -> VibrationEffect.EFFECT_CLICK
+            CartSounds.EJECT -> VibrationEffect.EFFECT_TICK
             else -> return
         }
+        val device = vibrator ?: return
+        if (!device.hasVibrator()) return
         try {
-            device.vibrate(effect)
+            device.vibrate(VibrationEffect.createPredefined(effect))
         } catch (error: RuntimeException) {
             Log.w(TAG, "KONKR cartridge haptic unavailable", error)
         }
