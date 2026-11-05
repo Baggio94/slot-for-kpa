@@ -139,6 +139,25 @@ The KONKR's round top button is called **slot. cap** in this port. Since it cont
 
 **Note:** Unlike the original slot., this Android port uses **START** to open the main menu and **SELECT** to choose the emulator core on the carousel.
 
+### Boktai: the Sun
+
+Boktai 1, 2 and 3 read real sunlight through a sensor on the cartridge. In slot., you choose the sun for each game.
+
+**Calibrate first.** The first time a Boktai game starts, it calibrates its solar sensor and expects darkness. Make sure the Sun is at **0** at that moment, or the gauge will never fill. To calibrate again later, set the Sun to 0 and run the calibration from the game's own options.
+
+**Set the Sun** in the in-game menu, **Settings → Emulation → Sun**. It's saved for each game:
+
+- **0 to 8** in Boktai 1, **0 to 10** in Boktai 2 and 3 — one bar of the gauge per level.
+- **SENSOR** — the handheld's light sensor, on handhelds that have one.
+- **AUTO** — follows the time of day: night until 6:00, full sun at 13:00, night again from 20:00.
+
+| Button | Action |
+|---|---|
+| <kbd>R3</kbd> or <kbd>SELECT</kbd> + <kbd>R2</kbd> | More sun |
+| <kbd>L3</kbd> or <kbd>SELECT</kbd> + <kbd>L2</kbd> | Less sun |
+
+The shortcuts go through every setting in order: 0, 1 … 8 or 10, SENSOR, AUTO, then back to 0. A banner shows the new setting. The Sun can't be changed during Multiplayer.
+
 ## Cart Studio
 
 Your cartridges dress themselves: slot. fetches their labels automatically while you're online, for every system.
