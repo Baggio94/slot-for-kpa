@@ -1,5 +1,5 @@
 use slot_ui::{ease, out_w, Draw, Millis, TexId, ARROW_LEFT_X, ARROW_RIGHT_X, ARROW_Y};
-use slot_ui::link_hardware::{Hardware, BAR_Y, SOCKET_CENTRE};
+use slot_ui::link_hardware::{Hardware, BAR_Y};
 use crate::app::{GameMenu, LinkRow, ReleaseFrom};
 
 #[derive(Copy, Clone)]
@@ -23,6 +23,7 @@ pub struct LinkSprites {
     pub front: Sprite,
     pub socket: Sprite,
     pub rim: Sprite,
+    pub contact: Sprite,
     pub grips: [Sprite; 2],
     pub nose: Sprite,
     pub buttons: Option<[[Sprite; 2]; 2]>,
@@ -123,26 +124,28 @@ pub fn draw_link_art(menu: GameMenu, now: Millis, s: &LinkSprites, marks: &Marks
     let x = centre + key.offset(join);
     let grip = s.grips[role.index()];
     let height = grip.h as f32;
-    let seated = key.lip() + 8.5 + height - key.shoulder();
-    let tip = lerp(READY_TIP, seated, travel(menu, now, key.wireless));
+    let seated = BAR_Y + height - key.shoulder();
+    let ready = READY_TIP - key.travel_offset();
+    let tip = lerp(ready, seated, travel(menu, now, key.wireless));
     let y = tip - height;
     let left = x - grip.w as f32 / 2.0;
     let alpha = grip_alpha(menu, now, key.wireless);
     let sx = x - s.socket.w as f32 / 2.0;
-    let sy = BAR_Y + SOCKET_CENTRE - 16.0;
     tex(out, s.wall, 0.0, BAR_Y, 1.0);
-    if tip < seated - 0.5 {
-        tex(out, s.socket, sx, sy, 1.0);
-        tex(out, s.nose, left, y, alpha);
-        if tip > key.lip() {
-            // Only the metal and plastic shank passes behind the near rim.
-            tex(out, s.front, 0.0, BAR_Y, 1.0);
-            tex(out, s.rim, sx, sy, 1.0);
-        }
-    }
+    tex(out, s.socket, sx, BAR_Y, 1.0);
     if key.dual() {
-        tex(out, s.socket, centre + key.offset(!join) - s.socket.w as f32 / 2.0, sy, 1.0);
+        tex(out, s.socket, centre + key.offset(!join) - s.socket.w as f32 / 2.0, BAR_Y, 1.0);
     }
+    tex(out, s.nose, left, y, alpha);
+    // The fixed, perforated fascia covers the shank outside the receiver.
+    // Its mouth, lip and remaining port never disappear as the plug seats.
+    tex(out, s.front, 0.0, BAR_Y, 1.0);
+    tex(out, s.rim, sx, BAR_Y, 1.0);
+    if key.dual() {
+        tex(out, s.rim, centre + key.offset(!join) - s.rim.w as f32 / 2.0, BAR_Y, 1.0);
+    }
+    let contact = ease(((9.0-(seated-tip))/9.0).clamp(0.0,1.0))*alpha;
+    tex(out, s.contact, left, BAR_Y, contact);
     if let Some(buttons) = s.buttons.as_ref().filter(|_| key.wireless) {
         let pressure = match menu {
             GameMenu::Unplug { since, .. } => eased(now, since, RFU_RELEASE_MS) * (1.0 - eased(now, since + 205, 115)),
@@ -165,7 +168,7 @@ pub fn draw_link_art(menu: GameMenu, now: Millis, s: &LinkSprites, marks: &Marks
     } else {
         let a = clicks_alpha(menu, now);
         if a > 0.0 {
-            let y = BAR_Y - if key.side_exit() { 41.0 } else { 31.0 };
+            let y = BAR_Y - if key.side_exit() { 41.0 + key.travel_offset() } else { 31.0 };
             tex(out, marks.clicks, x - marks.clicks.w as f32 / 2.0, y, a);
         }
     }
@@ -173,5 +176,77 @@ pub fn draw_link_art(menu: GameMenu, now: Millis, s: &LinkSprites, marks: &Marks
         let dx = centre - slot_gfx::BASE_W as f32 / 2.0;
         tex(out, marks.arrow_left, ARROW_LEFT_X + dx, ARROW_Y, 0.7);
         tex(out, marks.arrow_right, ARROW_RIGHT_X + dx, ARROW_Y, 0.7);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{LinkFail,LinkStep};
+
+    #[test]
+    fn moving_the_receiver_preserves_the_full_motion_and_speed() {
+        for family in 0..7 {
+            for wireless in [false,true] {
+                let key = Hardware::new(family,0,wireless);
+                let height = if key.wireless {151.} else {244.};
+                let old_seat = BAR_Y+key.travel_offset()+height-key.shoulder();
+                let new_seat = BAR_Y+height-key.shoulder();
+                let new_ready = READY_TIP-key.travel_offset();
+                for dt in [0,25,50,100,150,199,200,1000] {
+                    let menu = GameMenu::Working { role:LinkRow::Host, step:LinkStep::Waiting, since:100 };
+                    let t = travel(menu,100+dt,key.wireless);
+                    let old_tip = lerp(READY_TIP,old_seat,t);
+                    let new_tip = lerp(new_ready,new_seat,t);
+                    assert!((old_tip-new_tip-key.travel_offset()).abs()<0.0001);
+                    if dt==100 { assert_eq!(t,0.5); }
+                    if dt>=200 { assert_eq!(t,1.); }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clicks_require_a_real_link_and_remain_visible_when_its_menu_reopens() {
+        for role in LinkRow::ALL {
+            let linked = GameMenu::Linked { role,worked:0,since:100,opened:false };
+            assert_eq!(clicks_alpha(linked,100),0.);
+            assert_eq!(clicks_alpha(linked,180),0.5);
+            assert_eq!(clicks_alpha(linked,260),1.);
+            assert_eq!(clicks_alpha(linked,100_000),1.);
+            let reopened = GameMenu::Linked {role,worked:0,since:100_000,opened:true};
+            assert_eq!(travel(reopened,100_000,false),1.);
+            assert_eq!(clicks_alpha(reopened,100_000),1.);
+            for menu in [
+                GameMenu::Pick(role),
+                GameMenu::Working {role,step:LinkStep::Radio,since:0},
+                GameMenu::Working {role,step:LinkStep::Waiting,since:0},
+                GameMenu::Failed {role,fail:LinkFail::PeerVanished,worked:0,since:200},
+                GameMenu::Unplug {role,since:200,from:ReleaseFrom::Seated},
+            ] {
+                assert_eq!(clicks_alpha(menu,1000),0.);
+            }
+        }
+    }
+
+    #[test]
+    fn cancelling_search_or_failure_withdraws_without_a_position_jump() {
+        for wireless in [false,true] {
+            let role = LinkRow::Join;
+            let search = GameMenu::Working {role,step:LinkStep::Waiting,since:100};
+            let failed = GameMenu::Failed {role,fail:LinkFail::NobodyCame,worked:100,since:190};
+            for (previous,from,since) in [
+                (search,ReleaseFrom::Search {worked:100},150),
+                (failed,ReleaseFrom::Failure {worked:100,failed:190},280),
+            ] {
+                let unplug = GameMenu::Unplug {role,since,from};
+                let initial = travel(previous,since,wireless);
+                assert_eq!(travel(unplug,since,wireless),initial);
+                let delay = if wireless {60} else {0};
+                assert_eq!(travel(unplug,since+delay,wireless),initial);
+                assert!((travel(unplug,since+delay+130,wireless)-initial/2.).abs()<0.00001);
+                assert_eq!(travel(unplug,since+delay+260,wireless),0.);
+            }
+        }
     }
 }

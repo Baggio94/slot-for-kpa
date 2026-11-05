@@ -63,7 +63,8 @@ fn original_slot_link_title_and_bottom_keycaps_use_exact_canvas_geometry() {
     assert_eq!(out_w(), 720);
     assert_eq!(OUT_H, 480);
     assert_eq!(LINK_TEXT_Y, 44.0);
-    assert_eq!(LINK_LEGEND_Y + HINT_H as f32, OUT_H as f32 - 2.0);
+    assert_eq!(LINK_LEGEND_Y + HINT_H as f32, OUT_H as f32 - 11.0);
+    assert_eq!(LINK_LEGEND_Y - slot_ui::link_hardware::BAR_Y, 23.0);
     assert_eq!(LINK_LEGEND_GAP, 40.0);
     for width in [88, 100, 120, 216, 300] {
         let x = link_heading_x(width);
@@ -482,8 +483,9 @@ fn console_connector_and_role_follow_the_inserted_cart_and_actual_link_state() {
                 let w = if key.wireless {240} else if family==0 {244} else {120};
                 let h = if key.wireless {151} else {244};
                 let s = LinkSprites {
-                    key, wall:face(5,720,58), front:face(6,720,58), socket:face(7,100,32),
-                    rim:face(8,100,32), grips:[face(9,w,h),face(10,w,h)], nose:face(11,w,h), buttons:None,
+                    key, wall:face(5,720,58), front:face(6,720,58), socket:face(7,100,18),
+                    rim:face(8,100,18), grips:[face(9,w,h),face(10,w,h)], nose:face(11,w,h),
+                    contact:face(12,w,2), buttons:None,
                 };
                 for role in LinkRow::ALL {
                     let active = s.grips[role.index()].tex;
@@ -502,8 +504,26 @@ fn console_connector_and_role_follow_the_inserted_cart_and_actual_link_state() {
                     assert!(idle.contains(&(active,out_w() as f32/2.0 + offset - w as f32/2.0)));
                     assert_eq!(idle.iter().filter(|(t,_)|*t==s.socket.tex).count(),if dual {2} else {1});
                     assert!(idle.iter().any(|(t,_)|*t==s.nose.tex));
-                    assert!(seated.iter().all(|(t,_)|*t!=s.nose.tex && *t!=s.rim.tex));
-                    assert_eq!(seated.iter().filter(|(t,_)|*t==s.socket.tex).count(),usize::from(dual));
+                    assert!(seated.iter().any(|(t,_)|*t==s.nose.tex));
+                    for fixed in [s.wall.tex,s.front.tex,s.socket.tex,s.rim.tex] {
+                        let positions = |draws: &Vec<(slot_ui::TexId,f32)>| draws.iter().copied()
+                            .filter(|(t,_)|*t==fixed).collect::<Vec<_>>();
+                        assert_eq!(positions(&idle),positions(&seated),
+                            "the receiver must not disappear or move when seated");
+                    }
+                    let layer = |tex| seated.iter().position(|(t,_)|*t==tex).unwrap();
+                    assert!(layer(s.socket.tex)<layer(s.nose.tex));
+                    assert!(layer(s.nose.tex)<layer(s.front.tex));
+                    assert!(layer(s.front.tex)<layer(s.rim.tex));
+                    assert!(layer(s.rim.tex)<layer(active));
+                    let mut draws = Vec::new();
+                    link_screen::draw_link_art(LinkMenu::Linked { role, worked:0,
+                        since:200, opened:false },1000,&s,&marks,&mut draws);
+                    let y = draws.iter().find_map(|d| match d {
+                        Draw::Tex {tex,y,..} if *tex==active => Some(*y), _=>None
+                    }).unwrap();
+                    assert_eq!(y+key.shoulder(),slot_ui::link_hardware::BAR_Y,
+                        "only the shank passes into the receiver");
                     assert_eq!(seated.iter().any(|(t,_)|*t==marks.clicks.tex),!key.wireless);
                     assert_eq!(seated.iter().filter(|(t,_)|*t==marks.arcs_right[0].tex).count(),if key.wireless {3} else {0});
                     if dual {

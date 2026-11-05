@@ -75,7 +75,7 @@ jobs:
       - name: Test interface graphics
         run: |
           cargo test -p slot-ui --lib onboarding_tests
-          cargo test -p slot-ui --test cart_material --test upstream_v17_assets --test native_resolution --test insert_neighbour_motion --test mixed_shelf_parity --test chrome_crt_parity --test native_density
+          cargo test -p slot-ui --test cart_material --test upstream_v17_assets --test native_resolution --test insert_neighbour_motion --test mixed_shelf_parity --test chrome_crt_parity --test native_density --test link_hardware
       - name: Export Slot keycap graphics for Android Apps
         run: |
           cargo run --locked -p slot-ui --example export_apps_legend -- android/app/src/main/assets/apps_controls

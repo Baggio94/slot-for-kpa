@@ -5012,6 +5012,7 @@ impl Engine {
             front: upload(faces.front, previous.map(|s|s.front)),
             socket: upload(faces.socket, previous.map(|s|s.socket)),
             rim: upload(faces.rim, previous.map(|s|s.rim)),
+            contact: upload(faces.contact, previous.map(|s|s.contact)),
             nose: upload(faces.nose, previous.map(|s|s.nose)),
         });
     }
@@ -6485,7 +6486,7 @@ fn link_boot_failure(context: &str, error: &str,
 // Keep the upstream centred heading and keycaps. The hints sit below the
 // sockets on the console’s 58-pixel bar, including on narrow canvases.
 const LINK_TEXT_Y: f32 = 44.0;
-const LINK_LEGEND_Y: f32 = OUT_H as f32 - HINT_H as f32 - 2.0;
+const LINK_LEGEND_Y: f32 = OUT_H as f32 - HINT_H as f32 - 11.0;
 const LINK_LEGEND_GAP: f32 = 40.0;
 
 fn link_heading_x(width: u32) -> f32 {
@@ -6761,6 +6762,9 @@ fn picker_span(shelf: &Shelf, progress: f32) -> [f32; 2] {
 
 #[cfg(test)]
 mod ui_feedback_tests;
+
+#[cfg(test)]
+mod link_hardware_tests;
 
 mod jni_exports;
 #[cfg(all(test, target_os = "linux"))]

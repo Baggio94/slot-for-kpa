@@ -112,7 +112,7 @@ fn marks_with_arcs(arcs_right: [CartFace; 3]) -> LinkMarks {
     }
 }
 
-fn svg_face(svg: &str, w: u32, h: u32) -> CartFace {
+pub(crate) fn svg_face(svg: &str, w: u32, h: u32) -> CartFace {
     let (tw, th) = (density::px(w), density::px(h));
     let rgba = render_svg(svg, tw, th).unwrap_or_else(|| vec![0; (tw * th * 4) as usize]);
     CartFace { rgba, w, h }
@@ -271,5 +271,5 @@ fn stamp(
 }
 
 pub(crate) fn port_number(face: &mut CartFace, x: f32, label: &str, ink: [u8; 3]) {
-    stamp(face, x, 21.0, label, 10.0, ink, Align::Centre);
+    stamp(face, x, 13.8, label, 10.0, ink, Align::Centre);
 }
