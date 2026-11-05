@@ -49,6 +49,8 @@ internal class SlotAutoLabelIndicator(context: Context, rail: LinearLayout) {
         }
     }
     private var finishAt = 0L
+    /** When the current pass was first reported, before it is shown. */
+    private var pendingSince = 0L
     init {
         root.addView(spinner, LinearLayout.LayoutParams(dim(13), dim(13)))
         caption.setPadding(dim(6), 0, 0, 0)
@@ -77,7 +79,16 @@ internal class SlotAutoLabelIndicator(context: Context, rail: LinearLayout) {
     }
 
     fun progress(checked: Int, total: Int, saved: Int) {
-        if (root.visibility != View.VISIBLE) begin()
+        if (root.visibility != View.VISIBLE) {
+            // A pass that finds every label already there ends in a fraction
+            // of a second (each return to the shelf after a game runs one).
+            // Only a pass still running after SHOW_AFTER_MS earns the rail,
+            // so the corner no longer flashes "LABELS n/n" on every eject.
+            val now = SystemClock.uptimeMillis()
+            if (pendingSince == 0L) pendingSince = now
+            if (now - pendingSince < SHOW_AFTER_MS) return
+            begin()
+        }
         caption.text = if (total > 0) {
             String.format(Locale.ROOT, "LABELS %d/%d · %d SAVED",
                 checked.coerceIn(0, total), total, saved.coerceAtLeast(0))
@@ -105,6 +116,11 @@ internal class SlotAutoLabelIndicator(context: Context, rail: LinearLayout) {
 
     fun hide() {
         finishAt = 0L
+        pendingSince = 0L
         root.visibility = View.GONE
+    }
+
+    private companion object {
+        const val SHOW_AFTER_MS = 1500L
     }
 }
