@@ -166,15 +166,6 @@ static NEXT_RESUME_MODE: AtomicI32 = AtomicI32::new(-1);
 static CART_SFX: Mutex<VecDeque<i32>> = Mutex::new(VecDeque::new());
 const CART_INSERT_SFX: i32 = 1;
 const CART_EJECT_SFX: i32 = 2;
-// Felt, not heard (Kotlin cartHaptic): the cartridge seats with the insert
-// clip's click; a held button has just triggered the eject (let go now).
-// The eject sound (2) brings its own lighter tick.
-const CART_SEATED_HAPTIC: i32 = 3;
-const CART_HOLD_EJECT_HAPTIC: i32 = 4;
-
-fn cart_feedback(kind: i32) {
-    CART_SFX.lock().unwrap_or_else(|e| e.into_inner()).push_back(kind);
-}
 // Exact upstream Slot timeline: 450ms mechanical seating + 280ms hold.
 const INSERT_S: f32 = 0.73;
 const SEATED_AT: f32 = 0.45;
@@ -1768,7 +1759,6 @@ impl Engine {
             self.mode_last_tap = None;
             self.mode_down_at = None;
             crate::game::log_launch_timing("Exit requested by SELECT+START");
-            cart_feedback(CART_HOLD_EJECT_HAPTIC);
             self.handle(Input::Exit);
         }
         true
@@ -3044,7 +3034,6 @@ impl Engine {
                                 crate::game::log_launch_timing(&format!(
                                     "Exit requested by MODE key release (rewind_held={})",
                                     self.rewind_held));
-                                cart_feedback(CART_HOLD_EJECT_HAPTIC);
                                 self.handle(Input::Exit);
                             }
                         } else {
@@ -5909,8 +5898,6 @@ impl Engine {
             self.mode_down_at = None;
             crate::game::log_launch_timing(&format!(
                 "Exit requested by held MODE key (rewind_held={})", self.rewind_held));
-            // The moment the hold counts: the player can let go.
-            cart_feedback(CART_HOLD_EJECT_HAPTIC);
             self.handle(Input::Exit);
         }
 
@@ -6445,10 +6432,6 @@ impl Engine {
             && self.progress >= INSERT_SOUND_PROGRESS
         {
             CART_SFX.lock().unwrap_or_else(|e| e.into_inner()).push_back(CART_INSERT_SFX);
-        }
-        // Full contact: the click in the insert clip lands exactly here.
-        if self.inserted && previous_progress < 1.0 && self.progress >= 1.0 {
-            cart_feedback(CART_SEATED_HAPTIC);
         }
         if !self.inserted && self.eject_sound_armed
             && self.progress < previous_progress
