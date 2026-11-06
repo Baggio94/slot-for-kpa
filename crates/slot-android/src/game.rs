@@ -316,6 +316,9 @@ pub struct GameSession {
     second_player: bool,
     /// Port 2's buttons as slot. read them (Settings > Controls).
     port2: u16,
+    /// Each port's Controls (system, then game): which slot. button plays
+    /// which console button. None: the X/Y Buttons setting alone, as before.
+    layouts: [Option<crate::controls::Resolved>; 2],
     pending_undo: Option<(Instant, PendingUndo)>,
     last_sram: Instant,
     // F7: owns at most one immutable periodic SRAM/RTC write per solo session.
@@ -930,7 +933,7 @@ impl GameSession {
             rewind: RewindThread::spawn(REWIND_BYTES), rewind_frames: 0,
             frame_count: 0, palette_live, core_kind: which,
             full_pad: matches!(platform, Platform::Snes | Platform::Md),
-            second_player: !platform.handheld(), port2: 0,
+            second_player: !platform.handheld(), port2: 0, layouts: [None, None],
             runahead_video: Vec::new(), runahead_size: (0, 0), runahead_state: Vec::new(),
             // bsnes shows the frame before an unserialize on the first run
             // after it, so a predicted picture would be stale: no Run-Ahead.
@@ -962,12 +965,32 @@ impl GameSession {
         self.port2 = if self.second_player { buttons } else { 0 };
     }
 
+    /// Both ports' Controls, resolved by the runtime for this game.
+    pub fn set_layouts(&mut self, layouts: [crate::controls::Resolved; 2]) {
+        self.layouts = layouts.map(Some);
+    }
+
+    pub fn has_layouts(&self) -> bool { self.layouts[0].is_some() }
+
+    /// What L1/R1 do on Port 1 where the console has no such buttons.
+    pub fn shoulder_role(&self) -> Option<crate::controls::ShoulderRole> {
+        self.layouts[0].as_ref().and_then(|layout| layout.shoulders)
+    }
+
+    /// slot.'s buttons on `port` as the core reads them on `frame`.
+    fn pad(&self, port: usize, buttons: ButtonMask, turbo: bool, frame: u32) -> ButtonMask {
+        match &self.layouts[port] {
+            Some(layout) => ButtonMask(layout.apply(buttons.0, frame)),
+            None => pad_buttons(self.full_pad, buttons, turbo, frame),
+        }
+    }
+
     /// Port 2 as the core gets it on `frame`: turbo and X/Y like port 1.
     fn port2_at(&self, turbo: bool, frame: u32) -> ButtonMask {
         if !self.second_player || self.in_multiplayer() || self.port2 == 0 {
             return ButtonMask::default();
         }
-        pad_buttons(self.full_pad, ButtonMask(self.port2), turbo, frame)
+        self.pad(1, ButtonMask(self.port2), turbo, frame)
     }
 
     /// Both ports, as Preemptive Frames compares them.
@@ -992,7 +1015,7 @@ impl GameSession {
         self.follow_light_sensor();
         if self.link.is_none() && !self.preempt_before_frame(buttons, turbo) { return false; }
         let pressed = ButtonMask(buttons);
-        let mapped = pad_buttons(self.full_pad, pressed, turbo, self.frame_count);
+        let mapped = self.pad(0, pressed, turbo, self.frame_count);
         let port2 = self.port2_at(turbo, self.frame_count);
         self.core.set_port2(port2);
         let core_started = Instant::now();
@@ -1471,7 +1494,7 @@ impl GameSession {
         // predicts incorrect key presses across a three-frame boundary.
         for future in 0..frames {
             let frame = self.frame_count.wrapping_add(u32::from(future));
-            let mapped = pad_buttons(self.full_pad, pressed, turbo, frame);
+            let mapped = self.pad(0, pressed, turbo, frame);
             let port2 = self.port2_at(turbo, frame);
             self.core.set_port2(port2);
             self.core.run_speculative_frame(mapped);
@@ -1553,7 +1576,7 @@ impl GameSession {
         let mut inputs = [(ButtonMask::default(), ButtonMask::default()); 2];
         for future in 0..usize::from(frames) {
             let frame = self.frame_count.wrapping_add(future as u32);
-            inputs[future] = (pad_buttons(self.full_pad, pressed, turbo, frame),
+            inputs[future] = (self.pad(0, pressed, turbo, frame),
                 self.port2_at(turbo, frame));
         }
         let copy = self.runahead_secondary.as_deref_mut().expect("booted above");
@@ -1622,8 +1645,8 @@ impl GameSession {
                 let frame = first.wrapping_add(k as u32);
                 let port2 = self.port2_at(turbo, frame);
                 self.core.set_port2(port2);
-                self.core.run_speculative_frame(
-                    pad_buttons(self.full_pad, pressed, turbo, frame));
+                let mapped = self.pad(0, pressed, turbo, frame);
+                self.core.run_speculative_frame(mapped);
                 self.core.discard_audio();
             }
             let elapsed_us = started.elapsed().as_micros() as u64;

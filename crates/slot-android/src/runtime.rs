@@ -454,6 +454,10 @@ enum ShelfOverlay {
     /// Settings > Controls, and its Port 1 / Port 2 pages.
     ControlsSettings { row: usize },
     ControlsPort { port: usize, row: usize },
+    /// Systems > [system] > Controls (game: false), or the in-game
+    /// Settings > Controls of the game being played (game: true).
+    LayoutPorts { platform: Platform, game: bool, row: usize },
+    LayoutPort { platform: Platform, game: bool, port: usize, row: usize },
     // Pause submenus never mutate the global Settings object.
     PauseSettings { row: usize },
     PauseScreenSettings { row: usize },
@@ -751,8 +755,10 @@ fn bezel_value(bezel: crate::settings::Bezel) -> usize {
 /// Settings: General, Systems, Controls, Gameplay, Emulation, Status Bar.
 const SETTINGS_ROWS: [usize; 6] = [81, 117, 125, 33, 49, 58];
 
-const GAMEPLAY_ROWS: [usize; 6] = [27, 28, 37, 38, 30, 39];
-const GAMEPLAY_KEYS: [usize; 6] = [4, 5, 6, 7, 8, 9];
+/// X/Y Buttons (38, key 7) moved to Systems > Controls (X / Y), where its
+/// old value is the default until a system or game chooses.
+const GAMEPLAY_ROWS: [usize; 5] = [27, 28, 37, 30, 39];
+const GAMEPLAY_KEYS: [usize; 5] = [4, 5, 6, 8, 9];
 
 const INTERFACE_ROWS: [usize; 4] = [63, 64, 65, 116];
 const INTERFACE_KEYS: [usize; 4] = [13, 14, 15, 28];
@@ -854,6 +860,10 @@ struct Engine {
     port2_remote_noticed: bool,
     // A key came from the handheld's own controls this session.
     builtin_seen: bool,
+    // Bumped on every Controls change: the game's layouts are resolved
+    // again (with the X/Y Buttons setting they were resolved with).
+    controls_rev: u64,
+    layouts_for: Option<(u64, bool)>,
     // Presses no core frame has read yet, and releases held back until one
     // has: a quick tap between two frames must still reach the game.
     unseen_presses: u16,
@@ -1451,6 +1461,8 @@ impl Engine {
             controls_view: Default::default(),
             port2_remote_noticed: false,
             builtin_seen: false,
+            controls_rev: 0,
+            layouts_for: None,
             unseen_presses: 0,
             held_releases: 0,
             ff_held: false,
@@ -1764,6 +1776,8 @@ impl Engine {
                     | ShelfOverlay::PauseScreenSettings { .. }
                     | ShelfOverlay::PauseGameplaySettings { .. }
                     | ShelfOverlay::PauseEmulationSettings { .. }
+                    | ShelfOverlay::LayoutPorts { game: true, .. }
+                    | ShelfOverlay::LayoutPort { game: true, .. }
                     | ShelfOverlay::States => ShelfOverlay::None,
                     _=>ShelfOverlay::GameMenu {row:0},
                 };
@@ -1820,6 +1834,13 @@ impl Engine {
         self.select_tap_frames = 0;
         self.select_forwarded = false;
         self.buttons &= !ButtonMask::SELECT;
+        self.shortcut(code);
+        true
+    }
+
+    /// The SELECT + button shortcuts, also played by L1/R1 when a system's
+    /// Controls give them a shortcut (Load / Save, Shader, Palette).
+    fn shortcut(&mut self, code: i32) {
         let time = self.born.elapsed().as_millis() as u64;
         match code {
             96 | 97 => {
@@ -1857,10 +1878,10 @@ impl Engine {
             100 => {
                 let platform=self.current_cart_platform();
                 // Game Boy colours are the palette's: nothing to correct.
-                if platform==Platform::Gb {return true;}
+                if platform==Platform::Gb {return;}
                 if self.game_settings().shader_for(platform).includes_gba_color() {
                     set_message("This shader already includes color correction.".into());
-                    return true;
+                    return;
                 }
                 if self.game.is_some() {
                     self.change_game_screen_or_gameplay(2,true);
@@ -1869,7 +1890,7 @@ impl Engine {
                     // not the old GBA-only compatibility setting.
                     let key=match platform {
                         Platform::Gba=>22, Platform::Gbc=>23, Platform::Gb=>24,
-                        _=>return true,
+                        _=>return,
                     };
                     self.change_setting(key,true);
                 }
@@ -1942,7 +1963,6 @@ impl Engine {
                 }
             _ => {}
         }
-        true
     }
 
     fn link_millis(&self) -> u64 {
@@ -3263,9 +3283,13 @@ impl Engine {
                 if self.game.is_some() && matches!(self.overlay, ShelfOverlay::PauseSettings { .. }
                     | ShelfOverlay::PauseScreenSettings { .. }
                     | ShelfOverlay::PauseGameplaySettings { .. }
-                    | ShelfOverlay::PauseEmulationSettings { .. }) {
+                    | ShelfOverlay::PauseEmulationSettings { .. }
+                    | ShelfOverlay::LayoutPorts { game: true, .. }
+                    | ShelfOverlay::LayoutPort { game: true, .. }) {
                     if pressed {
                         match self.overlay {
+                            ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. } =>
+                                self.controls_menu_key(code),
                             ShelfOverlay::PauseSettings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::PauseSettings {
                                     row: move_menu_row(row, code, self.pause_settings_rows().len()),
@@ -3276,7 +3300,10 @@ impl Engine {
                                         0 => ShelfOverlay::PauseScreenSettings { row: 0 },
                                         1 if !linked => ShelfOverlay::PauseGameplaySettings { row: 0 },
                                         2 if !linked => ShelfOverlay::PauseEmulationSettings { row: 0 },
-                                        3 if !linked => {self.reset_game_emulation();
+                                        3 if !linked => ShelfOverlay::LayoutPorts {
+                                            platform: self.current_cart_platform(), game: true, row: 0,
+                                        },
+                                        4 if !linked => {self.reset_game_emulation();
                                             ShelfOverlay::PauseSettings { row }},
                                         _ => ShelfOverlay::PauseSettings { row },
                                     };
@@ -3419,12 +3446,39 @@ impl Engine {
                     // On GBA the shoulder buttons remain owned by the core.
                     // SELECT+shoulder save/load is handled below and takes priority.
                     // SNES and Mega Drive games use L/R themselves.
-                    if !matches!(self.current_cart_platform(),
-                            Platform::Gba | Platform::Snes | Platform::Md)
-                        && self.buttons & ButtonMask::SELECT == 0
-                        && (code == 102 || code == 103) {
-                        if pressed { self.step_screen_size(code == 102); }
-                        return;
+                    // Systems > Controls can give L1/R1 another shortcut, or
+                    // make them buttons (then they reach the game below).
+                    if self.buttons & ButtonMask::SELECT == 0 && (code == 102 || code == 103) {
+                        use crate::controls::ShoulderRole as Role;
+                        let platform = self.current_cart_platform();
+                        let session = self.game.as_ref();
+                        let role = match session {
+                            Some(game) if game.has_layouts() => game.shoulder_role(),
+                            _ if !matches!(platform, Platform::Gba | Platform::Snes | Platform::Md) =>
+                                Some(Role::ScreenSize),
+                            _ => None,
+                        };
+                        let linked = session.is_some_and(GameSession::linked);
+                        let first = code == 102;
+                        let shortcut = match role {
+                            Some(Role::ScreenSize) => Some(0),
+                            // A Link never loads or saves a state on its own.
+                            Some(Role::States) if linked => Some(-1),
+                            Some(Role::States) => Some(if first { 102 } else { 103 }),
+                            Some(Role::Shader) => Some(if first { 97 } else { 96 }),
+                            Some(Role::Palette) => Some(if first { 104 } else { 105 }),
+                            _ => None,
+                        };
+                        if let Some(shortcut) = shortcut {
+                            if pressed {
+                                match shortcut {
+                                    0 => self.step_screen_size(first),
+                                    -1 => {}
+                                    other => self.shortcut(other),
+                                }
+                            }
+                            return;
+                        }
                     }
                     let mask = controls(code);
                     if pressed {
@@ -3511,7 +3565,8 @@ impl Engine {
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
-                            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. } =>
+                            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. }
+                            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. } =>
                                 self.controls_menu_key(code),
                             ShelfOverlay::Settings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::Settings {
@@ -3570,8 +3625,10 @@ impl Engine {
                             },
                             ShelfOverlay::ScreenSystemSettings { platform,row } => match code {
                                 19 | 20 => self.overlay=ShelfOverlay::ScreenSystemSettings {
-                                    platform,row:move_menu_row(row,code,Self::system_rows(platform).len()),
+                                    platform,row:move_menu_row(row,code,Self::system_rows(platform).len()+1),
                                 },
+                                96 if row==Self::system_rows(platform).len() =>
+                                    self.overlay=ShelfOverlay::LayoutPorts { platform, game: false, row: 0 },
                                 21 | 22 | 96 => if let Some(key)=Self::system_keys(platform).get(row).copied(){
                                     self.change_setting(key,code!=21);
                                 },
@@ -4451,7 +4508,7 @@ impl Engine {
             // Display-only settings cannot alter GBA Link/RFU state.
             &[32]
         } else {
-            &[32,33,49,57]
+            &[32,33,49,125,57]
         }
     }
 
@@ -5416,9 +5473,13 @@ impl Engine {
                 self.draw_original_style_menu(117, &SYSTEM_TITLES, row, out);
             }
             ShelfOverlay::ScreenSystemSettings {platform,row} => {
-                self.draw_original_style_menu(Self::screen_title(platform),
-                    Self::system_rows(platform),row,out);
-                self.draw_setting_values(row,Self::system_keys(platform),out);
+                // The system's own rows, then Controls (no value: a page).
+                let mut rows=Self::system_rows(platform).to_vec();
+                rows.push(125);
+                let mut keys=Self::system_keys(platform).to_vec();
+                keys.push(usize::MAX);
+                self.draw_original_style_menu(Self::screen_title(platform),&rows,row,out);
+                self.draw_setting_values(row,&keys,out);
             }
             ShelfOverlay::GameplaySettings { row } => {
                 self.draw_original_style_menu(33, &GAMEPLAY_ROWS, row, out);
@@ -5517,7 +5578,8 @@ impl Engine {
                 self.draw_setting_values(row, &GAMEPLAY_KEYS, out);
             }
             ShelfOverlay::Multiplayer => self.draw_multiplayer(out),
-            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. } =>
+            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. }
+            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. } =>
                 self.draw_controls(out),
             ShelfOverlay::Core => {
                 self.draw_original_core_picker(out);
@@ -5894,7 +5956,8 @@ impl Engine {
             ShelfOverlay::PauseGameplaySettings { row } => (15u8, row, GAMEPLAY_KEYS.len()),
             ShelfOverlay::Multiplayer => (11u8, 0, 0usize),
             ShelfOverlay::Settings { row } => (4u8, row, SETTINGS_ROWS.len()),
-            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. } =>
+            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. }
+            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. } =>
                 self.controls_cursor().unwrap_or((0, 0, 0)),
             ShelfOverlay::GeneralSettings { row } =>
                 (12u8, row, self.general_rows().len()),
@@ -5905,7 +5968,7 @@ impl Engine {
                 (9u8, row, self.pause_emulation_rows().len()),
             ShelfOverlay::ScreenSettings { row } => (5u8, row, SYSTEM_ORDER.len()),
             ShelfOverlay::ScreenSystemSettings { platform,row } =>
-                (16u8,row,Self::system_rows(platform).len()),
+                (16u8,row,Self::system_rows(platform).len()+1),
             ShelfOverlay::GameplaySettings { row } => (6u8, row, GAMEPLAY_KEYS.len()),
             _ => (0, 0, 0),
         };
@@ -6051,7 +6114,8 @@ impl Engine {
         if self.game.is_some() && matches!(self.overlay,
             ShelfOverlay::GameMenu { .. } | ShelfOverlay::Multiplayer |
             ShelfOverlay::PauseSettings { .. } | ShelfOverlay::PauseScreenSettings { .. } |
-            ShelfOverlay::PauseGameplaySettings { .. } | ShelfOverlay::PauseEmulationSettings { .. }) {
+            ShelfOverlay::PauseGameplaySettings { .. } | ShelfOverlay::PauseEmulationSettings { .. } |
+            ShelfOverlay::LayoutPorts { game: true, .. } | ShelfOverlay::LayoutPort { game: true, .. }) {
             // Coordinate the pause with the remote game. Without this
             // the other Cable peer times out and gpSP RFU can drift.
             if let Some(game) = self.game.as_mut() { game.set_link_paused(true); }
@@ -6111,6 +6175,7 @@ impl Engine {
         let (transition_back, transition_front) = self.clear_layers();
         let a12_native_started = Instant::now();
         let mut frame_phases = crate::frame_phases::FramePhaseSample::default();
+        self.apply_layouts(live.turbo);
         if let Some(session) = self.game.as_mut() {
             // Resume only after the remote has also left its pause menu;
             // LinkPlay::frame holds either core while peer_paused is true.

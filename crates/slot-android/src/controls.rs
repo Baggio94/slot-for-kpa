@@ -100,11 +100,18 @@ pub struct Controls {
     /// Fingerprint of the controller on each port; "" = none.
     pub ports: [String; PORTS],
     pub pads: BTreeMap<String, Pad>,
+    /// Systems > [system] > Controls, by system ("gba", "nes"...).
+    pub systems: BTreeMap<String, Layout>,
+    /// The in-game Controls, by game (its ROM's library key).
+    pub games: BTreeMap<String, Layout>,
 }
 
 impl Default for Controls {
     fn default() -> Self {
-        Self { ports: [BUILTIN.to_owned(), String::new()], pads: BTreeMap::new() }
+        Self {
+            ports: [BUILTIN.to_owned(), String::new()], pads: BTreeMap::new(),
+            systems: BTreeMap::new(), games: BTreeMap::new(),
+        }
     }
 }
 
@@ -177,30 +184,46 @@ impl Controls {
 
     /// The controllers ◀▶ goes through on `port`, in order. `connected` is
     /// every connected controller's fingerprint (built-in included).
+    /// The same order whatever is chosen now, so ◀▶ always goes round the
+    /// same stops: Port 1 starts with the handheld's own controls, Port 2
+    /// with None and ends with them.
     pub fn candidates(&self, port: usize, connected: &[String]) -> Vec<String> {
         let mut list: Vec<String> = Vec::new();
-        if port == 1 { list.push(String::new()); }
         let mut push = |fp: &str| if !list.iter().any(|f| f == fp) { list.push(fp.to_owned()); };
-        push(BUILTIN);
-        for fp in connected { push(fp); }
+        if port == 1 { push(""); } else { push(BUILTIN); }
+        for fp in connected.iter().filter(|fp| fp.as_str() != BUILTIN) { push(fp); }
         // A controller that is off stays a stop while it holds this port.
         if let Some(fp) = self.on_port(port) { push(fp); }
-        // An empty Port 2 can't take Port 1's controller: Port 1 would be empty.
-        if port == 1 && self.on_port(1).is_none() {
-            if let Some(first) = self.on_port(0) { list.retain(|fp| fp != first); }
-        }
+        push(BUILTIN);
         list
     }
 
-    /// ◀▶ on a port's Controller row.
+    /// ◀▶ on a port's Controller row. A stop that would leave Port 1 with
+    /// nothing is passed over.
     pub fn cycle(&mut self, port: usize, right: bool, connected: &[String]) {
         let list = self.candidates(port, connected);
-        if list.is_empty() { return; }
-        let current = self.ports[port].as_str();
-        let at = list.iter().position(|fp| fp == current).unwrap_or(0);
-        let next = if right { (at + 1) % list.len() } else { (at + list.len() - 1) % list.len() };
-        let fp = list[next].clone();
-        if fp.is_empty() { self.ports[port].clear(); } else { self.assign(port, &fp); }
+        let n = list.len();
+        let current = self.ports[port].clone();
+        let at = list.iter().position(|fp| *fp == current).unwrap_or(0);
+        for step in 1..=n {
+            let fp = list[if right { (at + step) % n } else { (at + n - step % n) % n }].clone();
+            if fp == current { return; }
+            if fp.is_empty() { self.ports[port].clear(); return; }
+            // Port 2 taking Port 1's controller while Port 2 had none: Port 1
+            // takes another connected controller, or this stop is skipped.
+            if port == 1 && current.is_empty() && self.port_of(&fp) == Some(0) {
+                let other = connected.iter()
+                    .find(|c| **c != fp && self.port_of(c).is_none()).cloned();
+                let Some(other) = other else { continue };
+                self.ports[0] = other.clone();
+                self.ports[1] = fp.clone();
+                self.know(&other);
+                self.know(&fp);
+                return;
+            }
+            self.assign(port, &fp);
+            return;
+        }
     }
 
     /// Settings > Controls > Reset to Default: every controller's keys back
@@ -312,14 +335,22 @@ impl Held {
 pub enum Listen {
     Key { port: usize, button: usize, until: u64 },
     Controller { port: usize, until: u64 },
+    /// A console button of a system's or a game's Port page.
+    Console { port: usize, button: usize, until: u64 },
 }
 
 impl Listen {
     pub fn until(self) -> u64 {
-        match self { Listen::Key { until, .. } | Listen::Controller { until, .. } => until }
+        match self {
+            Listen::Key { until, .. } | Listen::Controller { until, .. }
+            | Listen::Console { until, .. } => until,
+        }
     }
     pub fn port(self) -> usize {
-        match self { Listen::Key { port, .. } | Listen::Controller { port, .. } => port }
+        match self {
+            Listen::Key { port, .. } | Listen::Controller { port, .. }
+            | Listen::Console { port, .. } => port,
+        }
     }
     /// Whole seconds left, for the countdown: 5 .. 1.
     pub fn seconds_left(self, now: u64) -> u64 {
@@ -349,6 +380,335 @@ pub const VISIBLE_ROWS: usize = 6;
 /// list scrolls, and the list never scrolls past its end.
 pub fn scroll_offset(selected: usize, rows: usize) -> usize {
     selected.saturating_sub(2).min(rows.saturating_sub(VISIBLE_ROWS))
+}
+
+// ---------------------------------------------------------------------------
+// Systems > [system] > Controls, and the in-game Controls (one game): which
+// slot. button plays each of the console's buttons, and what X/Y and L1/R1
+// do where the console has no such buttons.
+
+/// The libretro joypad bits (slot_retro::ButtonMask), which are also the
+/// bits of slot.'s own buttons.
+pub mod bit {
+    pub const B: u16 = 1 << 0;
+    pub const Y: u16 = 1 << 1;
+    pub const SELECT: u16 = 1 << 2;
+    pub const START: u16 = 1 << 3;
+    pub const UP: u16 = 1 << 4;
+    pub const DOWN: u16 = 1 << 5;
+    pub const LEFT: u16 = 1 << 6;
+    pub const RIGHT: u16 = 1 << 7;
+    pub const A: u16 = 1 << 8;
+    pub const X: u16 = 1 << 9;
+    pub const L: u16 = 1 << 10;
+    pub const R: u16 = 1 << 11;
+}
+
+/// The name of one of slot.'s buttons, by its bit; "None" for no button.
+pub fn slot_button_name(slot: u16) -> &'static str {
+    match slot {
+        bit::UP => "Up", bit::DOWN => "Down", bit::LEFT => "Left", bit::RIGHT => "Right",
+        bit::A => "A", bit::B => "B", bit::X => "X", bit::Y => "Y",
+        bit::L => "L1", bit::R => "R1", bit::SELECT => "SELECT", bit::START => "START",
+        _ => "None",
+    }
+}
+
+/// A button of the console. `core` is the joypad bit the core reads it
+/// from; slot.'s button with that same bit plays it by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConsoleButton { pub name: &'static str, pub core: u16 }
+
+const fn cb(name: &'static str, core: u16) -> ConsoleButton { ConsoleButton { name, core } }
+const DPAD: [ConsoleButton; 4] =
+    [cb("Up", bit::UP), cb("Down", bit::DOWN), cb("Left", bit::LEFT), cb("Right", bit::RIGHT)];
+const GBA: [ConsoleButton; 10] = [DPAD[0], DPAD[1], DPAD[2], DPAD[3],
+    cb("A", bit::A), cb("B", bit::B), cb("L", bit::L), cb("R", bit::R),
+    cb("SELECT", bit::SELECT), cb("START", bit::START)];
+const TWO_BUTTONS: [ConsoleButton; 8] = [DPAD[0], DPAD[1], DPAD[2], DPAD[3],
+    cb("A", bit::A), cb("B", bit::B), cb("SELECT", bit::SELECT), cb("START", bit::START)];
+const SNES: [ConsoleButton; 12] = [DPAD[0], DPAD[1], DPAD[2], DPAD[3],
+    cb("A", bit::A), cb("B", bit::B), cb("X", bit::X), cb("Y", bit::Y),
+    cb("L", bit::L), cb("R", bit::R), cb("SELECT", bit::SELECT), cb("START", bit::START)];
+/// Genesis Plus GX and PicoDrive read the Mega Drive pad as RetroArch does:
+/// A from Y, B from B, C from A, X from L, Y from X, Z from R, Mode from SELECT.
+const MD: [ConsoleButton; 12] = [DPAD[0], DPAD[1], DPAD[2], DPAD[3],
+    cb("A", bit::Y), cb("B", bit::B), cb("C", bit::A),
+    cb("X", bit::L), cb("Y", bit::X), cb("Z", bit::R),
+    cb("Mode", bit::SELECT), cb("START", bit::START)];
+
+/// Systems, by the names slot. files their controls under.
+pub const SYSTEMS: [&str; 6] = ["gba", "gbc", "gb", "nes", "snes", "md"];
+
+pub fn console_buttons(system: &str) -> &'static [ConsoleButton] {
+    match system {
+        "gba" => &GBA,
+        "snes" => &SNES,
+        "md" => &MD,
+        _ => &TWO_BUTTONS,
+    }
+}
+
+/// Only NES, SNES and Mega Drive take a second player.
+pub fn takes_port2(system: &str) -> bool { matches!(system, "nes" | "snes" | "md") }
+
+/// What X and Y do on a console without them (Game Boys, NES).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum XyRole {
+    /// Original slot.: X is turbo A, Y turbo B.
+    TurboAB,
+    /// Y is a second A, X a second B.
+    BA,
+    Off,
+}
+
+impl XyRole {
+    pub const ALL: [XyRole; 3] = [XyRole::TurboAB, XyRole::BA, XyRole::Off];
+    pub fn label(self) -> &'static str {
+        match self { XyRole::TurboAB => "Turbo A / B", XyRole::BA => "B / A", XyRole::Off => "None" }
+    }
+}
+
+/// What L1 and R1 do on a console without them (Game Boy, Color, NES).
+/// The first half is L1's, the second R1's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShoulderRole { ScreenSize, States, TurboAB, AB, Palette, Shader, Off }
+
+impl ShoulderRole {
+    pub fn label(self) -> &'static str {
+        match self {
+            ShoulderRole::ScreenSize => "Screen Size",
+            ShoulderRole::States => "Load / Save",
+            ShoulderRole::TurboAB => "Turbo A / B",
+            ShoulderRole::AB => "A / B",
+            ShoulderRole::Palette => "Palette - / +",
+            ShoulderRole::Shader => "Shader - / +",
+            ShoulderRole::Off => "None",
+        }
+    }
+
+    /// slot.'s own shortcuts are Port 1's: the second player only gets buttons.
+    pub fn choices(system: &str, port: usize) -> &'static [ShoulderRole] {
+        use ShoulderRole::*;
+        if port > 0 { return &[TurboAB, AB, Off]; }
+        if system == "gb" { &[ScreenSize, States, TurboAB, AB, Palette, Shader, Off] }
+        else { &[ScreenSize, States, TurboAB, AB, Shader, Off] }
+    }
+}
+
+/// X / Y and L1 / R1 rows: on which systems they are spare.
+pub fn spare_xy(system: &str) -> bool { matches!(system, "gba" | "gb" | "gbc" | "nes") }
+pub fn spare_shoulders(system: &str) -> bool { matches!(system, "gb" | "gbc" | "nes") }
+
+/// One port's choices at one level. Only what was changed there is kept.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PortLayout {
+    /// Console button name -> slot.'s button bit; 0 = none.
+    pub binds: BTreeMap<String, u16>,
+    pub xy: Option<XyRole>,
+    pub shoulders: Option<ShoulderRole>,
+}
+
+impl PortLayout {
+    fn is_empty(&self) -> bool { self.binds.is_empty() && self.xy.is_none() && self.shoulders.is_none() }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Layout { pub ports: [PortLayout; PORTS] }
+
+impl Layout {
+    fn is_empty(&self) -> bool { self.ports.iter().all(PortLayout::is_empty) }
+}
+
+/// Where a Controls page edits: a whole system, or one game of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scope { System(&'static str), Game { system: &'static str, game: String } }
+
+impl Scope {
+    pub fn system(&self) -> &'static str {
+        match self { Scope::System(s) | Scope::Game { system: s, .. } => s }
+    }
+}
+
+/// A port's controls as a game plays them: game, then system, then defaults.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resolved {
+    /// (slot.'s button bit, console button's core bit) for every bound button.
+    pub pairs: Vec<(u16, u16)>,
+    /// None where X and Y are console buttons, or play one.
+    pub xy: Option<XyRole>,
+    /// None where L1 and R1 are console buttons, or play one.
+    pub shoulders: Option<ShoulderRole>,
+}
+
+impl Resolved {
+    /// The joypad the core reads from slot.'s buttons held on `frame`.
+    pub fn apply(&self, slot: u16, frame: u32) -> u16 {
+        let mut out = 0;
+        for &(from, to) in &self.pairs {
+            if slot & from != 0 { out |= to; }
+        }
+        // Original slot. turbo: on for three frames, off for three.
+        let turbo_on = (frame / 3) % 2 == 0;
+        let mut second = |held: u16, a: u16, b: u16, turbo: bool| {
+            if turbo && !turbo_on { return; }
+            if slot & held & a != 0 { out |= bit::A; }
+            if slot & held & b != 0 { out |= bit::B; }
+        };
+        match self.xy {
+            Some(XyRole::TurboAB) => second(bit::X | bit::Y, bit::X, bit::Y, true),
+            Some(XyRole::BA) => second(bit::X | bit::Y, bit::Y, bit::X, false),
+            _ => {}
+        }
+        match self.shoulders {
+            Some(ShoulderRole::TurboAB) => second(bit::L | bit::R, bit::L, bit::R, true),
+            Some(ShoulderRole::AB) => second(bit::L | bit::R, bit::L, bit::R, false),
+            _ => {}
+        }
+        out
+    }
+}
+
+impl Controls {
+    fn layout(&self, scope: &Scope) -> Option<&Layout> {
+        match scope {
+            Scope::System(system) => self.systems.get(*system),
+            Scope::Game { game, .. } => self.games.get(game),
+        }
+    }
+
+    fn layout_mut(&mut self, scope: &Scope) -> &mut Layout {
+        match scope {
+            Scope::System(system) => self.systems.entry((*system).to_owned()).or_default(),
+            Scope::Game { game, .. } => self.games.entry(game.clone()).or_default(),
+        }
+    }
+
+    fn tidy(&mut self) {
+        self.systems.retain(|_, layout| !layout.is_empty());
+        self.games.retain(|_, layout| !layout.is_empty());
+    }
+
+    /// The levels under `scope`, most precise first: a game's page shows
+    /// what the system gives it.
+    fn levels(&self, scope: &Scope, port: usize) -> Vec<&PortLayout> {
+        let mut levels = Vec::new();
+        if let Scope::Game { game, .. } = scope {
+            if let Some(layout) = self.games.get(game) { levels.push(&layout.ports[port]); }
+        }
+        if let Some(layout) = self.systems.get(scope.system()) { levels.push(&layout.ports[port]); }
+        levels
+    }
+
+    /// The slot. button playing console button `index`, and whether this
+    /// very level chose it.
+    pub fn bind(&self, scope: &Scope, port: usize, index: usize) -> (u16, bool) {
+        let button = console_buttons(scope.system())[index];
+        let own = self.layout(scope).and_then(|l| l.ports[port].binds.get(button.name)).copied();
+        if let Some(slot) = own { return (slot, true); }
+        let below = self.levels(scope, port).into_iter()
+            .find_map(|level| level.binds.get(button.name).copied());
+        (below.unwrap_or(button.core), false)
+    }
+
+    /// Console button `index` <- slot.'s button `slot`. A console button
+    /// already played by `slot` takes this one's old button: no slot.
+    /// button plays two console buttons.
+    pub fn map_console(&mut self, scope: &Scope, port: usize, index: usize, slot: u16) {
+        let buttons = console_buttons(scope.system());
+        let (old, _) = self.bind(scope, port, index);
+        let other = (0..buttons.len())
+            .find(|&i| i != index && self.bind(scope, port, i).0 == slot);
+        let layout = &mut self.layout_mut(scope).ports[port];
+        if let Some(other) = other { layout.binds.insert(buttons[other].name.to_owned(), old); }
+        layout.binds.insert(buttons[index].name.to_owned(), slot);
+        self.tidy();
+    }
+
+    pub fn clear_console(&mut self, scope: &Scope, port: usize, index: usize) {
+        let name = console_buttons(scope.system())[index].name;
+        self.layout_mut(scope).ports[port].binds.insert(name.to_owned(), 0);
+        self.tidy();
+    }
+
+    /// X / Y and L1 / R1 at this level: (role, chosen here). `default_xy`
+    /// is the old X/Y Buttons setting, which still decides until changed.
+    pub fn xy(&self, scope: &Scope, port: usize, default_xy: XyRole) -> (XyRole, bool) {
+        if let Some(role) = self.layout(scope).and_then(|l| l.ports[port].xy) { return (role, true); }
+        let below = self.levels(scope, port).into_iter().find_map(|level| level.xy);
+        (below.unwrap_or(default_xy), false)
+    }
+
+    pub fn shoulders(&self, scope: &Scope, port: usize) -> (ShoulderRole, bool) {
+        if let Some(role) = self.layout(scope).and_then(|l| l.ports[port].shoulders) { return (role, true); }
+        let below = self.levels(scope, port).into_iter().find_map(|level| level.shoulders);
+        let default = if port == 0 { ShoulderRole::ScreenSize } else { ShoulderRole::Off };
+        let role = below.unwrap_or(default);
+        // A role the port can't have (Palette on Port 2): back to the default.
+        let fits = ShoulderRole::choices(scope.system(), port).contains(&role);
+        (if fits { role } else { default }, false)
+    }
+
+    pub fn cycle_xy(&mut self, scope: &Scope, port: usize, right: bool, default_xy: XyRole) {
+        let (now, _) = self.xy(scope, port, default_xy);
+        let all = XyRole::ALL;
+        let at = all.iter().position(|r| *r == now).unwrap_or(0);
+        let next = all[if right { (at + 1) % all.len() } else { (at + all.len() - 1) % all.len() }];
+        self.layout_mut(scope).ports[port].xy = Some(next);
+        self.tidy();
+    }
+
+    pub fn cycle_shoulders(&mut self, scope: &Scope, port: usize, right: bool) {
+        let (now, _) = self.shoulders(scope, port);
+        let all = ShoulderRole::choices(scope.system(), port);
+        let at = all.iter().position(|r| *r == now).unwrap_or(0);
+        let next = all[if right { (at + 1) % all.len() } else { (at + all.len() - 1) % all.len() }];
+        self.layout_mut(scope).ports[port].shoulders = Some(next);
+        self.tidy();
+    }
+
+    /// A port of this level back to what the level below gives it.
+    pub fn reset_layout(&mut self, scope: &Scope, port: usize) {
+        self.layout_mut(scope).ports[port] = PortLayout::default();
+        self.tidy();
+    }
+
+    /// Every level of a game removed (in-game Controls > Reset to Default).
+    pub fn reset_game(&mut self, game: &str) { self.games.remove(game); }
+
+    /// What a port plays in a game of `system` (`game`: its key, if any).
+    pub fn resolve(&self, system: &'static str, game: Option<&str>, port: usize,
+                   default_xy: XyRole) -> Resolved {
+        let scope = match game {
+            Some(game) => Scope::Game { system, game: game.to_owned() },
+            None => Scope::System(system),
+        };
+        let buttons = console_buttons(system);
+        let pairs: Vec<(u16, u16)> = (0..buttons.len())
+            .map(|i| (self.bind(&scope, port, i).0, buttons[i].core))
+            .filter(|&(slot, _)| slot != 0)
+            .collect();
+        let used = |b: u16| pairs.iter().any(|&(slot, _)| slot & b != 0);
+        let xy = (spare_xy(system) && !used(bit::X | bit::Y))
+            .then(|| self.xy(&scope, port, default_xy).0);
+        let shoulders = (spare_shoulders(system) && !used(bit::L | bit::R))
+            .then(|| self.shoulders(&scope, port).0);
+        Resolved { pairs, xy, shoulders }
+    }
+}
+
+/// A row of a system's (or a game's) Port page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutRow { Button(usize), Xy, Shoulders, Reset }
+
+pub fn layout_rows(system: &str) -> Vec<LayoutRow> {
+    let mut rows: Vec<LayoutRow> = (0..console_buttons(system).len()).map(LayoutRow::Button).collect();
+    if spare_xy(system) { rows.push(LayoutRow::Xy); }
+    if spare_shoulders(system) { rows.push(LayoutRow::Shoulders); }
+    rows.push(LayoutRow::Reset);
+    rows
 }
 
 #[cfg(not(slot_harness))]
@@ -448,8 +808,6 @@ mod tests {
     #[test]
     fn port_one_is_never_left_empty() {
         let mut controls = Controls::default();
-        // Port 2 empty taking Port 1's controller would empty Port 1.
-        assert!(!controls.candidates(1, &[BUILTIN.into()]).contains(&BUILTIN.to_owned()));
         controls.assign(1, BUILTIN);
         assert_eq!(controls.on_port(0), Some(BUILTIN));
         assert_eq!(controls.on_port(1), None);
@@ -461,20 +819,42 @@ mod tests {
     }
 
     #[test]
-    fn cycling_port_two_goes_through_none_and_every_connected_controller() {
+    fn cycling_port_two_goes_round_the_same_stops_both_ways() {
         let mut controls = Controls::default();
         let connected = vec![BUILTIN.to_owned(), PAD.to_owned(), "pro".to_owned()];
-        assert_eq!(controls.candidates(1, &connected), vec!["".to_owned(), PAD.into(), "pro".into()]);
+        assert_eq!(controls.candidates(1, &connected),
+            vec!["".to_owned(), PAD.into(), "pro".into(), BUILTIN.into()]);
         controls.cycle(1, true, &connected);
         assert_eq!(controls.on_port(1), Some(PAD));
         controls.cycle(1, true, &connected);
         assert_eq!(controls.on_port(1), Some("pro"));
         controls.cycle(1, true, &connected);
-        assert_eq!(controls.on_port(1), None, "back to None");
-        controls.assign(1, PAD);
-        controls.cycle(1, false, &connected);
         assert_eq!(controls.on_port(1), Some(BUILTIN), "taken from Port 1 by swapping");
-        assert_eq!(controls.on_port(0), Some(PAD));
+        assert_eq!(controls.on_port(0), Some("pro"));
+        controls.cycle(1, true, &connected);
+        assert_eq!(controls.on_port(1), None, "then None, never a short loop");
+        assert_eq!(controls.candidates(0, &connected)[0], BUILTIN, "Port 1 lists the handheld first");
+    }
+
+    #[test]
+    fn port_two_takes_the_handhelds_controls_only_if_port_one_has_another() {
+        let mut alone = Controls::default();
+        alone.cycle(1, false, &[BUILTIN.into()]);
+        assert_eq!(alone.on_port(0), Some(BUILTIN));
+        assert_eq!(alone.on_port(1), None, "nothing else could take Port 1");
+        let mut two = Controls::default();
+        two.cycle(1, false, &[BUILTIN.into(), PAD.into()]);
+        assert_eq!(two.on_port(1), Some(BUILTIN));
+        assert_eq!(two.on_port(0), Some(PAD));
+    }
+
+    #[test]
+    fn a_controller_that_is_off_stays_on_its_port() {
+        let mut controls = Controls::default();
+        controls.assign(1, PAD);
+        assert!(controls.candidates(1, &[BUILTIN.into()]).contains(&PAD.to_owned()));
+        controls.cycle(1, false, &[BUILTIN.into()]);
+        assert_eq!(controls.on_port(1), None);
     }
 
     #[test]
@@ -490,7 +870,7 @@ mod tests {
     fn a_controller_set_aside_never_takes_port_two_again() {
         let mut controls = Controls::default();
         assert!(controls.claim_free_port(PAD));
-        controls.cycle(1, true, &[BUILTIN.into(), PAD.into()]);
+        controls.cycle(1, false, &[BUILTIN.into(), PAD.into()]);
         assert_eq!(controls.on_port(1), None, "the player chose None");
         assert!(!controls.claim_free_port(PAD), "its next button doesn't undo that");
         // Nor after slot. restarts.
@@ -499,7 +879,7 @@ mod tests {
         // A controller only ever picked by hand is known too.
         let mut picked = Controls::default();
         picked.assign(1, "pro");
-        picked.cycle(1, true, &[BUILTIN.into(), "pro".into()]);
+        picked.cycle(1, false, &[BUILTIN.into(), "pro".into()]);
         assert!(!picked.claim_free_port("pro"));
     }
 
@@ -594,5 +974,104 @@ mod tests {
         assert_eq!(key_name(188), "Button 1");
         assert_eq!(key_name(203), "Button 16");
         assert_eq!(key_name(1234), "Key 1234");
+    }
+
+    // ---- Systems > Controls and the in-game Controls ----
+
+    const NES: Scope = Scope::System("nes");
+    fn game() -> Scope { Scope::Game { system: "nes", game: "mario".into() } }
+
+    #[test]
+    fn untouched_systems_play_exactly_as_before() {
+        let controls = Controls::default();
+        for system in SYSTEMS {
+            for turbo in [true, false] {
+                let default_xy = if turbo { XyRole::TurboAB } else { XyRole::BA };
+                let layout = controls.resolve(system, None, 0, default_xy);
+                for frame in 0..12u32 {
+                    for slot in 0..(1u16 << 12) {
+                        assert_eq!(layout.apply(slot, frame), old_pad(system, slot, turbo, frame),
+                            "{system} {slot:#x} turbo={turbo} frame={frame}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// game.rs's pad_buttons before Controls, for the comparison above.
+    fn old_pad(system: &str, slot: u16, turbo: bool, frame: u32) -> u16 {
+        if matches!(system, "snes" | "md") { return slot; }
+        let mut mapped = slot & !(bit::X | bit::Y);
+        if turbo {
+            if (frame / 3) % 2 == 0 {
+                if slot & bit::X != 0 { mapped |= bit::A; }
+                if slot & bit::Y != 0 { mapped |= bit::B; }
+            }
+        } else {
+            if slot & bit::Y != 0 { mapped |= bit::A; }
+            if slot & bit::X != 0 { mapped |= bit::B; }
+        }
+        // L1/R1 resized the screen and never reached Game Boy or NES cores.
+        if system != "gba" { mapped &= !(bit::L | bit::R); }
+        mapped
+    }
+
+    #[test]
+    fn mapping_a_console_button_swaps_and_shows_where_it_was_chosen() {
+        let mut controls = Controls::default();
+        let a = 4; // NES A
+        controls.map_console(&NES, 0, a, bit::B);
+        assert_eq!(controls.bind(&NES, 0, a), (bit::B, true));
+        assert_eq!(controls.bind(&NES, 0, 5), (bit::A, true), "B took A's old button");
+        let layout = controls.resolve("nes", None, 0, XyRole::TurboAB);
+        assert_eq!(layout.apply(bit::B, 0), bit::A);
+        // A game sees the system's choice, not as its own.
+        assert_eq!(controls.bind(&game(), 0, a), (bit::B, false));
+        controls.map_console(&game(), 0, a, bit::A);
+        assert_eq!(controls.bind(&game(), 0, a), (bit::A, true));
+        assert_eq!(controls.resolve("nes", Some("mario"), 0, XyRole::TurboAB).apply(bit::A, 0), bit::A);
+        controls.reset_game("mario");
+        assert_eq!(controls.bind(&game(), 0, a), (bit::B, false));
+        controls.reset_layout(&NES, 0);
+        assert!(controls.systems.is_empty(), "nothing left to keep");
+    }
+
+    #[test]
+    fn x_y_roles_cycle_and_follow_the_old_setting_until_changed() {
+        let mut controls = Controls::default();
+        assert_eq!(controls.xy(&NES, 0, XyRole::BA), (XyRole::BA, false));
+        controls.cycle_xy(&NES, 0, true, XyRole::BA);
+        assert_eq!(controls.xy(&NES, 0, XyRole::BA), (XyRole::Off, true));
+        let layout = controls.resolve("nes", None, 0, XyRole::BA);
+        assert_eq!(layout.apply(bit::X | bit::Y, 0), 0, "X and Y do nothing now");
+    }
+
+    #[test]
+    fn shoulder_roles_are_port_one_shortcuts_or_buttons() {
+        let mut controls = Controls::default();
+        assert_eq!(controls.shoulders(&NES, 0), (ShoulderRole::ScreenSize, false));
+        assert_eq!(controls.shoulders(&NES, 1), (ShoulderRole::Off, false));
+        assert!(!ShoulderRole::choices("nes", 1).contains(&ShoulderRole::States));
+        assert!(ShoulderRole::choices("gb", 0).contains(&ShoulderRole::Palette));
+        assert!(!ShoulderRole::choices("nes", 0).contains(&ShoulderRole::Palette));
+        controls.cycle_shoulders(&NES, 0, true);
+        controls.cycle_shoulders(&NES, 0, true);
+        assert_eq!(controls.shoulders(&NES, 0).0, ShoulderRole::TurboAB);
+        let layout = controls.resolve("nes", None, 0, XyRole::TurboAB);
+        assert_eq!(layout.apply(bit::L, 0), bit::A);
+        assert_eq!(layout.apply(bit::R, 3), 0, "turbo is off on frames 3-5");
+        // L1 playing a console button: the role steps aside.
+        controls.map_console(&NES, 0, 4, bit::L);
+        assert_eq!(controls.resolve("nes", None, 0, XyRole::TurboAB).shoulders, None);
+    }
+
+    #[test]
+    fn mega_drive_buttons_have_their_own_names() {
+        let names: Vec<&str> = console_buttons("md").iter().map(|b| b.name).collect();
+        assert_eq!(&names[4..], &["A", "B", "C", "X", "Y", "Z", "Mode", "START"]);
+        assert!(layout_rows("md").iter().all(|r| !matches!(r, LayoutRow::Xy | LayoutRow::Shoulders)));
+        assert!(layout_rows("gba").contains(&LayoutRow::Xy));
+        assert!(!layout_rows("gba").contains(&LayoutRow::Shoulders));
+        assert!(takes_port2("nes") && !takes_port2("gbc"));
     }
 }
