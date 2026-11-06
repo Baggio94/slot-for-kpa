@@ -35,8 +35,8 @@ internal class SlotUpdater(private val context: Context, private val notify: (In
         const val READY = 5
         private const val TAG = "SlotUpdater"
 
-        private const val API = "https://api.github.com/repos/Baggio94/slot-for-kpa/releases?per_page=20"
-        private const val RELEASES = "https://github.com/Baggio94/slot-for-kpa/releases/"
+        private const val API = "https://api.github.com/repos/Baggio94/slot-for-android/releases?per_page=20"
+        private const val RELEASES = "https://github.com/Baggio94/slot-for-android/releases/"
         private const val MAX_APK = 150L * 1024 * 1024
         private val worker = Executors.newSingleThreadExecutor { task ->
             Thread(task, "slot-updater").apply { priority = Thread.MIN_PRIORITY }

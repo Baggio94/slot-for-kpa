@@ -56,7 +56,9 @@ import android.opengl.GLSurfaceView
 import android.view.Choreographer
 import android.os.Bundle
 import android.util.Log
+import android.hardware.input.InputManager
 import android.view.InputDevice
+import android.view.InputEvent
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
@@ -108,6 +110,10 @@ class MainActivity : Activity() {
             // Stick clicks: Boktai's sun, like mGBA's R3 / L3.
             KeyEvent.KEYCODE_BUTTON_THUMBL, KeyEvent.KEYCODE_BUTTON_THUMBR
         )
+        private val DPAD_KEYS = setOf(
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN
+        )
     }
 
     external fun nativeSurfaceCreated(): Boolean
@@ -120,6 +126,10 @@ class MainActivity : Activity() {
     external fun nativeEglPresentationTick(pressedNs: Long)
     external fun nativeEglPresentationReport(): String
     external fun nativeKey(code: Int, pressed: Boolean)
+    /** A key of a controller: Settings > Controls picks its port and button. */
+    external fun nativePadKey(device: Int, code: Int, pressed: Boolean, stick: Boolean)
+    /** Every controller connected now, as [{"id","name","fp"}]. */
+    external fun nativeControllers(json: String)
     external fun nativeResetInput()
     external fun nativeExternalReturn()
     external fun nativePerformanceStats(): String?
@@ -179,6 +189,8 @@ class MainActivity : Activity() {
     // touches WifiManager, Android UI or permissions from the GL thread.
     external fun nativeLinkPeerRomDecision(choice: Int)
     external fun nativeLinkPeerLabel(): String?
+    // Internet Multiplayer: the room-code message to hand to the share sheet.
+    external fun nativeLinkShareText(): String?
     external fun nativeLinkNetworkReady(ipv4: String)
     external fun nativeLinkNetworkError(reason: String)
     external fun nativeLinkNeedsMulticast(): Boolean
@@ -288,9 +300,15 @@ class MainActivity : Activity() {
     // Frame Pacing NATIVE: render continuously and let the blocking buffer
     // swap pace the core, as RetroArch does.
     @Volatile private var raSwapLoopApplied = false
-    // Last D-pad hat position (-1, 0, 1) when the pad reports one.
-    private var hatX = 0
-    private var hatY = 0
+    // Last D-pad hat position (-1, 0, 1) of each controller reporting one.
+    private val hats = HashMap<Int, IntArray>()
+    // Controllers last sent to slot. (nativeControllers), by device id.
+    private val knownControllers = HashSet<Int>()
+    private val controllerListener = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) = pushControllers()
+        override fun onInputDeviceRemoved(deviceId: Int) = pushControllers()
+        override fun onInputDeviceChanged(deviceId: Int) = pushControllers()
+    }
     private var stickForwarded = false
     @Volatile private var latestVsyncFrameNs = 0L
     // Beta10 read-only Choreographer delivery telemetry (UI thread).
@@ -518,6 +536,31 @@ class MainActivity : Activity() {
      * before this UI appears. A14 never trusts IPs or legacy lab flags.
      * Keys are remembered only by Rust after a verified ROM exchange.
      */
+    /** Internet host: hand the room code to WhatsApp, SMS or anything else.
+     *  The code is also copied, so it can be pasted by hand. The room stays
+     *  open while slot. is in the background (see Rust Input::Suspend). */
+    private fun shareLinkCode() {
+        val text = nativeLinkShareText() ?: return
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("slot. room code", text))
+        } catch (error: Exception) {
+            Log.w(TAG, "Cannot copy the room code", error)
+        }
+        try {
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            startActivity(Intent.createChooser(send, "Send the room code"))
+        } catch (error: Exception) {
+            Log.w(TAG, "No app can share the room code", error)
+            SlotToast.makeText(this, "Code copied. Paste it in a message to your friend.",
+                Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun showPeerCartridgeConsent() {
         if (!resumed || isDestroyed || isFinishing) {
             nativeLinkPeerRomDecision(0)
@@ -696,6 +739,7 @@ class MainActivity : Activity() {
                 16 -> requestLinkWifi()
                 17 -> toggleShareGbaSaves()
                 18 -> showPeerCartridgeConsent()
+                23 -> shareLinkCode()
                 19 -> slotUpdater.check(true)
                 20 -> slotUpdater.openNotes()
                 21 -> {
@@ -886,6 +930,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        getSystemService(InputManager::class.java)
+            ?.registerInputDeviceListener(controllerListener, Handler(Looper.getMainLooper()))
         // A staged sign-out must finish before any native HTTP worker is started.
         val cleanSignOut = RaAccount.finishPendingSignOut(filesDir)
         // Device-specific *initial preference* only. Existing persisted
@@ -951,6 +997,8 @@ class MainActivity : Activity() {
                 glPacingCorrelation.reset()
                 if (!ready) Log.e(TAG, "Slot GLES initialization failed")
                 else runOnUiThread {
+                    // The engine is new: tell it every controller.
+                    pushControllers()
                     // Wait for the renderer to exist before revealing the shelf.
                     uiHandler.postDelayed({ hideSlotStartupSplash() }, 650L)
                 }
@@ -1267,7 +1315,7 @@ class MainActivity : Activity() {
         // START / SELECT on the shelf are now rendered by Slot itself.
         // Log any otherwise unrecognized physical key so the KONKR's top-round
         // key can be mapped from real device evidence, not a guessed keycode.
-        if (keyCode !in BUTTONS) {
+        if (!readsKey(keyCode)) {
             if (event.repeatCount == 0) {
                 Log.i(TAG, "Unmapped hardware key down: code=" + keyCode +
                     " name=" + KeyEvent.keyCodeToString(keyCode) +
@@ -1279,10 +1327,74 @@ class MainActivity : Activity() {
             EmulationDiagnostics.input(keyCode, true, event, keyCode)
             warmedCandidate.set(null)
             wakeCarouselRender()
-            nativeKey(keyCode, true)
+            sendKey(event, keyCode, true, fromStick(event))
         }
         return true
     }
+
+    /** A controller's own device, or null for a key that has none (virtual). */
+    private fun controllerOf(event: InputEvent): InputDevice? {
+        val device = event.device ?: return null
+        return if (device.isVirtual || event.deviceId <= 0) null else device
+    }
+
+    private fun isController(device: InputDevice): Boolean {
+        val sources = device.sources
+        return !device.isVirtual && (
+            (sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+            (sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ||
+            (sources and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD)
+    }
+
+    /** Tell slot. every controller connected now. The handheld's own input
+     *  devices are all one controller, "builtin"; any other is known by its
+     *  descriptor, which stays the same when it reconnects. */
+    private fun pushControllers() {
+        val list = JSONArray()
+        knownControllers.clear()
+        for (id in InputDevice.getDeviceIds()) {
+            val device = InputDevice.getDevice(id) ?: continue
+            if (!isController(device)) continue
+            knownControllers.add(id)
+            list.put(JSONObject()
+                .put("id", id)
+                .put("name", device.name ?: "Controller")
+                .put("fp", if (isBuiltIn(device)) "builtin" else device.descriptor)
+                // L3 / R3 (stick clicks): the Hotkeys page offers them only if present.
+                .put("sticks", device.hasKeys(KeyEvent.KEYCODE_BUTTON_THUMBL,
+                    KeyEvent.KEYCODE_BUTTON_THUMBR).all { it }))
+        }
+        nativeControllers(list.toString())
+    }
+
+    /** The handheld's own controls. Some report as external: the KONKR's
+     *  are an internal USB "Microsoft X-box 360 pad" (045e:028e, dumpsys
+     *  input 2026-11-06), and a Retroid's may be too. */
+    private fun isBuiltIn(device: InputDevice): Boolean =
+        !device.isExternal ||
+            (device.vendorId == 0x045e && device.productId == 0x028e) ||
+            device.name.orEmpty().contains("Retroid", ignoreCase = true)
+
+    /** A key (or hat direction) of a controller: to Settings > Controls. */
+    private fun sendKey(event: InputEvent, code: Int, pressed: Boolean, stick: Boolean = false) {
+        val device = controllerOf(event)
+        if (device == null) {
+            nativeKey(code, pressed)
+            return
+        }
+        if (event.deviceId !in knownControllers && isController(device)) pushControllers()
+        nativePadKey(event.deviceId, code, pressed, stick)
+    }
+
+    /** A D-pad key Android made from a controller's left stick. */
+    private fun fromStick(event: KeyEvent): Boolean =
+        (event.flags and KeyEvent.FLAG_FALLBACK) != 0 &&
+            event.keyCode in DPAD_KEYS
+
+    /** Keys slot. reads: its own, plus any gamepad button a controller may
+     *  send instead (C, Z, 1-16...), which Settings > Controls can map. */
+    private fun readsKey(keyCode: Int): Boolean =
+        keyCode in BUTTONS || KeyEvent.isGamepadButton(keyCode)
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
@@ -1313,23 +1425,26 @@ class MainActivity : Activity() {
         fun axis(value: Float) = if (value <= -0.5f) -1 else if (value >= 0.5f) 1 else 0
         val x = axis(event.getAxisValue(MotionEvent.AXIS_HAT_X))
         val y = axis(event.getAxisValue(MotionEvent.AXIS_HAT_Y))
+        val hat = hats.getOrPut(event.deviceId) { IntArray(2) }
+        val hatX = hat[0]
+        val hatY = hat[1]
         if (x != hatX || y != hatY) {
             EmulationDiagnostics.hat(event, (x != 0 && x != hatX) || (y != 0 && y != hatY))
             warmedCandidate.set(null)
             wakeCarouselRender()
             if (x != hatX) {
-                if (hatX < 0) nativeKey(KeyEvent.KEYCODE_DPAD_LEFT, false)
-                if (hatX > 0) nativeKey(KeyEvent.KEYCODE_DPAD_RIGHT, false)
-                if (x < 0) nativeKey(KeyEvent.KEYCODE_DPAD_LEFT, true)
-                if (x > 0) nativeKey(KeyEvent.KEYCODE_DPAD_RIGHT, true)
-                hatX = x
+                if (hatX < 0) sendKey(event, KeyEvent.KEYCODE_DPAD_LEFT, false)
+                if (hatX > 0) sendKey(event, KeyEvent.KEYCODE_DPAD_RIGHT, false)
+                if (x < 0) sendKey(event, KeyEvent.KEYCODE_DPAD_LEFT, true)
+                if (x > 0) sendKey(event, KeyEvent.KEYCODE_DPAD_RIGHT, true)
+                hat[0] = x
             }
             if (y != hatY) {
-                if (hatY < 0) nativeKey(KeyEvent.KEYCODE_DPAD_UP, false)
-                if (hatY > 0) nativeKey(KeyEvent.KEYCODE_DPAD_DOWN, false)
-                if (y < 0) nativeKey(KeyEvent.KEYCODE_DPAD_UP, true)
-                if (y > 0) nativeKey(KeyEvent.KEYCODE_DPAD_DOWN, true)
-                hatY = y
+                if (hatY < 0) sendKey(event, KeyEvent.KEYCODE_DPAD_UP, false)
+                if (hatY > 0) sendKey(event, KeyEvent.KEYCODE_DPAD_DOWN, false)
+                if (y < 0) sendKey(event, KeyEvent.KEYCODE_DPAD_UP, true)
+                if (y > 0) sendKey(event, KeyEvent.KEYCODE_DPAD_DOWN, true)
+                hat[1] = y
             }
         }
         // A stick on the same device still goes through Android's own
@@ -1363,11 +1478,11 @@ class MainActivity : Activity() {
         if (keyCode == KeyEvent.KEYCODE_BUTTON_MODE) {
             Log.i(TAG, "KONKR MENU BTN_MODE up: Android code=" + keyCode)
         }
-        if (keyCode !in BUTTONS) return super.onKeyUp(keyCode, event)
+        if (!readsKey(keyCode)) return super.onKeyUp(keyCode, event)
         EmulationDiagnostics.input(keyCode, false, event, keyCode)
         warmedCandidate.set(null)
         wakeCarouselRender()
-        nativeKey(keyCode, false)
+        sendKey(event, keyCode, false, fromStick(event))
         return true
     }
 
@@ -2991,6 +3106,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        getSystemService(InputManager::class.java)?.unregisterInputDeviceListener(controllerListener)
         releaseLinkMulticast()
         Choreographer.getInstance().removeFrameCallback(vsyncCallback)
         raConnectivity?.let { manager ->
@@ -3061,6 +3177,8 @@ class MainActivity : Activity() {
             nativeExternalReturn()
         }
         resumed = true
+        // Controllers may have come or gone while slot. was away.
+        pushControllers()
         publishSensors()
         publishDisplayRefresh()
         synchronized(raSmartForeground) { raSmartForeground.notifyAll() }

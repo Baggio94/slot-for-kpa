@@ -31,3 +31,4 @@
 /.build/
 /studio-upstream/
 __pycache__/
+/tools/slot-relay/target

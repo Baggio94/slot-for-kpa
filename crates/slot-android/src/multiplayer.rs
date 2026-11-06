@@ -24,10 +24,28 @@ const BOUND: Duration = Duration::from_secs(30);
 pub enum Role { Host, Join }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Failure { NoNetwork, NobodyCame, IncompatiblePeer, PeerVanished, Cancelled }
+pub enum Failure {
+    NoNetwork, NobodyCame, IncompatiblePeer, PeerVanished, Cancelled,
+    /// Internet: the relay has no room with the code that was typed (or
+    /// this address typed too many wrong ones).
+    WrongCode,
+    /// Internet: the relay could not be reached, or none is configured.
+    NoRelay,
+}
+
+/// Where the other console is looked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Network {
+    /// Same Wi-Fi: mDNS discovery, the host listens on 7211.
+    Local(Ipv4Addr),
+    /// Anywhere: both dial the relay; Join brings the host's room code.
+    Internet { relay: String, code: Option<String> },
+}
 
 pub enum Progress {
     Looking,
+    /// Internet host: the relay opened a room. Show and share this code.
+    RoomCode(String),
     /// Both devices must explicitly approve transmitting their ROM image
     /// to the other player. Only emitted for mixed-ROM mGBA Cable.
     PeerRomConsent(String),
@@ -50,6 +68,9 @@ fn classify(err: &io::Error) -> Failure {
     match err.kind() {
         io::ErrorKind::Interrupted => Failure::Cancelled,
         io::ErrorKind::TimedOut => Failure::NobodyCame,
+        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+            if err.to_string().contains("code") => Failure::WrongCode,
+        _ if err.to_string().contains("relay") => Failure::NoRelay,
         // During the strict KMLB/2 welcome, the Host closes the socket
         // without ACK when ROM/core/BIOS/backend/link mode differs. This
         // arrives on Join as EOF. Never mislabel it as a link that was
@@ -78,6 +99,12 @@ mod failure_classification_tests {
             Failure::NobodyCame);
         assert_eq!(classify(&io::Error::new(io::ErrorKind::ConnectionReset, "later")),
             Failure::PeerVanished);
+        assert_eq!(classify(&io::Error::new(io::ErrorKind::NotFound, "no room has this code")),
+            Failure::WrongCode);
+        assert_eq!(classify(&io::Error::new(io::ErrorKind::PermissionDenied,
+            "too many wrong codes, wait a few minutes")), Failure::WrongCode);
+        assert_eq!(classify(&io::Error::new(io::ErrorKind::ConnectionRefused,
+            "Internet relay unreachable: refused")), Failure::NoRelay);
     }
 }
 
@@ -231,9 +258,35 @@ impl LinkConfig {
     }
 }
 
-fn connect(role: Role, local: Ipv4Addr, config: &LinkConfig,
+/// How long an Internet host keeps its room open for the friend to type the
+/// code. Far longer than on Wi-Fi: the code travels by message first.
+const INTERNET_BOUND: Duration = Duration::from_secs(10 * 60);
+
+fn connect(role: Role, network: &Network, config: &LinkConfig,
            cancel: &Cancel, ui: &Sender<Progress>, approval: &Receiver<PeerPermission>)
     -> io::Result<(TcpLink, Option<PathBuf>, PeerBios)> {
+    let local = match network {
+        Network::Local(local) => *local,
+        Network::Internet { relay, code } => {
+            let fingerprint = config.fingerprint().map_err(|e|
+                io::Error::new(e.kind(), format!("prepare Link ROM/core/BIOS fingerprint: {e}")))?;
+            let cancelled = || cancel.is_cancelled();
+            let link = match role {
+                Role::Host => {
+                    let stream = crate::link_relay::host(relay, INTERNET_BOUND, &cancelled,
+                        &mut |code| { let _ = ui.send(Progress::RoomCode(code.to_owned())); })?;
+                    TcpLink::host_lab_on(stream, &fingerprint, crate::link_net::RELAYED_GREET_WAIT)?
+                }
+                Role::Join => {
+                    let code = code.as_deref().ok_or_else(|| io::Error::new(
+                        io::ErrorKind::InvalidInput, "a room code is needed to join"))?;
+                    let stream = crate::link_relay::join(relay, code, &cancelled)?;
+                    TcpLink::join_lab_on(stream, &fingerprint, crate::link_net::RELAYED_GREET_WAIT)?
+                }
+            };
+            return finish_setup(link, role, &fingerprint, config, cancel, ui, approval);
+        }
+    };
     if local.is_unspecified() || local.is_loopback() || local.is_multicast()
         || local.is_link_local() || local.is_broadcast() {
         return Err(io::Error::new(io::ErrorKind::AddrNotAvailable,
@@ -241,7 +294,7 @@ fn connect(role: Role, local: Ipv4Addr, config: &LinkConfig,
     }
     let fingerprint = config.fingerprint().map_err(|e|
         io::Error::new(e.kind(), format!("prepare Link ROM/core/BIOS fingerprint: {e}")))?;
-    let mut link = match role {
+    let link = match role {
         Role::Host => {
             // Validate multicast and join the correct interface before announcing.
             let wire = Multicast::open(local)?;
@@ -266,6 +319,15 @@ fn connect(role: Role, local: Ipv4Addr, config: &LinkConfig,
             })
         }
     }?;
+    finish_setup(link, role, &fingerprint, config, cancel, ui, approval)
+}
+
+/// Everything after the greeting is the same on Wi-Fi and over the Internet.
+fn finish_setup(mut link: TcpLink, role: Role, fingerprint: &LabGreeting,
+                config: &LinkConfig, cancel: &Cancel, ui: &Sender<Progress>,
+                approval: &Receiver<PeerPermission>)
+    -> io::Result<(TcpLink, Option<PathBuf>, PeerBios)> {
+    let fingerprint = fingerprint.clone();
     let peer_path = stage_mgba_peer(&mut link, &fingerprint, config,
         role == Role::Host, cancel, ui, approval)?;
     let peer_bios = if config.backend == Backend::MgbaSlotCable {
@@ -391,6 +453,10 @@ pub struct LinkStarter {
 
 impl LinkStarter {
     pub fn spawn(role: Role, local: Ipv4Addr, config: LinkConfig) -> io::Result<Self> {
+        Self::spawn_on(role, Network::Local(local), config)
+    }
+
+    pub fn spawn_on(role: Role, network: Network, config: LinkConfig) -> io::Result<Self> {
         if game_code(&config.game).is_none() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid GBA Link code"));
         }
@@ -400,7 +466,7 @@ impl LinkStarter {
         let worker_cancel = cancel.clone();
         thread::spawn(move || {
             let _ = tx.send(Progress::Looking);
-            let result = connect(role, local, &config, &worker_cancel, &tx, &approval);
+            let result = connect(role, &network, &config, &worker_cancel, &tx, &approval);
             if let Err(ref error) = result { report_setup_error(error); }
             let report = match result {
                 Ok((link, remote, bios)) if !worker_cancel.is_cancelled() =>
@@ -494,7 +560,7 @@ mod tests {
                       Ipv4Addr::new(224,0,0,251), Ipv4Addr::BROADCAST] {
             let (tx, _events) = mpsc::channel();
             let (_consent, approval) = mpsc::channel();
-            let err = connect(Role::Host, local, &test_config("BPRE"),
+            let err = connect(Role::Host, &Network::Local(local), &test_config("BPRE"),
                 &Cancel::new(), &tx, &approval).err().unwrap();
             assert_eq!(err.kind(), io::ErrorKind::AddrNotAvailable);
         }

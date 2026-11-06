@@ -617,21 +617,63 @@ fn the_grid_draws_one_dark_line_per_game_pixel_at_3x() {
     assert!(rows.windows(2).all(|p| p[1] - p[0] == 3), "rows: {rows:?}");
 }
 
+/// Each grid line's weight (its darkness summed across the screen pixels
+/// it covers) over the screen pixels per game pixel, and how far, in screen
+/// pixels, the lines stray from an even spacing, along x (`across_x`) or y.
+fn grid_line_fit(frame: &[u8], w: usize, h: usize, n: usize, across_x: bool) -> (Vec<f32>, f32) {
+    let g = |x: usize, y: usize| frame[(y * w + x) * 4 + 1] as f32;
+    let len = if across_x { w } else { h };
+    // The brightest pixel of each column (row) lies between the lines
+    // that run the other way.
+    let prof: Vec<f32> = (0..len)
+        .map(|i| {
+            (0..if across_x { h } else { w })
+                .map(|j| if across_x { g(i, j) } else { g(j, i) })
+                .fold(0.0, f32::max)
+        })
+        .collect();
+    let lit = prof.iter().cloned().fold(0.0, f32::max);
+    let first = prof.iter().position(|&v| v > 0.0).unwrap();
+    let last = prof.iter().rposition(|&v| v > 0.0).unwrap();
+    let scale = (last + 1 - first) as f32 / n as f32;
+    let (mut weight, mut moment) = (vec![0.0f32; n], vec![0.0f32; n]);
+    for (i, v) in prof.iter().enumerate().take(last + 1).skip(first) {
+        // A line covers the first third of its game pixel.
+        let k = ((i - first) as f32 + 0.5) / scale + 1.0 / 3.0;
+        if (k as usize) < n {
+            let d = 1.0 - v / lit;
+            weight[k as usize] += d;
+            moment[k as usize] += d * (i as f32 + 0.5);
+        }
+    }
+    let offset: Vec<f32> = (0..n)
+        .map(|k| moment[k] / weight[k] - (first as f32 + k as f32 * scale))
+        .collect();
+    let mean = offset.iter().sum::<f32>() / n as f32;
+    let drift = offset.iter().map(|o| (o - mean).abs()).fold(0.0, f32::max);
+    (weight.iter().map(|l| l / scale).collect(), drift)
+}
+
+fn assert_even_grid(frame: &[u8], w: usize, h: usize, cols: usize, rows: usize) {
+    for (n, across_x) in [(cols, true), (rows, false)] {
+        let (weight, drift) = grid_line_fit(frame, w, h, n, across_x);
+        // A third of each game pixel at 0.25 of its colour: 0.75 / 3.
+        assert!(
+            weight.iter().all(|&l| (l - 0.25).abs() < 0.01),
+            "uneven lines (x {across_x}): {weight:?}"
+        );
+        assert!(drift < 0.15, "a line strays {drift} px from an even spacing (x {across_x})");
+    }
+}
+
 #[test]
-fn the_grid_marks_every_game_pixel_edge_on_a_4_by_3_panel() {
+fn the_grid_marks_every_game_pixel_edge_evenly_on_a_4_by_3_panel() {
     let Some((_g, _s, mut c)) = compositor() else {
         return;
     };
     let (frame, w, h) = grid_frame(&mut c, (640, 480));
     assert_eq!((w, h), (640, 427));
-    let (cols, rows) = grid_lines(&frame, w, h);
-    assert_eq!(cols.len(), SRC_W as usize, "dark columns: {cols:?}");
-    assert_eq!(rows.len(), SRC_H as usize, "dark rows: {rows:?}");
-    assert!(
-        cols.windows(2).all(|p| p[1] - p[0] >= 2),
-        "columns: {cols:?}"
-    );
-    assert!(rows.windows(2).all(|p| p[1] - p[0] >= 2), "rows: {rows:?}");
+    assert_even_grid(&frame, w, h, SRC_W as usize, SRC_H as usize);
 }
 
 fn stretched_gb_grid(c: &mut Compositor, window: (u32, u32)) -> (Vec<u8>, usize, usize) {
@@ -653,37 +695,20 @@ fn stretched_gb_grid(c: &mut Compositor, window: (u32, u32)) -> (Vec<u8>, usize,
 }
 
 #[test]
-fn the_grid_marks_every_game_boy_pixel_edge_when_stretched() {
+fn the_grid_marks_every_game_boy_pixel_edge_evenly_when_stretched() {
     let Some((_g, _s, mut c)) = compositor() else {
         return;
     };
     let (frame, w, h) = stretched_gb_grid(&mut c, (out_w(), OUT_H));
-    let (cols, rows) = grid_lines(&frame, w, h);
-    assert_eq!(cols.len(), GB_W, "dark columns: {cols:?}");
-    assert_eq!(rows.len(), GB_H, "dark rows: {rows:?}");
-    assert!(
-        cols.windows(2).all(|p| (4..=5).contains(&(p[1] - p[0]))),
-        "columns: {cols:?}"
-    );
-    assert!(
-        rows.windows(2).all(|p| (3..=4).contains(&(p[1] - p[0]))),
-        "rows: {rows:?}"
-    );
+    assert_even_grid(&frame, w, h, GB_W, GB_H);
 }
 
 #[test]
-fn the_grid_keeps_game_boy_rows_even_when_stretched_on_a_4_by_3_panel() {
+fn the_grid_keeps_game_boy_lines_even_when_stretched_on_a_4_by_3_panel() {
     let Some((_g, _s, mut c)) = compositor() else {
         return;
     };
     let (frame, w, h) = stretched_gb_grid(&mut c, (640, 480));
     assert_eq!((w, h), (640, 427));
-    let (cols, rows) = grid_lines(&frame, w, h);
-    assert_eq!(cols.len(), GB_W, "dark columns: {cols:?}");
-    assert!(
-        cols.windows(2).all(|p| p[1] - p[0] == 4),
-        "columns: {cols:?}"
-    );
-    assert!(rows.windows(2).all(|p| p[1] - p[0] == 3), "rows: {rows:?}");
-    assert_eq!(rows.len(), 142, "dark rows: {rows:?}");
+    assert_even_grid(&frame, w, h, GB_W, GB_H);
 }

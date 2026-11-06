@@ -34,7 +34,7 @@ use slot_ui::{
     TURN_PAD,
     hint_face, arrows_hint_face, title_face, photo_face, Polaroids, Printed, HINT_H, HINT_EDGE, draw_slot_name, draw_platform_name, platform_name_face,
     icon_face, badge_face, menu_face, Icon, LinkBadge, BOLT_PX, HUD_INK,
-    Hud, HudKind, FfState, Toast, toast_face, QUICK_PITCH, opening, edge, centred_hints, LEGEND_GAP,
+    Hud, HudKind, FfState, Toast, toast_face, QUICK_PITCH, opening, edge, centred_hints, LEGEND_GAP, MOUTH_H,
     sticker_face_konkr, StickerFields, STICKER_W, STICKER_H, quick_caret_face,
     onboarding_instruction_face, onboarding_note_face,
 };
@@ -91,6 +91,10 @@ impl Surface for AndroidSurface {
 #[derive(Clone)]
 enum Input {
     Key(i32, bool),
+    /// A key of one of Android's input devices (Settings > Controls).
+    PadKey { device: i32, code: i32, pressed: bool, stick: bool },
+    /// Every controller connected now.
+    Controllers(Vec<crate::controls::Device>),
     // Predefined shelf UI states from Android: no untrusted or long text on GL.
     ShelfStatus(u8),
     UpdateStatus(u8, String, String, bool),
@@ -184,6 +188,12 @@ const EJECT_SOUND_DELAY_S: f32 = 0.040;
 const EJECT_SOUND_PROGRESS: f32 = 1.0 - EJECT_SOUND_DELAY_S / EJECT_S;
 const SELECT_CHORD_MS: u128 = 600;
 const SELECT_TAP_FRAMES: u8 = 3;
+/// slot. original's in-game menu: the paused game under this much black.
+const GAME_MENU_SCRIM: f32 = 0.65;
+/// The game menu waits this long for a second slot. tap (Save States).
+const MENU_REVEAL_MS: u64 = 120;
+/// A second slot. press this soon after a tap opens Save States.
+const DOUBLE_TAP_MS: u128 = 360;
 const SHELF_STATUS_TEXT: [&str; 8] = [
     "", "SCANNING CARTRIDGES...", "NO GAMES FOUND",
     "LIBRARY IMPORT FAILED", "FOLDER ACCESS EXPIRED",
@@ -286,6 +296,8 @@ static LINK_NEEDS_MULTICAST: AtomicBool = AtomicBool::new(false);
 static LINK_ACTIVE: AtomicBool = AtomicBool::new(false);
 // Authenticated peer key fingerprint, never a user-supplied device name.
 static LINK_PEER_LABEL: Mutex<Option<String>> = Mutex::new(None);
+// Internet Multiplayer: the message Kotlin's share sheet sends (UI action 23).
+static LINK_SHARE_TEXT: Mutex<Option<String>> = Mutex::new(None);
 
 #[derive(Clone)]
 struct SystemStatus {
@@ -445,6 +457,15 @@ enum ShelfOverlay {
     EmulationSettings { row: usize },
     InterfaceSettings { row: usize },
     GeneralSettings { row: usize },
+    /// Settings > Controls, and its Port 1 / Port 2 pages.
+    ControlsSettings { row: usize },
+    ControlsPort { port: usize, row: usize },
+    /// Systems > [system] > Controls (game: false), or the in-game
+    /// Settings > Controls of the game being played (game: true).
+    LayoutPorts { platform: Platform, game: bool, row: usize },
+    /// Settings > Controls > Hotkeys.
+    Hotkeys { row: usize },
+    LayoutPort { platform: Platform, game: bool, port: usize, row: usize },
     // Pause submenus never mutate the global Settings object.
     PauseSettings { row: usize },
     PauseScreenSettings { row: usize },
@@ -457,7 +478,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 125] = [
+const MENU_TEXT: [&str; 127] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -583,6 +604,8 @@ const MENU_TEXT: [&str; 125] = [
     "Super Nintendo",                    // 122
     "Mega Drive",                        // 123
     "Shader",                            // 124, NES / SNES / Mega Drive
+    "Controls",                          // 125, Settings > Controls
+    "Frame Blending",                    // 126, Systems / in-game Screen
 ];
 
 /// Settings > Systems, top to bottom.
@@ -596,7 +619,7 @@ const RECENTS_RACK: usize = Platform::ALL.len();
 const FAVORITES_RACK: usize = RECENTS_RACK + 1;
 
 /// Every Settings value face, by index: setting_face gives these indices.
-const SETTING_VALUE_NAMES: [&str; 96] = ["2×", "3×", "4×", "6×", "ON", "OFF",
+const SETTING_VALUE_NAMES: [&str; 98] = ["2×", "3×", "4×", "6×", "ON", "OFF",
                               "LCD3x", "Grid", "Dot", "Simpletex",
                               "STANDARD", "RESPONSIVE", "1 FRAME", "2 FRAMES",
                               "DISPLAY SYNC", "TURBO A/B", "A/B",
@@ -619,7 +642,7 @@ const SETTING_VALUE_NAMES: [&str; 96] = ["2×", "3×", "4×", "6×", "ON", "OFF"
                                "SNES", "SNES ALT", "SNES SILVER", "SNES SILVER ALT",
                                "GENESIS CLASSIC", "GENESIS", "MEGA DRIVE",
                                "zfast-crt", "GDV Trinitron", "CRT Geom Deluxe", "crt-pi",
-                               "fakelottes", "crt-aperture"];
+                               "fakelottes", "crt-aperture", "MIX", "GHOSTING"];
 
 /// The value face (an index in SETTING_VALUE_NAMES) a Settings key shows,
 /// None for an action-only row. Every key a menu lists must have one: the
@@ -701,6 +724,15 @@ fn setting_face(key: usize, settings: &Settings, scoped: &Settings,
             {35}else{36},
         29..=31 | 41..=43 => core_value(Engine::core_key_platform(key)
             .map_or(Core::Mgba, |platform| cores[platform as usize])),
+        // Frame Blending is the system's, in game too.
+        60..=65 => {
+            use slot_store::Platform::*;
+            match settings.blending_for([Gba, Gbc, Gb, Nes, Snes, Md][key - 60]) {
+                crate::settings::Blending::Off => 5,
+                crate::settings::Blending::Mix => 96,
+                crate::settings::Blending::Ghosting => 97,
+            }
+        }
         _ => return None,
     })
 }
@@ -738,8 +770,14 @@ fn bezel_value(bezel: crate::settings::Bezel) -> usize {
 }
 
 /// Gameplay page labels and the Settings keys they change, in row order.
-const GAMEPLAY_ROWS: [usize; 6] = [27, 28, 37, 38, 30, 39];
-const GAMEPLAY_KEYS: [usize; 6] = [4, 5, 6, 7, 8, 9];
+/// Settings: General, Systems, Controls, Gameplay, Emulation, Status Bar.
+// General, Systems, Gameplay, Emulation, Controls, Status Bar.
+const SETTINGS_ROWS: [usize; 6] = [81, 117, 33, 49, 125, 58];
+
+/// X/Y Buttons (38, key 7) moved to Systems > Controls (X / Y), where its
+/// old value is the default until a system or game chooses.
+const GAMEPLAY_ROWS: [usize; 5] = [27, 28, 37, 30, 39];
+const GAMEPLAY_KEYS: [usize; 5] = [4, 5, 6, 8, 9];
 
 const INTERFACE_ROWS: [usize; 4] = [63, 64, 65, 116];
 const INTERFACE_KEYS: [usize; 4] = [13, 14, 15, 28];
@@ -814,6 +852,11 @@ struct Engine {
     link_entry: LinkEntry,
     link_worked_at: u64,
     link_starter: Option<LinkStarter>,
+    // Internet tab, typed room code and relayed attempt (link_internet.rs),
+    // and the one heading face it draws instead of the stock ones.
+    link_inet: crate::link_internet::InternetUi,
+    link_inet_face: Option<(slot_gfx::TexId, u32, u32)>,
+    link_inet_face_text: String,
     link_art: Option<LinkSprites>,
     link_marks: Marks,
     // A single account-scoped engine outlives individual games, allowing
@@ -821,6 +864,49 @@ struct Engine {
     ra_service: Option<slot_achievements::Service>,
     ra_signing_out: bool,
     buttons: u16,
+    // Settings > Controls: who plays on which port, and Port 2's buttons.
+    controls: crate::controls::Controls,
+    pad_devices: Vec<crate::controls::Device>,
+    pad_held: crate::controls::Held,
+    buttons2: u16,
+    unseen2: u16,
+    held_releases2: u16,
+    controls_listen: Option<crate::controls::Listen>,
+    controls_faces: std::collections::HashMap<String, (slot_gfx::TexId, u32, u32)>,
+    controls_spare_faces: Vec<slot_gfx::TexId>,
+    controls_hint_faces: std::collections::HashMap<(&'static str, &'static str), (slot_gfx::TexId, u32)>,
+    controls_view: controls_ui::ControlsView,
+    port2_remote_noticed: bool,
+    // A key came from the handheld's own controls this session.
+    builtin_seen: bool,
+    // Bumped on every Controls change: the game's layouts are resolved
+    // again (with the X/Y Buttons setting they were resolved with).
+    controls_rev: u64,
+    layouts_for: Option<(u64, bool)>,
+    // Changed hotkeys: the Hotkey Button held, whether it made a hotkey or
+    // reached the game, keys whose release belongs to a hotkey, and the
+    // Hotkey Button held while a hotkey is being mapped.
+    hk_mod_down: bool,
+    hk_chorded: bool,
+    hk_forwarded: bool,
+    hk_releases: std::collections::BTreeMap<i32, crate::controls::Action>,
+    hk_listen_mod: bool,
+    // The game menu waits out a possible second slot. tap (Save States).
+    menu_reveal_at: Option<Instant>,
+    // Save States came from the game menu: B goes back there.
+    states_from_menu: bool,
+    // The second press of a double tap opened Save States: its release is spent.
+    mode_double_press: bool,
+    // The slot under the in-game menu: 0 down out of sight, 1 up.
+    footer: f32,
+    /// B on the in-game Screen page: the slot is sliding down before the
+    /// opaque Settings page comes back.
+    screen_closing: bool,
+    /// The Screen page was opened by its hotkey: Back returns to the game.
+    screen_direct: bool,
+    /// The Hotkey Button is held on an in-game settings page.
+    screen_hotkey_held: bool,
+    frame_blend: crate::frame_blend::FrameBlend,
     // Presses no core frame has read yet, and releases held back until one
     // has: a quick tap between two frames must still reach the game.
     unseen_presses: u16,
@@ -895,6 +981,8 @@ struct Engine {
     palette_values: Vec<(slot_gfx::TexId, u32, u32)>,
     setting_carets: [(slot_gfx::TexId, u32, u32); 2],
     settings_hints: [(slot_gfx::TexId, u32); 2],
+    /// The in-game Screen page's L1 R1 Size, right of the cart.
+    screen_size_hint: (slot_gfx::TexId, u32),
     about_texture: Option<slot_gfx::TexId>,
     update_status: u8,
     update_auto: bool,
@@ -915,12 +1003,19 @@ struct Engine {
     // Same centered role, progress and failure faces as original slot.
     link_role_faces: [(slot_gfx::TexId, u32, u32); 2],
     link_step_faces: [(slot_gfx::TexId, u32, u32); 2],
-    link_fail_faces: [(slot_gfx::TexId, u32, u32); 3],
+    link_fail_faces: [(slot_gfx::TexId, u32, u32); 4],
     link_connected_face: (slot_gfx::TexId, u32, u32),
     link_hints: [[(slot_gfx::TexId, u32); 3]; 2],
     link_switch_hints: [[(slot_gfx::TexId, u32); 4]; 2],
+    link_swap_icon: [(slot_gfx::TexId, u32); 2],
+    /// Multiplayer's LAN / WAN slide switch: track, knob, house, globe.
+    net_switch_faces: [(slot_gfx::TexId, u32, u32); 4],
+    /// Where its knob is: 0 at the house (LAN), 1 at the globe (WAN).
+    net_switch_t: f32,
     link_connected_hints: [[(slot_gfx::TexId, u32); 2]; 2],
     link_failed_hints: [[(slot_gfx::TexId, u32); 1]; 2],
+    // R1 WAN, L1 LAN, Y Share, UP Digit, arrows Move, A Join.
+    link_inet_hints: [[(slot_gfx::TexId, u32); 6]; 2],
     board_texture: Option<slot_gfx::TexId>,
     picker: Option<CorePicker>,
     socket_textures: [slot_gfx::TexId; Core::ALL.len()],
@@ -1031,6 +1126,11 @@ impl Engine {
         let settings = PATHS.lock().unwrap_or_else(|e| e.into_inner())
             .as_ref().map(|(root, _)| Settings::load_for_device(root, device))
             .unwrap_or_else(|| Settings::first_install_defaults_for_device(device));
+        let mut controls = PATHS.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().map(|(root, _)| crate::controls::Controls::load(root))
+            .unwrap_or_default();
+        // Until Android lists the controllers: L3/R3 only if seen before.
+        controls.hotkeys.sticks = controls.builtin_sticks;
         // Upstream Slot delegates colour correction to libretro core options.
         // Disable the dev13 approximate GPU grade to avoid double correction.
         gpu.enable_context_recovery();
@@ -1251,6 +1351,19 @@ impl Engine {
         let link_connected_hints = inks.map(|ink| [("B","Back"), ("A","End Link")]
             .map(|(k,v)| link_hint(k,v,ink)));
         let link_failed_hints = inks.map(|ink| [link_hint("A","OK",ink)]);
+        let link_inet_hints = inks.map(|ink| [("R1","WAN"), ("L1","LAN"),
+            ("Y","Share"), ("UP","Digit"), ("SWAP","Move"), ("A","Join")]
+            .map(|(k,v)| link_hint(k,v,ink)));
+        let net_switch_faces = [slot_ui::NetPart::Track, slot_ui::NetPart::Knob,
+            slot_ui::NetPart::House, slot_ui::NetPart::Globe].map(|part| {
+            let face = slot_ui::net_switch_face(part);
+            (gpu.create_face(&face), face.w, face.h)
+        });
+        // The arrows alone, for a legend too wide for a narrow screen.
+        let link_swap_icon = inks.map(|ink| {
+            let face = slot_ui::arrows_hint_face_ink("", ink);
+            (gpu.create_face(&face), face.w)
+        });
         let setting_values = SETTING_VALUE_NAMES
             .into_iter().map(|value| {
                 let face = quick_value_face(value, true);
@@ -1285,6 +1398,10 @@ impl Engine {
             let tex = gpu.create_face(&face);
             (tex, face.w)
         });
+        let screen_size_hint = {
+            let face = hint_face("L1+R1", "Size");
+            (gpu.create_face(&face), face.w)
+        };
         // Rasterize the detailed barcode About label only when opened.
         // Creating SVG / fonts during every cold boot needlessly delays shelf.
         let about_texture = None;
@@ -1389,11 +1506,42 @@ impl Engine {
             link_entry: LinkEntry::GameMenu,
             link_worked_at: 0,
             link_starter: None,
+            link_inet: Default::default(),
+            link_inet_face: None,
+            link_inet_face_text: String::new(),
             link_art: None,
             link_marks,
             ra_service: None,
             ra_signing_out: false,
             buttons: 0,
+            controls,
+            pad_devices: Vec::new(),
+            pad_held: Default::default(),
+            buttons2: 0,
+            unseen2: 0,
+            held_releases2: 0,
+            controls_listen: None,
+            controls_faces: Default::default(),
+            controls_spare_faces: Vec::new(),
+            controls_hint_faces: Default::default(),
+            controls_view: Default::default(),
+            port2_remote_noticed: false,
+            builtin_seen: false,
+            controls_rev: 0,
+            layouts_for: None,
+            hk_mod_down: false,
+            hk_chorded: false,
+            hk_forwarded: false,
+            hk_releases: Default::default(),
+            hk_listen_mod: false,
+            menu_reveal_at: None,
+            states_from_menu: false,
+            mode_double_press: false,
+            footer: 0.0,
+            screen_closing: false,
+            screen_direct: false,
+            screen_hotkey_held: false,
+            frame_blend: Default::default(),
             unseen_presses: 0,
             held_releases: 0,
             ff_held: false,
@@ -1449,6 +1597,7 @@ impl Engine {
             palette_values,
             setting_carets,
             settings_hints,
+            screen_size_hint,
             about_texture,
             update_status: 0,
             update_auto: true,
@@ -1472,8 +1621,12 @@ impl Engine {
             link_connected_face,
             link_hints,
             link_switch_hints,
+            link_swap_icon,
+            net_switch_faces,
+            net_switch_t: 0.0,
             link_connected_hints,
             link_failed_hints,
+            link_inet_hints,
             board_texture: None,
             picker: None,
             socket_textures,
@@ -1697,15 +1850,24 @@ impl Engine {
             self.reset_time_controls();
             RUMBLE_STRENGTH.store(0, Ordering::Release);
             if is_double {
+                self.menu_reveal_at=None;
+                self.states_from_menu=false;
                 self.open_polaroids();
             } else {
                 self.mode_last_tap=Some(Instant::now());
+                // Opening: show the menu only once a second tap (Save
+                // States) can no longer come. The game is paused already.
+                if matches!(self.overlay, ShelfOverlay::None) {
+                    self.menu_reveal_at=Some(Instant::now()+Duration::from_millis(MENU_REVEAL_MS));
+                }
                 self.overlay=match self.overlay {
                     ShelfOverlay::GameMenu { .. }
                     | ShelfOverlay::PauseSettings { .. }
                     | ShelfOverlay::PauseScreenSettings { .. }
                     | ShelfOverlay::PauseGameplaySettings { .. }
                     | ShelfOverlay::PauseEmulationSettings { .. }
+                    | ShelfOverlay::LayoutPorts { game: true, .. }
+                    | ShelfOverlay::LayoutPort { game: true, .. }
                     | ShelfOverlay::States => ShelfOverlay::None,
                     _=>ShelfOverlay::GameMenu {row:0},
                 };
@@ -1762,6 +1924,35 @@ impl Engine {
         self.select_tap_frames = 0;
         self.select_forwarded = false;
         self.buttons &= !ButtonMask::SELECT;
+        // SELECT + Y: the Screen page (Color Correction is on it).
+        if code == 100 { self.open_screen_shortcut(); } else { self.shortcut(code); }
+        true
+    }
+
+    /// Hotkey + Y: the in-game Screen page straight from the game, the slot
+    /// rising with it; Back or slot. sends it down and the game resumes
+    /// (Siham 2026-11-06).
+    fn open_screen_shortcut(&mut self) {
+        let Some(game) = self.game.as_ref() else { return };
+        if game.requires_relaunch() || !matches!(self.overlay, ShelfOverlay::None) { return; }
+        self.buttons = 0;
+        self.game_accum = 0.0;
+        AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.reset_time_controls();
+        RUMBLE_STRENGTH.store(0, Ordering::Release);
+        self.menu_reveal_at = None;
+        self.mode_last_tap = None;
+        self.footer = 0.0;
+        self.screen_closing = false;
+        self.screen_direct = true;
+        // Its Hotkey Button is still down: Y again closes the page.
+        self.screen_hotkey_held = true;
+        self.overlay = ShelfOverlay::PauseScreenSettings { row: 0 };
+    }
+
+    /// The SELECT + button shortcuts, also played by L1/R1 when a system's
+    /// Controls give them a shortcut (Load / Save, Shader, Palette).
+    fn shortcut(&mut self, code: i32) {
         let time = self.born.elapsed().as_millis() as u64;
         match code {
             96 | 97 => {
@@ -1799,10 +1990,10 @@ impl Engine {
             100 => {
                 let platform=self.current_cart_platform();
                 // Game Boy colours are the palette's: nothing to correct.
-                if platform==Platform::Gb {return true;}
+                if platform==Platform::Gb {return;}
                 if self.game_settings().shader_for(platform).includes_gba_color() {
                     set_message("This shader already includes color correction.".into());
-                    return true;
+                    return;
                 }
                 if self.game.is_some() {
                     self.change_game_screen_or_gameplay(2,true);
@@ -1811,7 +2002,7 @@ impl Engine {
                     // not the old GBA-only compatibility setting.
                     let key=match platform {
                         Platform::Gba=>22, Platform::Gbc=>23, Platform::Gb=>24,
-                        _=>return true,
+                        _=>return,
                     };
                     self.change_setting(key,true);
                 }
@@ -1884,7 +2075,93 @@ impl Engine {
                 }
             _ => {}
         }
-        true
+    }
+
+    /// SELECT + slot. (or its hotkey): the Multiplayer screen over the game.
+    fn open_multiplayer_shortcut(&mut self) {
+        // The SELECT+HOME gesture belongs to Slot, not to
+        // libretro or Android's normal HOME handler.
+        self.select_down_at = None;
+        self.select_chorded = true;
+        self.select_forwarded = false;
+        self.select_tap_frames = 0;
+        self.buttons = 0;
+        self.mode_down_at = None;
+        self.mode_last_tap = None;
+        self.game_accum = 0.0;
+        if self.game.as_ref().is_some_and(GameSession::linked) {
+            self.link_entry = LinkEntry::Shortcut;
+            // Upstream SELECT+MENU reopens the animated
+            // linked adapter and A=End Link / B=Back.
+            self.link_phase = LinkMenu::Linked {
+                role: self.link_role,
+                worked: self.link_worked_at,
+                since: self.link_millis(),
+                opened: true,
+            };
+            self.overlay = ShelfOverlay::Multiplayer;
+        } else {
+            self.enter_multiplayer_menu();
+            if matches!(self.overlay, ShelfOverlay::Multiplayer) {
+                self.link_entry = LinkEntry::Shortcut;
+            }
+        }
+    }
+
+    /// Rewind's key (L2 by default) held or released.
+    fn rewind_key(&mut self, pressed: bool) {
+        if !self.live_game_options().rewind { return; }
+        if pressed {
+            self.rewind_held = true;
+            self.rewind_accum = 0.0;
+            self.ff_held = false;
+            self.ff_latched = false;
+            self.ff_last_release = None;
+            self.hud.set_ff(FfState::Off);
+            AUDIO_SPEED_PERMILLE.store(1000, Ordering::Release);
+            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        } else {
+            self.rewind_held = false;
+            self.rewind_accum = 0.0;
+            self.game_accum = 0.0;
+            self.hud.release_rewind();
+            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+    }
+
+    /// Fast Forward's key (R2 by default): held, or double-tapped to lock.
+    fn fast_forward_key(&mut self, pressed: bool) {
+        // Fast Forward Off (original Slot 1.8.1): R2 does nothing.
+        if pressed && self.live_game_options().ff_speed == 0 { return; }
+        if pressed {
+            if self.ff_latched {
+                self.ff_latched = false;
+                self.ff_held = false;
+                self.ff_last_release = None;
+            } else {
+                let double = self.ff_last_release.take().is_some_and(
+                    |at| at.elapsed().as_millis() <= FF_DOUBLE_TAP_MS);
+                self.ff_latched = double;
+                self.ff_held = true;
+            }
+            self.rewind_held = false;
+            self.hud.release_rewind();
+            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        } else if self.ff_held {
+            self.ff_held = false;
+            self.ff_last_release = Some(Instant::now());
+        }
+        AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        AUDIO_SPEED_PERMILLE.store(
+            if self.ff_latched || self.ff_held {
+                i32::from(self.live_game_options().ff_speed) * 1000
+            } else { 1000 },
+            Ordering::Release);
+        self.hud.set_ff(match (self.ff_latched, self.ff_held) {
+            (true, _) => FfState::Latched,
+            (false, true) => FfState::Held,
+            (false, false) => FfState::Off,
+        });
     }
 
     fn link_millis(&self) -> u64 {
@@ -1894,6 +2171,132 @@ impl Engine {
     fn cancel_link_discovery(&mut self) {
         if let Some(starter) = self.link_starter.take() { starter.cancel(); }
         LINK_NEEDS_MULTICAST.store(false, Ordering::Release);
+        self.link_inet.end_attempt();
+    }
+
+    /// Keys of the Internet tab. True when the key was used here.
+    fn internet_link_key(&mut self, code: i32) -> bool {
+        use crate::link_internet as inet;
+        if let Some(entry) = self.link_inet.entry.as_mut() {
+            if !matches!(self.link_phase, LinkMenu::Pick(_)) {
+                self.link_inet.entry = None;
+                return false;
+            }
+            match code {
+                inet::KEY_UP => entry.up(),
+                inet::KEY_DOWN => entry.down(),
+                inet::KEY_LEFT => entry.left(),
+                inet::KEY_RIGHT => entry.right(),
+                inet::KEY_0..=inet::KEY_9 => entry.type_digit((code - inet::KEY_0) as u8),
+                96 => {
+                    let typed = entry.code();
+                    self.link_inet.entry = None;
+                    self.link_inet.last_code = Some(typed.clone());
+                    self.start_internet_link(Some(typed));
+                }
+                97 | 108 => self.link_inet.entry = None,
+                _ => {}
+            }
+            self.refresh_internet_heading();
+            return true;
+        }
+        match self.link_phase {
+            LinkMenu::Pick(role) => match code {
+                inet::KEY_L1 => { self.link_inet.internet = false; true }
+                inet::KEY_R1 => { self.link_inet.internet = true; true }
+                96 if self.link_inet.internet => {
+                    if role == LinkRow::Host {
+                        self.start_internet_link(None);
+                    } else {
+                        self.link_inet.entry = Some(inet::CodeEntry::new(
+                            self.link_inet.last_code.as_deref()));
+                        self.refresh_internet_heading();
+                    }
+                    true
+                }
+                _ => false,
+            },
+            LinkMenu::Working { .. } if code == inet::KEY_Y
+                && self.link_inet.can_share(self.link_phase) => {
+                self.share_room_code();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Internet Multiplayer: both consoles dial the relay. Host gets a room
+    /// code to share; Join brings the code it was sent.
+    fn start_internet_link(&mut self, code: Option<String>) {
+        if !matches!(self.overlay, ShelfOverlay::Multiplayer) { return; }
+        if matches!(self.link_phase, LinkMenu::Working {..} | LinkMenu::Linked {..}) { return; }
+        if self.game.as_ref().is_some_and(|g| g.core_kind() == Core::Gambatte) {
+            set_message("Game Boy Link over WAN isn't ready yet. Press L1 for LAN.".into());
+            return;
+        }
+        let storage = PATHS.lock().unwrap_or_else(|e| e.into_inner())
+            .clone().map(|(storage, _)| storage);
+        let Some(relay) = crate::link_internet::relay_address(storage.as_deref()) else {
+            set_message("WAN Multiplayer isn't set up in this build.".into());
+            return;
+        };
+        if let Err(error) = self.ensure_gpsp_link_serial() {
+            self.link_worked_at = self.link_millis();
+            self.fail_multiplayer(&error, LinkFail::Radio);
+            return;
+        }
+        let config = match self.link_config() {
+            Ok(config) => config,
+            Err(error) => {
+                self.link_worked_at = self.link_millis();
+                self.fail_multiplayer(&error, LinkFail::Radio);
+                return;
+            }
+        };
+        self.cancel_link_discovery();
+        let now = self.link_millis();
+        self.link_worked_at = now;
+        self.link_phase = LinkMenu::Working {
+            role: self.link_role, step: LinkStep::Waiting, since: now,
+        };
+        let role = if self.link_role == LinkRow::Host { LinkRole::Host } else { LinkRole::Join };
+        let network = crate::multiplayer::Network::Internet { relay, code: code.clone() };
+        match LinkStarter::spawn_on(role, network, config) {
+            Ok(starter) => {
+                self.link_starter = Some(starter);
+                self.link_inet.session = true;
+                self.link_inet.joining = code;
+                // Ready before the next draw: never a frame of Local text.
+                self.refresh_internet_heading();
+            }
+            Err(error) => self.fail_multiplayer(&error.to_string(), LinkFail::Radio),
+        }
+    }
+
+    /// Y on a waiting Internet host: Android's share sheet (WhatsApp, SMS...).
+    fn share_room_code(&mut self) {
+        let Some(code) = self.link_inet.room.clone() else { return };
+        let game = self.game.as_ref().map(|g| {
+            let stem = g.rom_stem();
+            stem.split(" (").next().unwrap_or(stem).trim().to_owned()
+        }).unwrap_or_default();
+        *LINK_SHARE_TEXT.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(crate::link_internet::share_text(&code, &game));
+        UI_ACTION.lock().unwrap_or_else(|e| e.into_inner()).push_back(23);
+    }
+
+    /// The Internet heading face follows the text it should show; it is
+    /// rendered here, on the GL thread, only when that text changes.
+    fn refresh_internet_heading(&mut self) {
+        let Some(text) = self.link_inet.heading(self.link_phase, self.link_millis()) else { return };
+        if text == self.link_inet_face_text && self.link_inet_face.is_some() { return; }
+        let face = menu_face(&text);
+        let tex = match self.link_inet_face {
+            Some((tex, _, _)) => { self.gpu.update_face(tex, &face); tex }
+            None => self.gpu.create_face(&face),
+        };
+        self.link_inet_face = Some((tex, face.w, face.h));
+        self.link_inet_face_text = text;
     }
 
     fn enter_multiplayer_menu(&mut self) {
@@ -2315,9 +2718,16 @@ impl Engine {
     fn poll_multiplayer(&mut self) {
         if !matches!(self.overlay, ShelfOverlay::Multiplayer) { return; }
         self.prepare_link_art();
+        self.refresh_internet_heading();
+        let internet = self.link_inet.session;
         let event = self.link_starter.as_mut().and_then(LinkStarter::poll);
         if let Some(event) = event {
             match event {
+                LinkProgress::RoomCode(code) => {
+                    // The heading shows the code; Y Share is in the legend.
+                    self.link_inet.room = Some(code);
+                    self.refresh_internet_heading();
+                }
                 LinkProgress::Looking => {
                     self.link_phase = LinkMenu::Working {
                         role: self.link_role, step: LinkStep::Waiting,
@@ -2332,6 +2742,7 @@ impl Engine {
                 }
                 LinkProgress::Ready(wire, peer_rom, peer_bios) => {
                     self.cancel_link_discovery();
+                    crate::link_play::set_internet_profile(internet);
                     let role = if self.link_role == LinkRow::Host {
                         LinkRole::Host
                     } else { LinkRole::Join };
@@ -2357,9 +2768,19 @@ impl Engine {
                         crate::multiplayer::Failure::IncompatiblePeer => LinkFail::PeerVanished,
                         crate::multiplayer::Failure::Cancelled => LinkFail::Cancelled,
                         crate::multiplayer::Failure::PeerVanished => LinkFail::PeerVanished,
+                        crate::multiplayer::Failure::WrongCode => LinkFail::WrongCode,
+                        crate::multiplayer::Failure::NoRelay => LinkFail::Radio,
                     };
                     let details = if reason == crate::multiplayer::Failure::IncompatiblePeer {
                         "The other console refused. Use the same game, core and slot. version."
+                    } else if internet {
+                        match reason {
+                            crate::multiplayer::Failure::WrongCode => "No room has this code. Check it with your friend.",
+                            crate::multiplayer::Failure::NoRelay => "Couldn't reach the slot. WAN server. Check your connection.",
+                            crate::multiplayer::Failure::NobodyCame => "Nobody joined in time. Open a new room and share the code again.",
+                            crate::multiplayer::Failure::Cancelled => "Connection cancelled.",
+                            _ => "Connection lost with the other console.",
+                        }
                     } else {
                         match reason {
                             crate::multiplayer::Failure::NobodyCame => "No host found. Make sure it's waiting on the same Wi-Fi.",
@@ -2380,11 +2801,19 @@ impl Engine {
         if link_unplug_complete(self.link_phase, self.link_millis()) {
             // A successfully rebuilt solo cartridge resumes *in place*.
             // A failed conversion remains in the fail-closed Eject menu.
+            // A cancelled search or a failure returns to the Host/Join
+            // picker (same role, same Local/Internet tab) to try again;
+            // only B on the picker leaves Multiplayer.
             let relaunch = self.game.as_ref().is_some_and(GameSession::requires_relaunch);
+            let seated = matches!(self.link_phase, LinkMenu::Unplug { from: ReleaseFrom::Seated, .. });
             self.overlay = if relaunch { ShelfOverlay::GameMenu { row: 0 } }
-                else if matches!(self.link_phase, LinkMenu::Unplug { from: ReleaseFrom::Seated, .. }) {
-                    ShelfOverlay::None
-                } else { self.link_entry.back(false, false) };
+                else if seated { ShelfOverlay::None }
+                else {
+                    self.link_phase = LinkMenu::Pick(self.link_role);
+                    self.game_accum = 0.0;
+                    self.buttons = 0;
+                    ShelfOverlay::Multiplayer
+                };
         }
     }
 
@@ -2565,6 +2994,14 @@ impl Engine {
             Input::Reset => {
                 self.reset_time_controls();
                 self.buttons = 0;
+                // Android won't tell the releases of keys held while away.
+                self.buttons2 = 0;
+                self.unseen2 = 0;
+                self.held_releases2 = 0;
+                self.controls_listen = None;
+                self.hk_mod_down = false;
+                self.hk_releases.clear();
+                self.menu_reveal_at = None;
                 self.mode_down_at = None;
                 self.mode_last_tap = None;
                 self.home_launch_held = false;
@@ -2573,8 +3010,11 @@ impl Engine {
                 self.polaroids = None;
                 // Android calls Reset onPause. Retain the *native menu* behind
                 // Apps/Studio while the new Activity animates in, otherwise
-                // the user briefly sees the cartridge carousel again.
-                if !self.external_pending {
+                // the user briefly sees the cartridge carousel again. An
+                // Internet host away sharing its code keeps its room screen.
+                let sharing_room = matches!(self.overlay, ShelfOverlay::Multiplayer)
+                    && self.link_inet.keeps_room_in_background(self.link_phase);
+                if !self.external_pending && !sharing_room {
                     self.overlay = if self.game.as_ref().is_some_and(GameSession::requires_relaunch) {
                         ShelfOverlay::GameMenu { row: 0 }
                     } else { ShelfOverlay::None };
@@ -2583,6 +3023,17 @@ impl Engine {
                 for shelf in &mut self.shelves {
                     shelf.release_hold();
                 }
+            }
+            Input::Suspend if matches!(self.overlay, ShelfOverlay::Multiplayer)
+                && self.link_inet.keeps_room_in_background(self.link_phase) => {
+                // The host is away sending its room code (WhatsApp, SMS):
+                // the relay connection lives on a worker thread, so keep
+                // the room and pick up where it is when slot. returns.
+                if let Some(session) = self.game.as_mut() {
+                    let _ = session.save(true);
+                }
+                self.buttons = 0;
+                AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
             }
             Input::Suspend => {
                 self.cancel_link_discovery();
@@ -2747,7 +3198,24 @@ impl Engine {
                     self.prepared_rom = Some(path);
                 }
             }
+            Input::PadKey { device, code, pressed, stick } =>
+                self.pad_key(device, code, pressed, stick),
+            Input::Controllers(devices) => self.controllers_changed(devices),
             Input::Key(code, pressed) => {
+                // A Map or Detect waits for a controller's button (pad_key);
+                // the slot. button cancels it.
+                if self.controls_listen.is_some() {
+                    if pressed && code == crate::controls::MODE { self.controls_listen = None; }
+                    return;
+                }
+                // A key during the double-tap wait shows the game menu at once.
+                if pressed && code != crate::controls::MODE && self.menu_reveal_at.take().is_some() {
+                    self.menu_seen = 0;
+                }
+                // Changed hotkeys have their own dispatcher; untouched ones
+                // run through slot.'s original gestures below.
+                if self.game.is_some() && !self.controls.hotkeys.is_default()
+                    && self.custom_hotkey(code, pressed) { return; }
                 if code == 109 { self.select_physical = pressed; }
                 if self.select_slot_combo(code, pressed) { return; }
                 if matches!(code, 19 | 20) {
@@ -2773,33 +3241,7 @@ impl Engine {
                     ) {
                         SelectHomeAction::Swallow => return,
                         SelectHomeAction::OpenLink => {
-                            // The SELECT+HOME gesture belongs to Slot, not to
-                            // libretro or Android's normal HOME handler.
-                            self.select_down_at = None;
-                            self.select_chorded = true;
-                            self.select_forwarded = false;
-                            self.select_tap_frames = 0;
-                            self.buttons = 0;
-                            self.mode_down_at = None;
-                            self.mode_last_tap = None;
-                            self.game_accum = 0.0;
-                            if self.game.as_ref().is_some_and(GameSession::linked) {
-                                self.link_entry = LinkEntry::Shortcut;
-                                // Upstream SELECT+MENU reopens the animated
-                                // linked adapter and A=End Link / B=Back.
-                                self.link_phase = LinkMenu::Linked {
-                                    role: self.link_role,
-                                    worked: self.link_worked_at,
-                                    since: self.link_millis(),
-                                    opened: true,
-                                };
-                                self.overlay = ShelfOverlay::Multiplayer;
-                            } else {
-                                self.enter_multiplayer_menu();
-                                if matches!(self.overlay, ShelfOverlay::Multiplayer) {
-                                    self.link_entry = LinkEntry::Shortcut;
-                                }
-                            }
+                            self.open_multiplayer_shortcut();
                             return;
                         }
                         SelectHomeAction::Pass => {}
@@ -2841,6 +3283,23 @@ impl Engine {
                         self.handle(Input::Key(96, true));
                         return;
                     }
+                    // Second press of a double tap: Save States at once,
+                    // without waiting for the release.
+                    if pressed && self.game.is_some()
+                        && matches!(self.overlay, ShelfOverlay::GameMenu { .. })
+                        && self.mode_last_tap.is_some_and(|t| t.elapsed().as_millis() < DOUBLE_TAP_MS)
+                    {
+                        self.mode_last_tap = None;
+                        self.menu_reveal_at = None;
+                        self.states_from_menu = false;
+                        self.mode_double_press = true;
+                        self.open_polaroids();
+                        return;
+                    }
+                    if !pressed && self.mode_double_press {
+                        self.mode_double_press = false;
+                        return;
+                    }
                     if pressed {
                         if self.mode_down_at.is_none() {
                             self.mode_down_at = Some(Instant::now());
@@ -2862,6 +3321,7 @@ impl Engine {
                     return;
                 }
                 if self.game.is_some() && matches!(self.overlay, ShelfOverlay::Multiplayer) {
+                    if pressed && self.internet_link_key(code) { return; }
                     if pressed {
                         match self.link_phase {
                             LinkMenu::Pick(_) => match code {
@@ -2975,7 +3435,15 @@ impl Engine {
                                 }
                                 self.overlay=ShelfOverlay::None;
                             }
-                            97=>self.overlay=ShelfOverlay::None,
+                            // Back where Save States was opened from.
+                            97=>self.overlay=if self.states_from_menu {
+                                let linked=self.game.as_ref().is_some_and(GameSession::linked);
+                                let relaunch=self.game.as_ref().is_some_and(GameSession::requires_relaunch);
+                                ShelfOverlay::GameMenu {
+                                    row: pause_rows(linked, relaunch).iter()
+                                        .position(|item| *item==PauseRow::States).unwrap_or(0),
+                                }
+                            } else { ShelfOverlay::None },
                             _=>{}
                         }
                     }
@@ -2993,8 +3461,10 @@ impl Engine {
                                 96 => match pause_rows(linked, relaunch).get(row).copied() {
                                     Some(PauseRow::SaveEject) => self.handle(Input::Exit),
                                     Some(PauseRow::Resume) => self.overlay = ShelfOverlay::None,
-                                    Some(PauseRow::States) if !linked && !relaunch =>
-                                        self.open_polaroids(),
+                                    Some(PauseRow::States) if !linked && !relaunch => {
+                                        self.states_from_menu=true;
+                                        self.open_polaroids();
+                                    }
                                     Some(PauseRow::Multiplayer) => {
                                         self.link_entry = LinkEntry::GameMenu;
                                         if linked {
@@ -3024,9 +3494,25 @@ impl Engine {
                 if self.game.is_some() && matches!(self.overlay, ShelfOverlay::PauseSettings { .. }
                     | ShelfOverlay::PauseScreenSettings { .. }
                     | ShelfOverlay::PauseGameplaySettings { .. }
-                    | ShelfOverlay::PauseEmulationSettings { .. }) {
+                    | ShelfOverlay::PauseEmulationSettings { .. }
+                    | ShelfOverlay::LayoutPorts { game: true, .. }
+                    | ShelfOverlay::LayoutPort { game: true, .. }) {
+                    // The Screen hotkey (Hotkey + Y) again on the Screen
+                    // page: the slot slides down and the game resumes.
+                    let hotkey = self.controls.hotkeys.hotkey_button();
+                    if code == hotkey { self.screen_hotkey_held = pressed; }
+                    if pressed && self.screen_hotkey_held && code != hotkey && !self.screen_closing
+                        && matches!(self.overlay, ShelfOverlay::PauseScreenSettings { .. })
+                        && self.controls.hotkeys.action_for(true, code, false)
+                            == Some(crate::controls::Action::Screen) {
+                        self.screen_direct = true;
+                        self.screen_closing = true;
+                        return;
+                    }
                     if pressed {
                         match self.overlay {
+                            ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. } =>
+                                self.controls_menu_key(code),
                             ShelfOverlay::PauseSettings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::PauseSettings {
                                     row: move_menu_row(row, code, self.pause_settings_rows().len()),
@@ -3037,7 +3523,8 @@ impl Engine {
                                         0 => ShelfOverlay::PauseScreenSettings { row: 0 },
                                         1 if !linked => ShelfOverlay::PauseGameplaySettings { row: 0 },
                                         2 if !linked => ShelfOverlay::PauseEmulationSettings { row: 0 },
-                                        3 if !linked => {self.reset_game_emulation();
+                                        3 if !linked => Self::layout_entry(self.current_cart_platform(), true),
+                                        4 if !linked => {self.reset_game_emulation();
                                             ShelfOverlay::PauseSettings { row }},
                                         _ => ShelfOverlay::PauseSettings { row },
                                     };
@@ -3050,13 +3537,27 @@ impl Engine {
                                 _ => {}
                             },
                             ShelfOverlay::PauseScreenSettings { row } => match code {
+                                // The slot is sliding down on the way out.
+                                _ if self.screen_closing => {}
+                                // L1 / R1: the picture one size up / down, for
+                                // every system (the game doesn't get them here).
+                                102 | 103 => if self.screen_page_sizes() {
+                                    self.step_screen_size(code == 102);
+                                },
                                 19 | 20 => self.overlay = ShelfOverlay::PauseScreenSettings {
-                                    row: move_menu_row(row,code,self.pause_screen_rows().len()),
+                                    row: move_menu_row(row,code,self.pause_screen_page_rows().len()),
                                 },
-                                21 | 22 => if let Some(key)=self.pause_screen_key(row) {
+                                21 | 22 => if let Some(key)=self.pause_screen_page_key(row) {
                                     self.change_game_screen_or_gameplay(key,code==22);
+                                    // Shader keys can switch the core's own GBA Color.
+                                    // (Frame Blending acts between frames: a
+                                    // still picture can't show it.)
+                                    if matches!(key, 0..=3 | 21..=24) {
+                                        self.redraw_paused_game();
+                                    }
                                 },
-                                97 => self.overlay = ShelfOverlay::PauseSettings { row: 0 },
+                                // Back: the slot slides down, then Settings.
+                                97 => self.screen_closing = true,
                                 _ => {}
                             },
                             ShelfOverlay::PauseGameplaySettings { row } => match code {
@@ -3122,57 +3623,11 @@ impl Engine {
                         return;
                     }
                     if code == 104 {
-                        if !self.live_game_options().rewind { return; }
-                        if pressed {
-                            self.rewind_held = true;
-                            self.rewind_accum = 0.0;
-                            self.ff_held = false;
-                            self.ff_latched = false;
-                            self.ff_last_release = None;
-                            self.hud.set_ff(FfState::Off);
-                            AUDIO_SPEED_PERMILLE.store(1000, Ordering::Release);
-                            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                        } else {
-                            self.rewind_held = false;
-                            self.rewind_accum = 0.0;
-                            self.game_accum = 0.0;
-                            self.hud.release_rewind();
-                            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                        }
+                        self.rewind_key(pressed);
                         return;
                     }
                     if code == 105 {
-                        // Fast Forward Off (original Slot 1.8.1): R2 does nothing.
-                        if pressed && self.live_game_options().ff_speed == 0 { return; }
-                        if pressed {
-                            if self.ff_latched {
-                                self.ff_latched = false;
-                                self.ff_held = false;
-                                self.ff_last_release = None;
-                            } else {
-                                let double = self.ff_last_release.take().is_some_and(
-                                    |at| at.elapsed().as_millis() <= FF_DOUBLE_TAP_MS);
-                                self.ff_latched = double;
-                                self.ff_held = true;
-                            }
-                            self.rewind_held = false;
-                            self.hud.release_rewind();
-                            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                        } else if self.ff_held {
-                            self.ff_held = false;
-                            self.ff_last_release = Some(Instant::now());
-                        }
-                        AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                        AUDIO_SPEED_PERMILLE.store(
-                            if self.ff_latched || self.ff_held {
-                                i32::from(self.live_game_options().ff_speed) * 1000
-                            } else { 1000 },
-                            Ordering::Release);
-                        self.hud.set_ff(match (self.ff_latched, self.ff_held) {
-                            (true, _) => FfState::Latched,
-                            (false, true) => FfState::Held,
-                            (false, false) => FfState::Off,
-                        });
+                        self.fast_forward_key(pressed);
                         return;
                     }
                     // GB/GBC: L1 = one size up, R1 = one size down
@@ -3180,12 +3635,39 @@ impl Engine {
                     // On GBA the shoulder buttons remain owned by the core.
                     // SELECT+shoulder save/load is handled below and takes priority.
                     // SNES and Mega Drive games use L/R themselves.
-                    if !matches!(self.current_cart_platform(),
-                            Platform::Gba | Platform::Snes | Platform::Md)
-                        && self.buttons & ButtonMask::SELECT == 0
-                        && (code == 102 || code == 103) {
-                        if pressed { self.step_screen_size(code == 102); }
-                        return;
+                    // Systems > Controls can give L1/R1 another shortcut, or
+                    // make them buttons (then they reach the game below).
+                    if self.buttons & ButtonMask::SELECT == 0 && (code == 102 || code == 103) {
+                        use crate::controls::ShoulderRole as Role;
+                        let platform = self.current_cart_platform();
+                        let session = self.game.as_ref();
+                        let role = match session {
+                            Some(game) if game.has_layouts() => game.shoulder_role(),
+                            _ if !matches!(platform, Platform::Gba | Platform::Snes | Platform::Md) =>
+                                Some(Role::ScreenSize),
+                            _ => None,
+                        };
+                        let linked = session.is_some_and(GameSession::linked);
+                        let first = code == 102;
+                        let shortcut = match role {
+                            Some(Role::ScreenSize) => Some(0),
+                            // A Link never loads or saves a state on its own.
+                            Some(Role::States) if linked => Some(-1),
+                            Some(Role::States) => Some(if first { 102 } else { 103 }),
+                            Some(Role::Shader) => Some(if first { 97 } else { 96 }),
+                            Some(Role::Palette) => Some(if first { 104 } else { 105 }),
+                            _ => None,
+                        };
+                        if let Some(shortcut) = shortcut {
+                            if pressed {
+                                match shortcut {
+                                    0 => self.step_screen_size(first),
+                                    -1 => {}
+                                    other => self.shortcut(other),
+                                }
+                            }
+                            return;
+                        }
                     }
                     let mask = controls(code);
                     if pressed {
@@ -3272,16 +3754,21 @@ impl Engine {
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
+                            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. }
+                            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. }
+                            | ShelfOverlay::Hotkeys { .. } =>
+                                self.controls_menu_key(code),
                             ShelfOverlay::Settings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::Settings {
-                                    row: move_menu_row(row, code, 5),
+                                    row: move_menu_row(row, code, SETTINGS_ROWS.len()),
                                 },
                                 96 => match row {
                                     0 => self.overlay = ShelfOverlay::GeneralSettings { row: 0 },
                                     1 => self.overlay = ShelfOverlay::ScreenSettings { row: 0 },
                                     2 => self.overlay = ShelfOverlay::GameplaySettings { row: 0 },
                                     3 => self.overlay = ShelfOverlay::EmulationSettings { row: 0 },
-                                    4 => self.overlay = ShelfOverlay::InterfaceSettings { row: 0 },
+                                    4 => self.overlay = ShelfOverlay::ControlsSettings { row: 0 },
+                                    5 => self.overlay = ShelfOverlay::InterfaceSettings { row: 0 },
                                     _ => return,
                                 },
                                 97 => self.overlay = ShelfOverlay::Menu { row: 4 },
@@ -3308,7 +3795,7 @@ impl Engine {
                                         self.change_setting(key, code != 21);
                                     }
                                 },
-                                97 => self.overlay = ShelfOverlay::Settings { row: 4 },
+                                97 => self.overlay = ShelfOverlay::Settings { row: 5 },
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
@@ -3328,9 +3815,12 @@ impl Engine {
                             },
                             ShelfOverlay::ScreenSystemSettings { platform,row } => match code {
                                 19 | 20 => self.overlay=ShelfOverlay::ScreenSystemSettings {
-                                    platform,row:move_menu_row(row,code,Self::system_rows(platform).len()),
+                                    platform,row:move_menu_row(row,code,Self::system_page_rows(platform).len()),
                                 },
-                                21 | 22 | 96 => if let Some(key)=Self::system_keys(platform).get(row).copied(){
+                                96 if row+1==Self::system_page_rows(platform).len() =>
+                                    self.overlay=Self::layout_entry(platform, false),
+                                21 | 22 | 96 => if let Some(key)=Self::system_page_keys(platform).get(row).copied()
+                                    .filter(|key| *key!=usize::MAX) {
                                     self.change_setting(key,code!=21);
                                 },
                                 97 => self.overlay=ShelfOverlay::ScreenSettings {
@@ -3797,6 +4287,19 @@ impl Engine {
         }
     }
 
+    /// A row label at `scale` (fit_scales), centred on the row.
+    fn text_scaled(&self, index: usize, x: f32, y: f32, scale: f32,
+                   alpha: f32, out: &mut Vec<Draw>) {
+        let (tex, raw_w, raw_h) = self.menu_textures[index];
+        if raw_w == 0 || raw_h == 0 { return; }
+        let scale = scale.min((out_w() as f32 - 70.0) / raw_w as f32);
+        out.push(Draw::Tex {
+            x, y: y + raw_h as f32 * (0.79 - scale) / 2.0,
+            w: raw_w as f32 * scale, h: raw_h as f32 * scale,
+            tex, alpha,
+        });
+    }
+
     fn text_fit(&self, index: usize, x: f32, y: f32, max_w: f32,
                 alpha: f32, out: &mut Vec<Draw>) {
         let (tex, raw_w, raw_h) = self.menu_textures[index];
@@ -4043,8 +4546,12 @@ impl Engine {
             // the cores correct only GBC/GBA colours (Siham, 2026-11-04).
             (Platform::Gb,false)=>&[89,36],
             (Platform::Gb,true)=>&[89,36,90],
-            (Platform::Nes|Platform::Snes|Platform::Md,false)=>&[120,124],
-            (Platform::Nes|Platform::Snes|Platform::Md,true)=>&[120,124,90],
+            // NES sizes with L1/R1 in game: no Screen Size row (Siham
+            // 2026-11-06); SNES and Mega Drive games use L/R themselves.
+            (Platform::Nes,false)=>&[124],
+            (Platform::Nes,true)=>&[124,90],
+            (Platform::Snes|Platform::Md,false)=>&[120,124],
+            (Platform::Snes|Platform::Md,true)=>&[120,124,90],
         }
     }
     fn screen_keys(platform: Platform)-> &'static [usize] {
@@ -4059,10 +4566,10 @@ impl Engine {
             (Platform::Gbc,true)=>&[21,23,26],
             (Platform::Gb,false)=>&[1,3],
             (Platform::Gb,true)=>&[1,3,27],
-            (Platform::Nes,false)=>&[SCREEN_SIZE_KEY,47],
+            (Platform::Nes,false)=>&[47],
             (Platform::Snes,false)=>&[SCREEN_SIZE_KEY,48],
             (Platform::Md,false)=>&[SCREEN_SIZE_KEY,49],
-            (Platform::Nes,true)=>&[SCREEN_SIZE_KEY,47,44],
+            (Platform::Nes,true)=>&[47,44],
             (Platform::Snes,true)=>&[SCREEN_SIZE_KEY,48,45],
             (Platform::Md,true)=>&[SCREEN_SIZE_KEY,49,46],
         }
@@ -4071,6 +4578,29 @@ impl Engine {
     // Screen Size, then the screen rows a paused game of that system also
     // shows. A system whose shape the panel already has (GBA on the KONKR)
     // offers neither Screen Size nor a bezel (Siham 2026-11-02).
+    /// A system's page: its own rows, Frame Blending, then Controls (a page).
+    fn system_page_rows(platform: Platform) -> Vec<usize> {
+        let mut rows = Self::system_rows(platform).to_vec();
+        rows.extend([126, 125]);
+        rows
+    }
+    fn system_page_keys(platform: Platform) -> Vec<usize> {
+        let mut keys = Self::system_keys(platform).to_vec();
+        keys.extend([Settings::blending_key(platform), usize::MAX]);
+        keys
+    }
+    /// The in-game Screen page: its rows, then Frame Blending.
+    fn pause_screen_page_rows(&self) -> Vec<usize> {
+        let mut rows = self.pause_screen_rows().to_vec();
+        rows.push(126);
+        rows
+    }
+    fn pause_screen_page_key(&self, row: usize) -> Option<usize> {
+        let own = self.pause_screen_rows().len();
+        if row < own { self.pause_screen_key(row) }
+        else if row == own { Some(Settings::blending_key(self.current_cart_platform())) }
+        else { None }
+    }
     fn system_rows(platform: Platform)-> &'static [usize] {
         Self::system_rows_on(platform,panel_size())
     }
@@ -4163,11 +4693,11 @@ impl Engine {
             Err(err) => set_error_message("Couldn't save the default core.", &err),
         }
     }
+    /// The heading of Settings > Systems > <system>: the same face as its
+    /// row in the Systems list (MENU_TEXT 121..=123 are NES, Super
+    /// Nintendo, Mega Drive; 120 is "Screen Size").
     fn screen_title(platform:Platform)->usize {
-        match platform {
-            Platform::Gba=>91, Platform::Gbc=>92,Platform::Gb=>93,
-            Platform::Nes=>120, Platform::Snes=>121, Platform::Md=>122,
-        }
+        SYSTEM_TITLES[SYSTEM_ORDER.iter().position(|p| *p==platform).unwrap_or(0)]
     }
     fn screen_submenu_platform(row:usize)->Platform {
         SYSTEM_ORDER.get(row).copied().unwrap_or(Platform::Gb)
@@ -4209,7 +4739,7 @@ impl Engine {
             // Display-only settings cannot alter GBA Link/RFU state.
             &[32]
         } else {
-            &[32,33,49,57]
+            &[32,33,49,125,57]
         }
     }
 
@@ -4276,7 +4806,31 @@ impl Engine {
                 .and_then(|(root, _)| EmulationProfile::load(root, uri, core))
         });
     }
+    /// The in-game Screen page previews a look option the core draws itself
+    /// at once: the paused game redrawn, the game not moved (Siham
+    /// 2026-11-06).
+    fn redraw_paused_game(&mut self) {
+        let platform = self.current_cart_platform();
+        let blending = self.settings.blending_for(platform);
+        let Some(session) = self.game.as_mut() else { return };
+        session.set_frame_blending(blending);
+        if !session.redraw_paused() { return; }
+        if session.frame_size() == (slot_retro::GBA_W, slot_retro::GBA_H)
+            && session.display_aspect() <= 0.0 {
+            self.gpu.upload_game(session.frame());
+        } else {
+            let size = session.frame_size();
+            let picture = self.frame_blend.apply(session.slot_blending(), session.frame(), size);
+            self.gpu.upload_game_sized(picture, size);
+        }
+    }
+
     fn change_game_screen_or_gameplay(&mut self, key: usize, right: bool) {
+        // Frame Blending is the system's: the in-game row changes it.
+        if (60..=65).contains(&key) {
+            self.change_setting(key, right);
+            return;
+        }
         if key == SCREEN_SIZE_KEY {
             let mode = if right { self.video_mode.bigger() } else { self.video_mode.smaller() };
             if mode != self.video_mode {
@@ -4865,13 +5419,11 @@ impl Engine {
         }
     }
 
-    fn draw_setting_values(&self, row: usize, keys: &[usize], out: &mut Vec<Draw>) {
-        let top = settings_row_top(keys.len());
-        for (index, key) in keys.iter().copied().enumerate() {
-            // Only action rows (usize::MAX) have no value: setting_face
-            // answers every other key, so a new key can't go blank.
-            let (tex, width, height) =
-                if key == SUN_KEY {
+    /// The face of a setting's current value; None for an action row.
+    fn value_face(&self, key: usize) -> Option<(slot_gfx::TexId, u32, u32)> {
+        // Only action rows (usize::MAX) have no value: setting_face
+        // answers every other key, so a new key can't go blank.
+        Some(if key == SUN_KEY {
                     let sun = self.current_emulation().sun(light_sensor(), self.sun_top());
                     self.setting_values[match sun {
                         crate::emulation::SUN_SENSOR => 53,
@@ -4886,9 +5438,48 @@ impl Engine {
                 } else if let Some(face) = self.setting_value(key)
                     .and_then(|value| self.setting_values.get(value)) {
                     *face
-                } else { continue };
-            let y = top + index as f32 * QUICK_PITCH + 8.0;
-            let scale = 0.79;
+                } else { return None })
+    }
+
+    /// Each row's label and value scales, so the two never meet on a narrow
+    /// screen: the label gives way first, down to 0.55, then the value,
+    /// down to 0.5 (as the Controls pages). The room assumes the carets, so
+    /// nothing resizes as the selection moves. 0.79 each where both fit.
+    fn fit_scales(&self, items: &[usize], keys: &[usize]) -> Vec<(f32, f32)> {
+        let caret = self.setting_carets[0].1 as f32 + 8.0;
+        // From the label's x to the value's right edge, less the carets
+        // and a 12 px gap.
+        let room = out_w() as f32 - 34.0 - 22.0 - caret - 12.0 - 37.0;
+        items.iter().enumerate().map(|(i, &label)| {
+            let lw = self.menu_textures.get(label).map_or(0, |t| t.1) as f32;
+            let vw = keys.get(i).and_then(|&k| self.value_face(k)).map_or(0, |f| f.1) as f32;
+            if vw == 0.0 || (lw + vw) * 0.79 <= room { return (0.79, 0.79); }
+            let label_scale = ((room - vw * 0.79) / lw.max(1.0)).clamp(0.55, 0.79);
+            let value_scale = ((room - lw * label_scale) / vw).clamp(0.5, 0.79);
+            (label_scale, value_scale)
+        }).collect()
+    }
+
+    /// A settings page: its rows, then their values, fitted together.
+    fn draw_settings_menu(&self, heading: usize, items: &[usize], row: usize,
+                          keys: &[usize], out: &mut Vec<Draw>) {
+        let scales = self.fit_scales(items, keys);
+        self.draw_menu_rows(heading, items, row, &scales, out);
+        self.draw_values(row, keys, &scales, out);
+    }
+
+    fn draw_values(&self, row: usize, keys: &[usize], scales: &[(f32, f32)],
+                   out: &mut Vec<Draw>) {
+        // Six rows at most on screen; a longer page scrolls (as Controls).
+        let offset = crate::controls::scroll_offset(row, keys.len());
+        let top = self.menu_rows_top(keys.len().min(crate::controls::VISIBLE_ROWS));
+        for (index, key) in keys.iter().copied().enumerate()
+            .skip(offset).take(crate::controls::VISIBLE_ROWS) {
+            let Some((tex, width, height)) = self.value_face(key) else { continue };
+            let scale = scales.get(index).map_or(0.79, |s| s.1);
+            // A smaller value stays centred on its row.
+            let y = top + (index - offset) as f32 * QUICK_PITCH + 8.0
+                + height as f32 * (0.79 - scale) / 2.0;
             let w = width as f32 * scale;
             let right = out_w() as f32 - 34.0;
             let chosen = row == index;
@@ -4898,6 +5489,7 @@ impl Engine {
                 tex, alpha: if chosen { 1.0 } else { 0.62 },
             });
             if chosen {
+                let y = top + (index - offset) as f32 * QUICK_PITCH + 8.0;
                 let (left, lw, lh) = self.setting_carets[0];
                 let (right_tex, rw, rh) = self.setting_carets[1];
                 out.push(Draw::Tex {
@@ -4910,47 +5502,162 @@ impl Engine {
                 });
             }
         }
-        // The original Back / Change physical keycap legend.
+        // The original Back / Change physical keycap legend; on the in-game
+        // Screen page, either side of the seated cart.
+        if self.screen_panel() {
+            // B Back | L1 R1 Size; where the screen already has the
+            // system's shape there is no size: arrows Change.
+            let right = if self.screen_page_sizes() { self.screen_size_hint }
+                else { self.settings_hints[1] };
+            self.draw_flanking_hints(&[self.settings_hints[0], right], out);
+            return;
+        }
         out.push(Draw::Rect {
             x: 0.0, y: 420.0, w: out_w() as f32, h: 60.0,
             colour: opening(),
         });
         for (tex, w, x) in centred_hints(&self.settings_hints, LEGEND_GAP) {
             out.push(Draw::Tex {
-                x, y: 427.0, w: w as f32, h: HINT_H as f32,
+                x, y: self.legend_y(), w: w as f32, h: HINT_H as f32,
                 tex, alpha: 1.0,
             });
         }
     }
 
+    /// slot. original's legends with the slot up: the first at the left
+    /// edge, the second at the right, clear of the bay.
+    fn draw_flanking_hints(&self, hints: &[(slot_gfx::TexId, u32)], out: &mut Vec<Draw>) {
+        let seen = |w: u32| w.saturating_sub(slot_ui::HINT_EDGE) as f32;
+        let width = out_w() as f32;
+        // Closer to the edges on the narrowest screens (1:1), so the right
+        // legend still clears the bay.
+        let margin = if width < 520.0 { 8.0 } else { 16.0 };
+        let bay_right = (width + slot_ui::MOUTH_W) / 2.0;
+        let y = self.legend_y();
+        if let Some(&(tex, w)) = hints.first() {
+            out.push(Draw::Tex { x: margin, y, w: w as f32, h: HINT_H as f32, tex, alpha: 1.0 });
+        }
+        if let Some(&(tex, w)) = hints.get(1) {
+            let x = (width - margin - seen(w)).max(bay_right + 4.0).round();
+            out.push(Draw::Tex { x, y, w: w as f32, h: HINT_H as f32, tex, alpha: 1.0 });
+        }
+    }
+
+    /// The in-game Screen page: rows above the slot, the game in view above,
+    /// as slot. original's in-game menu. Every other in-game page is opaque
+    /// (Siham 2026-11-06).
+    /// The game's system has a Screen Size (the screen hasn't the system's
+    /// own shape, as Systems > Screen Size), so L1 / R1 size the picture
+    /// on the in-game Screen page, row or not.
+    fn screen_page_sizes(&self) -> bool {
+        !video_mode::screen_fits(self.current_cart_platform(), panel_size())
+    }
+
+    fn screen_panel(&self) -> bool {
+        self.game.is_some() && matches!(self.overlay, ShelfOverlay::PauseScreenSettings { .. })
+    }
+
+    /// Where a menu's first row goes.
+    fn menu_rows_top(&self, count: usize) -> f32 {
+        if self.screen_panel() {
+            (OUT_H as f32 - MOUTH_H - 6.0 - QUICK_PITCH * count as f32).round()
+        } else { settings_row_top(count) }
+    }
+
+    /// How far the slot still is below its place (0 when up).
+    fn footer_dy(&self) -> f32 { (1.0 - slot_ui::ease(self.footer)) * MOUTH_H }
+
+    /// The legend's line: in the slot on the in-game Screen page, at the
+    /// bottom otherwise.
+    fn legend_y(&self) -> f32 {
+        if self.screen_panel() {
+            OUT_H as f32 - MOUTH_H + ((MOUTH_H - HINT_H as f32) / 2.0).round() + self.footer_dy()
+        } else { 427.0 }
+    }
+
+    /// slot. original's seated slot: the slot with the playing cart in it,
+    /// rising from below with the in-game menu.
+    fn draw_game_footer(&self, out: &mut Vec<Draw>) {
+        if self.footer <= 0.0 || self.game.is_none() { return; }
+        let Some(shelf) = self.shelves.get(self.active) else { return };
+        let Some(cart) = shelf.carts.get(shelf.index) else { return };
+        let (rest, scale) = shelf.selected_at();
+        let start = out.len();
+        SlotChrome {
+            cart, face: shelf.face(shelf.index), rest, scale,
+            seat: 1.0, alert: None, dim: 0.0, screen: 0.0, game: false, over: true,
+            slot_faces: pick_slot_faces(self.slot_faces, self.home_slot_faces, Some(cart)),
+        }.draw_with_closer(out, [None, None], None,
+            pick_closer(self.slot_faces, self.home_closers, Some(cart)), false);
+        shift_down(&mut out[start..], self.footer_dy());
+    }
+
+    /// A menu's ground: opaque, except on the in-game Screen page: there the
+    /// paused game, a scrim behind the rows, then the slot.
+    fn draw_menu_ground(&self, rows_top: f32, out: &mut Vec<Draw>) {
+        if !self.screen_panel() {
+            out.push(Draw::Rect {
+                x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32,
+                colour: opening(),
+            });
+            return;
+        }
+        let y = rows_top - 8.0;
+        let bottom = OUT_H as f32 - MOUTH_H + self.footer_dy();
+        out.push(Draw::Rect {
+            x: 0.0, y, w: out_w() as f32, h: (bottom - y).max(0.0),
+            colour: [0.0, 0.0, 0.0, GAME_MENU_SCRIM],
+        });
+        self.draw_game_footer(out);
+    }
+
     fn draw_original_style_menu(&self, heading: usize, items: &[usize],
                                 selected: usize, out: &mut Vec<Draw>) {
+        self.draw_menu_rows(heading, items, selected, &[], out);
+    }
+
+    /// `scales`: each row's label scale (fit_scales), or none for 0.79.
+    fn draw_menu_rows(&self, heading: usize, items: &[usize], selected: usize,
+                      scales: &[(f32, f32)], out: &mut Vec<Draw>) {
         // The original Slot full-screen quick menu uses the housing palette,
         // full-width selected bar, 52px pitch, and centred physical keycaps.
         // Reuse those exact primitives for Android's library settings.
-        out.push(Draw::Rect {
-            x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32,
-            colour: opening(),
-        });
-        let top = settings_row_top(items.len());
+        // Six rows at most on screen; a longer page scrolls (as Controls).
+        let offset = crate::controls::scroll_offset(selected, items.len());
+        let top = self.menu_rows_top(items.len().min(crate::controls::VISIBLE_ROWS));
+        self.draw_menu_ground(top, out);
         let cursor = if self.menu_cursor_y.is_finite() { self.menu_cursor_y }
-            else { top + selected as f32 * QUICK_PITCH };
-        let intro = (self.menu_opened.elapsed().as_secs_f32() / 0.16).clamp(0.0, 1.0);
+            else { top + (selected - offset) as f32 * QUICK_PITCH };
+        // The game menu fades in over 100 ms, after its 120 ms wait for a
+        // second tap; every other menu over the original 160 ms.
+        let fade_s = if heading == 19 { 0.10 } else { 0.16 };
+        let intro = (self.menu_opened.elapsed().as_secs_f32() / fade_s).clamp(0.0, 1.0);
         let fade = slot_ui::ease(intro);
         out.push(Draw::Rect {
             x: 0.0, y: cursor + 4.0, w: out_w() as f32,
             h: QUICK_PITCH - 8.0,
             colour: { let mut c = edge(); c[3] *= fade; c },
         });
-        self.text_fit(heading, 32.0, 33.0, out_w() as f32 - 70.0, 0.68 * fade, out);
-        for (i, index) in items.iter().copied().enumerate() {
+        // The in-game Screen page leaves the game in view above its rows.
+        if !self.screen_panel() {
+            self.text_fit(heading, 32.0, 33.0, out_w() as f32 - 70.0, 0.68 * fade, out);
+        }
+        for (i, index) in items.iter().copied().enumerate()
+            .skip(offset).take(crate::controls::VISIBLE_ROWS) {
             let x = 37.0;
-            let y = top + i as f32 * QUICK_PITCH + 8.0
+            let y = top + (i - offset) as f32 * QUICK_PITCH + 8.0
                 + (1.0 - fade) * 8.0;
-            self.text_fit(index, x, y, out_w() as f32 - 70.0, fade, out);
+            match scales.get(i) {
+                Some(&(scale, _)) => self.text_scaled(index, x, y, scale, fade, out),
+                None => self.text_fit(index, x, y, out_w() as f32 - 70.0, fade, out),
+            }
         }
         // All menus use the original Slot keycap generator. The paused game
         // screen additionally advertises its active SAVE / LOAD shortcuts.
+        // (The Screen page's values draw its legend, either side of the cart.)
+        if self.screen_panel() {
+            return;
+        }
         if heading == 19 {
             let linked = self.game.as_ref().is_some_and(|session|
                 session.linked() || session.requires_relaunch());
@@ -4960,7 +5667,7 @@ impl Engine {
             } else { &self.game_menu_hints };
             for (tex, w, x) in centred_hints(hints, 15.0) {
                 out.push(Draw::Tex {
-                    x, y: 427.0, w: w as f32, h: HINT_H as f32,
+                    x, y: self.legend_y(), w: w as f32, h: HINT_H as f32,
                     tex, alpha: fade,
                 });
             }
@@ -4970,7 +5677,7 @@ impl Engine {
                 else { &self.menu_hints };
             for (tex, w, x) in centred_hints(hints, LEGEND_GAP) {
                 out.push(Draw::Tex {
-                    x, y: 427.0, w: w as f32, h: HINT_H as f32,
+                    x, y: self.legend_y(), w: w as f32, h: HINT_H as f32,
                     tex, alpha: fade,
                 });
             }
@@ -5023,16 +5730,23 @@ impl Engine {
             colour: opening(),
         });
         let Some(art) = &self.link_art else { return };
-        link_screen::draw_link_art(self.link_phase, self.link_millis(), art, &self.link_marks, out);
+        link_screen::draw_link_art_with(self.link_phase, self.link_millis(), art, &self.link_marks,
+            self.link_inet.entry.is_none(), out);
         let ink = usize::from(art.key.dark_ink());
-        let text = match self.link_phase {
+        // While the Internet tab has its own heading, never fall back to the
+        // Local text: if its face is not rendered yet, draw no heading.
+        let wanted = self.link_inet.heading(self.link_phase, self.link_millis());
+        let internet_heading = wanted.as_ref()
+            .filter(|text| **text == self.link_inet_face_text)
+            .and(self.link_inet_face);
+        let text = if wanted.is_some() { internet_heading } else { match self.link_phase {
             LinkMenu::Pick(role) => Some(self.link_role_faces[role.index()]),
             LinkMenu::Working { step, .. } => Some(self.link_step_faces[step.index()]),
             LinkMenu::Linked { .. } => Some(self.link_connected_face),
             LinkMenu::Failed { fail, .. } => fail.shown()
                 .and_then(|i| self.link_fail_faces.get(i).copied()),
             LinkMenu::Unplug { .. } => None,
-        };
+        } };
         if let Some((tex, w, h)) = text {
             out.push(Draw::Tex {
                 x: link_heading_x(w),
@@ -5040,7 +5754,26 @@ impl Engine {
                 tex, alpha: 1.0,
             });
         }
-        let hints: &[(slot_gfx::TexId, u32)] =
+        // LAN / WAN: the slide switch top right, level with the heading,
+        // unless a long heading reaches it on a narrow screen.
+        let switch_x = out_w() as f32 - 16.0 - slot_ui::NET_SWITCH_W as f32;
+        if text.is_none_or(|(_, w, _)| link_heading_x(w) + w as f32 + 8.0 <= switch_x) {
+            let [track, knob, house, globe] = self.net_switch_faces;
+            let heading_h = self.link_role_faces[0].2 as f32;
+            let y = (LINK_TEXT_Y + (heading_h - slot_ui::NET_SWITCH_H as f32) / 2.0).round();
+            let t = slot_ui::ease(self.net_switch_t.clamp(0.0, 1.0));
+            let [lan, wan] = slot_ui::NET_KNOB_X;
+            let kx = (switch_x + lan + (wan - lan) * t).round();
+            let ky = y + slot_ui::NET_KNOB_Y;
+            let face = |(tex, w, h): (slot_gfx::TexId, u32, u32), x: f32, y: f32, alpha: f32|
+                Draw::Tex { x, y, w: w as f32, h: h as f32, tex, alpha };
+            out.push(face(track, switch_x, y, 1.0));
+            out.push(face(knob, kx, ky, 1.0));
+            let (ix, iy) = (kx + slot_ui::NET_ICON_X, ky + slot_ui::NET_ICON_Y);
+            if t < 1.0 { out.push(face(house, ix, iy, 1.0 - t)); }
+            if t > 0.0 { out.push(face(globe, ix, iy, t)); }
+        }
+        let stock: &[(slot_gfx::TexId, u32)] =
             match link_legend_profile(self.link_phase, self.link_mode_switchable()) {
                 LinkLegendProfile::PickerWithMode => &self.link_switch_hints[ink],
                 LinkLegendProfile::Picker => &self.link_hints[ink],
@@ -5049,15 +5782,39 @@ impl Engine {
                 LinkLegendProfile::Failed => &self.link_failed_hints[ink],
                 LinkLegendProfile::None => &[],
             };
+        let inet = &self.link_inet_hints[ink];
+        let mut hints: Vec<(slot_gfx::TexId, u32)> = stock.to_vec();
+        if self.link_inet.entry.is_some() {
+            // B Back | UP Digit | arrows Move | A Join
+            hints = vec![self.link_connected_hints[ink][0], inet[3], inet[4], inet[5]];
+        } else if matches!(self.link_phase, LinkMenu::Pick(_)) {
+            // Right after B Cancel: the tab the shoulder button switches to.
+            let tab = if self.link_inet.internet { inet[1] } else { inet[0] };
+            hints.insert(1.min(hints.len()), tab);
+        } else if self.link_inet.can_share(self.link_phase) {
+            hints.push(inet[2]);
+        }
+        // Too wide for the screen (GBA's five keycaps on a 4:3 or narrower
+        // screen): closer together, then the arrows without "Swap".
+        let mut gap = link_legend_gap(&hints);
+        if gap.is_none() {
+            let swap = self.link_switch_hints[ink][2].0;
+            for hint in hints.iter_mut().filter(|hint| hint.0 == swap) {
+                *hint = self.link_swap_icon[ink];
+            }
+            gap = link_legend_gap(&hints);
+        }
+        let gap = gap.unwrap_or(LINK_LEGEND_MIN_GAP);
+        let hints = hints.as_slice();
         let seen = |w: u32| w.saturating_sub(HINT_EDGE) as f32;
-        let mut x = link_legend_start(hints);
+        let mut x = link_legend_start(hints, gap);
         for &(tex, w) in hints {
             out.push(Draw::Tex {
                 x, y: LINK_LEGEND_Y,
                 w: w as f32, h: HINT_H as f32,
                 tex, alpha: 1.0,
             });
-            x += (seen(w) + LINK_LEGEND_GAP).round();
+            x += (seen(w) + gap).round();
         }
     }
 
@@ -5108,26 +5865,29 @@ impl Engine {
                 self.draw_library_share_value(row, out);
             }
             ShelfOverlay::Settings { row } => {
-                self.draw_original_style_menu(26, &[81, 117, 33, 49, 58], row, out);
+                self.draw_original_style_menu(26, &SETTINGS_ROWS, row, out);
             }
             ShelfOverlay::GeneralSettings { row } => {
                 let rows=self.general_rows();
-                self.draw_original_style_menu(82,&rows,row,out);
                 let keys:Vec<usize>=rows.iter().map(|id|match id {
                     83=>16,84=>17,85=>18,86=>19,87=>20,_=>usize::MAX
                 }).collect();
-                self.draw_setting_values(row,&keys,out);
+                self.draw_settings_menu(82,&rows,row,&keys,out);
             }
             ShelfOverlay::InterfaceSettings { row } => {
-                self.draw_original_style_menu(59, &INTERFACE_ROWS, row, out);
-                self.draw_setting_values(row, &INTERFACE_KEYS, out);
+                self.draw_settings_menu(59, &INTERFACE_ROWS, row, &INTERFACE_KEYS, out);
             }
             ShelfOverlay::EmulationSettings { row } => {
-                self.draw_original_style_menu(50, &[51, 52, 55], row, out);
-                self.draw_setting_values(row, &[10, 11, 12], out);
+                self.draw_settings_menu(50, &[51, 52, 55], row, &[10, 11, 12], out);
             }
             ShelfOverlay::PauseEmulationSettings { row } => {
-                self.draw_original_style_menu(50, self.pause_emulation_rows(), row, out);
+                // One value per visible row: an extra action sentinel
+                // displaced ALL value glyphs by half a row and
+                // desynchronised them from their carets.
+                let keys: &[usize] = if self.pause_emulation_rows().len() == 4 {
+                    &[10, 11, 12, SUN_KEY]
+                } else { &[10, 11, 12] };
+                self.draw_settings_menu(50, self.pause_emulation_rows(), row, keys, out);
                 // Identify the selected core without changing Slot's menu
                 // layout or existing keycap typography.
                 let (tex, w, h) = self.emulation_core_labels[self.selected_emulation_core().index()];
@@ -5142,25 +5902,17 @@ impl Engine {
                     w: w as f32 * scale, h: h as f32 * scale,
                     tex, alpha: 0.68 * fade,
                 });
-                // One value per visible row: an extra action sentinel
-                // displaced ALL value glyphs by half a row and
-                // desynchronised them from their carets.
-                let keys: &[usize] = if self.pause_emulation_rows().len() == 4 {
-                    &[10, 11, 12, SUN_KEY]
-                } else { &[10, 11, 12] };
-                self.draw_setting_values(row, keys, out);
             }
             ShelfOverlay::ScreenSettings { row } => {
                 self.draw_original_style_menu(117, &SYSTEM_TITLES, row, out);
             }
             ShelfOverlay::ScreenSystemSettings {platform,row} => {
-                self.draw_original_style_menu(Self::screen_title(platform),
-                    Self::system_rows(platform),row,out);
-                self.draw_setting_values(row,Self::system_keys(platform),out);
+                let rows=Self::system_page_rows(platform);
+                let keys=Self::system_page_keys(platform);
+                self.draw_settings_menu(Self::screen_title(platform),&rows,row,&keys,out);
             }
             ShelfOverlay::GameplaySettings { row } => {
-                self.draw_original_style_menu(33, &GAMEPLAY_ROWS, row, out);
-                self.draw_setting_values(row, &GAMEPLAY_KEYS, out);
+                self.draw_settings_menu(33, &GAMEPLAY_ROWS, row, &GAMEPLAY_KEYS, out);
             }
             ShelfOverlay::About { row } => {
                 // The native KONKR sticker stays intact, shifted up to make room
@@ -5233,6 +5985,8 @@ impl Engine {
                     });
                 }
             }
+            // Waiting out a second slot. tap: the paused game, no menu yet.
+            ShelfOverlay::GameMenu { .. } if self.menu_reveal_at.is_some_and(|at| Instant::now() < at) => {}
             ShelfOverlay::GameMenu { row } => {
                 let linked = self.game.as_ref().is_some_and(GameSession::linked);
                 let relaunch = self.game.as_ref().is_some_and(GameSession::requires_relaunch);
@@ -5244,17 +5998,19 @@ impl Engine {
                 self.draw_original_style_menu(26, self.pause_settings_rows(), row, out);
             }
             ShelfOverlay::PauseScreenSettings { row } => {
-                let items=self.pause_screen_rows();
-                self.draw_original_style_menu(32, items, row, out);
+                let items=self.pause_screen_page_rows();
                 let keys: Vec<usize>=(0..items.len())
-                    .filter_map(|index|self.pause_screen_key(index)).collect();
-                self.draw_setting_values(row,&keys,out);
+                    .filter_map(|index|self.pause_screen_page_key(index)).collect();
+                self.draw_settings_menu(32, &items, row, &keys, out);
             }
             ShelfOverlay::PauseGameplaySettings { row } => {
-                self.draw_original_style_menu(33, &GAMEPLAY_ROWS, row, out);
-                self.draw_setting_values(row, &GAMEPLAY_KEYS, out);
+                self.draw_settings_menu(33, &GAMEPLAY_ROWS, row, &GAMEPLAY_KEYS, out);
             }
             ShelfOverlay::Multiplayer => self.draw_multiplayer(out),
+            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. }
+            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. }
+            | ShelfOverlay::Hotkeys { .. } =>
+                self.draw_controls(out),
             ShelfOverlay::Core => {
                 self.draw_original_core_picker(out);
             }
@@ -5615,6 +6371,44 @@ impl Engine {
             self.picker = None;
             self.overlay = ShelfOverlay::None;
         }
+        if self.menu_reveal_at.is_some_and(|at| Instant::now() >= at) {
+            self.menu_reveal_at = None;
+            self.menu_seen = 0; // the menu's own fade-in, now
+        }
+        if !matches!(self.overlay, ShelfOverlay::GameMenu { .. }) { self.menu_reveal_at = None; }
+        // slot. original: the slot rises with the in-game menu and slides
+        // back down as the game resumes, over a power-on's 220 ms.
+        if self.game.is_none() || matches!(self.overlay, ShelfOverlay::States | ShelfOverlay::Multiplayer) {
+            self.footer = 0.0;
+            self.screen_closing = false;
+            self.screen_direct = false;
+        } else {
+            let step = dt / SCREEN_POWER_ON_S;
+            self.footer = if self.screen_panel() && !self.screen_closing { (self.footer + step).min(1.0) }
+                else { (self.footer - step).max(0.0) };
+            // Leaving the Screen page: once the slot is down, Settings (or
+            // the game, when its hotkey opened it).
+            if self.screen_closing && self.footer <= 0.0 {
+                self.screen_closing = false;
+                if self.screen_panel() {
+                    self.overlay = if self.screen_direct { ShelfOverlay::None }
+                        else { ShelfOverlay::PauseSettings { row: 0 } };
+                }
+            }
+            if !self.screen_panel() { self.screen_direct = false; self.screen_hotkey_held = false; }
+        }
+        // Multiplayer's LAN / WAN knob slides over 220 ms, as the slot.
+        {
+            let wan = if self.link_inet.internet || self.link_inet.entry.is_some() { 1.0 } else { 0.0 };
+            if matches!(self.overlay, ShelfOverlay::Multiplayer) {
+                let step = dt / SCREEN_POWER_ON_S;
+                self.net_switch_t = if wan > self.net_switch_t { (self.net_switch_t + step).min(wan) }
+                    else { (self.net_switch_t - step).max(wan) };
+            } else {
+                self.net_switch_t = wan;
+            }
+        }
+        self.prepare_controls();
         // Update full-screen menus and spring-smooth the selection bar.
         // Keep animation entirely in rendering: never delay controller input.
         let (kind, selected, count) = match self.overlay {
@@ -5625,10 +6419,14 @@ impl Engine {
                 self.game.as_ref().is_some_and(GameSession::requires_relaunch)).len()),
             ShelfOverlay::PauseSettings { row } => (13u8, row, self.pause_settings_rows().len()),
             ShelfOverlay::PauseScreenSettings { row } =>
-                (14u8, row, self.pause_screen_rows().len()),
+                (14u8, row, self.pause_screen_page_rows().len()),
             ShelfOverlay::PauseGameplaySettings { row } => (15u8, row, GAMEPLAY_KEYS.len()),
             ShelfOverlay::Multiplayer => (11u8, 0, 0usize),
-            ShelfOverlay::Settings { row } => (4u8, row, 5usize),
+            ShelfOverlay::Settings { row } => (4u8, row, SETTINGS_ROWS.len()),
+            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. }
+            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. }
+            | ShelfOverlay::Hotkeys { .. } =>
+                self.controls_cursor().unwrap_or((0, 0, 0)),
             ShelfOverlay::GeneralSettings { row } =>
                 (12u8, row, self.general_rows().len()),
             ShelfOverlay::About { row } => (17u8, row, 2usize),
@@ -5638,20 +6436,24 @@ impl Engine {
                 (9u8, row, self.pause_emulation_rows().len()),
             ShelfOverlay::ScreenSettings { row } => (5u8, row, SYSTEM_ORDER.len()),
             ShelfOverlay::ScreenSystemSettings { platform,row } =>
-                (16u8,row,Self::system_rows(platform).len()),
+                (16u8,row,Self::system_page_rows(platform).len()),
             ShelfOverlay::GameplaySettings { row } => (6u8, row, GAMEPLAY_KEYS.len()),
             _ => (0, 0, 0),
         };
+        // A page of more than six rows shows six and scrolls: the bar
+        // follows the selected row within them (Controls' are already so).
+        let offset = crate::controls::scroll_offset(selected, count);
+        let (selected, count) = (selected - offset, count.min(crate::controls::VISIBLE_ROWS));
         if kind != self.menu_seen {
             self.menu_seen = kind;
             self.menu_opened = now;
             if count > 0 {
                 self.menu_cursor_y = (if kind == 17 { about_row_top() }
-                    else { settings_row_top(count) }) + selected as f32 * QUICK_PITCH;
+                    else { self.menu_rows_top(count) }) + selected as f32 * QUICK_PITCH;
             }
         } else if count > 0 {
             let goal = (if kind == 17 { about_row_top() }
-                else { settings_row_top(count) }) + selected as f32 * QUICK_PITCH;
+                else { self.menu_rows_top(count) }) + selected as f32 * QUICK_PITCH;
             let response = 1.0 - (-dt * 24.0).exp();
             self.menu_cursor_y += (goal - self.menu_cursor_y) * response;
         }
@@ -5784,7 +6586,8 @@ impl Engine {
         if self.game.is_some() && matches!(self.overlay,
             ShelfOverlay::GameMenu { .. } | ShelfOverlay::Multiplayer |
             ShelfOverlay::PauseSettings { .. } | ShelfOverlay::PauseScreenSettings { .. } |
-            ShelfOverlay::PauseGameplaySettings { .. } | ShelfOverlay::PauseEmulationSettings { .. }) {
+            ShelfOverlay::PauseGameplaySettings { .. } | ShelfOverlay::PauseEmulationSettings { .. } |
+            ShelfOverlay::LayoutPorts { game: true, .. } | ShelfOverlay::LayoutPort { game: true, .. }) {
             // Coordinate the pause with the remote game. Without this
             // the other Cable peer times out and gpSP RFU can drift.
             if let Some(game) = self.game.as_mut() { game.set_link_paused(true); }
@@ -5796,14 +6599,22 @@ impl Engine {
                 self.peer_link_stopped(fault);
             }
             self.game_accum = 0.0;
+            // The paused game as it plays: under its overlay, which the
+            // Screen page changes live.
+            let bezel = self.game_bezel();
             let mut commands = vec![Draw::Game];
+            if let Some((tex,[x,y,w,h])) = bezel {
+                commands.push(Draw::Tex { x,y,w,h,tex,alpha:1.0 });
+            }
             self.draw_overlay(&mut commands);
             // The original Slot app draws the HUD AFTER draw_game_menu()
             // (app.rs), including during its Linked animation. The four
             // cyan/purple chain badges are already loaded into our Hud but
             // used to disappear behind the Multiplayer overlay because we
             // skipped this final HUD pass. Keep the exact upstream z-order.
-            if matches!(self.overlay, ShelfOverlay::Multiplayer) {
+            // The Screen page shows the game, and its toasts (Integer,
+            // Original Ratio, Stretch) at the top as in game.
+            if matches!(self.overlay, ShelfOverlay::Multiplayer) || self.screen_panel() {
                 self.hud.draw(self.born.elapsed().as_millis() as u64, &mut commands);
             }
             self.gpu.fit(self.size);
@@ -5844,6 +6655,12 @@ impl Engine {
         let (transition_back, transition_front) = self.clear_layers();
         let a12_native_started = Instant::now();
         let mut frame_phases = crate::frame_phases::FramePhaseSample::default();
+        self.apply_layouts(live.turbo);
+        let blending = self.settings.blending_for(cart_platform);
+        if let Some(game) = self.game.as_mut() { game.set_frame_blending(blending); }
+        // The slot sliding back down over the game just resumed.
+        let mut footer_draws = Vec::new();
+        self.draw_game_footer(&mut footer_draws);
         if let Some(session) = self.game.as_mut() {
             // Resume only after the remote has also left its pause menu;
             // LinkPlay::frame holds either core while peer_paused is true.
@@ -5977,6 +6794,7 @@ impl Engine {
                     // Cable lockstep must not consume emulation time while
                     // the remote frame has not arrived. NEVER invent a solo
                     // frame or perform speculative Run-Ahead on a held link.
+                    session.set_port2(self.buttons2);
                     let advanced = session.advance(self.buttons, live.turbo,
                         live.rewind && !session.linked());
                     let timing = session.last_step_timings();
@@ -6005,6 +6823,9 @@ impl Engine {
                     self.unseen_presses = 0;
                     self.buttons &= !self.held_releases;
                     self.held_releases = 0;
+                    self.unseen2 = 0;
+                    self.buttons2 &= !self.held_releases2;
+                    self.held_releases2 = 0;
                     self.perf_emulated = self.perf_emulated.saturating_add(1);
                     frame_phases.core_steps = frame_phases.core_steps.saturating_add(1);
                     self.game_accum -= period;
@@ -6061,6 +6882,7 @@ impl Engine {
                 // The normal frames and their audio are already consumed.
                 // Predicted video never advances the real saved/RA timeline.
                 let speculation_started = Instant::now();
+                session.set_port2(self.buttons2);
                 session.prepare_runahead(self.buttons, live.turbo,
                     profile.run_ahead_frames);
                 frame_phases.speculative_us = speculation_started.elapsed().as_micros() as u64;
@@ -6100,7 +6922,11 @@ impl Engine {
                 } else {
                     // Home consoles: the frame at its own size, fitted at
                     // the aspect the core reports (it may change mid-game).
-                    self.gpu.upload_game_sized(session.frame(), session.frame_size());
+                    // NES, SNES and Mega Drive Frame Blending: mixed here,
+                    // before any shader draws the picture.
+                    let size = session.frame_size();
+                    let picture = self.frame_blend.apply(session.slot_blending(), session.frame(), size);
+                    self.gpu.upload_game_sized(picture, size);
                     self.gpu.set_game_fit(video_mode::home_fit(cart_platform, self.video_mode,
                         session.display_aspect(), session.frame_size(), panel_size()));
                 }
@@ -6146,6 +6972,7 @@ impl Engine {
             if let Some((tex,[x,y,w,h]))=bezel {
                 commands.push(Draw::Tex { x,y,w,h,tex,alpha:1.0 });
             }
+            commands.extend_from_slice(&footer_draws);
             self.hud.draw(self.born.elapsed().as_millis() as u64, &mut commands);
             frame_phases.submit_build_us = build_started.elapsed().as_micros() as u64;
             let draw_started = Instant::now();
@@ -6493,9 +7320,22 @@ fn link_heading_x(width: u32) -> f32 {
     ((out_w() as f32 - width as f32) / 2.0).round()
 }
 
-fn link_legend_start(hints: &[(slot_gfx::TexId, u32)]) -> f32 {
+const LINK_LEGEND_MIN_GAP: f32 = 14.0;
+
+/// The gap that fits the legend on screen with 12 px either side: the
+/// original 40 px, or less, down to 14; None if even that is too wide.
+fn link_legend_gap(hints: &[(slot_gfx::TexId, u32)]) -> Option<f32> {
+    let gaps = hints.len().saturating_sub(1) as f32;
+    let keys = hints.iter().map(|(_, w)| w.saturating_sub(HINT_EDGE) as f32).sum::<f32>();
+    let room = out_w() as f32 - 24.0 - keys;
+    if gaps == 0.0 { return (room >= 0.0).then_some(LINK_LEGEND_GAP); }
+    let gap = (room / gaps).min(LINK_LEGEND_GAP).floor();
+    (gap >= LINK_LEGEND_MIN_GAP).then_some(gap)
+}
+
+fn link_legend_start(hints: &[(slot_gfx::TexId, u32)], gap: f32) -> f32 {
     let total = hints.iter().map(|(_, w)| w.saturating_sub(HINT_EDGE) as f32)
-        .sum::<f32>() + LINK_LEGEND_GAP * hints.len().saturating_sub(1) as f32;
+        .sum::<f32>() + gap * hints.len().saturating_sub(1) as f32;
     ((out_w() as f32 - total) / 2.0).round()
 }
 
@@ -6705,6 +7545,17 @@ fn move_menu_row(row: usize, key: i32, count: usize) -> usize {
 }
 
 /// Match Slot's centred menu row layout on the 720x480 design canvas.
+/// Move draws down by `dy` (the slot rising with the in-game menu).
+fn shift_down(draws: &mut [Draw], dy: f32) {
+    if dy == 0.0 { return; }
+    for draw in draws {
+        match draw {
+            Draw::Rect { y, .. } | Draw::Tex { y, .. } | Draw::Turned { y, .. } => *y += dy,
+            Draw::Game | Draw::Shot { .. } => {}
+        }
+    }
+}
+
 fn settings_row_top(rows: usize) -> f32 {
     ((OUT_H as f32 - QUICK_PITCH * rows as f32) / 2.0).round()
 }
@@ -6767,6 +7618,7 @@ mod ui_feedback_tests;
 mod link_hardware_tests;
 
 mod jni_exports;
+mod controls_ui;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use jni_exports::exercise_session_graphics_recovery;
 
@@ -6777,6 +7629,43 @@ pub(crate) use jni_exports::exercise_session_graphics_recovery;
 #[cfg(test)]
 mod settings_value_tests {
     use super::*;
+
+    #[test]
+    fn each_system_page_is_titled_with_its_own_name() {
+        // Reported on 2.0.0: NES showed "Screen Size", SNES "NES" and Mega
+        // Drive "Super Nintendo".
+        for platform in Platform::ALL {
+            assert_eq!(MENU_TEXT[Engine::screen_title(platform)], platform.name(),
+                "Settings > Systems > {platform:?} heading");
+        }
+        for (platform, title) in SYSTEM_ORDER.iter().zip(SYSTEM_TITLES) {
+            assert_eq!(MENU_TEXT[title], platform.name(), "Systems list row");
+        }
+    }
+
+    #[test]
+    fn each_system_page_changes_only_its_own_system() {
+        // Default core, shader, colour/palette and overlay keys of each page.
+        let own: [(Platform, &[usize]); 6] = [
+            (Platform::Gba, &[29, 0, 22, 25]),
+            (Platform::Gbc, &[30, 21, 23, 26]),
+            (Platform::Gb, &[31, 1, 3, 27]),
+            (Platform::Nes, &[41, 47, 44]),
+            (Platform::Snes, &[42, 48, 45]),
+            (Platform::Md, &[43, 49, 46]),
+        ];
+        for (platform, keys) in own {
+            for panel in PANELS {
+                for key in Engine::system_keys_on(platform, panel) {
+                    assert!(*key == SCREEN_SIZE_KEY || keys.contains(key),
+                        "Settings > Systems > {platform:?} on {panel:?} shows key {key}");
+                    if let Some(core) = Engine::core_key_platform(*key) {
+                        assert_eq!(core, platform, "default core row of {platform:?}");
+                    }
+                }
+            }
+        }
+    }
 
     const PANELS: [(u32, u32); 7] = [(960, 640), (1240, 1080), (1920, 1080),
         (720, 720), (1024, 768), (1280, 720), (1920, 1152)];

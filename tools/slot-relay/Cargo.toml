@@ -1,0 +1,17 @@
+[package]
+name = "slot-relay"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Room-code relay for slot. Internet Multiplayer"
+publish = false
+
+# Not part of the app workspace: it runs on a server, not on the console,
+# and builds with nothing but the standard library.
+[workspace]
+
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1

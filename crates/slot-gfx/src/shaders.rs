@@ -107,7 +107,9 @@ vec3 lcd_grid_v2(vec2 uv, bool bgr) {
     // parameters: gain=1.5, gamma=2.2, RGB matrix diagonal=0.75.
     vec2 xy = uv*u_src;
     vec2 tli = floor(xy-vec2(0.4999));
-    vec2 range = vec2(1.0)/max(u_rect.zw*u_fbo,vec2(1.0));
+    // Game texels per screen pixel, as upstream's range/texelSize: each
+    // screen pixel integrates the subpixel profile over its own width.
+    vec2 range = (u_uv.zw*u_src)/(u_rect.zw*u_fbo);
     float sub = (xy.x-0.4999-tli.x)*3.0;
     float dx = range.x*3.0;
     vec3 left = vec3(lcd_smear(sub+1.0,dx,1.5,false),
@@ -129,18 +131,26 @@ vec3 lcd_grid_v2(vec2 uv, bool bgr) {
     vec3 weighted=(tl*left+tr*right)*top+(bl*left+br*right)*bot;
     return pow(max(weighted*0.75,vec3(0.0)),vec3(1.0/2.2));
 }
-vec3 mgba_mask(vec2 uv) {
-    // endrift AGB/AGS-001 original 4x RGB subpixel mask.
-    float px=mod((uv*u_src).x*4.0,4.0);
-    if(px<1.0) return vec3(1.0,0.2,0.2);
-    if(px<2.0) return vec3(0.2,1.0,0.2);
-    if(px<3.0) return vec3(0.2,0.2,1.0);
-    return vec3(0.4);
+/* endrift AGB/AGS-001 are two passes upstream: the game at 4x, nearest,
+   through the 4x4 subpixel mask, then that picture scaled to the screen
+   with LINEAR filtering. sub_4x is one texel of the 4x picture and
+   mgba_pass filters four of them, so the mask keeps even columns and rows
+   at any scale (at exactly 4x it is the first pass as it is). */
+vec3 mgba_sub_4x(vec2 i, bool ags) {
+    vec2 m = mod(i, 4.0);
+    vec3 c = texture2D(u_game, (floor(i/4.0) + vec2(0.5))/u_src).rgb;
+    c = ags ? pow(c, vec3(1.6)) : pow(c*0.8, vec3(1.8)) + vec3(0.16);
+    vec3 mask = m.x < 0.5 ? vec3(1.0,0.2,0.2)
+        : m.x < 1.5 ? vec3(0.2,1.0,0.2)
+        : m.x < 2.5 ? vec3(0.2,0.2,1.0) : vec3(0.4);
+    return c*mask*(m.y > 2.5 ? (ags ? 0.9 : 0.8) : 1.0);
 }
-vec3 ags_first_pass(vec2 uv) {
-    float py=mod((uv*u_src).y*4.0,4.0);
-    return pow(texture2D(u_game,uv).rgb,vec3(1.6))*mgba_mask(uv)*
-           (py>=3.0 ? 0.9 : 1.0);
+vec3 mgba_pass(vec2 uv, bool ags) {
+    vec2 q = uv*u_src*4.0 - vec2(0.5);
+    vec2 b = floor(q);
+    vec2 t = fract(q);
+    return mix(mix(mgba_sub_4x(b, ags), mgba_sub_4x(b + vec2(1.0,0.0), ags), t.x),
+               mix(mgba_sub_4x(b + vec2(0.0,1.0), ags), mgba_sub_4x(b + vec2(1.0), ags), t.x), t.y);
 }
 vec3 nearest_bilinear(vec2 uv) {
     // GPU sampler remains NEAREST for the other presets. Manually emulate
@@ -424,14 +434,27 @@ vec3 crt_geom_deluxe(vec2 xy) {
     vec3 chi = vec3(ifb*avg)*m - vec3(ifb-1.0)*clow;
     return pow(max(mix(clow, chi, mask), vec3(0.0)), vec3(1.0/2.2));
 }
+/* Grid as slot. original draws it: a dark band over the first third of
+   each game pixel, left and top, darkening a screen pixel by the share of
+   it the band covers. The band grows with the picture, so every line keeps
+   a solid core at any scale; the colours come through Pixel AA. */
+vec2 grid_band(vec2 x) {
+    return floor(x)/3.0 + min(fract(x), vec2(1.0/3.0));
+}
+vec3 grid_line(vec2 uv, vec3 c) {
+    vec2 hp = 0.5*(u_uv.zw*u_src)/(u_rect.zw*u_fbo);
+    vec2 at = uv*u_src;
+    vec2 edge = (grid_band(at + hp) - grid_band(at - hp))/(2.0*hp);
+    return c*(1.0 - 0.75*max(edge.x, edge.y));
+}
 void main() {
     vec2 uv = u_uv.xy + v_uv * u_uv.zw;
     vec2 f = fract(uv * u_src);
     vec3 c;
-    // The LCD shaders (LCD3x, Dot, Simpletex, zfast LCD, LCD1x, Simpletex
-    // + GBA, AGB-001) read the game through Pixel AA; the others as before.
-    if (u_mode > 0.5 && u_mode < 10.5 && !(u_mode > 1.5 && u_mode < 2.5)
-        && !(u_mode > 4.5 && u_mode < 6.5)) {
+    // The LCD shaders (LCD3x, Grid, Dot, Simpletex, zfast LCD, LCD1x,
+    // Simpletex + GBA) read the game through Pixel AA. LCD Grid V2 and
+    // AGB/AGS-001 filter the game themselves; the others as before.
+    if (u_mode > 0.5 && u_mode < 9.5 && !(u_mode > 4.5 && u_mode < 6.5)) {
         c = pixel_aa(uv);
     } else {
         c = texture2D(u_game, uv).rgb;
@@ -488,16 +511,14 @@ void main() {
         c=nearest_bilinear((floor(texel)+filtered)/u_src);
     } else if (u_mode > 10.5) {
         // endrift AGS-001: frontlit SP gamma, subpixel mask and light.
-        c=ags_first_pass(uv);
+        c=mgba_pass(uv,true);
         vec2 radius=pow(abs((v_uv-vec2(0.5))*1.5),vec2(4.0));
         vec3 bleed=vec3(0.12,0.14,0.19) +
             (dot(radius,radius)+vec3(0.02,0.03,0.05))*vec3(0.14,0.18,0.2);
-        c+=bleed+0.07*ags_first_pass(uv-vec2(0.0,0.025));
+        c+=bleed+0.07*mgba_pass(uv-vec2(0.0,0.025),true);
     } else if (u_mode > 9.5) {
         // endrift AGB-001: original non-backlit screen color subpixels.
-        float py=mod((uv*u_src).y*4.0,4.0);
-        c=(pow(c*0.8,vec3(1.8))+vec3(0.16))*mgba_mask(uv)*
-            (py>=3.0 ? 0.8 : 1.0);
+        c=mgba_pass(uv,false);
     } else if (u_mode > 8.5) {
         // jdgleaver simpletex_lcd+gba-color, using Slot's existing
         // licensed paper texture crop. Russ (RetroGameCorps) settings,
@@ -562,9 +583,7 @@ void main() {
         }
         c = mix(1.2 * c * mid, c * sum, 0.65);
     } else if (u_mode > 1.5) {
-        vec2 hp = 0.5 * u_uv.zw * u_src / (u_rect.zw * u_fbo);
-        vec2 edge = max(step(f - hp, vec2(1e-4)), step(vec2(1.0) + 1e-4, f + hp));
-        c *= 1.0 - 0.75 * max(edge.x, edge.y);
+        c = grid_line(uv, c);
     } else if (u_mode > 0.5) {
         vec2 angle = f * 6.283185307;
         float yfactor = (16.0 + sin(angle.y)) / 17.0;

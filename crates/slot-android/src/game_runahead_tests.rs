@@ -16,6 +16,9 @@ struct Calls {
     real: usize,
     predicted: Vec<u16>,
     battery: usize,
+    // Port 2 as each real / predicted frame saw it.
+    port2_real: Vec<u16>,
+    port2_predicted: Vec<u16>,
 }
 struct CoreFixture {
     frame: u32,
@@ -26,6 +29,7 @@ struct CoreFixture {
     pixels: Vec<u8>,
     failure: Failure,
     calls: Arc<Mutex<Calls>>,
+    port2: u16,
 }
 impl CoreFixture {
     fn step(&mut self) {
@@ -40,12 +44,21 @@ impl RetroCore for CoreFixture {
         Ok(())
     }
     fn run_frame(&mut self, _: ButtonMask) {
-        self.calls.lock().unwrap().real += 1;
+        let mut calls = self.calls.lock().unwrap();
+        calls.real += 1;
+        calls.port2_real.push(self.port2);
+        drop(calls);
         self.step();
     }
     fn run_speculative_frame(&mut self, input: ButtonMask) {
-        self.calls.lock().unwrap().predicted.push(input.0);
+        let mut calls = self.calls.lock().unwrap();
+        calls.predicted.push(input.0);
+        calls.port2_predicted.push(self.port2);
+        drop(calls);
         self.step();
+    }
+    fn set_port2(&mut self, input: ButtonMask) {
+        self.port2 = input.0;
     }
     fn video_xrgb8888(&self) -> &[u8] {
         &self.pixels
@@ -111,6 +124,7 @@ fn session(root: &Path, failure: Failure) -> (GameSession, Arc<Mutex<Calls>>) {
         pixels: vec![0; 4],
         failure,
         calls: calls.clone(),
+        port2: 0,
     });
     let session = GameSession {
         core,
@@ -134,6 +148,11 @@ fn session(root: &Path, failure: Failure) -> (GameSession, Arc<Mutex<Calls>>) {
         rewind_frames: 0,
         frame_count: 0,
         full_pad: false,
+        second_player: false,
+        port2: 0,
+        layouts: [None, None],
+        blending: None,
+        slot_blending: crate::frame_blend::Mode::Off,
         runahead_video: vec![],
         runahead_size: (0, 0),
         runahead_state: vec![],
@@ -318,7 +337,7 @@ fn prediction_copy(failure: Failure) -> (Box<dyn RetroCore>, Arc<Mutex<Calls>>) 
     let calls = Arc::new(Mutex::new(Calls::default()));
     (Box::new(CoreFixture {
         frame: 0, mixer: 0, captured_mixer: 0, pcm: vec![], pixels: vec![0; 4],
-        failure, calls: calls.clone(),
+        failure, calls: calls.clone(), port2: 0,
     }), calls)
 }
 
@@ -494,4 +513,40 @@ fn pokemon_flash_guard_saves_a_new_game_but_protects_a_complete_save() {
     // An incomplete image must never replace a complete in-game save.
     assert!(game.save_for_eject(false).is_err());
     assert_eq!(std::fs::read(&game.save).unwrap(), complete);
+}
+
+#[test]
+fn a_second_local_player_reaches_real_predicted_and_replayed_frames() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut game, calls) = session(root.path(), Failure::None);
+    // A Super Nintendo game: full pad, a second player.
+    game.full_pad = true;
+    game.second_player = true;
+    game.set_port2(ButtonMask::B);
+    assert!(game.advance(ButtonMask::A, false, false));
+    game.prepare_runahead(ButtonMask::A, false, 2);
+    {
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.port2_real, vec![ButtonMask::B]);
+        assert_eq!(calls.port2_predicted, vec![ButtonMask::B; 2]);
+    }
+    // Preemptive Frames replays the window when only port 2 changed.
+    game.set_preemptive_frames(2);
+    for _ in 0..3 { assert!(game.advance(ButtonMask::A, false, false)); }
+    let replays_before = calls.lock().unwrap().port2_predicted.len();
+    game.set_port2(ButtonMask::Y);
+    assert!(game.advance(ButtonMask::A, false, false));
+    let calls = calls.lock().unwrap();
+    assert_eq!(&calls.port2_predicted[replays_before..], &[ButtonMask::Y; 2],
+        "the window was replayed with the new port 2");
+    assert_eq!(calls.port2_real.last(), Some(&ButtonMask::Y));
+}
+
+#[test]
+fn a_game_boy_game_never_sees_port_2() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut game, calls) = session(root.path(), Failure::None);
+    game.set_port2(ButtonMask::B);
+    assert!(game.advance(ButtonMask::A, false, false));
+    assert_eq!(calls.lock().unwrap().port2_real, vec![0]);
 }

@@ -160,9 +160,15 @@ impl LabGreeting {
     }
 }
 fn vet_lab(stream:&mut TcpStream,local:&LabGreeting)->Option<LabGreeting>{
+    vet_lab_within(stream, local, GREET_WAIT)
+}
+/// Over the Internet one greeting crosses a relay and a continent or two:
+/// give it the time of several round trips, not of one Wi-Fi hop.
+pub const RELAYED_GREET_WAIT: Duration = Duration::from_secs(8);
+fn vet_lab_within(stream:&mut TcpStream,local:&LabGreeting,wait:Duration)->Option<LabGreeting>{
     let mut bytes=[0u8;LAB_GREETING_LEN];
-    if stream.set_read_timeout(Some(GREET_WAIT)).is_err() ||
-        stream.set_write_timeout(Some(GREET_WAIT)).is_err() ||
+    if stream.set_read_timeout(Some(wait)).is_err() ||
+        stream.set_write_timeout(Some(wait)).is_err() ||
         stream.read_exact(&mut bytes).is_err(){return None;}
     let Some(peer)=LabGreeting::decode(&bytes) else {
         report_link_transport_fault("greeting", "peer greeting unreadable (other slot. version?)");
@@ -270,11 +276,30 @@ impl TcpLink {
 
     pub fn join_lab_greeted(addr: std::net::SocketAddr,
                             identity: &LabGreeting) -> std::io::Result<TcpLink> {
+        let stream=TcpStream::connect_timeout(&addr,GREET_WAIT)?;
+        TcpLink::join_lab_on(stream, identity, GREET_WAIT)
+    }
+
+    /// The host's half of the strict greeting, on a socket the relay has
+    /// already paired: there is exactly one candidate, so a refusal is final.
+    pub fn host_lab_on(mut stream: TcpStream, identity: &LabGreeting,
+                       wait: Duration) -> std::io::Result<TcpLink> {
+        let Some(peer) = vet_lab_within(&mut stream, identity, wait) else {
+            let _ = stream.shutdown(Shutdown::Both);
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "the other player did not accept the greeting"));
+        };
+        TcpLink::wrap_identified(stream, Some(peer))
+    }
+
+    /// The joiner's half of the strict greeting on an already-open socket
+    /// (a Wi-Fi connection, or one the Internet relay paired).
+    pub fn join_lab_on(mut stream: TcpStream, identity: &LabGreeting,
+                       wait: Duration) -> std::io::Result<TcpLink> {
         {
-            let mut stream=TcpStream::connect_timeout(&addr,GREET_WAIT)?;
-            stream.set_write_timeout(Some(GREET_WAIT))?;
+            stream.set_write_timeout(Some(wait))?;
             stream.write_all(&identity.bytes())?;
-            stream.set_read_timeout(Some(GREET_WAIT))?;
+            stream.set_read_timeout(Some(wait))?;
             let mut ack=[0u8;1];stream.read_exact(&mut ack)?;
             if ack[0]!=GREETING_ACK {return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,"host refused KMLB/3 greeting"));}

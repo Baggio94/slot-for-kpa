@@ -13,6 +13,8 @@ use crate::link_sync::{self, Sync};
 use crate::multiplayer::Role;
 
 const MAX_RECEIVE_PER_FRAME: usize = 256;
+/// Internet links send a round-trip PING every this many frames.
+const PING_EVERY_FRAMES: u64 = 30;
 const MAX_INITIAL_STATE: usize = 16 * 1024 * 1024;
 const MAX_FUTURE_FRAMES: u64 = 256;
 // Original Slot cable::state_packets emits at most 60,000 state bytes per
@@ -38,6 +40,22 @@ fn valid_cable_packet_shape(packet: &[u8]) -> bool {
 
 
 const INITIAL_STATE_TIMEOUT: Duration = Duration::from_secs(12);
+/// The first state crosses the Internet on someone's home upload speed.
+const INTERNET_INITIAL_STATE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Set by the runtime just before an Internet (relayed) link begins and
+/// cleared for a Wi-Fi one. Only one link exists at a time; the flag picks
+/// the Internet input-delay ceiling and first-state allowance.
+static INTERNET_PROFILE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_internet_profile(internet: bool) {
+    INTERNET_PROFILE.store(internet, std::sync::atomic::Ordering::Release);
+}
+
+fn internet_profile() -> bool {
+    INTERNET_PROFILE.load(std::sync::atomic::Ordering::Acquire)
+}
 // A delayed Mac AVD can miss 60 GL callbacks in ~1 second while TCP is still
 // healthy. Use wall-clock time, NOT callback count; never invent peer input.
 const CABLE_INPUT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -122,6 +140,10 @@ pub struct LinkPlay {
     bios_checked: bool,
     // mGBA pair: desync check every two seconds, resync from Host's pair.
     sync: Option<Sync>,
+    initial_state_timeout: Duration,
+    /// Internet: measure the round trip (PING/PONG) to set the input delay.
+    internet: bool,
+    next_ping_frame: u64,
 }
 
 impl LinkPlay {
@@ -154,7 +176,8 @@ impl LinkPlay {
         let cable = match mode {
             LinkKind::Cable if !core.supports_netpacket() => {
                 let player = if role == Role::Host { 0 } else { 1 };
-                let c = Cable::new(player);
+                let mut c = Cable::new(player);
+                if internet_profile() { c.allow_internet_delay(); }
                 // Both devices start with their *own* cartridge progress.
                 // mGBA's private SLK1 pair contains a blank remote GBA;
                 // exchange Join's local half first, then Host combines
@@ -209,6 +232,11 @@ impl LinkPlay {
             stalled_for_input: false,
             bios_checked: true,
             sync,
+            initial_state_timeout: if internet_profile() {
+                INTERNET_INITIAL_STATE_TIMEOUT
+            } else { INITIAL_STATE_TIMEOUT },
+            internet: internet_profile(),
+            next_ping_frame: 0,
         })
     }
 
@@ -326,6 +354,21 @@ impl LinkPlay {
             let Some(packet) = self.wire.try_recv() else { break };
             self.pacing.packets += 1;
             if let Some(cable) = self.cable.as_mut() {
+                if cable::is_ping_packet(&packet) {
+                    // Internet round-trip probe: answer a PING at once; a
+                    // PONG is ours coming back.
+                    if let Some(pong) = cable::pong_for(&packet) {
+                        self.wire.send(NETPACKET_RELIABLE, &pong);
+                    } else if let Some(stamp) = cable::pong_stamp(&packet) {
+                        let now = self.started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+                        let rtt = Duration::from_micros(now.saturating_sub(stamp));
+                        if let Some(target) = cable.note_rtt(rtt) {
+                            report(&format!("Link Internet: round trip {} ms, input delay target {target} frames",
+                                rtt.as_millis()));
+                        }
+                    }
+                    continue;
+                }
                 if link_sync::is_sync_packet(&packet) {
                     let current = cable.frame();
                     let accepted = self.sync.as_mut()
@@ -396,7 +439,7 @@ impl LinkPlay {
                     self.awaiting_join_seed = false;
                 }
                 if self.awaiting_join_seed {
-                    if self.started.elapsed() >= INITIAL_STATE_TIMEOUT {
+                    if self.started.elapsed() >= self.initial_state_timeout {
                         return self.fail(LinkError::Timeout);
                     }
                     return Frame::Waiting;
@@ -419,7 +462,7 @@ impl LinkPlay {
             // Host is primed at construction but MUST NOT advance until
             // Join acknowledges the final combined SLK1 restore.
             if !cable.armed() {
-                if self.started.elapsed() >= INITIAL_STATE_TIMEOUT {
+                if self.started.elapsed() >= self.initial_state_timeout {
                     return self.fail(LinkError::Timeout);
                 }
                 return Frame::Waiting;
@@ -434,6 +477,12 @@ impl LinkPlay {
                     self.wire.send(NETPACKET_RELIABLE, packet);
                 }
                 if self.wire.is_closed() { return self.fail(LinkError::Disconnected); }
+            }
+            if self.internet && cable.frame() >= self.next_ping_frame {
+                // Twice a second: the stamp is this side's link clock.
+                self.next_ping_frame = cable.frame() + PING_EVERY_FRAMES;
+                let stamp = self.started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+                self.wire.send(NETPACKET_RELIABLE, &cable::ping_packet(stamp));
             }
             if let Some(sync) = self.sync.as_mut() {
                 let frame = cable.frame();

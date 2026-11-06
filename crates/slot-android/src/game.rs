@@ -312,6 +312,17 @@ pub struct GameSession {
     core_kind: Core,
     /// SNES / Mega Drive: every face button goes to the core as is.
     full_pad: bool,
+    /// NES, SNES and Mega Drive take a second local player on port 2.
+    second_player: bool,
+    /// Port 2's buttons as slot. read them (Settings > Controls).
+    port2: u16,
+    /// Each port's Controls (system, then game): which slot. button plays
+    /// which console button. None: the X/Y Buttons setting alone, as before.
+    layouts: [Option<crate::controls::Resolved>; 2],
+    /// Frame Blending as last given to the core (None: not yet), and the
+    /// mixing slot. does itself for cores without an option for it.
+    blending: Option<crate::settings::Blending>,
+    slot_blending: crate::frame_blend::Mode,
     pending_undo: Option<(Instant, PendingUndo)>,
     last_sram: Instant,
     // F7: owns at most one immutable periodic SRAM/RTC write per solo session.
@@ -926,6 +937,8 @@ impl GameSession {
             rewind: RewindThread::spawn(REWIND_BYTES), rewind_frames: 0,
             frame_count: 0, palette_live, core_kind: which,
             full_pad: matches!(platform, Platform::Snes | Platform::Md),
+            second_player: !platform.handheld(), port2: 0, layouts: [None, None],
+            blending: None, slot_blending: crate::frame_blend::Mode::Off,
             runahead_video: Vec::new(), runahead_size: (0, 0), runahead_state: Vec::new(),
             // bsnes shows the frame before an unserialize on the first run
             // after it, so a predicted picture would be stale: no Run-Ahead.
@@ -950,6 +963,47 @@ impl GameSession {
         Ok(session)
     }
 
+    /// The second local player's buttons for the next frames. Ignored by
+    /// Game Boy games and during Multiplayer, where port 2 is the other
+    /// console's.
+    pub fn set_port2(&mut self, buttons: u16) {
+        self.port2 = if self.second_player { buttons } else { 0 };
+    }
+
+    /// Both ports' Controls, resolved by the runtime for this game.
+    pub fn set_layouts(&mut self, layouts: [crate::controls::Resolved; 2]) {
+        self.layouts = layouts.map(Some);
+    }
+
+    pub fn has_layouts(&self) -> bool { self.layouts[0].is_some() }
+
+    /// What L1/R1 do on Port 1 where the console has no such buttons.
+    pub fn shoulder_role(&self) -> Option<crate::controls::ShoulderRole> {
+        self.layouts[0].as_ref().and_then(|layout| layout.shoulders)
+    }
+
+    /// slot.'s buttons on `port` as the core reads them on `frame`.
+    fn pad(&self, port: usize, buttons: ButtonMask, turbo: bool, frame: u32) -> ButtonMask {
+        match &self.layouts[port] {
+            Some(layout) => ButtonMask(layout.apply(buttons.0, frame)),
+            None => pad_buttons(self.full_pad, buttons, turbo, frame),
+        }
+    }
+
+    /// Port 2 as the core gets it on `frame`: turbo and X/Y like port 1.
+    fn port2_at(&self, turbo: bool, frame: u32) -> ButtonMask {
+        if !self.second_player || self.in_multiplayer() || self.port2 == 0 {
+            return ButtonMask::default();
+        }
+        self.pad(1, ButtonMask(self.port2), turbo, frame)
+    }
+
+    /// Both ports, as Preemptive Frames compares them.
+    fn both_ports(&self, buttons: u16) -> u32 {
+        let port2 = if self.second_player && !self.in_multiplayer() { self.port2 } else { 0 };
+        u32::from(buttons) | u32::from(port2) << 16
+    }
+
     /// False while cable lockstep is awaiting the other player. The caller
     /// must not subtract an emulated-frame budget until this returns true.
     pub fn advance(&mut self, buttons: u16, turbo: bool, record_rewind: bool) -> bool {
@@ -966,7 +1020,9 @@ impl GameSession {
         self.follow_light_sensor();
         if self.link.is_none() && !self.preempt_before_frame(buttons, turbo) { return false; }
         let pressed = ButtonMask(buttons);
-        let mapped = pad_buttons(self.full_pad, pressed, turbo, self.frame_count);
+        let mapped = self.pad(0, pressed, turbo, self.frame_count);
+        let port2 = self.port2_at(turbo, self.frame_count);
+        self.core.set_port2(port2);
         let core_started = Instant::now();
         let advanced = if let Some(link) = self.link.as_mut() {
             matches!(link.frame(self.core.as_mut(), mapped), LinkFrame::Advanced)
@@ -1102,6 +1158,13 @@ impl GameSession {
     }
 
     pub fn home_netplay(&self) -> bool { self.home_netplay.is_some() }
+
+    /// A second local player plays now: a home console game outside
+    /// Multiplayer (Settings > Controls, Port 2).
+    pub fn takes_port2(&self) -> bool { self.second_player && !self.in_multiplayer() }
+
+    /// A home console game whose port 2 is the other console's right now.
+    pub fn port2_is_remote(&self) -> bool { self.second_player && self.in_multiplayer() }
 
     fn in_multiplayer(&self) -> bool {
         self.link_touched || self.linked_boot.is_some() || self.game_link.is_some()
@@ -1435,8 +1498,10 @@ impl GameSession {
         // sample its own future phase; reusing one mask for all offsets
         // predicts incorrect key presses across a three-frame boundary.
         for future in 0..frames {
-            let mapped = pad_buttons(self.full_pad, pressed, turbo,
-                self.frame_count.wrapping_add(u32::from(future)));
+            let frame = self.frame_count.wrapping_add(u32::from(future));
+            let mapped = self.pad(0, pressed, turbo, frame);
+            let port2 = self.port2_at(turbo, frame);
+            self.core.set_port2(port2);
             self.core.run_speculative_frame(mapped);
             // Discard predicted audio without reallocating libretro's buffer.
             self.core.discard_audio();
@@ -1513,10 +1578,11 @@ impl GameSession {
         let pressed = ButtonMask(buttons);
         // Turbo flips every three REAL frames; each predicted frame samples
         // its own future phase, exactly like the single-instance path.
-        let mut inputs = [ButtonMask::default(); 2];
+        let mut inputs = [(ButtonMask::default(), ButtonMask::default()); 2];
         for future in 0..usize::from(frames) {
-            inputs[future] = pad_buttons(self.full_pad, pressed, turbo,
-                self.frame_count.wrapping_add(future as u32));
+            let frame = self.frame_count.wrapping_add(future as u32);
+            inputs[future] = (self.pad(0, pressed, turbo, frame),
+                self.port2_at(turbo, frame));
         }
         let copy = self.runahead_secondary.as_deref_mut().expect("booted above");
         match crate::runahead_secondary::predict(copy, &self.runahead_state,
@@ -1564,7 +1630,7 @@ impl GameSession {
     fn preempt_before_frame(&mut self, buttons: u16, turbo: bool) -> bool {
         let n = self.preempt.frames();
         if n == 0 || self.in_multiplayer() { return true; }
-        let input = (buttons, turbo);
+        let input = (self.both_ports(buttons), turbo);
         if self.preempt.needs_rollback(input) {
             let started = Instant::now();
             // The replayed frames rewrite the last n frames with the new
@@ -1581,8 +1647,11 @@ impl GameSession {
                 if replayed.is_err() { break; }
                 if k > 0 { replayed = self.core.serialize_into(self.preempt.state_mut(k)); }
                 if replayed.is_err() { break; }
-                self.core.run_speculative_frame(
-                    pad_buttons(self.full_pad, pressed, turbo, first.wrapping_add(k as u32)));
+                let frame = first.wrapping_add(k as u32);
+                let port2 = self.port2_at(turbo, frame);
+                self.core.set_port2(port2);
+                let mapped = self.pad(0, pressed, turbo, frame);
+                self.core.run_speculative_frame(mapped);
                 self.core.discard_audio();
             }
             let elapsed_us = started.elapsed().as_micros() as u64;
@@ -1615,6 +1684,38 @@ impl GameSession {
         true
     }
 
+    /// The paused picture with a look option the core draws itself (colour
+    /// correction, frame blending, GB palette) just changed: one frame run
+    /// as Run-Ahead runs its frames (no achievements, no sound) from a
+    /// snapshot that is then put back, so the game doesn't move a frame.
+    /// The picture stays in view until play resumes. False when the core
+    /// can't roll back safely: the change shows on resume.
+    pub fn redraw_paused(&mut self) -> bool {
+        if !self.runahead_supported() || self.runahead_rollback_failed { return false; }
+        if self.core.serialize_into(&mut self.runahead_state).is_err()
+            || self.core.capture_speculative_audio().is_err() { return false; }
+        self.core.set_frame_skip(false);
+        self.core.set_port2(ButtonMask::default());
+        self.core.run_speculative_frame(ButtonMask(0));
+        self.core.discard_audio();
+        self.runahead_video.clear();
+        self.runahead_video.extend_from_slice(self.core.video_xrgb8888());
+        self.runahead_size = self.core.video_size();
+        let restored = self.core.restore_speculative_state(&self.runahead_state)
+            .and_then(|_| self.core.restore_speculative_audio());
+        if let Err(error) = restored {
+            // As a failed Run-Ahead rollback: the core has moved on, so no
+            // save may be written from this timeline.
+            self.runahead_video.clear();
+            self.runahead_unavailable = true;
+            self.runahead_rollback_failed = true;
+            log_launch_timing(&format!(
+                "Paused redraw ROLLBACK FAILED: session quarantined, ALL saves disabled: {error}"));
+            return false;
+        }
+        true
+    }
+
     pub fn rewind_step(&mut self) -> bool {
         if self.runahead_rollback_failed || self.in_multiplayer() { return false; }
         self.runahead_video.clear();
@@ -1633,6 +1734,7 @@ impl GameSession {
         // Match original Slot's rewind: force frame rendering (never inherit
         // an FF/speculative frame-skip state) before refreshing the picture.
         self.core.set_frame_skip(false);
+        self.core.set_port2(ButtonMask::default());
         self.core.run_frame(ButtonMask(0));
         let _ = self.core.take_audio();
         self.rewind_frames = 0;
@@ -1680,6 +1782,40 @@ impl GameSession {
         self.set_core_option("mgba_gb_colors_preset", if enabled { "0" } else { "1" });
         if enabled { self.set_core_option("mgba_gb_colors", name); }
     }
+
+    /// Frame Blending, as slot. original: the Game Boy cores mix frames
+    /// themselves (gpSP has no Ghosting: Mix instead); the others leave
+    /// it to slot. (slot_blending). Calls with an unchanged value cost nothing.
+    pub fn set_frame_blending(&mut self, blending: crate::settings::Blending) {
+        use crate::settings::Blending::{Ghosting, Mix, Off};
+        if self.blending == Some(blending) { return; }
+        self.blending = Some(blending);
+        let option = match (self.core_kind, blending) {
+            (Core::Mgba, Off) => Some(("mgba_interframe_blending", "OFF")),
+            (Core::Mgba, Mix) => Some(("mgba_interframe_blending", "mix")),
+            (Core::Mgba, Ghosting) => Some(("mgba_interframe_blending", "lcd_ghosting")),
+            (Core::Gambatte, Off) => Some(("gambatte_mix_frames", "disabled")),
+            (Core::Gambatte, Mix) => Some(("gambatte_mix_frames", "mix")),
+            (Core::Gambatte, Ghosting) => Some(("gambatte_mix_frames", "lcd_ghosting")),
+            (Core::Gpsp, Off) => Some(("gpsp_frame_mixing", "disabled")),
+            (Core::Gpsp, _) => Some(("gpsp_frame_mixing", "enabled")),
+            _ => None,
+        };
+        match option {
+            Some((key, value)) => {
+                self.slot_blending = crate::frame_blend::Mode::Off;
+                self.set_core_option(key, value);
+            }
+            None => self.slot_blending = match blending {
+                Off => crate::frame_blend::Mode::Off,
+                Mix => crate::frame_blend::Mode::Mix,
+                Ghosting => crate::frame_blend::Mode::Ghosting,
+            },
+        }
+    }
+
+    /// The mixing slot. does before the picture is drawn (NES, SNES, Mega Drive).
+    pub fn slot_blending(&self) -> crate::frame_blend::Mode { self.slot_blending }
 
     pub fn set_colour_correction(&mut self, enabled: bool) {
         let (key, value) = match self.core_kind {
