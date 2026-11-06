@@ -1364,9 +1364,13 @@ class MainActivity : Activity() {
         nativeControllers(list.toString())
     }
 
-    /** The handheld's own controls. A Retroid's may report as external. */
+    /** The handheld's own controls. Some report as external: the KONKR's
+     *  are an internal USB "Microsoft X-box 360 pad" (045e:028e, dumpsys
+     *  input 2026-11-06), and a Retroid's may be too. */
     private fun isBuiltIn(device: InputDevice): Boolean =
-        !device.isExternal || device.name.orEmpty().contains("Retroid", ignoreCase = true)
+        !device.isExternal ||
+            (device.vendorId == 0x045e && device.productId == 0x028e) ||
+            device.name.orEmpty().contains("Retroid", ignoreCase = true)
 
     /** A key (or hat direction) of a controller: to Settings > Controls. */
     private fun sendKey(event: InputEvent, code: Int, pressed: Boolean, stick: Boolean = false) {

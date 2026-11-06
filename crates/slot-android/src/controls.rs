@@ -151,17 +151,27 @@ impl Controls {
             self.ports[other] = if other == 0 && old.is_empty() { BUILTIN.to_owned() } else { old };
         }
         self.ports[port] = fp.to_owned();
+        self.know(fp);
         if self.ports[0].is_empty() { self.ports[0] = BUILTIN.to_owned(); }
         if self.ports[1] == self.ports[0] { self.ports[1].clear(); }
     }
 
-    /// A Bluetooth controller pressed a button for the first time: it takes
-    /// Port 2 if nobody has it. True when it did.
+    /// slot. has met this controller: it never takes a port by itself again.
+    fn know(&mut self, fp: &str) {
+        if fp != BUILTIN && !fp.is_empty() { self.pads.entry(fp.to_owned()).or_default(); }
+    }
+
+    /// A controller slot. has never met pressed a button: it takes Port 2 if
+    /// nobody has it. Only once: a controller the player then moved or set
+    /// aside stays where they put it. True when it took Port 2.
     pub fn claim_free_port(&mut self, fp: &str) -> bool {
-        if fp == BUILTIN || fp.is_empty() || self.port_of(fp).is_some() || self.on_port(1).is_some() {
+        if fp == BUILTIN || fp.is_empty() || self.pads.contains_key(fp)
+            || self.port_of(fp).is_some() || self.on_port(1).is_some()
+        {
             return false;
         }
         self.ports[1] = fp.to_owned();
+        self.know(fp);
         true
     }
 
@@ -205,7 +215,7 @@ impl Controls {
         if device.fp == BUILTIN || self.pads.get(&device.fp).is_some_and(|p| p.name == device.name) {
             return false;
         }
-        if self.port_of(&device.fp).is_none() && !self.pads.contains_key(&device.fp) { return false; }
+        if !self.pads.contains_key(&device.fp) { return false; }
         self.pad_mut(&device.fp).name = device.name.clone();
         true
     }
@@ -375,7 +385,9 @@ impl Controls {
     pub fn sanitized(mut self) -> Self {
         if self.ports[0].is_empty() { self.ports[0] = BUILTIN.to_owned(); }
         if self.ports[1] == self.ports[0] { self.ports[1].clear(); }
-        self.pads.retain(|_, pad| !pad.is_default() || !pad.name.is_empty());
+        // Every other controller stays known, even with default keys: a
+        // known controller never takes Port 2 by itself again.
+        if self.pads.get(BUILTIN).is_some_and(Pad::is_default) { self.pads.remove(BUILTIN); }
         self
     }
 }
@@ -472,6 +484,23 @@ mod tests {
         assert!(controls.claim_free_port(PAD));
         assert_eq!(controls.on_port(1), Some(PAD));
         assert!(!controls.claim_free_port("pro"), "Port 2 is taken");
+    }
+
+    #[test]
+    fn a_controller_set_aside_never_takes_port_two_again() {
+        let mut controls = Controls::default();
+        assert!(controls.claim_free_port(PAD));
+        controls.cycle(1, true, &[BUILTIN.into(), PAD.into()]);
+        assert_eq!(controls.on_port(1), None, "the player chose None");
+        assert!(!controls.claim_free_port(PAD), "its next button doesn't undo that");
+        // Nor after slot. restarts.
+        let mut reloaded = controls.clone().sanitized();
+        assert!(!reloaded.claim_free_port(PAD));
+        // A controller only ever picked by hand is known too.
+        let mut picked = Controls::default();
+        picked.assign(1, "pro");
+        picked.cycle(1, true, &[BUILTIN.into(), "pro".into()]);
+        assert!(!picked.claim_free_port("pro"));
     }
 
     #[test]
