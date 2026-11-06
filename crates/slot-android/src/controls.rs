@@ -92,6 +92,9 @@ pub struct Device {
     pub id: i32,
     pub name: String,
     pub fp: String,
+    /// Android says it has L3 and R3.
+    #[serde(default)]
+    pub sticks: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +108,8 @@ pub struct Controls {
     /// The in-game Controls, by game (its ROM's library key).
     pub games: BTreeMap<String, Layout>,
     pub hotkeys: Hotkeys,
+    /// The handheld's own controls sent L3 or R3 once: they exist.
+    pub builtin_sticks: bool,
 }
 
 impl Default for Controls {
@@ -112,6 +117,7 @@ impl Default for Controls {
         Self {
             ports: [BUILTIN.to_owned(), String::new()], pads: BTreeMap::new(),
             systems: BTreeMap::new(), games: BTreeMap::new(), hotkeys: Hotkeys::default(),
+            builtin_sticks: false,
         }
     }
 }
@@ -770,26 +776,39 @@ impl Action {
 
     /// Held down rather than pressed once: its release matters too.
     pub fn held(self) -> bool { matches!(self, Action::FastForward | Action::Rewind) }
+
+    /// Fast Forward (R2), Rewind (L2) and the sun keep their keys.
+    pub fn fixed(self) -> bool {
+        matches!(self, Action::FastForward | Action::Rewind | Action::SunDown | Action::SunUp)
+    }
 }
+
+/// Keys no game uses (L2, R2, L3, R3): the only ones a hotkey may have alone.
+pub fn spare_key(key: i32) -> bool { matches!(key, 104..=107) }
 
 /// The Hotkey Button (or none) + one key, as slot. reads them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Combo { pub modifier: bool, pub key: i32 }
 
-/// The Hotkey Button choices: SELECT, L3, R3, or none.
-pub const HOTKEY_BUTTONS: [i32; 4] = [109, 106, 107, 0];
+/// The Hotkey Button choices: SELECT, then L3 and R3 where the handheld has them.
+pub const HOTKEY_BUTTONS: [i32; 3] = [109, 106, 107];
+
+fn yes() -> bool { true }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Hotkeys {
-    /// The Hotkey Button's key code; 0 = none.
+    /// The Hotkey Button's key code (see hotkey_button()).
     pub button: i32,
     /// Changed hotkeys only; None = no hotkey for that action.
     pub binds: BTreeMap<Action, Option<Combo>>,
+    /// The handheld has L3 and R3 (not saved: the runtime tells).
+    #[serde(skip, default = "yes")]
+    pub sticks: bool,
 }
 
 impl Default for Hotkeys {
-    fn default() -> Self { Self { button: 109, binds: BTreeMap::new() } }
+    fn default() -> Self { Self { button: 109, binds: BTreeMap::new(), sticks: true } }
 }
 
 /// A key's name in a hotkey: slot.'s own button names.
@@ -803,33 +822,86 @@ pub fn hotkey_key_name(key: i32) -> &'static str {
 
 impl Hotkeys {
     /// Nothing changed: slot.'s shortcuts run exactly as they always have.
-    pub fn is_default(&self) -> bool { self.button == 109 && self.binds.is_empty() }
+    pub fn is_default(&self) -> bool { self.hotkey_button() == 109 && self.binds.is_empty() }
 
-    /// The hotkey of `action`, if it can be pressed with this Hotkey Button.
+    /// The Hotkey Button in use: SELECT unless L3 or R3 was chosen and exists.
+    pub fn hotkey_button(&self) -> i32 {
+        if self.sticks && HOTKEY_BUTTONS.contains(&self.button) { self.button } else { 109 }
+    }
+
+    /// L3 and R3 set the sun alone (unless one is the Hotkey Button).
+    fn sun_alone(&self) -> bool {
+        self.sticks && !matches!(self.hotkey_button(), 106 | 107)
+    }
+
+    /// Every way a fixed action is pressed. The sun is always also the
+    /// Hotkey Button + L2 / R2, which only Boktai reads that way.
+    fn fixed_combos(&self, action: Action) -> Vec<Combo> {
+        let with = |key| Combo { modifier: true, key };
+        let alone = |key| Combo { modifier: false, key };
+        match action {
+            Action::FastForward => vec![alone(105)],
+            Action::Rewind => vec![alone(104)],
+            Action::SunDown if self.sun_alone() => vec![alone(106), with(104)],
+            Action::SunUp if self.sun_alone() => vec![alone(107), with(105)],
+            Action::SunDown => vec![with(104)],
+            Action::SunUp => vec![with(105)],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The hotkey of an action that can be changed, if it has one now.
     pub fn combo(&self, action: Action) -> Option<Combo> {
+        if action.fixed() { return self.fixed_combos(action).first().copied(); }
         let combo = self.binds.get(&action).copied().unwrap_or(Some(action.default_combo()))?;
-        let usable = if combo.modifier { self.button != 0 && combo.key != self.button }
-            else { combo.key != self.button && combo.key != MODE };
+        let usable = combo.key != self.hotkey_button()
+            && (combo.modifier || (spare_key(combo.key) && self.fixed_alone(combo.key).is_none()));
         usable.then_some(combo)
     }
 
-    /// The action a key starts, with or without the Hotkey Button held.
-    pub fn action_for(&self, modifier_held: bool, key: i32) -> Option<Action> {
-        Action::ALL.into_iter()
-            .find(|a| self.combo(*a) == Some(Combo { modifier: modifier_held, key }))
+    /// The fixed action a key alone belongs to (R2, L2, and L3 / R3).
+    fn fixed_alone(&self, key: i32) -> Option<Action> {
+        [Action::FastForward, Action::Rewind, Action::SunDown, Action::SunUp].into_iter()
+            .find(|a| self.fixed_combos(*a).contains(&Combo { modifier: false, key }))
     }
 
-    /// `action` <- `combo`. Another action that had it loses its hotkey,
-    /// returned so the page can say so.
-    pub fn set(&mut self, action: Action, combo: Combo) -> Option<Action> {
+    /// The action a key starts. In Boktai the sun comes first; elsewhere a
+    /// hotkey that shares the sun's Hotkey Button + L2 / R2 wins.
+    pub fn action_for(&self, modifier_held: bool, key: i32, boktai: bool) -> Option<Action> {
+        let pressed = Combo { modifier: modifier_held, key };
+        let fixed = |a: &Action| a.fixed() && self.fixed_combos(*a).contains(&pressed);
+        let sun = |a: &Action| matches!(a, Action::SunDown | Action::SunUp);
+        let all = Action::ALL;
+        all.iter().find(|a| boktai && sun(a) && fixed(a))
+            .or_else(|| all.iter().find(|a| !sun(a) && fixed(a)))
+            .or_else(|| all.iter().find(|a| !a.fixed() && self.combo(**a) == Some(pressed)))
+            .or_else(|| all.iter().find(|a| fixed(a)))
+            .copied()
+    }
+
+    /// The hotkey for a key pressed while mapping. Game buttons always go
+    /// with the Hotkey Button; L2, R2, L3 and R3 only if it was held.
+    pub fn combo_for_key(&self, modifier_held: bool, key: i32) -> Combo {
+        Combo { modifier: modifier_held || !spare_key(key), key }
+    }
+
+    /// `action` <- `combo`. Err: a fixed action owns that key alone.
+    /// Ok(Some): another action lost it.
+    pub fn set(&mut self, action: Action, combo: Combo) -> Result<Option<Action>, Action> {
+        if action.fixed() { return Err(action); }
+        if !combo.modifier {
+            if let Some(owner) = self.fixed_alone(combo.key) { return Err(owner); }
+        }
         let other = Action::ALL.into_iter()
-            .find(|a| *a != action && self.combo(*a) == Some(combo));
+            .find(|a| *a != action && !a.fixed() && self.combo(*a) == Some(combo));
         if let Some(other) = other { self.put(other, None); }
         self.put(action, Some(combo));
-        other
+        Ok(other)
     }
 
-    pub fn clear(&mut self, action: Action) { self.put(action, None); }
+    pub fn clear(&mut self, action: Action) {
+        if !action.fixed() { self.put(action, None); }
+    }
 
     fn put(&mut self, action: Action, combo: Option<Combo>) {
         if combo == Some(action.default_combo()) { self.binds.remove(&action); }
@@ -837,21 +909,27 @@ impl Hotkeys {
     }
 
     pub fn cycle_button(&mut self, right: bool) {
-        let all = HOTKEY_BUTTONS;
-        let at = all.iter().position(|b| *b == self.button).unwrap_or(0);
+        let all: &[i32] = if self.sticks { &HOTKEY_BUTTONS } else { &HOTKEY_BUTTONS[..1] };
+        let at = all.iter().position(|b| *b == self.hotkey_button()).unwrap_or(0);
         self.button = all[if right { (at + 1) % all.len() } else { (at + all.len() - 1) % all.len() }];
     }
 
-    pub fn button_name(&self) -> &'static str {
-        if self.button == 0 { "None" } else { hotkey_key_name(self.button) }
+    pub fn button_name(&self) -> &'static str { hotkey_key_name(self.hotkey_button()) }
+
+    fn combo_text(&self, combo: Combo) -> String {
+        let key = hotkey_key_name(combo.key);
+        if combo.modifier { format!("{} + {key}", self.button_name()) } else { key.to_owned() }
     }
 
-    /// "SELECT + R1", "R2 (hold)", "None".
+    /// "SELECT + R1", "R2 (hold)", "L3 or SELECT + L2", "None".
     pub fn label(&self, action: Action) -> String {
-        let Some(combo) = self.combo(action) else { return "None".into() };
-        let key = hotkey_key_name(combo.key);
-        let text = if combo.modifier { format!("{} + {key}", self.button_name()) } else { key.to_owned() };
-        if action.held() { format!("{text} (hold)") } else { text }
+        if action.fixed() {
+            let combos: Vec<String> = self.fixed_combos(action).into_iter()
+                .map(|c| self.combo_text(c)).collect();
+            let text = combos.join(" or ");
+            return if action.held() { format!("{text} (hold)") } else { text };
+        }
+        self.combo(action).map_or_else(|| "None".into(), |c| self.combo_text(c))
     }
 }
 
@@ -1093,7 +1171,7 @@ mod tests {
     #[test]
     fn names_are_remembered_only_for_controllers_slot_keeps() {
         let mut controls = Controls::default();
-        let device = Device { id: 9, name: "8BitDo SN30 Pro".into(), fp: PAD.into() };
+        let device = Device { id: 9, name: "8BitDo SN30 Pro".into(), fp: PAD.into(), sticks: true };
         assert!(!controls.remember(&device), "a controller on no port leaves no trace");
         controls.assign(1, PAD);
         assert!(controls.remember(&device));
@@ -1236,43 +1314,72 @@ mod tests {
     fn default_hotkeys_are_slots_shortcuts() {
         let hk = Hotkeys::default();
         assert!(hk.is_default());
-        assert_eq!(hk.action_for(true, 103), Some(Action::SaveState));
-        assert_eq!(hk.action_for(false, 105), Some(Action::FastForward));
-        assert_eq!(hk.action_for(true, MODE), Some(Action::Multiplayer));
-        assert_eq!(hk.action_for(false, 96), None, "A alone is the game's");
+        assert_eq!(hk.action_for(true, 103, false), Some(Action::SaveState));
+        assert_eq!(hk.action_for(false, 105, false), Some(Action::FastForward));
+        assert_eq!(hk.action_for(true, MODE, false), Some(Action::Multiplayer));
+        assert_eq!(hk.action_for(false, 96, false), None, "A alone is the game's");
         assert_eq!(hk.label(Action::SaveState), "SELECT + R1");
         assert_eq!(hk.label(Action::FastForward), "R2 (hold)");
         assert_eq!(hk.label(Action::Multiplayer), "SELECT + slot.");
+        assert_eq!(hk.label(Action::SunDown), "L3 or SELECT + L2");
     }
 
     #[test]
-    fn a_taken_hotkey_moves_and_the_other_action_loses_it() {
+    fn select_l2_is_the_palette_but_the_sun_in_boktai() {
+        let hk = Hotkeys::default();
+        assert_eq!(hk.action_for(true, 104, false), Some(Action::PalettePrev));
+        assert_eq!(hk.action_for(true, 104, true), Some(Action::SunDown));
+        assert_eq!(hk.action_for(false, 106, false), Some(Action::SunDown));
+    }
+
+    #[test]
+    fn game_buttons_always_go_with_the_hotkey_button() {
+        let hk = Hotkeys::default();
+        assert_eq!(hk.combo_for_key(false, 100), Combo { modifier: true, key: 100 });
+        assert_eq!(hk.combo_for_key(false, 105), Combo { modifier: false, key: 105 });
+        assert_eq!(hk.combo_for_key(true, 105), Combo { modifier: true, key: 105 });
+    }
+
+    #[test]
+    fn a_taken_hotkey_moves_and_fixed_keys_stay_fixed() {
         let mut hk = Hotkeys::default();
         let lost = hk.set(Action::LoadState, Combo { modifier: true, key: 103 });
-        assert_eq!(lost, Some(Action::SaveState));
+        assert_eq!(lost, Ok(Some(Action::SaveState)));
         assert_eq!(hk.label(Action::SaveState), "None");
-        assert_eq!(hk.action_for(true, 103), Some(Action::LoadState));
-        assert_eq!(hk.action_for(true, 102), None, "SELECT + L1 is free now");
-        hk.set(Action::SaveState, Combo { modifier: false, key: 107 });
-        assert_eq!(hk.label(Action::SunUp), "None", "R3 alone was More Sun's");
+        assert_eq!(hk.action_for(true, 103, false), Some(Action::LoadState));
+        assert_eq!(hk.action_for(true, 102, false), None, "SELECT + L1 is free now");
+        assert_eq!(hk.set(Action::SaveState, Combo { modifier: false, key: 105 }),
+            Err(Action::FastForward), "R2 alone is Fast Forward's");
+        assert_eq!(hk.set(Action::SaveState, Combo { modifier: false, key: 107 }),
+            Err(Action::SunUp));
+        assert_eq!(hk.set(Action::FastForward, Combo { modifier: true, key: 99 }),
+            Err(Action::FastForward), "Fast Forward can't change");
         assert!(!hk.is_default());
+    }
+
+    #[test]
+    fn without_l3_r3_select_is_the_only_hotkey_button_and_the_sun_moves() {
+        let mut hk = Hotkeys { sticks: false, ..Hotkeys::default() };
+        hk.cycle_button(true);
+        assert_eq!(hk.hotkey_button(), 109);
+        assert_eq!(hk.label(Action::SunDown), "SELECT + L2");
+        assert_eq!(hk.action_for(false, 106, true), None, "no L3 here");
+        // A file made where L3 existed falls back to SELECT.
+        let moved = Hotkeys { button: 106, sticks: false, ..Hotkeys::default() };
+        assert_eq!(moved.hotkey_button(), 109);
     }
 
     #[test]
     fn the_hotkey_button_changes_every_combo_and_never_is_a_hotkey_itself() {
         let mut hk = Hotkeys::default();
         hk.cycle_button(true);
-        assert_eq!(hk.button, 106);
+        assert_eq!(hk.hotkey_button(), 106);
         assert_eq!(hk.label(Action::SaveState), "L3 + R1");
-        assert_eq!(hk.combo(Action::SunDown), None, "L3 alone is the Hotkey Button now");
-        assert_eq!(hk.action_for(true, 103), Some(Action::SaveState));
+        assert_eq!(hk.label(Action::SunDown), "L3 + L2", "L3 is the Hotkey Button now");
+        assert_eq!(hk.action_for(true, 103, false), Some(Action::SaveState));
         hk.cycle_button(true);
         hk.cycle_button(true);
-        assert_eq!(hk.button, 0);
-        assert_eq!(hk.label(Action::SaveState), "None", "no Hotkey Button: only keys alone");
-        assert_eq!(hk.label(Action::FastForward), "R2 (hold)");
-        hk.cycle_button(true);
-        assert!(hk.is_default());
+        assert!(hk.is_default(), "SELECT, L3, R3, then SELECT again");
     }
 
     #[test]

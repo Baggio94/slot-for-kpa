@@ -188,6 +188,10 @@ const EJECT_SOUND_DELAY_S: f32 = 0.040;
 const EJECT_SOUND_PROGRESS: f32 = 1.0 - EJECT_SOUND_DELAY_S / EJECT_S;
 const SELECT_CHORD_MS: u128 = 600;
 const SELECT_TAP_FRAMES: u8 = 3;
+/// The game menu waits this long for a second slot. tap (Save States).
+const MENU_REVEAL_MS: u64 = 150;
+/// A second slot. press this soon after a tap opens Save States.
+const DOUBLE_TAP_MS: u128 = 360;
 const SHELF_STATUS_TEXT: [&str; 8] = [
     "", "SCANNING CARTRIDGES...", "NO GAMES FOUND",
     "LIBRARY IMPORT FAILED", "FOLDER ACCESS EXPIRED",
@@ -878,6 +882,8 @@ struct Engine {
     menu_reveal_at: Option<Instant>,
     // Save States came from the game menu: B goes back there.
     states_from_menu: bool,
+    // The second press of a double tap opened Save States: its release is spent.
+    mode_double_press: bool,
     // Presses no core frame has read yet, and releases held back until one
     // has: a quick tap between two frames must still reach the game.
     unseen_presses: u16,
@@ -1090,9 +1096,11 @@ impl Engine {
         let settings = PATHS.lock().unwrap_or_else(|e| e.into_inner())
             .as_ref().map(|(root, _)| Settings::load_for_device(root, device))
             .unwrap_or_else(|| Settings::first_install_defaults_for_device(device));
-        let controls = PATHS.lock().unwrap_or_else(|e| e.into_inner())
+        let mut controls = PATHS.lock().unwrap_or_else(|e| e.into_inner())
             .as_ref().map(|(root, _)| crate::controls::Controls::load(root))
             .unwrap_or_default();
+        // Until Android lists the controllers: L3/R3 only if seen before.
+        controls.hotkeys.sticks = controls.builtin_sticks;
         // Upstream Slot delegates colour correction to libretro core options.
         // Disable the dev13 approximate GPU grade to avoid double correction.
         gpu.enable_context_recovery();
@@ -1484,6 +1492,7 @@ impl Engine {
             hk_listen_mod: false,
             menu_reveal_at: None,
             states_from_menu: false,
+            mode_double_press: false,
             unseen_presses: 0,
             held_releases: 0,
             ff_held: false,
@@ -1796,7 +1805,7 @@ impl Engine {
                 // Opening: show the menu only once a second tap (Save
                 // States) can no longer come. The game is paused already.
                 if matches!(self.overlay, ShelfOverlay::None) {
-                    self.menu_reveal_at=Some(Instant::now()+Duration::from_millis(360));
+                    self.menu_reveal_at=Some(Instant::now()+Duration::from_millis(MENU_REVEAL_MS));
                 }
                 self.overlay=match self.overlay {
                     ShelfOverlay::GameMenu { .. }
@@ -3197,6 +3206,23 @@ impl Engine {
                     {
                         self.home_launch_held = true;
                         self.handle(Input::Key(96, true));
+                        return;
+                    }
+                    // Second press of a double tap: Save States at once,
+                    // without waiting for the release.
+                    if pressed && self.game.is_some()
+                        && matches!(self.overlay, ShelfOverlay::GameMenu { .. })
+                        && self.mode_last_tap.is_some_and(|t| t.elapsed().as_millis() < DOUBLE_TAP_MS)
+                    {
+                        self.mode_last_tap = None;
+                        self.menu_reveal_at = None;
+                        self.states_from_menu = false;
+                        self.mode_double_press = true;
+                        self.open_polaroids();
+                        return;
+                    }
+                    if !pressed && self.mode_double_press {
+                        self.mode_double_press = false;
                         return;
                     }
                     if pressed {

@@ -151,7 +151,7 @@ impl Engine {
     /// Changed hotkeys, in a game: true when the key was a hotkey's (or the
     /// Hotkey Button), so it doesn't reach the game.
     pub(super) fn custom_hotkey(&mut self, code: i32, pressed: bool) -> bool {
-        let button = self.controls.hotkeys.button;
+        let button = self.controls.hotkeys.hotkey_button();
         if !pressed {
             if let Some(action) = self.hk_releases.remove(&code) {
                 self.run_hotkey(action, false);
@@ -182,7 +182,8 @@ impl Engine {
         }
         // Another Hotkey Button: SELECT is only the game's button.
         if code == 109 { self.slot_bit(ButtonMask::SELECT, true); return true; }
-        let action = self.controls.hotkeys.action_for(self.hk_mod_down, code)
+        let boktai = self.game.as_ref().is_some_and(GameSession::solar);
+        let action = self.controls.hotkeys.action_for(self.hk_mod_down, code, boktai)
             // A+B+START+SELECT is the Game Boy soft reset: leave it to the game.
             .filter(|a| !(*a == Action::SaveEject && self.buttons & (ButtonMask::A | ButtonMask::B) != 0));
         if let Some(action) = action {
@@ -237,6 +238,14 @@ impl Engine {
         }
     }
 
+    /// Whether the handheld has L3 and R3: Android says so (but the KONKR's
+    /// Xbox-like pad claims them without sticks), or slot. saw one pressed.
+    pub(super) fn refresh_sticks(&mut self) {
+        let reported = !is_konkr()
+            && self.pad_devices.iter().any(|d| d.fp == BUILTIN && d.sticks);
+        self.controls.hotkeys.sticks = reported || self.controls.builtin_sticks;
+    }
+
     /// A key from one of Android's input devices.
     pub(super) fn pad_key(&mut self, device: i32, code: i32, pressed: bool, stick: bool) {
         let held = if stick { code | STICK_KEY } else { code };
@@ -246,7 +255,7 @@ impl Engine {
         if !pressed {
             if matches!(self.controls_listen, Some(Listen::Hotkey { .. })) && !stick {
                 let fp = self.device_fp(device);
-                if self.controls.slot_code(&fp, code, false) == Some(self.controls.hotkeys.button) {
+                if self.controls.slot_code(&fp, code, false) == Some(self.controls.hotkeys.hotkey_button()) {
                     self.hk_listen_mod = false;
                 }
             }
@@ -259,6 +268,11 @@ impl Engine {
         }
         if self.pad_held.holds(device, held) { return; }
         let fp = self.device_fp(device);
+        if fp == BUILTIN && !stick && matches!(code, 106 | 107) && !self.controls.builtin_sticks {
+            self.controls.builtin_sticks = true;
+            self.refresh_sticks();
+            self.persist_controls();
+        }
         if self.controls_listen.is_some() {
             self.pad_held.press(device, held, Sink::Nowhere);
             if !stick { self.listened(&fp, code); }
@@ -352,23 +366,30 @@ impl Engine {
                     self.controls_listen = Some(listen);
                     return;
                 };
-                let button = self.controls.hotkeys.button;
-                if button != 0 && slot == button && !self.hk_listen_mod {
+                let hotkeys = &self.controls.hotkeys;
+                if slot == hotkeys.hotkey_button() {
                     // The Hotkey Button: now the key that goes with it.
                     self.hk_listen_mod = true;
                     self.controls_listen = Some(listen);
                     return;
                 }
-                let combo = Combo { modifier: self.hk_listen_mod, key: slot };
+                // Game buttons always go with the Hotkey Button.
+                let combo = hotkeys.combo_for_key(self.hk_listen_mod, slot);
+                let button = hotkeys.button_name();
                 self.hk_listen_mod = false;
-                let lost = self.controls.hotkeys.set(action, combo);
-                if let Some(lost) = lost {
-                    set_message(format!("{}: none", lost.label()));
-                } else if !combo.modifier && controls_mask(slot) != 0 {
-                    set_message(format!("{} won't reach games anymore.",
-                        controls::hotkey_key_name(slot)));
+                match self.controls.hotkeys.set(action, combo) {
+                    Err(owner) => set_message(format!("{} is {}'s.",
+                        controls::hotkey_key_name(slot), owner.label())),
+                    Ok(lost) => {
+                        if let Some(lost) = lost {
+                            set_message(format!("{}: none", lost.label()));
+                        } else if combo.modifier && matches!(slot, 104 | 105) {
+                            set_message(format!("In Boktai, {button} + {} sets the sun.",
+                                controls::hotkey_key_name(slot)));
+                        }
+                        self.persist_controls();
+                    }
                 }
-                self.persist_controls();
             }
         }
     }
@@ -402,6 +423,7 @@ impl Engine {
         if remembered { self.persist_controls(); }
         let moment = self.controls_moment();
         self.pad_devices = devices;
+        self.refresh_sticks();
         for device in gone {
             for sink in self.pad_held.drop_device(device.id) {
                 match sink {
@@ -569,6 +591,10 @@ impl Engine {
                         self.controls.hotkeys.cycle_button(code != 21);
                         self.persist_controls();
                     }
+                    (96 | 100, HotkeyRow::Action(action)) if action.fixed() => {
+                        set_message(format!("{} is always {}.", action.label(),
+                            self.controls.hotkeys.label(action)));
+                    }
                     (96, HotkeyRow::Action(action)) => {
                         self.hk_listen_mod = false;
                         self.controls_listen = Some(Listen::Hotkey { action, until: now + controls::LISTEN_MS });
@@ -690,6 +716,8 @@ impl Engine {
                 let rows = controls::hotkey_rows();
                 let lines: Vec<ControlsLine> = rows.iter().map(|item| match *item {
                     HotkeyRow::Button => line("Hotkey Button", hk.button_name().into(), true),
+                    HotkeyRow::Action(action) if action.fixed() =>
+                        dim(line(action.label(), hk.label(action), false), false),
                     HotkeyRow::Action(action) => line(action.label(), match listen {
                         Some(l @ Listen::Hotkey { action: a, .. }) if a == action =>
                             if self.hk_listen_mod {
@@ -704,6 +732,7 @@ impl Engine {
                 let hints = match (listen, rows.get(row)) {
                     (Some(_), _) => vec![("SLOT", "Cancel")],
                     (None, Some(HotkeyRow::Button)) => vec![("SWAP", "Change"), ("B", "Back")],
+                    (None, Some(HotkeyRow::Action(a))) if a.fixed() => vec![("B", "Back")],
                     (None, Some(HotkeyRow::Action(_))) => vec![("A", "Map"), ("Y", "Clear"), ("B", "Back")],
                     _ => vec![("A", "Select"), ("B", "Back")],
                 };

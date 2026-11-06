@@ -1359,7 +1359,10 @@ class MainActivity : Activity() {
             list.put(JSONObject()
                 .put("id", id)
                 .put("name", device.name ?: "Controller")
-                .put("fp", if (isBuiltIn(device)) "builtin" else device.descriptor))
+                .put("fp", if (isBuiltIn(device)) "builtin" else device.descriptor)
+                // L3 / R3 (stick clicks): the Hotkeys page offers them only if present.
+                .put("sticks", device.hasKeys(KeyEvent.KEYCODE_BUTTON_THUMBL,
+                    KeyEvent.KEYCODE_BUTTON_THUMBR).all { it }))
         }
         nativeControllers(list.toString())
     }
