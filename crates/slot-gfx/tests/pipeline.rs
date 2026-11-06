@@ -617,9 +617,9 @@ fn the_grid_draws_one_dark_line_per_game_pixel_at_3x() {
     assert!(rows.windows(2).all(|p| p[1] - p[0] == 3), "rows: {rows:?}");
 }
 
-/// Each grid line's weight (its darkness in linear light, summed across
-/// the screen pixels it covers) and how far, in screen pixels, its centre
-/// sits from the game pixel edge it marks, along x (`across_x`) or y.
+/// Each grid line's weight (its darkness summed across the screen pixels
+/// it covers) over the screen pixels per game pixel, and how far, in screen
+/// pixels, the lines stray from an even spacing, along x (`across_x`) or y.
 fn grid_line_fit(frame: &[u8], w: usize, h: usize, n: usize, across_x: bool) -> (Vec<f32>, f32) {
     let g = |x: usize, y: usize| frame[(y * w + x) * 4 + 1] as f32;
     let len = if across_x { w } else { h };
@@ -638,27 +638,31 @@ fn grid_line_fit(frame: &[u8], w: usize, h: usize, n: usize, across_x: bool) -> 
     let scale = (last + 1 - first) as f32 / n as f32;
     let (mut weight, mut moment) = (vec![0.0f32; n], vec![0.0f32; n]);
     for (i, v) in prof.iter().enumerate().take(last + 1).skip(first) {
-        let k = (((i - first) as f32) / scale).round() as usize;
-        if k < n {
-            let d = 1.0 - (v / lit).powf(2.2);
-            weight[k] += d;
-            moment[k] += d * i as f32;
+        // A line covers the first third of its game pixel.
+        let k = ((i - first) as f32 + 0.5) / scale + 1.0 / 3.0;
+        if (k as usize) < n {
+            let d = 1.0 - v / lit;
+            weight[k as usize] += d;
+            moment[k as usize] += d * (i as f32 + 0.5);
         }
     }
-    let drift = (0..n)
-        .map(|k| (moment[k] / weight[k] - (first as f32 + k as f32 * scale)).abs())
-        .fold(0.0, f32::max);
-    (weight, drift)
+    let offset: Vec<f32> = (0..n)
+        .map(|k| moment[k] / weight[k] - (first as f32 + k as f32 * scale))
+        .collect();
+    let mean = offset.iter().sum::<f32>() / n as f32;
+    let drift = offset.iter().map(|o| (o - mean).abs()).fold(0.0, f32::max);
+    (weight.iter().map(|l| l / scale).collect(), drift)
 }
 
 fn assert_even_grid(frame: &[u8], w: usize, h: usize, cols: usize, rows: usize) {
     for (n, across_x) in [(cols, true), (rows, false)] {
         let (weight, drift) = grid_line_fit(frame, w, h, n, across_x);
+        // A third of each game pixel at 0.25 of its colour: 0.75 / 3.
         assert!(
-            weight.iter().all(|&l| (l - 0.953).abs() < 0.03),
+            weight.iter().all(|&l| (l - 0.25).abs() < 0.01),
             "uneven lines (x {across_x}): {weight:?}"
         );
-        assert!(drift < 0.05, "a line strays {drift} px from its edge (x {across_x})");
+        assert!(drift < 0.15, "a line strays {drift} px from an even spacing (x {across_x})");
     }
 }
 

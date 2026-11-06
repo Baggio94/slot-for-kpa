@@ -866,10 +866,8 @@ impl Engine {
                     tex, alpha: fade });
             }
         }
-        // The legend: under its own band on the shelf, in the slot in a game.
-        if self.game.is_none() {
-            out.push(Draw::Rect { x: 0.0, y: 420.0, w: width, h: 60.0, colour: opening() });
-        }
+        // The legend, under its own band.
+        out.push(Draw::Rect { x: 0.0, y: 420.0, w: width, h: 60.0, colour: opening() });
         for (tex, w, x) in centred_hints(&view.hints, LEGEND_GAP) {
             out.push(Draw::Tex { x, y: self.legend_y(), w: w as f32, h: HINT_H as f32, tex, alpha: fade });
         }

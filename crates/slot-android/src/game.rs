@@ -1684,6 +1684,38 @@ impl GameSession {
         true
     }
 
+    /// The paused picture with a look option the core draws itself (colour
+    /// correction, frame blending, GB palette) just changed: one frame run
+    /// as Run-Ahead runs its frames (no achievements, no sound) from a
+    /// snapshot that is then put back, so the game doesn't move a frame.
+    /// The picture stays in view until play resumes. False when the core
+    /// can't roll back safely: the change shows on resume.
+    pub fn redraw_paused(&mut self) -> bool {
+        if !self.runahead_supported() || self.runahead_rollback_failed { return false; }
+        if self.core.serialize_into(&mut self.runahead_state).is_err()
+            || self.core.capture_speculative_audio().is_err() { return false; }
+        self.core.set_frame_skip(false);
+        self.core.set_port2(ButtonMask::default());
+        self.core.run_speculative_frame(ButtonMask(0));
+        self.core.discard_audio();
+        self.runahead_video.clear();
+        self.runahead_video.extend_from_slice(self.core.video_xrgb8888());
+        self.runahead_size = self.core.video_size();
+        let restored = self.core.restore_speculative_state(&self.runahead_state)
+            .and_then(|_| self.core.restore_speculative_audio());
+        if let Err(error) = restored {
+            // As a failed Run-Ahead rollback: the core has moved on, so no
+            // save may be written from this timeline.
+            self.runahead_video.clear();
+            self.runahead_unavailable = true;
+            self.runahead_rollback_failed = true;
+            log_launch_timing(&format!(
+                "Paused redraw ROLLBACK FAILED: session quarantined, ALL saves disabled: {error}"));
+            return false;
+        }
+        true
+    }
+
     pub fn rewind_step(&mut self) -> bool {
         if self.runahead_rollback_failed || self.in_multiplayer() { return false; }
         self.runahead_video.clear();

@@ -3472,6 +3472,10 @@ impl Engine {
                                 },
                                 21 | 22 => if let Some(key)=self.pause_screen_page_key(row) {
                                     self.change_game_screen_or_gameplay(key,code==22);
+                                    // Shader keys can switch the core's own GBA Color.
+                                    if matches!(key, 0..=3 | 21..=24 | 60..=65) {
+                                        self.redraw_paused_game();
+                                    }
                                 },
                                 97 => self.overlay = ShelfOverlay::PauseSettings { row: 0 },
                                 _ => {}
@@ -4705,6 +4709,25 @@ impl Engine {
                 .and_then(|(root, _)| EmulationProfile::load(root, uri, core))
         });
     }
+    /// The in-game Screen page previews a look option the core draws itself
+    /// at once: the paused game redrawn, the game not moved (Siham
+    /// 2026-11-06).
+    fn redraw_paused_game(&mut self) {
+        let platform = self.current_cart_platform();
+        let blending = self.settings.blending_for(platform);
+        let Some(session) = self.game.as_mut() else { return };
+        session.set_frame_blending(blending);
+        if !session.redraw_paused() { return; }
+        if session.frame_size() == (slot_retro::GBA_W, slot_retro::GBA_H)
+            && session.display_aspect() <= 0.0 {
+            self.gpu.upload_game(session.frame());
+        } else {
+            let size = session.frame_size();
+            let picture = self.frame_blend.apply(session.slot_blending(), session.frame(), size);
+            self.gpu.upload_game_sized(picture, size);
+        }
+    }
+
     fn change_game_screen_or_gameplay(&mut self, key: usize, right: bool) {
         // Frame Blending is the system's: the in-game row changes it.
         if (60..=65).contains(&key) {
@@ -5300,8 +5323,11 @@ impl Engine {
     }
 
     fn draw_setting_values(&self, row: usize, keys: &[usize], out: &mut Vec<Draw>) {
-        let top = self.menu_rows_top(keys.len());
-        for (index, key) in keys.iter().copied().enumerate() {
+        // Six rows at most on screen; a longer page scrolls (as Controls).
+        let offset = crate::controls::scroll_offset(row, keys.len());
+        let top = self.menu_rows_top(keys.len().min(crate::controls::VISIBLE_ROWS));
+        for (index, key) in keys.iter().copied().enumerate()
+            .skip(offset).take(crate::controls::VISIBLE_ROWS) {
             // Only action rows (usize::MAX) have no value: setting_face
             // answers every other key, so a new key can't go blank.
             let (tex, width, height) =
@@ -5321,7 +5347,7 @@ impl Engine {
                     .and_then(|value| self.setting_values.get(value)) {
                     *face
                 } else { continue };
-            let y = top + index as f32 * QUICK_PITCH + 8.0;
+            let y = top + (index - offset) as f32 * QUICK_PITCH + 8.0;
             let scale = 0.79;
             let w = width as f32 * scale;
             let right = out_w() as f32 - 34.0;
@@ -5344,14 +5370,16 @@ impl Engine {
                 });
             }
         }
-        // The original Back / Change physical keycap legend (in the slot
-        // during a game).
-        if self.game.is_none() {
-            out.push(Draw::Rect {
-                x: 0.0, y: 420.0, w: out_w() as f32, h: 60.0,
-                colour: opening(),
-            });
+        // The original Back / Change physical keycap legend; on the in-game
+        // Screen page, either side of the seated cart.
+        if self.screen_panel() {
+            self.draw_flanking_hints(&self.settings_hints, out);
+            return;
         }
+        out.push(Draw::Rect {
+            x: 0.0, y: 420.0, w: out_w() as f32, h: 60.0,
+            colour: opening(),
+        });
         for (tex, w, x) in centred_hints(&self.settings_hints, LEGEND_GAP) {
             out.push(Draw::Tex {
                 x, y: self.legend_y(), w: w as f32, h: HINT_H as f32,
@@ -5360,18 +5388,26 @@ impl Engine {
         }
     }
 
-    /// An in-game menu is up (once a double-tap wait is over).
-    fn in_game_menu_shown(&self) -> bool {
-        self.game.is_some() && match self.overlay {
-            ShelfOverlay::GameMenu { .. } => self.menu_reveal_at.is_none(),
-            ShelfOverlay::PauseSettings { .. } | ShelfOverlay::PauseScreenSettings { .. }
-            | ShelfOverlay::PauseGameplaySettings { .. } | ShelfOverlay::PauseEmulationSettings { .. }
-            | ShelfOverlay::LayoutPorts { game: true, .. } | ShelfOverlay::LayoutPort { game: true, .. } => true,
-            _ => false,
+    /// slot. original's legends with the slot up: the first at the left
+    /// edge, the second at the right, clear of the bay.
+    fn draw_flanking_hints(&self, hints: &[(slot_gfx::TexId, u32)], out: &mut Vec<Draw>) {
+        const MARGIN: f32 = 16.0;
+        let seen = |w: u32| w.saturating_sub(slot_ui::HINT_EDGE) as f32;
+        let width = out_w() as f32;
+        let bay_right = (width + slot_ui::MOUTH_W) / 2.0;
+        let y = self.legend_y();
+        if let Some(&(tex, w)) = hints.first() {
+            out.push(Draw::Tex { x: MARGIN, y, w: w as f32, h: HINT_H as f32, tex, alpha: 1.0 });
+        }
+        if let Some(&(tex, w)) = hints.get(1) {
+            let x = (width - MARGIN - seen(w)).max(bay_right + 4.0).round();
+            out.push(Draw::Tex { x, y, w: w as f32, h: HINT_H as f32, tex, alpha: 1.0 });
         }
     }
 
-    /// The in-game Screen page: rows above the slot, the game in view above.
+    /// The in-game Screen page: rows above the slot, the game in view above,
+    /// as slot. original's in-game menu. Every other in-game page is opaque
+    /// (Siham 2026-11-06).
     fn screen_panel(&self) -> bool {
         self.game.is_some() && matches!(self.overlay, ShelfOverlay::PauseScreenSettings { .. })
     }
@@ -5386,9 +5422,10 @@ impl Engine {
     /// How far the slot still is below its place (0 when up).
     fn footer_dy(&self) -> f32 { (1.0 - slot_ui::ease(self.footer)) * MOUTH_H }
 
-    /// The legend's line: in the slot during a game, at the bottom otherwise.
+    /// The legend's line: in the slot on the in-game Screen page, at the
+    /// bottom otherwise.
     fn legend_y(&self) -> f32 {
-        if self.game.is_some() {
+        if self.screen_panel() {
             OUT_H as f32 - MOUTH_H + ((MOUTH_H - HINT_H as f32) / 2.0).round() + self.footer_dy()
         } else { 427.0 }
     }
@@ -5410,17 +5447,17 @@ impl Engine {
         shift_down(&mut out[start..], self.footer_dy());
     }
 
-    /// A menu's ground: opaque on the shelf; in a game, the paused game
-    /// under a scrim (only behind the rows on the Screen page), then the slot.
+    /// A menu's ground: opaque, except on the in-game Screen page: there the
+    /// paused game, a scrim behind the rows, then the slot.
     fn draw_menu_ground(&self, rows_top: f32, out: &mut Vec<Draw>) {
-        if self.game.is_none() {
+        if !self.screen_panel() {
             out.push(Draw::Rect {
                 x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32,
                 colour: opening(),
             });
             return;
         }
-        let y = if self.screen_panel() { rows_top - 8.0 } else { 0.0 };
+        let y = rows_top - 8.0;
         let bottom = OUT_H as f32 - MOUTH_H + self.footer_dy();
         out.push(Draw::Rect {
             x: 0.0, y, w: out_w() as f32, h: (bottom - y).max(0.0),
@@ -5434,10 +5471,12 @@ impl Engine {
         // The original Slot full-screen quick menu uses the housing palette,
         // full-width selected bar, 52px pitch, and centred physical keycaps.
         // Reuse those exact primitives for Android's library settings.
-        let top = self.menu_rows_top(items.len());
+        // Six rows at most on screen; a longer page scrolls (as Controls).
+        let offset = crate::controls::scroll_offset(selected, items.len());
+        let top = self.menu_rows_top(items.len().min(crate::controls::VISIBLE_ROWS));
         self.draw_menu_ground(top, out);
         let cursor = if self.menu_cursor_y.is_finite() { self.menu_cursor_y }
-            else { top + selected as f32 * QUICK_PITCH };
+            else { top + (selected - offset) as f32 * QUICK_PITCH };
         let intro = (self.menu_opened.elapsed().as_secs_f32() / 0.16).clamp(0.0, 1.0);
         let fade = slot_ui::ease(intro);
         out.push(Draw::Rect {
@@ -5449,14 +5488,19 @@ impl Engine {
         if !self.screen_panel() {
             self.text_fit(heading, 32.0, 33.0, out_w() as f32 - 70.0, 0.68 * fade, out);
         }
-        for (i, index) in items.iter().copied().enumerate() {
+        for (i, index) in items.iter().copied().enumerate()
+            .skip(offset).take(crate::controls::VISIBLE_ROWS) {
             let x = 37.0;
-            let y = top + i as f32 * QUICK_PITCH + 8.0
+            let y = top + (i - offset) as f32 * QUICK_PITCH + 8.0
                 + (1.0 - fade) * 8.0;
             self.text_fit(index, x, y, out_w() as f32 - 70.0, fade, out);
         }
         // All menus use the original Slot keycap generator. The paused game
         // screen additionally advertises its active SAVE / LOAD shortcuts.
+        // (The Screen page's values draw its legend, either side of the cart.)
+        if self.screen_panel() {
+            return;
+        }
         if heading == 19 {
             let linked = self.game.as_ref().is_some_and(|session|
                 session.linked() || session.requires_relaunch());
@@ -6159,7 +6203,7 @@ impl Engine {
             self.footer = 0.0;
         } else {
             let step = dt / SCREEN_POWER_ON_S;
-            self.footer = if self.in_game_menu_shown() { (self.footer + step).min(1.0) }
+            self.footer = if self.screen_panel() { (self.footer + step).min(1.0) }
                 else { (self.footer - step).max(0.0) };
         }
         self.prepare_controls();
@@ -6194,6 +6238,10 @@ impl Engine {
             ShelfOverlay::GameplaySettings { row } => (6u8, row, GAMEPLAY_KEYS.len()),
             _ => (0, 0, 0),
         };
+        // A page of more than six rows shows six and scrolls: the bar
+        // follows the selected row within them (Controls' are already so).
+        let offset = crate::controls::scroll_offset(selected, count);
+        let (selected, count) = (selected - offset, count.min(crate::controls::VISIBLE_ROWS));
         if kind != self.menu_seen {
             self.menu_seen = kind;
             self.menu_opened = now;
@@ -6349,7 +6397,13 @@ impl Engine {
                 self.peer_link_stopped(fault);
             }
             self.game_accum = 0.0;
+            // The paused game as it plays: under its overlay, which the
+            // Screen page changes live.
+            let bezel = self.game_bezel();
             let mut commands = vec![Draw::Game];
+            if let Some((tex,[x,y,w,h])) = bezel {
+                commands.push(Draw::Tex { x,y,w,h,tex,alpha:1.0 });
+            }
             self.draw_overlay(&mut commands);
             // The original Slot app draws the HUD AFTER draw_game_menu()
             // (app.rs), including during its Linked animation. The four

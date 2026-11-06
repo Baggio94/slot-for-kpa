@@ -434,27 +434,18 @@ vec3 crt_geom_deluxe(vec2 xy) {
     vec3 chi = vec3(ifb*avg)*m - vec3(ifb-1.0)*clow;
     return pow(max(mix(clow, chi, mask), vec3(0.0)), vec3(1.0/2.2));
 }
-/* Grid: a dark line one screen pixel wide on each game pixel's left and
-   top edge. At a whole scale it is that pixel exactly; at any other the
-   line darkens the pixels it covers by the area it covers, in linear
-   light, so every line carries the same weight (Siham 2026-11-06). */
-float grid_cover(float x, float w) {
-    // Of the screen pixel [x-w/2, x+w/2] (game texels), the share inside
-    // the lines [k, k+w]; w <= 1, so two lines at most reach it.
-    float lo = x - 0.5*w;
-    float k = floor(lo);
-    float a = max(0.0, min(lo + w, k + w) - max(lo, k));
-    float b = max(0.0, min(lo + w, k + 1.0 + w) - max(lo, k + 1.0));
-    return clamp((a + b)/max(w, 1e-4), 0.0, 1.0);
+/* Grid as slot. original draws it: a dark band over the first third of
+   each game pixel, left and top, darkening a screen pixel by the share of
+   it the band covers. The band grows with the picture, so every line keeps
+   a solid core at any scale; the colours come through Pixel AA. */
+vec2 grid_band(vec2 x) {
+    return floor(x)/3.0 + min(fract(x), vec2(1.0/3.0));
 }
 vec3 grid_line(vec2 uv, vec3 c) {
-    vec2 w = min((u_uv.zw*u_src)/(u_rect.zw*u_fbo), vec2(1.0));
+    vec2 hp = 0.5*(u_uv.zw*u_src)/(u_rect.zw*u_fbo);
     vec2 at = uv*u_src;
-    float cx = grid_cover(at.x, w.x);
-    float cy = grid_cover(at.y, w.y);
-    float cover = cx + cy - cx*cy;
-    // 0.25 of the colour on a whole line, as before: 0.25^2.2 in light.
-    return c*pow(1.0 - (1.0 - 0.0474)*cover, 1.0/2.2);
+    vec2 edge = (grid_band(at + hp) - grid_band(at - hp))/(2.0*hp);
+    return c*(1.0 - 0.75*max(edge.x, edge.y));
 }
 void main() {
     vec2 uv = u_uv.xy + v_uv * u_uv.zw;
