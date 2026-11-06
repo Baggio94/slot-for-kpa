@@ -729,14 +729,14 @@ pub fn layout_rows(system: &str) -> Vec<LayoutRow> {
 /// What a hotkey does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Action {
-    GameMenu, SaveEject, Multiplayer, SaveState, LoadState, FastForward, Rewind,
+    GameMenu, Screen, SaveEject, Multiplayer, SaveState, LoadState, FastForward, Rewind,
     ShaderPrev, ShaderNext, Color, PalettePrev, PaletteNext,
     Bigger, Smaller, RunAheadDown, RunAheadUp, SunDown, SunUp,
 }
 
 impl Action {
-    pub const ALL: [Action; 18] = [
-        Action::GameMenu, Action::SaveEject, Action::Multiplayer, Action::SaveState,
+    pub const ALL: [Action; 19] = [
+        Action::GameMenu, Action::Screen, Action::SaveEject, Action::Multiplayer, Action::SaveState,
         Action::LoadState, Action::FastForward, Action::Rewind, Action::ShaderPrev,
         Action::ShaderNext, Action::Color, Action::PalettePrev, Action::PaletteNext,
         Action::Bigger, Action::Smaller, Action::RunAheadDown, Action::RunAheadUp,
@@ -745,7 +745,8 @@ impl Action {
 
     pub fn label(self) -> &'static str {
         match self {
-            Action::GameMenu => "Game Menu", Action::SaveEject => "Save and Eject",
+            Action::GameMenu => "Game Menu", Action::Screen => "Screen",
+            Action::SaveEject => "Save and Eject",
             Action::Multiplayer => "Multiplayer", Action::SaveState => "Save State",
             Action::LoadState => "Load State", Action::FastForward => "Fast Forward",
             Action::Rewind => "Rewind", Action::ShaderPrev => "Previous Shader",
@@ -757,21 +758,25 @@ impl Action {
         }
     }
 
-    /// slot.'s shortcuts until now, which stay the defaults.
-    pub fn default_combo(self) -> Combo {
+    /// slot.'s shortcuts until now, which stay the defaults; the Screen page
+    /// took Hotkey + Y from Color Correction, which that page shows live
+    /// (Siham 2026-11-06), so Color Correction has none until given one.
+    pub fn default_combo(self) -> Option<Combo> {
         let with = |key| Combo { modifier: true, key };
         let alone = |key| Combo { modifier: false, key };
-        match self {
-            Action::GameMenu => with(99), Action::SaveEject => with(108),
+        Some(match self {
+            Action::Color => return None,
+            Action::GameMenu => with(99), Action::Screen => with(100),
+            Action::SaveEject => with(108),
             Action::Multiplayer => with(MODE), Action::SaveState => with(103),
             Action::LoadState => with(102), Action::FastForward => alone(105),
             Action::Rewind => alone(104), Action::ShaderPrev => with(97),
-            Action::ShaderNext => with(96), Action::Color => with(100),
+            Action::ShaderNext => with(96),
             Action::PalettePrev => with(104), Action::PaletteNext => with(105),
             Action::Bigger => with(19), Action::Smaller => with(20),
             Action::RunAheadDown => with(21), Action::RunAheadUp => with(22),
             Action::SunDown => alone(106), Action::SunUp => alone(107),
-        }
+        })
     }
 
     /// Held down rather than pressed once: its release matters too.
@@ -853,7 +858,7 @@ impl Hotkeys {
     /// The hotkey of an action that can be changed, if it has one now.
     pub fn combo(&self, action: Action) -> Option<Combo> {
         if action.fixed() { return self.fixed_combos(action).first().copied(); }
-        let combo = self.binds.get(&action).copied().unwrap_or(Some(action.default_combo()))?;
+        let combo = self.binds.get(&action).copied().unwrap_or(action.default_combo())?;
         let usable = combo.key != self.hotkey_button()
             && (combo.modifier || (spare_key(combo.key) && self.fixed_alone(combo.key).is_none()));
         usable.then_some(combo)
@@ -904,7 +909,7 @@ impl Hotkeys {
     }
 
     fn put(&mut self, action: Action, combo: Option<Combo>) {
-        if combo == Some(action.default_combo()) { self.binds.remove(&action); }
+        if combo == action.default_combo() { self.binds.remove(&action); }
         else { self.binds.insert(action, combo); }
     }
 
@@ -1383,10 +1388,22 @@ mod tests {
     }
 
     #[test]
+    fn hotkey_y_opens_the_screen_page_and_color_correction_has_none() {
+        let mut hk = Hotkeys::default();
+        assert_eq!(hk.action_for(true, 100, false), Some(Action::Screen));
+        assert_eq!(hk.label(Action::Screen), "SELECT + Y");
+        assert_eq!(hk.label(Action::Color), "None");
+        assert!(hk.is_default());
+        assert_eq!(hk.set(Action::Color, Combo { modifier: true, key: 100 }), Ok(Some(Action::Screen)));
+        assert_eq!(hk.action_for(true, 100, false), Some(Action::Color));
+        assert_eq!(hk.label(Action::Screen), "None");
+    }
+
+    #[test]
     fn hotkeys_page_lists_every_action() {
         assert_eq!(hotkey_rows().len(), Action::ALL.len() + 2);
         let mut controls = Controls::default();
-        controls.hotkeys.clear(Action::Color);
+        controls.hotkeys.clear(Action::ShaderNext);
         controls.reset_all();
         assert!(controls.hotkeys.is_default(), "Reset to Default resets the hotkeys too");
     }

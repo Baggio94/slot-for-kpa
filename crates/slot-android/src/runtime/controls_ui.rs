@@ -212,6 +212,7 @@ impl Engine {
             Action::Rewind => if !linked { self.rewind_key(pressed) },
             _ if !pressed => {}
             Action::GameMenu => self.slot_button_tap(),
+            Action::Screen => self.open_screen_shortcut(),
             Action::SaveEject => {
                 self.mode_last_tap = None;
                 self.mode_down_at = None;

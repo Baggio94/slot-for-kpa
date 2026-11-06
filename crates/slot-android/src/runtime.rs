@@ -191,7 +191,7 @@ const SELECT_TAP_FRAMES: u8 = 3;
 /// slot. original's in-game menu: the paused game under this much black.
 const GAME_MENU_SCRIM: f32 = 0.65;
 /// The game menu waits this long for a second slot. tap (Save States).
-const MENU_REVEAL_MS: u64 = 150;
+const MENU_REVEAL_MS: u64 = 120;
 /// A second slot. press this soon after a tap opens Save States.
 const DOUBLE_TAP_MS: u128 = 360;
 const SHELF_STATUS_TEXT: [&str; 8] = [
@@ -902,6 +902,8 @@ struct Engine {
     /// B on the in-game Screen page: the slot is sliding down before the
     /// opaque Settings page comes back.
     screen_closing: bool,
+    /// The Screen page was opened by its hotkey: Back returns to the game.
+    screen_direct: bool,
     frame_blend: crate::frame_blend::FrameBlend,
     // Presses no core frame has read yet, and releases held back until one
     // has: a quick tap between two frames must still reach the game.
@@ -1526,6 +1528,7 @@ impl Engine {
             mode_double_press: false,
             footer: 0.0,
             screen_closing: false,
+            screen_direct: false,
             frame_blend: Default::default(),
             unseen_presses: 0,
             held_releases: 0,
@@ -1907,8 +1910,28 @@ impl Engine {
         self.select_tap_frames = 0;
         self.select_forwarded = false;
         self.buttons &= !ButtonMask::SELECT;
-        self.shortcut(code);
+        // SELECT + Y: the Screen page (Color Correction is on it).
+        if code == 100 { self.open_screen_shortcut(); } else { self.shortcut(code); }
         true
+    }
+
+    /// Hotkey + Y: the in-game Screen page straight from the game, the slot
+    /// rising with it; Back or slot. sends it down and the game resumes
+    /// (Siham 2026-11-06).
+    fn open_screen_shortcut(&mut self) {
+        let Some(game) = self.game.as_ref() else { return };
+        if game.requires_relaunch() || !matches!(self.overlay, ShelfOverlay::None) { return; }
+        self.buttons = 0;
+        self.game_accum = 0.0;
+        AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.reset_time_controls();
+        RUMBLE_STRENGTH.store(0, Ordering::Release);
+        self.menu_reveal_at = None;
+        self.mode_last_tap = None;
+        self.footer = 0.0;
+        self.screen_closing = false;
+        self.screen_direct = true;
+        self.overlay = ShelfOverlay::PauseScreenSettings { row: 0 };
     }
 
     /// The SELECT + button shortcuts, also played by L1/R1 when a system's
@@ -4495,8 +4518,12 @@ impl Engine {
             // the cores correct only GBC/GBA colours (Siham, 2026-11-04).
             (Platform::Gb,false)=>&[89,36],
             (Platform::Gb,true)=>&[89,36,90],
-            (Platform::Nes|Platform::Snes|Platform::Md,false)=>&[120,124],
-            (Platform::Nes|Platform::Snes|Platform::Md,true)=>&[120,124,90],
+            // NES sizes with L1/R1 in game: no Screen Size row (Siham
+            // 2026-11-06); SNES and Mega Drive games use L/R themselves.
+            (Platform::Nes,false)=>&[124],
+            (Platform::Nes,true)=>&[124,90],
+            (Platform::Snes|Platform::Md,false)=>&[120,124],
+            (Platform::Snes|Platform::Md,true)=>&[120,124,90],
         }
     }
     fn screen_keys(platform: Platform)-> &'static [usize] {
@@ -4511,10 +4538,10 @@ impl Engine {
             (Platform::Gbc,true)=>&[21,23,26],
             (Platform::Gb,false)=>&[1,3],
             (Platform::Gb,true)=>&[1,3,27],
-            (Platform::Nes,false)=>&[SCREEN_SIZE_KEY,47],
+            (Platform::Nes,false)=>&[47],
             (Platform::Snes,false)=>&[SCREEN_SIZE_KEY,48],
             (Platform::Md,false)=>&[SCREEN_SIZE_KEY,49],
-            (Platform::Nes,true)=>&[SCREEN_SIZE_KEY,47,44],
+            (Platform::Nes,true)=>&[47,44],
             (Platform::Snes,true)=>&[SCREEN_SIZE_KEY,48,45],
             (Platform::Md,true)=>&[SCREEN_SIZE_KEY,49,46],
         }
@@ -5491,11 +5518,11 @@ impl Engine {
     /// The in-game Screen page: rows above the slot, the game in view above,
     /// as slot. original's in-game menu. Every other in-game page is opaque
     /// (Siham 2026-11-06).
-    /// The in-game Screen page has a Screen Size row (the screen hasn't
-    /// the system's own shape), so L1 / R1 size the picture there.
+    /// The game's system has a Screen Size (the screen hasn't the system's
+    /// own shape, as Systems > Screen Size), so L1 / R1 size the picture
+    /// on the in-game Screen page, row or not.
     fn screen_page_sizes(&self) -> bool {
-        (0..self.pause_screen_page_rows().len())
-            .any(|row| self.pause_screen_page_key(row) == Some(SCREEN_SIZE_KEY))
+        !video_mode::screen_fits(self.current_cart_platform(), panel_size())
     }
 
     fn screen_panel(&self) -> bool {
@@ -5573,7 +5600,10 @@ impl Engine {
         self.draw_menu_ground(top, out);
         let cursor = if self.menu_cursor_y.is_finite() { self.menu_cursor_y }
             else { top + (selected - offset) as f32 * QUICK_PITCH };
-        let intro = (self.menu_opened.elapsed().as_secs_f32() / 0.16).clamp(0.0, 1.0);
+        // The game menu fades in over 100 ms, after its 120 ms wait for a
+        // second tap; every other menu over the original 160 ms.
+        let fade_s = if heading == 19 { 0.10 } else { 0.16 };
+        let intro = (self.menu_opened.elapsed().as_secs_f32() / fade_s).clamp(0.0, 1.0);
         let fade = slot_ui::ease(intro);
         out.push(Draw::Rect {
             x: 0.0, y: cursor + 4.0, w: out_w() as f32,
@@ -6304,17 +6334,21 @@ impl Engine {
         if self.game.is_none() || matches!(self.overlay, ShelfOverlay::States | ShelfOverlay::Multiplayer) {
             self.footer = 0.0;
             self.screen_closing = false;
+            self.screen_direct = false;
         } else {
             let step = dt / SCREEN_POWER_ON_S;
             self.footer = if self.screen_panel() && !self.screen_closing { (self.footer + step).min(1.0) }
                 else { (self.footer - step).max(0.0) };
-            // Leaving the Screen page: once the slot is down, Settings.
+            // Leaving the Screen page: once the slot is down, Settings (or
+            // the game, when its hotkey opened it).
             if self.screen_closing && self.footer <= 0.0 {
                 self.screen_closing = false;
                 if self.screen_panel() {
-                    self.overlay = ShelfOverlay::PauseSettings { row: 0 };
+                    self.overlay = if self.screen_direct { ShelfOverlay::None }
+                        else { ShelfOverlay::PauseSettings { row: 0 } };
                 }
             }
+            if !self.screen_panel() { self.screen_direct = false; }
         }
         self.prepare_controls();
         // Update full-screen menus and spring-smooth the selection bar.
