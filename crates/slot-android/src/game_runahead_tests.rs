@@ -334,7 +334,7 @@ fn prediction_copy(failure: Failure) -> (Box<dyn RetroCore>, Arc<Mutex<Calls>>) 
     let calls = Arc::new(Mutex::new(Calls::default()));
     (Box::new(CoreFixture {
         frame: 0, mixer: 0, captured_mixer: 0, pcm: vec![], pixels: vec![0; 4],
-        failure, calls: calls.clone(),
+        failure, calls: calls.clone(), port2: 0,
     }), calls)
 }
 

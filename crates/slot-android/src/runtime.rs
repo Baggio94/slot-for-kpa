@@ -852,6 +852,8 @@ struct Engine {
     controls_hint_faces: std::collections::HashMap<(&'static str, &'static str), (slot_gfx::TexId, u32)>,
     controls_view: controls_ui::ControlsView,
     port2_remote_noticed: bool,
+    // A key came from the handheld's own controls this session.
+    builtin_seen: bool,
     // Presses no core frame has read yet, and releases held back until one
     // has: a quick tap between two frames must still reach the game.
     unseen_presses: u16,
@@ -1448,6 +1450,7 @@ impl Engine {
             controls_hint_faces: Default::default(),
             controls_view: Default::default(),
             port2_remote_noticed: false,
+            builtin_seen: false,
             unseen_presses: 0,
             held_releases: 0,
             ff_held: false,

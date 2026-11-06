@@ -1359,10 +1359,14 @@ class MainActivity : Activity() {
             list.put(JSONObject()
                 .put("id", id)
                 .put("name", device.name ?: "Controller")
-                .put("fp", if (device.isExternal) device.descriptor else "builtin"))
+                .put("fp", if (isBuiltIn(device)) "builtin" else device.descriptor))
         }
         nativeControllers(list.toString())
     }
+
+    /** The handheld's own controls. A Retroid's may report as external. */
+    private fun isBuiltIn(device: InputDevice): Boolean =
+        !device.isExternal || device.name.orEmpty().contains("Retroid", ignoreCase = true)
 
     /** A key (or hat direction) of a controller: to Settings > Controls. */
     private fun sendKey(event: InputEvent, code: Int, pressed: Boolean, stick: Boolean = false) {

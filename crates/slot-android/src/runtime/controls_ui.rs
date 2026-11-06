@@ -97,7 +97,19 @@ impl Engine {
             if !stick { self.listened(&fp, code); }
             return;
         }
-        if self.controls.claim_free_port(&fp) {
+        // A handheld whose own controls Android doesn't report as built-in
+        // (or none at all): the first controller pressed plays on Port 1.
+        if fp == BUILTIN { self.builtin_seen = true; }
+        let builtin_here = self.builtin_seen || self.pad_devices.iter().any(|d| d.fp == BUILTIN);
+        if !builtin_here && fp != BUILTIN && self.controls.on_port(0) == Some(BUILTIN)
+            && self.controls.port_of(&fp).is_none()
+        {
+            self.controls.assign(0, &fp);
+            if let Some(found) = self.pad_devices.iter().find(|d| d.fp == fp).cloned() {
+                self.controls.remember(&found);
+            }
+            self.persist_controls();
+        } else if self.controls.claim_free_port(&fp) {
             if let Some(found) = self.pad_devices.iter().find(|d| d.fp == fp).cloned() {
                 self.controls.remember(&found);
             }
