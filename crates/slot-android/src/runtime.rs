@@ -904,6 +904,8 @@ struct Engine {
     screen_closing: bool,
     /// The Screen page was opened by its hotkey: Back returns to the game.
     screen_direct: bool,
+    /// The Hotkey Button is held on an in-game settings page.
+    screen_hotkey_held: bool,
     frame_blend: crate::frame_blend::FrameBlend,
     // Presses no core frame has read yet, and releases held back until one
     // has: a quick tap between two frames must still reach the game.
@@ -1006,6 +1008,10 @@ struct Engine {
     link_hints: [[(slot_gfx::TexId, u32); 3]; 2],
     link_switch_hints: [[(slot_gfx::TexId, u32); 4]; 2],
     link_swap_icon: [(slot_gfx::TexId, u32); 2],
+    /// Multiplayer's LAN / WAN slide switch: track, knob, house, globe.
+    net_switch_faces: [(slot_gfx::TexId, u32, u32); 4],
+    /// Where its knob is: 0 at the house (LAN), 1 at the globe (WAN).
+    net_switch_t: f32,
     link_connected_hints: [[(slot_gfx::TexId, u32); 2]; 2],
     link_failed_hints: [[(slot_gfx::TexId, u32); 1]; 2],
     // R1 WAN, L1 LAN, Y Share, UP Digit, arrows Move, A Join.
@@ -1348,6 +1354,11 @@ impl Engine {
         let link_inet_hints = inks.map(|ink| [("R1","WAN"), ("L1","LAN"),
             ("Y","Share"), ("UP","Digit"), ("SWAP","Move"), ("A","Join")]
             .map(|(k,v)| link_hint(k,v,ink)));
+        let net_switch_faces = [slot_ui::NetPart::Track, slot_ui::NetPart::Knob,
+            slot_ui::NetPart::House, slot_ui::NetPart::Globe].map(|part| {
+            let face = slot_ui::net_switch_face(part);
+            (gpu.create_face(&face), face.w, face.h)
+        });
         // The arrows alone, for a legend too wide for a narrow screen.
         let link_swap_icon = inks.map(|ink| {
             let face = slot_ui::arrows_hint_face_ink("", ink);
@@ -1529,6 +1540,7 @@ impl Engine {
             footer: 0.0,
             screen_closing: false,
             screen_direct: false,
+            screen_hotkey_held: false,
             frame_blend: Default::default(),
             unseen_presses: 0,
             held_releases: 0,
@@ -1610,6 +1622,8 @@ impl Engine {
             link_hints,
             link_switch_hints,
             link_swap_icon,
+            net_switch_faces,
+            net_switch_t: 0.0,
             link_connected_hints,
             link_failed_hints,
             link_inet_hints,
@@ -1931,6 +1945,8 @@ impl Engine {
         self.footer = 0.0;
         self.screen_closing = false;
         self.screen_direct = true;
+        // Its Hotkey Button is still down: Y again closes the page.
+        self.screen_hotkey_held = true;
         self.overlay = ShelfOverlay::PauseScreenSettings { row: 0 };
     }
 
@@ -3481,6 +3497,18 @@ impl Engine {
                     | ShelfOverlay::PauseEmulationSettings { .. }
                     | ShelfOverlay::LayoutPorts { game: true, .. }
                     | ShelfOverlay::LayoutPort { game: true, .. }) {
+                    // The Screen hotkey (Hotkey + Y) again on the Screen
+                    // page: the slot slides down and the game resumes.
+                    let hotkey = self.controls.hotkeys.hotkey_button();
+                    if code == hotkey { self.screen_hotkey_held = pressed; }
+                    if pressed && self.screen_hotkey_held && code != hotkey && !self.screen_closing
+                        && matches!(self.overlay, ShelfOverlay::PauseScreenSettings { .. })
+                        && self.controls.hotkeys.action_for(true, code, false)
+                            == Some(crate::controls::Action::Screen) {
+                        self.screen_direct = true;
+                        self.screen_closing = true;
+                        return;
+                    }
                     if pressed {
                         match self.overlay {
                             ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. } =>
@@ -5726,6 +5754,25 @@ impl Engine {
                 tex, alpha: 1.0,
             });
         }
+        // LAN / WAN: the slide switch top right, level with the heading,
+        // unless a long heading reaches it on a narrow screen.
+        let switch_x = out_w() as f32 - 16.0 - slot_ui::NET_SWITCH_W as f32;
+        if text.is_none_or(|(_, w, _)| link_heading_x(w) + w as f32 + 8.0 <= switch_x) {
+            let [track, knob, house, globe] = self.net_switch_faces;
+            let heading_h = self.link_role_faces[0].2 as f32;
+            let y = (LINK_TEXT_Y + (heading_h - slot_ui::NET_SWITCH_H as f32) / 2.0).round();
+            let t = slot_ui::ease(self.net_switch_t.clamp(0.0, 1.0));
+            let [lan, wan] = slot_ui::NET_KNOB_X;
+            let kx = (switch_x + lan + (wan - lan) * t).round();
+            let ky = y + slot_ui::NET_KNOB_Y;
+            let face = |(tex, w, h): (slot_gfx::TexId, u32, u32), x: f32, y: f32, alpha: f32|
+                Draw::Tex { x, y, w: w as f32, h: h as f32, tex, alpha };
+            out.push(face(track, switch_x, y, 1.0));
+            out.push(face(knob, kx, ky, 1.0));
+            let (ix, iy) = (kx + slot_ui::NET_ICON_X, ky + slot_ui::NET_ICON_Y);
+            if t < 1.0 { out.push(face(house, ix, iy, 1.0 - t)); }
+            if t > 0.0 { out.push(face(globe, ix, iy, t)); }
+        }
         let stock: &[(slot_gfx::TexId, u32)] =
             match link_legend_profile(self.link_phase, self.link_mode_switchable()) {
                 LinkLegendProfile::PickerWithMode => &self.link_switch_hints[ink],
@@ -6348,7 +6395,18 @@ impl Engine {
                         else { ShelfOverlay::PauseSettings { row: 0 } };
                 }
             }
-            if !self.screen_panel() { self.screen_direct = false; }
+            if !self.screen_panel() { self.screen_direct = false; self.screen_hotkey_held = false; }
+        }
+        // Multiplayer's LAN / WAN knob slides over 220 ms, as the slot.
+        {
+            let wan = if self.link_inet.internet || self.link_inet.entry.is_some() { 1.0 } else { 0.0 };
+            if matches!(self.overlay, ShelfOverlay::Multiplayer) {
+                let step = dt / SCREEN_POWER_ON_S;
+                self.net_switch_t = if wan > self.net_switch_t { (self.net_switch_t + step).min(wan) }
+                    else { (self.net_switch_t - step).max(wan) };
+            } else {
+                self.net_switch_t = wan;
+            }
         }
         self.prepare_controls();
         // Update full-screen menus and spring-smooth the selection bar.
@@ -6554,7 +6612,9 @@ impl Engine {
             // cyan/purple chain badges are already loaded into our Hud but
             // used to disappear behind the Multiplayer overlay because we
             // skipped this final HUD pass. Keep the exact upstream z-order.
-            if matches!(self.overlay, ShelfOverlay::Multiplayer) {
+            // The Screen page shows the game, and its toasts (Integer,
+            // Original Ratio, Stretch) at the top as in game.
+            if matches!(self.overlay, ShelfOverlay::Multiplayer) || self.screen_panel() {
                 self.hud.draw(self.born.elapsed().as_millis() as u64, &mut commands);
             }
             self.gpu.fit(self.size);

@@ -20,6 +20,7 @@ mod home_art;
 mod hud;
 mod icon;
 mod link_art;
+mod net_switch;
 pub mod link_hardware;
 mod plate;
 mod polaroids;
@@ -91,6 +92,10 @@ pub use shell::{
     GB_CLEAR_SHELL,
 };
 pub use silhouette::{gb_silhouette, silhouette, GbShell};
+pub use net_switch::{
+    net_switch_face, NetPart, NET_ICON, NET_ICON_X, NET_ICON_Y, NET_KNOB_H, NET_KNOB_W, NET_KNOB_X,
+    NET_KNOB_Y, NET_SWITCH_H, NET_SWITCH_W,
+};
 pub use slot_chrome::{
     draw_empty_slot, draw_empty_slot_closed, draw_empty_slot_with, draw_slot_name, draw_slot_title, draw_platform_name, ease, edge, housing, opening, recess,
     set_theme, CloserKind, SlotChrome, SlotCloser,
