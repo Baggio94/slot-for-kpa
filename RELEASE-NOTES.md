@@ -1,47 +1,37 @@
-# slot. for Android — v2.0
+# slot. for Android — v2.1
 
-slot. for KONKR Pocket Advance becomes **slot. for Android**. The app is now simply called **slot.**, it adapts to any Android handheld, and the **NES**, **Super Nintendo** and **Mega Drive** join the Game Boy family.
+Your controllers, your shortcuts, and multiplayer over the Internet. The repository is now **slot-for-android**.
 
 ### What's New
 
-- **NES, Super Nintendo and Mega Drive** — Their own shelves, console slots and cartridge shells, including the Famicom, Japanese Mega Drive and EA carts.
-- **Two cores per home console** — FCEUmm or Nestopia, Snes9x or bsnes, Genesis Plus GX or PicoDrive. Press SELECT on a cartridge to choose.
-- **Automatic labels** — NES, Super Nintendo and Mega Drive carts get their real scanned labels from ScreenScraper, automatically or in Cart Studio.
-- **RetroAchievements** — On NES, Super Nintendo (with Snes9x) and Mega Drive, online and offline.
-- **Home console multiplayer** — Two-player netplay over local Wi-Fi: player 1 on the Host, player 2 on the Join console.
-- **CRT shaders** — zfast-crt (default), fakelottes, crt-aperture, GDV Trinitron, CRT Geom Deluxe and crt-pi for the home consoles.
-- **Every Android handheld** — The interface fits any screen, from square to widescreen, at native resolution, and the About sticker shows your handheld's name.
-- **Defaults per handheld** — Screen size, overlays and frame pacing start with the right settings for each device. Frame Pacing starts on RESPONSIVE, except on the KONKR, which keeps NATIVE.
-- **slot. button everywhere** — The Retroid Pocket's centre key is the slot. button. On every handheld, SELECT + X opens the in-game menu and SELECT + START saves and ejects the cartridge.
-- **New Multiplayer screen** — Each console plugs in its own connector: Link Cable, Wireless Adapter or controller ports.
-- **GBA Link with any BIOS** — Different BIOS files on each console, a BIOS on only one, or none.
-- **Direct Game Boy cable** — On mGBA, the two Game Boys are connected directly: trades and battles are faster and more reliable, including on Game Boy Color.
-- **Automatic resync** — If the two consoles drift apart, slot. brings both back to the same moment.
-- **Share Core Saves on every system** — Renamed from Share Saves. Switch a game to its other core and keep your in-game save.
-- **Pixel AA** — Clean pixels at non-integer scales, now lighter on the GPU.
-- **Simpletex LCD** — A new LCD shader for GB, GBC and GBA. LCD3x is now their default.
-- **Overlays for every system** — [Watomsk](https://github.com/Watomsk/Overlays)'s overlays for GB, GBC, GBA, NES, Super Nintendo and Mega Drive, fitted to each screen.
-- **New Game Boy palette** — TWB64 028 "Game.com Ver." is the default on mGBA and Gambatte.
-- **Sharper artwork** — Cartridges, slot bars, bezels and button art drawn at up to 3x.
-- **Slot bars and wallpaper** — Dark, Light or Original slot bars, and a Shelf wallpaper that follows the current shelf.
-- **Real cartridge colours** — Classic NES Series and Famicom Mini carts, Donkey Kong Land and European Pokémon Pinball.
-- **Boktai** — The Sun setting gets an AUTO mode that follows the time of day.
-- **New shortcuts** — SELECT + Up / Down changes the screen size, SELECT + Left / Right the Run-Ahead.
-- **Faster library** — The scan skips ES-DE folders of systems slot. doesn't run, and labels are fetched faster.
+- **Multiplayer over the Internet (beta)** — Next to LAN, play over the Internet (WAN) with a four-digit room code: Host shows the code, Y shares it, your friend types it with the D-pad. No router setup. Every Link mode works except Gambatte's Game Boy link, which stays on LAN for now.
+- **Settings → Controls** — Choose the controller of Port 1 and Port 2 and remap its buttons. With a second controller, two players share one handheld on NES, Super Nintendo and Mega Drive.
+- **Hotkeys** — Change every shortcut, and choose SELECT, L3 or R3 as the Hotkey Button (L3 and R3 only where the handheld has them). Fast-forward (R2), rewind (L2) and the Boktai sun keep their buttons.
+- **Controls per system and per game** — In Systems → [system] → Controls, choose which button plays each console button, and what X / Y and L1 / R1 do on consoles without them. In a game, Settings → Controls changes it for that game only.
+- **Screen menu** — SELECT + Y opens it straight from the game. The game stays in view while you change its shader, color correction, palette and overlay, and L1 / R1 change the screen size on every system. The slot rises with it, as in the original slot.
+- **Frame Blending** — Off, Mix or Ghosting for each system, for games that flicker their sprites to draw shadows or transparency.
+- **Faster in-game menu** — The menu shows sooner, and a double tap on the slot. button opens Save States without the menu flashing first.
+- **Menus for every screen** — Six rows at most, the rest scrolls; on narrow screens a setting's name makes room for its value.
+
+### Changed
+
+- SELECT + Y now opens the Screen menu. Color Correction has no shortcut by default: give it one in Hotkeys, or change it in the Screen menu.
+- Settings: Controls comes after Emulation.
+- Multiplayer says LAN and WAN instead of Local and Internet.
 
 ### Fixed
 
-- Save states are shared with RetroArch both ways, and Gambatte states convert between RetroArch core versions.
-- More reliable Gambatte Link over Wi-Fi, and Wi-Fi stays out of power saving during a Link session.
-- The game menu's Color Correction and GBC Shader rows work again. The Game Boy no longer shows a Color Correction row.
-- Holding Up / Down to jump letters no longer leaves the shelf blank.
-- No more stray tiles when a Game Boy screen turns back on on mGBA.
-- On narrow screens, the battery and clock no longer touch the edges.
-- The charging icon shows whenever the handheld is plugged in.
+- Grid draws its lines as the original slot., even at any scale.
+- LCD Grid V2 blends its subpixels as in RetroArch.
+- AGB-001 and AGS-001 keep even subpixel columns at any scale.
+- B in Save States opened from the in-game menu returns to the menu.
+- Settings → Systems pages show their system's name.
+- No more "LABELS" flash after ejecting a cartridge.
+- Multiplayer keycaps fit 4:3 and narrower screens.
 
 ### Installation
 
-Install the APK below over your existing version: your games, saves and settings are kept. On 1.3.4, slot. also offers this update from **START → About**.
+Install the APK below over your existing version: your games, saves and settings are kept. On 2.0, slot. also offers this update from **START → About**. On 1.3, install this APK by hand once; updates from **START → About** work again from there.
 
 ### Credits
 

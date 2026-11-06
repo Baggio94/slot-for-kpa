@@ -2,6 +2,20 @@
 
 This changelog covers the public releases of slot. for Android, an Android port born on the KONKR Pocket Advance (formerly slot. for KONKR Pocket Advance). Earlier development experiments are preserved in Git history.
 
+## v2.1.0 — 6 November 2026
+
+The repository is renamed slot-for-android: releases are tagged vX.Y.Z with slot-for-android-X.Y.Z-arm64.apk, and the updater asks slot-for-android directly (2.0 follows GitHub's redirect; 1.3 needs one manual install).
+
+- Multiplayer over the Internet (WAN, beta) next to LAN: relay server (tools/slot-relay, one-command installer), four-digit room codes, Y Share, round-trip based input delay; Gambatte's Game Boy link stays on LAN. L1 / R1 switch LAN / WAN, shown by a house / globe slide switch.
+- Settings → Controls: Port 1 / Port 2 controllers with their own bindings, player 2 on NES/SNES/Mega Drive through libretro port 2 (real, Run-Ahead and Preemptive frames); Hotkeys with SELECT, L3 or R3 as Hotkey Button, fixed fast-forward, rewind and Boktai sun; Reset to Default.
+- Systems → [system] → Controls and the in-game Controls: console button layout per port, X / Y roles (GBA, GB, GBC, NES) and L1 / R1 roles (GB, GBC, NES), per system or per game.
+- In-game Screen menu over the paused game with the slot rising (slot. v1.14 animations), Hotkey + Y to open and close it, live shader / color correction / palette / overlay, L1 / R1 screen size on every system; the other in-game pages are opaque. Color Correction has no default hotkey.
+- Frame Blending per system: Off, Mix, Ghosting (mGBA, Gambatte and gpSP core options; slot.'s own blend for NES, SNES and Mega Drive).
+- Game menu after 120 ms with a 100 ms fade; a double tap opens Save States without the menu showing first; B in Save States opened from the menu returns to it.
+- Menus show six rows and scroll; settings labels give way to their values on narrow screens; Multiplayer keycaps tighten (then drop "Swap") when too wide.
+- Shaders: Grid as slot. original with Pixel AA; LCD Grid V2 smear range in texels per screen pixel as upstream; AGB-001 / AGS-001 emulate upstream's 4x pass filtered to the screen.
+- Settings order: General, Systems, Gameplay, Emulation, Controls, Status Bar. Systems pages titled with their system. No LABELS flash after an eject.
+
 ## v2.0.0 — 5 November 2026
 
 Renamed slot. for Android; the installed app is called "slot.". Package name, signature, saves and settings unchanged.

@@ -2,7 +2,7 @@
 # Install or update slot-relay on a Linux server: Oracle Cloud (Oracle Linux
 # or Ubuntu, AMD or ARM), a Raspberry Pi, or any VPS. Run it again to update.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Baggio94/slot-for-kpa/beta/internet-multiplayer/tools/slot-relay/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/Baggio94/slot-for-android/main/tools/slot-relay/install.sh | sudo bash
 #
 # Builds from source on the server (a minute or two), installs a systemd
 # service on TCP 7212 and opens that port in the server's own firewall.
@@ -11,8 +11,8 @@
 set -euo pipefail
 
 PORT="${SLOT_RELAY_PORT:-7212}"
-BRANCH="${SLOT_RELAY_BRANCH:-beta/internet-multiplayer}"
-REPO="${SLOT_RELAY_REPO:-https://github.com/Baggio94/slot-for-kpa}"
+BRANCH="${SLOT_RELAY_BRANCH:-main}"
+REPO="${SLOT_RELAY_REPO:-https://github.com/Baggio94/slot-for-android}"
 HOME_DIR=/opt/slot-relay
 export RUSTUP_HOME="$HOME_DIR/rustup" CARGO_HOME="$HOME_DIR/cargo"
 

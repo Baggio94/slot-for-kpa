@@ -14,7 +14,7 @@ as on Wi-Fi. Protocol details: `crates/slot-android/src/link_relay.rs`.
 On the server (Oracle Cloud VM, Raspberry Pi, any Linux VPS), over SSH:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Baggio94/slot-for-kpa/beta/internet-multiplayer/tools/slot-relay/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Baggio94/slot-for-android/main/tools/slot-relay/install.sh | sudo bash
 ```
 
 It builds the relay, installs it as a service on TCP 7212, opens the port in

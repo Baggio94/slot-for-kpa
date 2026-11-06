@@ -49,9 +49,12 @@ Everything you love about the original slot., now on Android handhelds — with 
 - **Share Core Saves** — Switch any game to its other core and keep your in-game save, on every system.
 - **Syncthing-friendly** — Keep your saves synchronized across devices by sharing your RetroArch save and state folders.
 - **RetroAchievements, online and offline** — Earn achievements on every system. Prepare your library while connected, then play offline and synchronize your unlocks when you're back online.
-- **Multiplayer on Android** — Play over local Wi-Fi: mGBA Link Cable for GBA, GB and GBC, gpSP Link Cable and Wireless Adapter for GBA, and two-player netplay for NES, Super Nintendo and Mega Drive. Each console plugs in its own connector.
+- **Multiplayer on Android** — Play on the same Wi-Fi (LAN) or over the Internet (WAN, beta) with a four-digit room code: mGBA Link Cable for GBA, GB and GBC, gpSP Link Cable and Wireless Adapter for GBA, and two-player netplay for NES, Super Nintendo and Mega Drive. Each console plugs in its own connector.
+- **Your controls, your way** — Choose the controller of each player, remap its buttons, give each system or game its own layout, and pick your own hotkeys. With a second controller, two players can share one handheld on NES, Super Nintendo and Mega Drive.
+- **Screen menu** — Change the shader, color correction, palette, overlay and screen size while you watch your game. Press SELECT + Y to open it straight from the game.
+- **Frame Blending** — Off, Mix or Ghosting for each system, for games that flicker their sprites to draw shadows or transparency.
 - **Shaders for every system** — Ten GBA shader presets, Game Boy LCD shaders, and CRT shaders for the home consoles (zfast-crt, fakelottes, crt-aperture, GDV Trinitron, CRT Geom Deluxe, crt-pi), plus Pixel AA for clean pixels at any scale.
-- **Independent system settings** — Configure the default core, shader, color correction, screen size and overlay of each system separately in **START → Settings → Systems**.
+- **Independent system settings** — Configure the default core, shader, color correction, screen size, overlay, frame blending and controls of each system separately in **START → Settings → Systems**.
 - **Screen sizes and overlays** — Integer, Original Ratio or Stretch, with [Watomsk](https://github.com/Watomsk/Overlays)'s overlays for every system.
 - **Optimized cartridge browsing** — Background artwork loading, persistent caching and GPU texture management designed to keep large libraries responsive.
 - **Android app launcher** — Launch your other Android apps directly from slot., with the option to make slot. your HOME launcher.
@@ -60,7 +63,7 @@ All of this without losing what makes slot. special: **the simple pleasure of ch
 
 ## Getting Started
 
-1. Download the latest APK from [Releases](https://github.com/Baggio94/slot-for-kpa/releases/latest) and install it on your Android handheld (ARM64, Android 12 or later).
+1. Download the latest APK from [Releases](https://github.com/Baggio94/slot-for-android/releases/latest) and install it on your Android handheld (ARM64, Android 12 or later).
 2. Open **slot.**, press **START → Library → Choose ROM Folder** and pick the folder containing your games.
 3. Your cartridges appear in the carousel. Pick one and play!
 
@@ -82,6 +85,8 @@ We'll cover RetroArch compatibility and Syncthing in more detail below.
 
 slot. checks for updates and can install them for you from **START → About**. You can also install the newer APK over your existing installation. **Do not uninstall the previous version or clear its data**, or you could lose your settings and locally stored saves.
 
+Still on version 1.3? Install the latest APK by hand once: updates from **START → About** work again from there.
+
 ## Controls & Hotkeys
 
 <p align="center"><img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="54" /></p>
@@ -89,6 +94,16 @@ slot. checks for updates and can install them for you from **START → About**. 
 The KONKR's round top button is called **slot. cap** in this port. Since it controls the cartridge experience, **slot. cap** felt like the most fitting name. Press it to insert a cartridge, or hold it while playing to save and eject it.
 
 **On other handhelds:** the Retroid Pocket's round centre key is the slot. cap. On any handheld, **SELECT + X** works like a tap on the slot. cap while playing, and **SELECT + START** saves and ejects the cartridge.
+
+### Your controllers
+
+In **START → Settings → Controls**:
+
+- **Port 1 / Port 2** — Choose each player's controller and remap its buttons. Port 2 is player 2 on NES, Super Nintendo and Mega Drive.
+- **Hotkeys** — Change any shortcut below, and choose SELECT, L3 or R3 as the Hotkey Button. Fast-forward, rewind and the Boktai sun keep their buttons.
+- **Reset to Default** — Back to slot.'s own controls.
+
+Each system has its own layout in **START → Settings → Systems → [system] → Controls**: which button plays each console button, and what X / Y and L1 / R1 do on consoles without them. In a game, **Settings → Controls** changes it for that game only.
 
 ### Carousel
 
@@ -119,13 +134,19 @@ The KONKR's round top button is called **slot. cap** in this port. Since it cont
 | Hold <kbd>R2</kbd> | Fast-forward |
 | Double-tap <kbd>R2</kbd> | Lock or unlock fast-forward |
 | Hold <kbd>L2</kbd> | Rewind |
-| Hold <kbd>X</kbd> / <kbd>Y</kbd> | Turbo A / B (when enabled) |
+| Hold <kbd>X</kbd> / <kbd>Y</kbd> | Turbo A / B (GBA, GB, GBC and NES, when enabled) |
 | <kbd>SELECT</kbd> + <kbd>B</kbd> / <kbd>A</kbd> | Previous / next shader |
-| <kbd>SELECT</kbd> + <kbd>Y</kbd> | Toggle color correction |
+| <kbd>SELECT</kbd> + <kbd>Y</kbd> | Open or close the Screen menu |
 | <kbd>SELECT</kbd> + <kbd>L2</kbd> / <kbd>R2</kbd> | Change GB palette (Game Boy games, when enabled) |
 | <kbd>SELECT</kbd> + <kbd>Up</kbd> / <kbd>Down</kbd> | Bigger / smaller screen: Integer, Original Ratio, Stretch |
 | <kbd>SELECT</kbd> + <kbd>Left</kbd> / <kbd>Right</kbd> | Run-Ahead: Off, 1 frame, 2 frames |
 | <kbd>L1</kbd> / <kbd>R1</kbd> | Bigger / smaller screen (GB, GBC and NES, whose games don't use these buttons) |
+
+These are the default shortcuts: change them in **START → Settings → Controls → Hotkeys**. X / Y (GBA, GB, GBC and NES) and L1 / R1 (GB, GBC and NES) can do something else in **Systems → [system] → Controls**.
+
+### Screen menu
+
+Press <kbd>SELECT</kbd> + <kbd>Y</kbd> while playing, or open **Settings → Screen** in the in-game menu. The game stays in view while you change its shader, color correction, palette and overlay, and <kbd>L1</kbd> / <kbd>R1</kbd> change the screen size on every system. Press <kbd>B</kbd> or <kbd>SELECT</kbd> + <kbd>Y</kbd> to return to the game.
 
 ### Save State Switcher
 
@@ -216,22 +237,23 @@ slot. supports [RetroAchievements](https://retroachievements.org/) for **GBA, GB
 
 Link up with another Android handheld, just like the good old days!
 
-slot. supports multiplayer over local Wi-Fi:
+slot. supports multiplayer on the same Wi-Fi (**LAN**) and over the Internet (**WAN**, beta):
 
 - **mGBA** — Link Cable for compatible GBA, GB and GBC games. Both consoles may use different BIOS files, or none at all.
 - **gpSP** — Link Cable and Wireless Adapter for compatible GBA games, including Pokémon trading. Press **SELECT** in the Multiplayer screen to switch between them when a game supports both.
-- **Gambatte** — Link Cable for GB and GBC games.
+- **Gambatte** — Link Cable for GB and GBC games (LAN only for now).
 - **NES, Super Nintendo and Mega Drive** — Two-player netplay, with player 1 on the Host and player 2 on the Join console. On Super Nintendo, use Snes9x.
 
 ### How to connect
 
-1. Connect both devices to the same Wi-Fi network.
-2. Launch the same game using the same emulator core on both devices.
-3. Press <kbd>SELECT</kbd> + <img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="24" align="middle" /> or open **Pause → Multiplayer**.
-4. Choose **Host** on one device and **Join** on the other.
-5. Once connected, enjoy multiplayer!
+1. Launch the same game using the same emulator core on both devices.
+2. Press <kbd>SELECT</kbd> + <img src=".github/resources/konkr-slot-keycap-v3.svg" alt="slot. button" height="24" align="middle" /> or open **Multiplayer** in the in-game menu.
+3. Choose **LAN** with <kbd>L1</kbd> or **WAN** with <kbd>R1</kbd>: the switch at the top right shows a house for LAN and a globe for WAN.
+4. **LAN** — Connect both devices to the same Wi-Fi, then choose **Host** on one and **Join** on the other.
+5. **WAN** — Choose **Host**: slot. shows a four-digit code. Press <kbd>Y</kbd> to share it. Your friend chooses **Join**, enters the code with the D-pad and presses <kbd>A</kbd>. No router setup needed.
+6. Once connected, enjoy multiplayer!
 
-**Note:** Both devices should run the same version of slot. Multiplayer support depends on the game, core and connection mode.
+**Note:** Both devices should run the same version of slot. Multiplayer support depends on the game, core and connection mode. WAN goes through slot.'s own server and is still in beta: a slow connection adds a little input delay.
 
 ## Credits & License
 
