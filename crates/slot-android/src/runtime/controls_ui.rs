@@ -1,7 +1,7 @@
 //! Settings > Controls on the engine: controller keys routed to Port 1, to
 //! the second player or to the menus, and the Controls pages themselves.
 use super::*;
-use crate::controls::{self, Device, LayoutRow, Listen, PortRow, Scope, Sink, XyRole, BUILTIN, MODE, PORTS};
+use crate::controls::{self, Action, Combo, Device, HotkeyRow, LayoutRow, Listen, PortRow, Scope, Sink, XyRole, BUILTIN, MODE, PORTS};
 
 /// A Held key for a stick direction, apart from the same device's D-pad.
 const STICK_KEY: i32 = 1 << 20;
@@ -120,6 +120,123 @@ impl Engine {
         self.layouts_for = Some(wanted);
     }
 
+    /// Controls of a system (or of the game played): straight to Port 1's
+    /// buttons where there is only one port (Game Boys).
+    pub(super) fn layout_entry(platform: Platform, game: bool) -> ShelfOverlay {
+        if controls::takes_port2(Self::system_key(platform)) {
+            ShelfOverlay::LayoutPorts { platform, game, row: 0 }
+        } else {
+            ShelfOverlay::LayoutPort { platform, game, port: 0, row: 0 }
+        }
+    }
+
+    /// Where B leaves a system's (or the game's) Controls for.
+    fn layout_exit(platform: Platform, game: bool) -> ShelfOverlay {
+        if game { ShelfOverlay::PauseSettings { row: 3 } }
+        else { ShelfOverlay::ScreenSystemSettings { platform, row: Self::system_rows(platform).len() } }
+    }
+
+    fn slot_bit(&mut self, mask: u16, pressed: bool) {
+        if pressed {
+            self.buttons |= mask;
+            self.unseen_presses |= mask;
+            self.held_releases &= !mask;
+        } else if self.unseen_presses & mask != 0 {
+            self.held_releases |= mask;
+        } else {
+            self.buttons &= !mask;
+        }
+    }
+
+    /// Changed hotkeys, in a game: true when the key was a hotkey's (or the
+    /// Hotkey Button), so it doesn't reach the game.
+    pub(super) fn custom_hotkey(&mut self, code: i32, pressed: bool) -> bool {
+        let button = self.controls.hotkeys.button;
+        if !pressed {
+            if let Some(action) = self.hk_releases.remove(&code) {
+                self.run_hotkey(action, false);
+                return true;
+            }
+            if button != 0 && code == button {
+                self.hk_mod_down = false;
+                if button == 109 {
+                    // A SELECT that made no hotkey is the game's: a tap.
+                    if !self.hk_chorded && !self.hk_forwarded {
+                        self.buttons |= ButtonMask::SELECT;
+                        self.select_tap_frames = SELECT_TAP_FRAMES;
+                    } else {
+                        self.buttons &= !ButtonMask::SELECT;
+                    }
+                }
+                return true;
+            }
+            if code == 109 { self.slot_bit(ButtonMask::SELECT, false); return true; }
+            return matches!(code, 104..=107);
+        }
+        if !matches!(self.overlay, ShelfOverlay::None) { return false; }
+        if button != 0 && code == button {
+            self.hk_mod_down = true;
+            self.hk_chorded = false;
+            self.hk_forwarded = false;
+            return true;
+        }
+        // Another Hotkey Button: SELECT is only the game's button.
+        if code == 109 { self.slot_bit(ButtonMask::SELECT, true); return true; }
+        let action = self.controls.hotkeys.action_for(self.hk_mod_down, code)
+            // A+B+START+SELECT is the Game Boy soft reset: leave it to the game.
+            .filter(|a| !(*a == Action::SaveEject && self.buttons & (ButtonMask::A | ButtonMask::B) != 0));
+        if let Some(action) = action {
+            if self.hk_mod_down {
+                self.hk_chorded = true;
+                if button == 109 { self.buttons &= !ButtonMask::SELECT; }
+            }
+            self.hk_releases.insert(code, action);
+            self.run_hotkey(action, true);
+            return true;
+        }
+        if self.hk_mod_down && button == 109 && !self.hk_chorded && !self.hk_forwarded {
+            // SELECT + a button that is no hotkey: both reach the game.
+            self.hk_forwarded = true;
+            self.buttons |= ButtonMask::SELECT;
+        }
+        // L2, R2, L3 and R3 are slot.'s keys, never a game's.
+        matches!(code, 104..=107)
+    }
+
+    fn run_hotkey(&mut self, action: Action, pressed: bool) {
+        let linked = self.game.as_ref().is_some_and(GameSession::linked);
+        match action {
+            // A Link's frames belong to both players: no time travel.
+            Action::FastForward => if !linked { self.fast_forward_key(pressed) },
+            Action::Rewind => if !linked { self.rewind_key(pressed) },
+            _ if !pressed => {}
+            Action::GameMenu => self.slot_button_tap(),
+            Action::SaveEject => {
+                self.mode_last_tap = None;
+                self.mode_down_at = None;
+                crate::game::log_launch_timing("Exit requested by the Save and Eject hotkey");
+                self.handle(Input::Exit);
+            }
+            Action::Multiplayer => self.open_multiplayer_shortcut(),
+            Action::SaveState => self.shortcut(103),
+            Action::LoadState => self.shortcut(102),
+            Action::ShaderPrev => self.shortcut(97),
+            Action::ShaderNext => self.shortcut(96),
+            Action::Color => self.shortcut(100),
+            Action::PalettePrev => self.shortcut(104),
+            Action::PaletteNext => self.shortcut(105),
+            Action::Bigger => self.shortcut(19),
+            Action::Smaller => self.shortcut(20),
+            Action::RunAheadDown => self.shortcut(21),
+            Action::RunAheadUp => self.shortcut(22),
+            Action::SunDown | Action::SunUp => {
+                if !linked && self.game.as_ref().is_some_and(GameSession::solar) {
+                    self.nudge_sun(action == Action::SunUp);
+                }
+            }
+        }
+    }
+
     /// A key from one of Android's input devices.
     pub(super) fn pad_key(&mut self, device: i32, code: i32, pressed: bool, stick: bool) {
         let held = if stick { code | STICK_KEY } else { code };
@@ -127,6 +244,12 @@ impl Engine {
             self.port2_remote_noticed = false;
         }
         if !pressed {
+            if matches!(self.controls_listen, Some(Listen::Hotkey { .. })) && !stick {
+                let fp = self.device_fp(device);
+                if self.controls.slot_code(&fp, code, false) == Some(self.controls.hotkeys.button) {
+                    self.hk_listen_mod = false;
+                }
+            }
             match self.pad_held.release(device, held) {
                 Some(Sink::Slot(slot)) => self.handle(Input::Key(slot, false)),
                 Some(Sink::Port2(slot)) => self.release_port2(slot),
@@ -185,8 +308,9 @@ impl Engine {
     /// The button pressed while a Map or Detect waited for one.
     fn listened(&mut self, fp: &str, code: i32) {
         let Some(listen) = self.controls_listen.take() else { return };
-        // The slot. button only cancels: it can't be mapped.
-        if code == MODE { return; }
+        // The slot. button only cancels (but Hotkey Button + slot. is a hotkey).
+        let hotkey_with_mod = matches!(listen, Listen::Hotkey { .. }) && self.hk_listen_mod;
+        if code == MODE && !hotkey_with_mod { self.hk_listen_mod = false; return; }
         match listen {
             Listen::Controller { port, .. } => {
                 self.controls.assign(port, fp);
@@ -219,6 +343,31 @@ impl Engine {
                 }
                 let scope = self.layout_scope(platform, game);
                 self.controls.map_console(&scope, port, button, slot);
+                self.persist_controls();
+            }
+            Listen::Hotkey { action, .. } => {
+                // Hotkeys are Port 1's.
+                let Some(slot) = self.controls.slot_code(fp, code, false)
+                    .filter(|_| self.controls.on_port(0) == Some(fp)) else {
+                    self.controls_listen = Some(listen);
+                    return;
+                };
+                let button = self.controls.hotkeys.button;
+                if button != 0 && slot == button && !self.hk_listen_mod {
+                    // The Hotkey Button: now the key that goes with it.
+                    self.hk_listen_mod = true;
+                    self.controls_listen = Some(listen);
+                    return;
+                }
+                let combo = Combo { modifier: self.hk_listen_mod, key: slot };
+                self.hk_listen_mod = false;
+                let lost = self.controls.hotkeys.set(action, combo);
+                if let Some(lost) = lost {
+                    set_message(format!("{}: none", lost.label()));
+                } else if !combo.modifier && controls_mask(slot) != 0 {
+                    set_message(format!("{} won't reach games anymore.",
+                        controls::hotkey_key_name(slot)));
+                }
                 self.persist_controls();
             }
         }
@@ -284,9 +433,10 @@ impl Engine {
         match self.overlay {
             ShelfOverlay::ControlsSettings { row } => match code {
                 19 | 20 => self.overlay = ShelfOverlay::ControlsSettings {
-                    row: move_menu_row(row, code, 3),
+                    row: move_menu_row(row, code, 4),
                 },
                 96 if row < PORTS => self.overlay = ShelfOverlay::ControlsPort { port: row, row: 0 },
+                96 if row == PORTS => self.overlay = ShelfOverlay::Hotkeys { row: 0 },
                 96 => {
                     self.controls.reset_all();
                     self.persist_controls();
@@ -363,10 +513,7 @@ impl Engine {
                         self.persist_controls();
                         set_message("Controls reset to default.".into());
                     }
-                    97 if game => self.overlay = ShelfOverlay::PauseSettings { row: 3 },
-                    97 => self.overlay = ShelfOverlay::ScreenSystemSettings {
-                        platform, row: Self::system_rows(platform).len(),
-                    },
+                    97 => self.overlay = Self::layout_exit(platform, game),
                     108 if !game => self.overlay = ShelfOverlay::None,
                     _ => {}
                 }
@@ -405,8 +552,38 @@ impl Engine {
                         self.persist_controls();
                         set_message(format!("Port {} reset to default.", port + 1));
                     }
+                    (97, _) if !controls::takes_port2(scope.system()) =>
+                        self.overlay = Self::layout_exit(platform, game),
                     (97, _) => self.overlay = ShelfOverlay::LayoutPorts { platform, game, row: port },
                     (108, _) if !game => self.overlay = ShelfOverlay::None,
+                    _ => {}
+                }
+            }
+            ShelfOverlay::Hotkeys { row } => {
+                let rows = controls::hotkey_rows();
+                match (code, rows.get(row).copied().unwrap_or(HotkeyRow::Reset)) {
+                    (19 | 20, _) => self.overlay = ShelfOverlay::Hotkeys {
+                        row: move_menu_row(row, code, rows.len()),
+                    },
+                    (21 | 22 | 96, HotkeyRow::Button) => {
+                        self.controls.hotkeys.cycle_button(code != 21);
+                        self.persist_controls();
+                    }
+                    (96, HotkeyRow::Action(action)) => {
+                        self.hk_listen_mod = false;
+                        self.controls_listen = Some(Listen::Hotkey { action, until: now + controls::LISTEN_MS });
+                    }
+                    (100, HotkeyRow::Action(action)) => {
+                        self.controls.hotkeys.clear(action);
+                        self.persist_controls();
+                    }
+                    (96, HotkeyRow::Reset) => {
+                        self.controls.hotkeys = Default::default();
+                        self.persist_controls();
+                        set_message("Hotkeys reset to default.".into());
+                    }
+                    (97, _) => self.overlay = ShelfOverlay::ControlsSettings { row: PORTS },
+                    (108, _) => self.overlay = ShelfOverlay::None,
                     _ => {}
                 }
             }
@@ -425,6 +602,7 @@ impl Engine {
             ShelfOverlay::ControlsSettings { row } => Some(("CONTROLS".into(), vec![
                 line("Port 1", self.pad_name(self.controls.on_port(0)), false),
                 line("Port 2", self.pad_name(self.controls.on_port(1)), false),
+                line("Hotkeys", String::new(), false),
                 line("Reset to Default", String::new(), false),
             ], row, vec![("A", "Select"), ("B", "Back")])),
             ShelfOverlay::ControlsPort { port, row } => {
@@ -497,9 +675,39 @@ impl Engine {
                     (None, Some(LayoutRow::Xy | LayoutRow::Shoulders)) => vec![("SWAP", "Change"), ("B", "Back")],
                     _ => vec![("A", "Select"), ("B", "Back")],
                 };
-                let heading = if game { format!("GAME PORT {}", port + 1) }
-                    else { format!("{} PORT {}", platform.name().to_uppercase(), port + 1) };
+                let single = !controls::takes_port2(system);
+                let heading = match (game, single) {
+                    (true, true) => "GAME CONTROLS".to_owned(),
+                    (true, false) => format!("GAME PORT {}", port + 1),
+                    (false, true) => format!("{} CONTROLS", platform.name().to_uppercase()),
+                    (false, false) => format!("{} PORT {}", platform.name().to_uppercase(), port + 1),
+                };
                 Some((heading, lines, row, hints))
+            }
+            ShelfOverlay::Hotkeys { row } => {
+                let hk = &self.controls.hotkeys;
+                let listen = self.controls_listen;
+                let rows = controls::hotkey_rows();
+                let lines: Vec<ControlsLine> = rows.iter().map(|item| match *item {
+                    HotkeyRow::Button => line("Hotkey Button", hk.button_name().into(), true),
+                    HotkeyRow::Action(action) => line(action.label(), match listen {
+                        Some(l @ Listen::Hotkey { action: a, .. }) if a == action =>
+                            if self.hk_listen_mod {
+                                format!("{} + ... {}", hk.button_name(), l.seconds_left(now))
+                            } else {
+                                format!("Press the keys... {}", l.seconds_left(now))
+                            },
+                        _ => hk.label(action),
+                    }, false),
+                    HotkeyRow::Reset => line("Reset to Default", String::new(), false),
+                }).collect();
+                let hints = match (listen, rows.get(row)) {
+                    (Some(_), _) => vec![("SLOT", "Cancel")],
+                    (None, Some(HotkeyRow::Button)) => vec![("SWAP", "Change"), ("B", "Back")],
+                    (None, Some(HotkeyRow::Action(_))) => vec![("A", "Map"), ("Y", "Clear"), ("B", "Back")],
+                    _ => vec![("A", "Select"), ("B", "Back")],
+                };
+                Some(("HOTKEYS".to_owned(), lines, row, hints))
             }
             _ => None,
         }
@@ -541,7 +749,7 @@ impl Engine {
         let now = self.controls_now();
         if self.controls_listen.is_some_and(|l| now >= l.until()) { self.controls_listen = None; }
         if !matches!(self.overlay, ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. }
-            | ShelfOverlay::LayoutPort { .. }) {
+            | ShelfOverlay::LayoutPort { .. } | ShelfOverlay::Hotkeys { .. }) {
             self.controls_listen = None;
         }
         let Some((heading, lines, selected, hint_keys)) = self.controls_lines() else {
@@ -562,7 +770,11 @@ impl Engine {
     pub(super) fn controls_cursor(&self) -> Option<(u8, usize, usize)> {
         let rows = self.controls_view.lines.len();
         match self.overlay {
-            ShelfOverlay::ControlsSettings { row } => Some((18, row, 3)),
+            ShelfOverlay::ControlsSettings { row } => Some((18, row, 4)),
+            ShelfOverlay::Hotkeys { row } if rows > 0 => {
+                let offset = controls::scroll_offset(row, rows);
+                Some((24, row - offset, rows.min(controls::VISIBLE_ROWS)))
+            }
             ShelfOverlay::ControlsPort { port, row } if rows > 0 => {
                 let offset = controls::scroll_offset(row, rows);
                 Some((19 + port as u8, row - offset, rows.min(controls::VISIBLE_ROWS)))

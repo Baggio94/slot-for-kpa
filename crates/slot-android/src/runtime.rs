@@ -457,6 +457,8 @@ enum ShelfOverlay {
     /// Systems > [system] > Controls (game: false), or the in-game
     /// Settings > Controls of the game being played (game: true).
     LayoutPorts { platform: Platform, game: bool, row: usize },
+    /// Settings > Controls > Hotkeys.
+    Hotkeys { row: usize },
     LayoutPort { platform: Platform, game: bool, port: usize, row: usize },
     // Pause submenus never mutate the global Settings object.
     PauseSettings { row: usize },
@@ -864,6 +866,18 @@ struct Engine {
     // again (with the X/Y Buttons setting they were resolved with).
     controls_rev: u64,
     layouts_for: Option<(u64, bool)>,
+    // Changed hotkeys: the Hotkey Button held, whether it made a hotkey or
+    // reached the game, keys whose release belongs to a hotkey, and the
+    // Hotkey Button held while a hotkey is being mapped.
+    hk_mod_down: bool,
+    hk_chorded: bool,
+    hk_forwarded: bool,
+    hk_releases: std::collections::BTreeMap<i32, crate::controls::Action>,
+    hk_listen_mod: bool,
+    // The game menu waits out a possible second slot. tap (Save States).
+    menu_reveal_at: Option<Instant>,
+    // Save States came from the game menu: B goes back there.
+    states_from_menu: bool,
     // Presses no core frame has read yet, and releases held back until one
     // has: a quick tap between two frames must still reach the game.
     unseen_presses: u16,
@@ -1463,6 +1477,13 @@ impl Engine {
             builtin_seen: false,
             controls_rev: 0,
             layouts_for: None,
+            hk_mod_down: false,
+            hk_chorded: false,
+            hk_forwarded: false,
+            hk_releases: Default::default(),
+            hk_listen_mod: false,
+            menu_reveal_at: None,
+            states_from_menu: false,
             unseen_presses: 0,
             held_releases: 0,
             ff_held: false,
@@ -1767,9 +1788,16 @@ impl Engine {
             self.reset_time_controls();
             RUMBLE_STRENGTH.store(0, Ordering::Release);
             if is_double {
+                self.menu_reveal_at=None;
+                self.states_from_menu=false;
                 self.open_polaroids();
             } else {
                 self.mode_last_tap=Some(Instant::now());
+                // Opening: show the menu only once a second tap (Save
+                // States) can no longer come. The game is paused already.
+                if matches!(self.overlay, ShelfOverlay::None) {
+                    self.menu_reveal_at=Some(Instant::now()+Duration::from_millis(360));
+                }
                 self.overlay=match self.overlay {
                     ShelfOverlay::GameMenu { .. }
                     | ShelfOverlay::PauseSettings { .. }
@@ -1963,6 +1991,93 @@ impl Engine {
                 }
             _ => {}
         }
+    }
+
+    /// SELECT + slot. (or its hotkey): the Multiplayer screen over the game.
+    fn open_multiplayer_shortcut(&mut self) {
+        // The SELECT+HOME gesture belongs to Slot, not to
+        // libretro or Android's normal HOME handler.
+        self.select_down_at = None;
+        self.select_chorded = true;
+        self.select_forwarded = false;
+        self.select_tap_frames = 0;
+        self.buttons = 0;
+        self.mode_down_at = None;
+        self.mode_last_tap = None;
+        self.game_accum = 0.0;
+        if self.game.as_ref().is_some_and(GameSession::linked) {
+            self.link_entry = LinkEntry::Shortcut;
+            // Upstream SELECT+MENU reopens the animated
+            // linked adapter and A=End Link / B=Back.
+            self.link_phase = LinkMenu::Linked {
+                role: self.link_role,
+                worked: self.link_worked_at,
+                since: self.link_millis(),
+                opened: true,
+            };
+            self.overlay = ShelfOverlay::Multiplayer;
+        } else {
+            self.enter_multiplayer_menu();
+            if matches!(self.overlay, ShelfOverlay::Multiplayer) {
+                self.link_entry = LinkEntry::Shortcut;
+            }
+        }
+    }
+
+    /// Rewind's key (L2 by default) held or released.
+    fn rewind_key(&mut self, pressed: bool) {
+        if !self.live_game_options().rewind { return; }
+        if pressed {
+            self.rewind_held = true;
+            self.rewind_accum = 0.0;
+            self.ff_held = false;
+            self.ff_latched = false;
+            self.ff_last_release = None;
+            self.hud.set_ff(FfState::Off);
+            AUDIO_SPEED_PERMILLE.store(1000, Ordering::Release);
+            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        } else {
+            self.rewind_held = false;
+            self.rewind_accum = 0.0;
+            self.game_accum = 0.0;
+            self.hud.release_rewind();
+            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+    }
+
+    /// Fast Forward's key (R2 by default): held, or double-tapped to lock.
+    fn fast_forward_key(&mut self, pressed: bool) {
+        // Fast Forward Off (original Slot 1.8.1): R2 does nothing.
+        if pressed && self.live_game_options().ff_speed == 0 { return; }
+        if pressed {
+            if self.ff_latched {
+                self.ff_latched = false;
+                self.ff_held = false;
+                self.ff_last_release = None;
+            } else {
+                let double = self.ff_last_release.take().is_some_and(
+                    |at| at.elapsed().as_millis() <= FF_DOUBLE_TAP_MS);
+                self.ff_latched = double;
+                self.ff_held = true;
+            }
+            self.rewind_held = false;
+            self.hud.release_rewind();
+            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        } else if self.ff_held {
+            self.ff_held = false;
+            self.ff_last_release = Some(Instant::now());
+        }
+        AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        AUDIO_SPEED_PERMILLE.store(
+            if self.ff_latched || self.ff_held {
+                i32::from(self.live_game_options().ff_speed) * 1000
+            } else { 1000 },
+            Ordering::Release);
+        self.hud.set_ff(match (self.ff_latched, self.ff_held) {
+            (true, _) => FfState::Latched,
+            (false, true) => FfState::Held,
+            (false, false) => FfState::Off,
+        });
     }
 
     fn link_millis(&self) -> u64 {
@@ -2800,6 +2915,9 @@ impl Engine {
                 self.unseen2 = 0;
                 self.held_releases2 = 0;
                 self.controls_listen = None;
+                self.hk_mod_down = false;
+                self.hk_releases.clear();
+                self.menu_reveal_at = None;
                 self.mode_down_at = None;
                 self.mode_last_tap = None;
                 self.home_launch_held = false;
@@ -3006,6 +3124,14 @@ impl Engine {
                     if pressed && code == crate::controls::MODE { self.controls_listen = None; }
                     return;
                 }
+                // A key during the double-tap wait shows the game menu at once.
+                if pressed && code != crate::controls::MODE && self.menu_reveal_at.take().is_some() {
+                    self.menu_seen = 0;
+                }
+                // Changed hotkeys have their own dispatcher; untouched ones
+                // run through slot.'s original gestures below.
+                if self.game.is_some() && !self.controls.hotkeys.is_default()
+                    && self.custom_hotkey(code, pressed) { return; }
                 if code == 109 { self.select_physical = pressed; }
                 if self.select_slot_combo(code, pressed) { return; }
                 if matches!(code, 19 | 20) {
@@ -3031,33 +3157,7 @@ impl Engine {
                     ) {
                         SelectHomeAction::Swallow => return,
                         SelectHomeAction::OpenLink => {
-                            // The SELECT+HOME gesture belongs to Slot, not to
-                            // libretro or Android's normal HOME handler.
-                            self.select_down_at = None;
-                            self.select_chorded = true;
-                            self.select_forwarded = false;
-                            self.select_tap_frames = 0;
-                            self.buttons = 0;
-                            self.mode_down_at = None;
-                            self.mode_last_tap = None;
-                            self.game_accum = 0.0;
-                            if self.game.as_ref().is_some_and(GameSession::linked) {
-                                self.link_entry = LinkEntry::Shortcut;
-                                // Upstream SELECT+MENU reopens the animated
-                                // linked adapter and A=End Link / B=Back.
-                                self.link_phase = LinkMenu::Linked {
-                                    role: self.link_role,
-                                    worked: self.link_worked_at,
-                                    since: self.link_millis(),
-                                    opened: true,
-                                };
-                                self.overlay = ShelfOverlay::Multiplayer;
-                            } else {
-                                self.enter_multiplayer_menu();
-                                if matches!(self.overlay, ShelfOverlay::Multiplayer) {
-                                    self.link_entry = LinkEntry::Shortcut;
-                                }
-                            }
+                            self.open_multiplayer_shortcut();
                             return;
                         }
                         SelectHomeAction::Pass => {}
@@ -3234,7 +3334,15 @@ impl Engine {
                                 }
                                 self.overlay=ShelfOverlay::None;
                             }
-                            97=>self.overlay=ShelfOverlay::None,
+                            // Back where Save States was opened from.
+                            97=>self.overlay=if self.states_from_menu {
+                                let linked=self.game.as_ref().is_some_and(GameSession::linked);
+                                let relaunch=self.game.as_ref().is_some_and(GameSession::requires_relaunch);
+                                ShelfOverlay::GameMenu {
+                                    row: pause_rows(linked, relaunch).iter()
+                                        .position(|item| *item==PauseRow::States).unwrap_or(0),
+                                }
+                            } else { ShelfOverlay::None },
                             _=>{}
                         }
                     }
@@ -3252,8 +3360,10 @@ impl Engine {
                                 96 => match pause_rows(linked, relaunch).get(row).copied() {
                                     Some(PauseRow::SaveEject) => self.handle(Input::Exit),
                                     Some(PauseRow::Resume) => self.overlay = ShelfOverlay::None,
-                                    Some(PauseRow::States) if !linked && !relaunch =>
-                                        self.open_polaroids(),
+                                    Some(PauseRow::States) if !linked && !relaunch => {
+                                        self.states_from_menu=true;
+                                        self.open_polaroids();
+                                    }
                                     Some(PauseRow::Multiplayer) => {
                                         self.link_entry = LinkEntry::GameMenu;
                                         if linked {
@@ -3300,9 +3410,7 @@ impl Engine {
                                         0 => ShelfOverlay::PauseScreenSettings { row: 0 },
                                         1 if !linked => ShelfOverlay::PauseGameplaySettings { row: 0 },
                                         2 if !linked => ShelfOverlay::PauseEmulationSettings { row: 0 },
-                                        3 if !linked => ShelfOverlay::LayoutPorts {
-                                            platform: self.current_cart_platform(), game: true, row: 0,
-                                        },
+                                        3 if !linked => Self::layout_entry(self.current_cart_platform(), true),
                                         4 if !linked => {self.reset_game_emulation();
                                             ShelfOverlay::PauseSettings { row }},
                                         _ => ShelfOverlay::PauseSettings { row },
@@ -3388,57 +3496,11 @@ impl Engine {
                         return;
                     }
                     if code == 104 {
-                        if !self.live_game_options().rewind { return; }
-                        if pressed {
-                            self.rewind_held = true;
-                            self.rewind_accum = 0.0;
-                            self.ff_held = false;
-                            self.ff_latched = false;
-                            self.ff_last_release = None;
-                            self.hud.set_ff(FfState::Off);
-                            AUDIO_SPEED_PERMILLE.store(1000, Ordering::Release);
-                            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                        } else {
-                            self.rewind_held = false;
-                            self.rewind_accum = 0.0;
-                            self.game_accum = 0.0;
-                            self.hud.release_rewind();
-                            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                        }
+                        self.rewind_key(pressed);
                         return;
                     }
                     if code == 105 {
-                        // Fast Forward Off (original Slot 1.8.1): R2 does nothing.
-                        if pressed && self.live_game_options().ff_speed == 0 { return; }
-                        if pressed {
-                            if self.ff_latched {
-                                self.ff_latched = false;
-                                self.ff_held = false;
-                                self.ff_last_release = None;
-                            } else {
-                                let double = self.ff_last_release.take().is_some_and(
-                                    |at| at.elapsed().as_millis() <= FF_DOUBLE_TAP_MS);
-                                self.ff_latched = double;
-                                self.ff_held = true;
-                            }
-                            self.rewind_held = false;
-                            self.hud.release_rewind();
-                            AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                        } else if self.ff_held {
-                            self.ff_held = false;
-                            self.ff_last_release = Some(Instant::now());
-                        }
-                        AUDIO.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                        AUDIO_SPEED_PERMILLE.store(
-                            if self.ff_latched || self.ff_held {
-                                i32::from(self.live_game_options().ff_speed) * 1000
-                            } else { 1000 },
-                            Ordering::Release);
-                        self.hud.set_ff(match (self.ff_latched, self.ff_held) {
-                            (true, _) => FfState::Latched,
-                            (false, true) => FfState::Held,
-                            (false, false) => FfState::Off,
-                        });
+                        self.fast_forward_key(pressed);
                         return;
                     }
                     // GB/GBC: L1 = one size up, R1 = one size down
@@ -3566,7 +3628,8 @@ impl Engine {
                                 _ => {}
                             },
                             ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. }
-                            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. } =>
+                            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. }
+                            | ShelfOverlay::Hotkeys { .. } =>
                                 self.controls_menu_key(code),
                             ShelfOverlay::Settings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::Settings {
@@ -3628,7 +3691,7 @@ impl Engine {
                                     platform,row:move_menu_row(row,code,Self::system_rows(platform).len()+1),
                                 },
                                 96 if row==Self::system_rows(platform).len() =>
-                                    self.overlay=ShelfOverlay::LayoutPorts { platform, game: false, row: 0 },
+                                    self.overlay=Self::layout_entry(platform, false),
                                 21 | 22 | 96 => if let Some(key)=Self::system_keys(platform).get(row).copied(){
                                     self.change_setting(key,code!=21);
                                 },
@@ -5556,6 +5619,8 @@ impl Engine {
                     });
                 }
             }
+            // Waiting out a second slot. tap: the paused game, no menu yet.
+            ShelfOverlay::GameMenu { .. } if self.menu_reveal_at.is_some_and(|at| Instant::now() < at) => {}
             ShelfOverlay::GameMenu { row } => {
                 let linked = self.game.as_ref().is_some_and(GameSession::linked);
                 let relaunch = self.game.as_ref().is_some_and(GameSession::requires_relaunch);
@@ -5579,7 +5644,8 @@ impl Engine {
             }
             ShelfOverlay::Multiplayer => self.draw_multiplayer(out),
             ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. }
-            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. } =>
+            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. }
+            | ShelfOverlay::Hotkeys { .. } =>
                 self.draw_controls(out),
             ShelfOverlay::Core => {
                 self.draw_original_core_picker(out);
@@ -5941,6 +6007,11 @@ impl Engine {
             self.picker = None;
             self.overlay = ShelfOverlay::None;
         }
+        if self.menu_reveal_at.is_some_and(|at| Instant::now() >= at) {
+            self.menu_reveal_at = None;
+            self.menu_seen = 0; // the menu's own fade-in, now
+        }
+        if !matches!(self.overlay, ShelfOverlay::GameMenu { .. }) { self.menu_reveal_at = None; }
         self.prepare_controls();
         // Update full-screen menus and spring-smooth the selection bar.
         // Keep animation entirely in rendering: never delay controller input.
@@ -5957,7 +6028,8 @@ impl Engine {
             ShelfOverlay::Multiplayer => (11u8, 0, 0usize),
             ShelfOverlay::Settings { row } => (4u8, row, SETTINGS_ROWS.len()),
             ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. }
-            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. } =>
+            | ShelfOverlay::LayoutPorts { .. } | ShelfOverlay::LayoutPort { .. }
+            | ShelfOverlay::Hotkeys { .. } =>
                 self.controls_cursor().unwrap_or((0, 0, 0)),
             ShelfOverlay::GeneralSettings { row } =>
                 (12u8, row, self.general_rows().len()),

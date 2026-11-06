@@ -104,13 +104,14 @@ pub struct Controls {
     pub systems: BTreeMap<String, Layout>,
     /// The in-game Controls, by game (its ROM's library key).
     pub games: BTreeMap<String, Layout>,
+    pub hotkeys: Hotkeys,
 }
 
 impl Default for Controls {
     fn default() -> Self {
         Self {
             ports: [BUILTIN.to_owned(), String::new()], pads: BTreeMap::new(),
-            systems: BTreeMap::new(), games: BTreeMap::new(),
+            systems: BTreeMap::new(), games: BTreeMap::new(), hotkeys: Hotkeys::default(),
         }
     }
 }
@@ -227,9 +228,10 @@ impl Controls {
     }
 
     /// Settings > Controls > Reset to Default: every controller's keys back
-    /// to the defaults. Who is on which port stays.
+    /// to the defaults, and the hotkeys too. Who is on which port stays.
     pub fn reset_all(&mut self) {
         for pad in self.pads.values_mut() { pad.reset(); }
+        self.hotkeys = Hotkeys::default();
     }
 
     /// Remember the name Android gives a controller, for when it's off.
@@ -337,19 +339,22 @@ pub enum Listen {
     Controller { port: usize, until: u64 },
     /// A console button of a system's or a game's Port page.
     Console { port: usize, button: usize, until: u64 },
+    /// A hotkey: the Hotkey Button (optional) then a key.
+    Hotkey { action: Action, until: u64 },
 }
 
 impl Listen {
     pub fn until(self) -> u64 {
         match self {
             Listen::Key { until, .. } | Listen::Controller { until, .. }
-            | Listen::Console { until, .. } => until,
+            | Listen::Console { until, .. } | Listen::Hotkey { until, .. } => until,
         }
     }
     pub fn port(self) -> usize {
         match self {
             Listen::Key { port, .. } | Listen::Controller { port, .. }
             | Listen::Console { port, .. } => port,
+            Listen::Hotkey { .. } => 0,
         }
     }
     /// Whole seconds left, for the countdown: 5 .. 1.
@@ -708,6 +713,156 @@ pub fn layout_rows(system: &str) -> Vec<LayoutRow> {
     if spare_xy(system) { rows.push(LayoutRow::Xy); }
     if spare_shoulders(system) { rows.push(LayoutRow::Shoulders); }
     rows.push(LayoutRow::Reset);
+    rows
+}
+
+// ---------------------------------------------------------------------------
+// Settings > Controls > Hotkeys: slot.'s shortcuts, Port 1's only. A hotkey
+// is the Hotkey Button + a key, or a key alone. Global, never per game.
+
+/// What a hotkey does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Action {
+    GameMenu, SaveEject, Multiplayer, SaveState, LoadState, FastForward, Rewind,
+    ShaderPrev, ShaderNext, Color, PalettePrev, PaletteNext,
+    Bigger, Smaller, RunAheadDown, RunAheadUp, SunDown, SunUp,
+}
+
+impl Action {
+    pub const ALL: [Action; 18] = [
+        Action::GameMenu, Action::SaveEject, Action::Multiplayer, Action::SaveState,
+        Action::LoadState, Action::FastForward, Action::Rewind, Action::ShaderPrev,
+        Action::ShaderNext, Action::Color, Action::PalettePrev, Action::PaletteNext,
+        Action::Bigger, Action::Smaller, Action::RunAheadDown, Action::RunAheadUp,
+        Action::SunDown, Action::SunUp,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Action::GameMenu => "Game Menu", Action::SaveEject => "Save and Eject",
+            Action::Multiplayer => "Multiplayer", Action::SaveState => "Save State",
+            Action::LoadState => "Load State", Action::FastForward => "Fast Forward",
+            Action::Rewind => "Rewind", Action::ShaderPrev => "Previous Shader",
+            Action::ShaderNext => "Next Shader", Action::Color => "Color Correction",
+            Action::PalettePrev => "Previous Palette", Action::PaletteNext => "Next Palette",
+            Action::Bigger => "Bigger Screen", Action::Smaller => "Smaller Screen",
+            Action::RunAheadDown => "Run-Ahead -", Action::RunAheadUp => "Run-Ahead +",
+            Action::SunDown => "Less Sun", Action::SunUp => "More Sun",
+        }
+    }
+
+    /// slot.'s shortcuts until now, which stay the defaults.
+    pub fn default_combo(self) -> Combo {
+        let with = |key| Combo { modifier: true, key };
+        let alone = |key| Combo { modifier: false, key };
+        match self {
+            Action::GameMenu => with(99), Action::SaveEject => with(108),
+            Action::Multiplayer => with(MODE), Action::SaveState => with(103),
+            Action::LoadState => with(102), Action::FastForward => alone(105),
+            Action::Rewind => alone(104), Action::ShaderPrev => with(97),
+            Action::ShaderNext => with(96), Action::Color => with(100),
+            Action::PalettePrev => with(104), Action::PaletteNext => with(105),
+            Action::Bigger => with(19), Action::Smaller => with(20),
+            Action::RunAheadDown => with(21), Action::RunAheadUp => with(22),
+            Action::SunDown => alone(106), Action::SunUp => alone(107),
+        }
+    }
+
+    /// Held down rather than pressed once: its release matters too.
+    pub fn held(self) -> bool { matches!(self, Action::FastForward | Action::Rewind) }
+}
+
+/// The Hotkey Button (or none) + one key, as slot. reads them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Combo { pub modifier: bool, pub key: i32 }
+
+/// The Hotkey Button choices: SELECT, L3, R3, or none.
+pub const HOTKEY_BUTTONS: [i32; 4] = [109, 106, 107, 0];
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Hotkeys {
+    /// The Hotkey Button's key code; 0 = none.
+    pub button: i32,
+    /// Changed hotkeys only; None = no hotkey for that action.
+    pub binds: BTreeMap<Action, Option<Combo>>,
+}
+
+impl Default for Hotkeys {
+    fn default() -> Self { Self { button: 109, binds: BTreeMap::new() } }
+}
+
+/// A key's name in a hotkey: slot.'s own button names.
+pub fn hotkey_key_name(key: i32) -> &'static str {
+    match key {
+        MODE => "slot.",
+        19 => "Up", 20 => "Down", 21 => "Left", 22 => "Right",
+        _ => BUTTONS.iter().find(|(_, code)| *code == key).map_or("?", |(name, _)| name),
+    }
+}
+
+impl Hotkeys {
+    /// Nothing changed: slot.'s shortcuts run exactly as they always have.
+    pub fn is_default(&self) -> bool { self.button == 109 && self.binds.is_empty() }
+
+    /// The hotkey of `action`, if it can be pressed with this Hotkey Button.
+    pub fn combo(&self, action: Action) -> Option<Combo> {
+        let combo = self.binds.get(&action).copied().unwrap_or(Some(action.default_combo()))?;
+        let usable = if combo.modifier { self.button != 0 && combo.key != self.button }
+            else { combo.key != self.button && combo.key != MODE };
+        usable.then_some(combo)
+    }
+
+    /// The action a key starts, with or without the Hotkey Button held.
+    pub fn action_for(&self, modifier_held: bool, key: i32) -> Option<Action> {
+        Action::ALL.into_iter()
+            .find(|a| self.combo(*a) == Some(Combo { modifier: modifier_held, key }))
+    }
+
+    /// `action` <- `combo`. Another action that had it loses its hotkey,
+    /// returned so the page can say so.
+    pub fn set(&mut self, action: Action, combo: Combo) -> Option<Action> {
+        let other = Action::ALL.into_iter()
+            .find(|a| *a != action && self.combo(*a) == Some(combo));
+        if let Some(other) = other { self.put(other, None); }
+        self.put(action, Some(combo));
+        other
+    }
+
+    pub fn clear(&mut self, action: Action) { self.put(action, None); }
+
+    fn put(&mut self, action: Action, combo: Option<Combo>) {
+        if combo == Some(action.default_combo()) { self.binds.remove(&action); }
+        else { self.binds.insert(action, combo); }
+    }
+
+    pub fn cycle_button(&mut self, right: bool) {
+        let all = HOTKEY_BUTTONS;
+        let at = all.iter().position(|b| *b == self.button).unwrap_or(0);
+        self.button = all[if right { (at + 1) % all.len() } else { (at + all.len() - 1) % all.len() }];
+    }
+
+    pub fn button_name(&self) -> &'static str {
+        if self.button == 0 { "None" } else { hotkey_key_name(self.button) }
+    }
+
+    /// "SELECT + R1", "R2 (hold)", "None".
+    pub fn label(&self, action: Action) -> String {
+        let Some(combo) = self.combo(action) else { return "None".into() };
+        let key = hotkey_key_name(combo.key);
+        let text = if combo.modifier { format!("{} + {key}", self.button_name()) } else { key.to_owned() };
+        if action.held() { format!("{text} (hold)") } else { text }
+    }
+}
+
+/// Rows of the Hotkeys page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HotkeyRow { Button, Action(Action), Reset }
+
+pub fn hotkey_rows() -> Vec<HotkeyRow> {
+    let mut rows = vec![HotkeyRow::Button];
+    rows.extend(Action::ALL.map(HotkeyRow::Action));
+    rows.push(HotkeyRow::Reset);
     rows
 }
 
@@ -1073,5 +1228,59 @@ mod tests {
         assert!(layout_rows("gba").contains(&LayoutRow::Xy));
         assert!(!layout_rows("gba").contains(&LayoutRow::Shoulders));
         assert!(takes_port2("nes") && !takes_port2("gbc"));
+    }
+
+    // ---- Hotkeys ----
+
+    #[test]
+    fn default_hotkeys_are_slots_shortcuts() {
+        let hk = Hotkeys::default();
+        assert!(hk.is_default());
+        assert_eq!(hk.action_for(true, 103), Some(Action::SaveState));
+        assert_eq!(hk.action_for(false, 105), Some(Action::FastForward));
+        assert_eq!(hk.action_for(true, MODE), Some(Action::Multiplayer));
+        assert_eq!(hk.action_for(false, 96), None, "A alone is the game's");
+        assert_eq!(hk.label(Action::SaveState), "SELECT + R1");
+        assert_eq!(hk.label(Action::FastForward), "R2 (hold)");
+        assert_eq!(hk.label(Action::Multiplayer), "SELECT + slot.");
+    }
+
+    #[test]
+    fn a_taken_hotkey_moves_and_the_other_action_loses_it() {
+        let mut hk = Hotkeys::default();
+        let lost = hk.set(Action::LoadState, Combo { modifier: true, key: 103 });
+        assert_eq!(lost, Some(Action::SaveState));
+        assert_eq!(hk.label(Action::SaveState), "None");
+        assert_eq!(hk.action_for(true, 103), Some(Action::LoadState));
+        assert_eq!(hk.action_for(true, 102), None, "SELECT + L1 is free now");
+        hk.set(Action::SaveState, Combo { modifier: false, key: 107 });
+        assert_eq!(hk.label(Action::SunUp), "None", "R3 alone was More Sun's");
+        assert!(!hk.is_default());
+    }
+
+    #[test]
+    fn the_hotkey_button_changes_every_combo_and_never_is_a_hotkey_itself() {
+        let mut hk = Hotkeys::default();
+        hk.cycle_button(true);
+        assert_eq!(hk.button, 106);
+        assert_eq!(hk.label(Action::SaveState), "L3 + R1");
+        assert_eq!(hk.combo(Action::SunDown), None, "L3 alone is the Hotkey Button now");
+        assert_eq!(hk.action_for(true, 103), Some(Action::SaveState));
+        hk.cycle_button(true);
+        hk.cycle_button(true);
+        assert_eq!(hk.button, 0);
+        assert_eq!(hk.label(Action::SaveState), "None", "no Hotkey Button: only keys alone");
+        assert_eq!(hk.label(Action::FastForward), "R2 (hold)");
+        hk.cycle_button(true);
+        assert!(hk.is_default());
+    }
+
+    #[test]
+    fn hotkeys_page_lists_every_action() {
+        assert_eq!(hotkey_rows().len(), Action::ALL.len() + 2);
+        let mut controls = Controls::default();
+        controls.hotkeys.clear(Action::Color);
+        controls.reset_all();
+        assert!(controls.hotkeys.is_default(), "Reset to Default resets the hotkeys too");
     }
 }
