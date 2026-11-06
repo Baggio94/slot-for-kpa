@@ -4346,11 +4346,11 @@ impl Engine {
             Err(err) => set_error_message("Couldn't save the default core.", &err),
         }
     }
+    /// The heading of Settings > Systems > <system>: the same face as its
+    /// row in the Systems list (MENU_TEXT 121..=123 are NES, Super
+    /// Nintendo, Mega Drive; 120 is "Screen Size").
     fn screen_title(platform:Platform)->usize {
-        match platform {
-            Platform::Gba=>91, Platform::Gbc=>92,Platform::Gb=>93,
-            Platform::Nes=>120, Platform::Snes=>121, Platform::Md=>122,
-        }
+        SYSTEM_TITLES[SYSTEM_ORDER.iter().position(|p| *p==platform).unwrap_or(0)]
     }
     fn screen_submenu_platform(row:usize)->Platform {
         SYSTEM_ORDER.get(row).copied().unwrap_or(Platform::Gb)
@@ -6980,6 +6980,43 @@ pub(crate) use jni_exports::exercise_session_graphics_recovery;
 #[cfg(test)]
 mod settings_value_tests {
     use super::*;
+
+    #[test]
+    fn each_system_page_is_titled_with_its_own_name() {
+        // Reported on 2.0.0: NES showed "Screen Size", SNES "NES" and Mega
+        // Drive "Super Nintendo".
+        for platform in Platform::ALL {
+            assert_eq!(MENU_TEXT[Engine::screen_title(platform)], platform.name(),
+                "Settings > Systems > {platform:?} heading");
+        }
+        for (platform, title) in SYSTEM_ORDER.iter().zip(SYSTEM_TITLES) {
+            assert_eq!(MENU_TEXT[title], platform.name(), "Systems list row");
+        }
+    }
+
+    #[test]
+    fn each_system_page_changes_only_its_own_system() {
+        // Default core, shader, colour/palette and overlay keys of each page.
+        let own: [(Platform, &[usize]); 6] = [
+            (Platform::Gba, &[29, 0, 22, 25]),
+            (Platform::Gbc, &[30, 21, 23, 26]),
+            (Platform::Gb, &[31, 1, 3, 27]),
+            (Platform::Nes, &[41, 47, 44]),
+            (Platform::Snes, &[42, 48, 45]),
+            (Platform::Md, &[43, 49, 46]),
+        ];
+        for (platform, keys) in own {
+            for panel in PANELS {
+                for key in Engine::system_keys_on(platform, panel) {
+                    assert!(*key == SCREEN_SIZE_KEY || keys.contains(key),
+                        "Settings > Systems > {platform:?} on {panel:?} shows key {key}");
+                    if let Some(core) = Engine::core_key_platform(*key) {
+                        assert_eq!(core, platform, "default core row of {platform:?}");
+                    }
+                }
+            }
+        }
+    }
 
     const PANELS: [(u32, u32); 7] = [(960, 640), (1240, 1080), (1920, 1080),
         (720, 720), (1024, 768), (1280, 720), (1920, 1152)];
