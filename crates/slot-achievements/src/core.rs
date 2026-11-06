@@ -104,6 +104,9 @@ impl RetroCore for Tracked {
         // enqueue frames, or advance the persistent award journal.
         self.core.run_speculative_frame(input);
     }
+    fn set_port2(&mut self, input: ButtonMask) {
+        self.core.set_port2(input);
+    }
     fn run_frame_linked(&mut self, p1: ButtonMask, p2: ButtonMask) {
         self.core.run_frame_linked(p1, p2);
         self.timeline += 1;

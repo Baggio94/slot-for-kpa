@@ -899,3 +899,26 @@ pub(crate) fn exercise_session_graphics_recovery(game: GameSession) -> GameSessi
     assert_eq!(Java_fyi_slot_konkr_MainActivity_nativeGraphicsReady(std::ptr::null_mut(), std::ptr::null_mut()), 0);
     game
 }
+
+/// A key of an Android input device (a controller). Settings > Controls
+/// decides which port it plays on and which slot. button it is. `stick`: a
+/// D-pad direction Android made from the left stick.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativePadKey(
+    _env: *mut c_void, _activity: *mut c_void,
+    device: i32, key: i32, pressed: u8, stick: u8,
+) {
+    INPUT.lock().unwrap_or_else(|poison| poison.into_inner())
+        .push_back(Input::PadKey { device, code: key, pressed: pressed != 0, stick: stick != 0 });
+}
+
+/// Every controller connected now, as JSON: [{"id","name","fp"}].
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fyi_slot_konkr_MainActivity_nativeControllers(
+    mut env: JNIEnv<'_>, _this: JObject<'_>, json: JString<'_>,
+) {
+    if let Ok(value) = env.get_string(&json) {
+        let devices = crate::controls::devices(&value.to_string_lossy());
+        INPUT.lock().unwrap_or_else(|e| e.into_inner()).push_back(Input::Controllers(devices));
+    }
+}

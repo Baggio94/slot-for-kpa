@@ -18,7 +18,7 @@ pub struct Preempt {
     head: usize,
     len: usize,
     /// Buttons and turbo every frame in the window ran with.
-    input: Option<(u16, bool)>,
+    input: Option<(u32, bool)>,
 }
 
 impl Preempt {
@@ -42,7 +42,7 @@ impl Preempt {
     }
 
     /// True when a full window ran with other buttons than `input`.
-    pub fn needs_rollback(&self, input: (u16, bool)) -> bool {
+    pub fn needs_rollback(&self, input: (u32, bool)) -> bool {
         self.frames > 0 && self.len == self.frames
             && self.input.is_some_and(|ran| ran != input)
     }
@@ -58,7 +58,7 @@ impl Preempt {
 
     /// Buffer for the state at the start of the frame about to run with
     /// `input`, dropping the oldest frame once the window is full.
-    pub fn push(&mut self, input: (u16, bool)) -> &mut Vec<u8> {
+    pub fn push(&mut self, input: (u32, bool)) -> &mut Vec<u8> {
         self.input = Some(input);
         let slot = if self.len < self.frames {
             self.len += 1;
@@ -76,7 +76,7 @@ impl Preempt {
 mod tests {
     use super::*;
 
-    fn fill(p: &mut Preempt, input: (u16, bool), frame: u8) {
+    fn fill(p: &mut Preempt, input: (u32, bool), frame: u8) {
         *p.push(input) = vec![frame];
     }
 

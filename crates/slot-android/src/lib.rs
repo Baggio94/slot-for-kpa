@@ -4,6 +4,7 @@
 mod library;
 mod cart_disk_cache;
 mod settings;
+mod controls;
 mod gambatte_state;
 mod recents;
 mod favorites;

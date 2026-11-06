@@ -312,6 +312,10 @@ pub struct GameSession {
     core_kind: Core,
     /// SNES / Mega Drive: every face button goes to the core as is.
     full_pad: bool,
+    /// NES, SNES and Mega Drive take a second local player on port 2.
+    second_player: bool,
+    /// Port 2's buttons as slot. read them (Settings > Controls).
+    port2: u16,
     pending_undo: Option<(Instant, PendingUndo)>,
     last_sram: Instant,
     // F7: owns at most one immutable periodic SRAM/RTC write per solo session.
@@ -926,6 +930,7 @@ impl GameSession {
             rewind: RewindThread::spawn(REWIND_BYTES), rewind_frames: 0,
             frame_count: 0, palette_live, core_kind: which,
             full_pad: matches!(platform, Platform::Snes | Platform::Md),
+            second_player: !platform.handheld(), port2: 0,
             runahead_video: Vec::new(), runahead_size: (0, 0), runahead_state: Vec::new(),
             // bsnes shows the frame before an unserialize on the first run
             // after it, so a predicted picture would be stale: no Run-Ahead.
@@ -950,6 +955,27 @@ impl GameSession {
         Ok(session)
     }
 
+    /// The second local player's buttons for the next frames. Ignored by
+    /// Game Boy games and during Multiplayer, where port 2 is the other
+    /// console's.
+    pub fn set_port2(&mut self, buttons: u16) {
+        self.port2 = if self.second_player { buttons } else { 0 };
+    }
+
+    /// Port 2 as the core gets it on `frame`: turbo and X/Y like port 1.
+    fn port2_at(&self, turbo: bool, frame: u32) -> ButtonMask {
+        if !self.second_player || self.in_multiplayer() || self.port2 == 0 {
+            return ButtonMask::default();
+        }
+        pad_buttons(self.full_pad, ButtonMask(self.port2), turbo, frame)
+    }
+
+    /// Both ports, as Preemptive Frames compares them.
+    fn both_ports(&self, buttons: u16) -> u32 {
+        let port2 = if self.second_player && !self.in_multiplayer() { self.port2 } else { 0 };
+        u32::from(buttons) | u32::from(port2) << 16
+    }
+
     /// False while cable lockstep is awaiting the other player. The caller
     /// must not subtract an emulated-frame budget until this returns true.
     pub fn advance(&mut self, buttons: u16, turbo: bool, record_rewind: bool) -> bool {
@@ -967,6 +993,8 @@ impl GameSession {
         if self.link.is_none() && !self.preempt_before_frame(buttons, turbo) { return false; }
         let pressed = ButtonMask(buttons);
         let mapped = pad_buttons(self.full_pad, pressed, turbo, self.frame_count);
+        let port2 = self.port2_at(turbo, self.frame_count);
+        self.core.set_port2(port2);
         let core_started = Instant::now();
         let advanced = if let Some(link) = self.link.as_mut() {
             matches!(link.frame(self.core.as_mut(), mapped), LinkFrame::Advanced)
@@ -1102,6 +1130,13 @@ impl GameSession {
     }
 
     pub fn home_netplay(&self) -> bool { self.home_netplay.is_some() }
+
+    /// A second local player plays now: a home console game outside
+    /// Multiplayer (Settings > Controls, Port 2).
+    pub fn takes_port2(&self) -> bool { self.second_player && !self.in_multiplayer() }
+
+    /// A home console game whose port 2 is the other console's right now.
+    pub fn port2_is_remote(&self) -> bool { self.second_player && self.in_multiplayer() }
 
     fn in_multiplayer(&self) -> bool {
         self.link_touched || self.linked_boot.is_some() || self.game_link.is_some()
@@ -1435,8 +1470,10 @@ impl GameSession {
         // sample its own future phase; reusing one mask for all offsets
         // predicts incorrect key presses across a three-frame boundary.
         for future in 0..frames {
-            let mapped = pad_buttons(self.full_pad, pressed, turbo,
-                self.frame_count.wrapping_add(u32::from(future)));
+            let frame = self.frame_count.wrapping_add(u32::from(future));
+            let mapped = pad_buttons(self.full_pad, pressed, turbo, frame);
+            let port2 = self.port2_at(turbo, frame);
+            self.core.set_port2(port2);
             self.core.run_speculative_frame(mapped);
             // Discard predicted audio without reallocating libretro's buffer.
             self.core.discard_audio();
@@ -1513,10 +1550,11 @@ impl GameSession {
         let pressed = ButtonMask(buttons);
         // Turbo flips every three REAL frames; each predicted frame samples
         // its own future phase, exactly like the single-instance path.
-        let mut inputs = [ButtonMask::default(); 2];
+        let mut inputs = [(ButtonMask::default(), ButtonMask::default()); 2];
         for future in 0..usize::from(frames) {
-            inputs[future] = pad_buttons(self.full_pad, pressed, turbo,
-                self.frame_count.wrapping_add(future as u32));
+            let frame = self.frame_count.wrapping_add(future as u32);
+            inputs[future] = (pad_buttons(self.full_pad, pressed, turbo, frame),
+                self.port2_at(turbo, frame));
         }
         let copy = self.runahead_secondary.as_deref_mut().expect("booted above");
         match crate::runahead_secondary::predict(copy, &self.runahead_state,
@@ -1564,7 +1602,7 @@ impl GameSession {
     fn preempt_before_frame(&mut self, buttons: u16, turbo: bool) -> bool {
         let n = self.preempt.frames();
         if n == 0 || self.in_multiplayer() { return true; }
-        let input = (buttons, turbo);
+        let input = (self.both_ports(buttons), turbo);
         if self.preempt.needs_rollback(input) {
             let started = Instant::now();
             // The replayed frames rewrite the last n frames with the new
@@ -1581,8 +1619,11 @@ impl GameSession {
                 if replayed.is_err() { break; }
                 if k > 0 { replayed = self.core.serialize_into(self.preempt.state_mut(k)); }
                 if replayed.is_err() { break; }
+                let frame = first.wrapping_add(k as u32);
+                let port2 = self.port2_at(turbo, frame);
+                self.core.set_port2(port2);
                 self.core.run_speculative_frame(
-                    pad_buttons(self.full_pad, pressed, turbo, first.wrapping_add(k as u32)));
+                    pad_buttons(self.full_pad, pressed, turbo, frame));
                 self.core.discard_audio();
             }
             let elapsed_us = started.elapsed().as_micros() as u64;
@@ -1633,6 +1674,7 @@ impl GameSession {
         // Match original Slot's rewind: force frame rendering (never inherit
         // an FF/speculative frame-skip state) before refreshing the picture.
         self.core.set_frame_skip(false);
+        self.core.set_port2(ButtonMask::default());
         self.core.run_frame(ButtonMask(0));
         let _ = self.core.take_audio();
         self.rewind_frames = 0;

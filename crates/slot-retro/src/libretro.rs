@@ -46,6 +46,8 @@ struct Host {
     format: PixelFormat,
     audio: Vec<i16>,
     inputs: [u16; 2],
+    /// A second local player's buttons (NES, SNES, Mega Drive) for solo frames.
+    port2: u16,
     // Borrowed memory descriptors, valid only while game/core are loaded.
     memory: Vec<MemoryDescriptor>,
     system_dir: CString,
@@ -800,6 +802,7 @@ impl LibretroCore {
             format: PixelFormat::default(),
             audio: Vec::new(),
             inputs: [0; 2],
+            port2: 0,
             memory: Vec::new(),
             system_dir: cdir(system_dir)?,
             save_dir: cdir(save_dir)?,
@@ -1132,7 +1135,11 @@ impl RetroCore for LibretroCore {
     }
 
     fn run_frame(&mut self, input: ButtonMask) {
-        self.run_frame_linked(input, ButtonMask::default());
+        self.run_frame_linked(input, ButtonMask(self.host.port2));
+    }
+
+    fn set_port2(&mut self, input: ButtonMask) {
+        self.host.port2 = input.0;
     }
 
     fn link_step_fault(&self) -> bool {
@@ -1459,6 +1466,7 @@ mod tests {
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
             inputs: [0; 2],
+            port2: 0,
             memory: Vec::new(),
             system_dir: CString::new(".").unwrap(),
             save_dir: CString::new(".").unwrap(),

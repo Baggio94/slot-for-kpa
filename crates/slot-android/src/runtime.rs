@@ -91,6 +91,10 @@ impl Surface for AndroidSurface {
 #[derive(Clone)]
 enum Input {
     Key(i32, bool),
+    /// A key of one of Android's input devices (Settings > Controls).
+    PadKey { device: i32, code: i32, pressed: bool, stick: bool },
+    /// Every controller connected now.
+    Controllers(Vec<crate::controls::Device>),
     // Predefined shelf UI states from Android: no untrusted or long text on GL.
     ShelfStatus(u8),
     UpdateStatus(u8, String, String, bool),
@@ -447,6 +451,9 @@ enum ShelfOverlay {
     EmulationSettings { row: usize },
     InterfaceSettings { row: usize },
     GeneralSettings { row: usize },
+    /// Settings > Controls, and its Port 1 / Port 2 pages.
+    ControlsSettings { row: usize },
+    ControlsPort { port: usize, row: usize },
     // Pause submenus never mutate the global Settings object.
     PauseSettings { row: usize },
     PauseScreenSettings { row: usize },
@@ -459,7 +466,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 125] = [
+const MENU_TEXT: [&str; 126] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -585,6 +592,7 @@ const MENU_TEXT: [&str; 125] = [
     "Super Nintendo",                    // 122
     "Mega Drive",                        // 123
     "Shader",                            // 124, NES / SNES / Mega Drive
+    "Controls",                          // 125, Settings > Controls
 ];
 
 /// Settings > Systems, top to bottom.
@@ -740,6 +748,9 @@ fn bezel_value(bezel: crate::settings::Bezel) -> usize {
 }
 
 /// Gameplay page labels and the Settings keys they change, in row order.
+/// Settings: General, Systems, Controls, Gameplay, Emulation, Status Bar.
+const SETTINGS_ROWS: [usize; 6] = [81, 117, 125, 33, 49, 58];
+
 const GAMEPLAY_ROWS: [usize; 6] = [27, 28, 37, 38, 30, 39];
 const GAMEPLAY_KEYS: [usize; 6] = [4, 5, 6, 7, 8, 9];
 
@@ -828,6 +839,19 @@ struct Engine {
     ra_service: Option<slot_achievements::Service>,
     ra_signing_out: bool,
     buttons: u16,
+    // Settings > Controls: who plays on which port, and Port 2's buttons.
+    controls: crate::controls::Controls,
+    pad_devices: Vec<crate::controls::Device>,
+    pad_held: crate::controls::Held,
+    buttons2: u16,
+    unseen2: u16,
+    held_releases2: u16,
+    controls_listen: Option<crate::controls::Listen>,
+    controls_faces: std::collections::HashMap<String, (slot_gfx::TexId, u32, u32)>,
+    controls_spare_faces: Vec<slot_gfx::TexId>,
+    controls_hint_faces: std::collections::HashMap<(&'static str, &'static str), (slot_gfx::TexId, u32)>,
+    controls_view: controls_ui::ControlsView,
+    port2_remote_noticed: bool,
     // Presses no core frame has read yet, and releases held back until one
     // has: a quick tap between two frames must still reach the game.
     unseen_presses: u16,
@@ -1040,6 +1064,9 @@ impl Engine {
         let settings = PATHS.lock().unwrap_or_else(|e| e.into_inner())
             .as_ref().map(|(root, _)| Settings::load_for_device(root, device))
             .unwrap_or_else(|| Settings::first_install_defaults_for_device(device));
+        let controls = PATHS.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().map(|(root, _)| crate::controls::Controls::load(root))
+            .unwrap_or_default();
         // Upstream Slot delegates colour correction to libretro core options.
         // Disable the dev13 approximate GPU grade to avoid double correction.
         gpu.enable_context_recovery();
@@ -1409,6 +1436,18 @@ impl Engine {
             ra_service: None,
             ra_signing_out: false,
             buttons: 0,
+            controls,
+            pad_devices: Vec::new(),
+            pad_held: Default::default(),
+            buttons2: 0,
+            unseen2: 0,
+            held_releases2: 0,
+            controls_listen: None,
+            controls_faces: Default::default(),
+            controls_spare_faces: Vec::new(),
+            controls_hint_faces: Default::default(),
+            controls_view: Default::default(),
+            port2_remote_noticed: false,
             unseen_presses: 0,
             held_releases: 0,
             ff_held: false,
@@ -2733,6 +2772,11 @@ impl Engine {
             Input::Reset => {
                 self.reset_time_controls();
                 self.buttons = 0;
+                // Android won't tell the releases of keys held while away.
+                self.buttons2 = 0;
+                self.unseen2 = 0;
+                self.held_releases2 = 0;
+                self.controls_listen = None;
                 self.mode_down_at = None;
                 self.mode_last_tap = None;
                 self.home_launch_held = false;
@@ -2929,7 +2973,16 @@ impl Engine {
                     self.prepared_rom = Some(path);
                 }
             }
+            Input::PadKey { device, code, pressed, stick } =>
+                self.pad_key(device, code, pressed, stick),
+            Input::Controllers(devices) => self.controllers_changed(devices),
             Input::Key(code, pressed) => {
+                // A Map or Detect waits for a controller's button (pad_key);
+                // the slot. button cancels it.
+                if self.controls_listen.is_some() {
+                    if pressed && code == crate::controls::MODE { self.controls_listen = None; }
+                    return;
+                }
                 if code == 109 { self.select_physical = pressed; }
                 if self.select_slot_combo(code, pressed) { return; }
                 if matches!(code, 19 | 20) {
@@ -3455,16 +3508,19 @@ impl Engine {
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
+                            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. } =>
+                                self.controls_menu_key(code),
                             ShelfOverlay::Settings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::Settings {
-                                    row: move_menu_row(row, code, 5),
+                                    row: move_menu_row(row, code, SETTINGS_ROWS.len()),
                                 },
                                 96 => match row {
                                     0 => self.overlay = ShelfOverlay::GeneralSettings { row: 0 },
                                     1 => self.overlay = ShelfOverlay::ScreenSettings { row: 0 },
-                                    2 => self.overlay = ShelfOverlay::GameplaySettings { row: 0 },
-                                    3 => self.overlay = ShelfOverlay::EmulationSettings { row: 0 },
-                                    4 => self.overlay = ShelfOverlay::InterfaceSettings { row: 0 },
+                                    2 => self.overlay = ShelfOverlay::ControlsSettings { row: 0 },
+                                    3 => self.overlay = ShelfOverlay::GameplaySettings { row: 0 },
+                                    4 => self.overlay = ShelfOverlay::EmulationSettings { row: 0 },
+                                    5 => self.overlay = ShelfOverlay::InterfaceSettings { row: 0 },
                                     _ => return,
                                 },
                                 97 => self.overlay = ShelfOverlay::Menu { row: 4 },
@@ -3491,7 +3547,7 @@ impl Engine {
                                         self.change_setting(key, code != 21);
                                     }
                                 },
-                                97 => self.overlay = ShelfOverlay::Settings { row: 4 },
+                                97 => self.overlay = ShelfOverlay::Settings { row: 5 },
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
@@ -3527,7 +3583,7 @@ impl Engine {
                                     row: move_menu_row(row, code, 3),
                                 },
                                 21 | 22 => self.change_setting(row + 10, code == 22),
-                                97 => self.overlay = ShelfOverlay::Settings { row: 3 },
+                                97 => self.overlay = ShelfOverlay::Settings { row: 4 },
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
@@ -3536,7 +3592,7 @@ impl Engine {
                                     row: move_menu_row(row, code, GAMEPLAY_KEYS.len()),
                                 },
                                 21 | 22 => self.change_setting(GAMEPLAY_KEYS[row], code == 22),
-                                97 => self.overlay = ShelfOverlay::Settings { row: 2 },
+                                97 => self.overlay = ShelfOverlay::Settings { row: 3 },
                                 108 => self.overlay = ShelfOverlay::None,
                                 _ => {}
                             },
@@ -5311,7 +5367,7 @@ impl Engine {
                 self.draw_library_share_value(row, out);
             }
             ShelfOverlay::Settings { row } => {
-                self.draw_original_style_menu(26, &[81, 117, 33, 49, 58], row, out);
+                self.draw_original_style_menu(26, &SETTINGS_ROWS, row, out);
             }
             ShelfOverlay::GeneralSettings { row } => {
                 let rows=self.general_rows();
@@ -5458,6 +5514,8 @@ impl Engine {
                 self.draw_setting_values(row, &GAMEPLAY_KEYS, out);
             }
             ShelfOverlay::Multiplayer => self.draw_multiplayer(out),
+            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. } =>
+                self.draw_controls(out),
             ShelfOverlay::Core => {
                 self.draw_original_core_picker(out);
             }
@@ -5818,6 +5876,7 @@ impl Engine {
             self.picker = None;
             self.overlay = ShelfOverlay::None;
         }
+        self.prepare_controls();
         // Update full-screen menus and spring-smooth the selection bar.
         // Keep animation entirely in rendering: never delay controller input.
         let (kind, selected, count) = match self.overlay {
@@ -5831,7 +5890,9 @@ impl Engine {
                 (14u8, row, self.pause_screen_rows().len()),
             ShelfOverlay::PauseGameplaySettings { row } => (15u8, row, GAMEPLAY_KEYS.len()),
             ShelfOverlay::Multiplayer => (11u8, 0, 0usize),
-            ShelfOverlay::Settings { row } => (4u8, row, 5usize),
+            ShelfOverlay::Settings { row } => (4u8, row, SETTINGS_ROWS.len()),
+            ShelfOverlay::ControlsSettings { .. } | ShelfOverlay::ControlsPort { .. } =>
+                self.controls_cursor().unwrap_or((0, 0, 0)),
             ShelfOverlay::GeneralSettings { row } =>
                 (12u8, row, self.general_rows().len()),
             ShelfOverlay::About { row } => (17u8, row, 2usize),
@@ -6180,6 +6241,7 @@ impl Engine {
                     // Cable lockstep must not consume emulation time while
                     // the remote frame has not arrived. NEVER invent a solo
                     // frame or perform speculative Run-Ahead on a held link.
+                    session.set_port2(self.buttons2);
                     let advanced = session.advance(self.buttons, live.turbo,
                         live.rewind && !session.linked());
                     let timing = session.last_step_timings();
@@ -6208,6 +6270,9 @@ impl Engine {
                     self.unseen_presses = 0;
                     self.buttons &= !self.held_releases;
                     self.held_releases = 0;
+                    self.unseen2 = 0;
+                    self.buttons2 &= !self.held_releases2;
+                    self.held_releases2 = 0;
                     self.perf_emulated = self.perf_emulated.saturating_add(1);
                     frame_phases.core_steps = frame_phases.core_steps.saturating_add(1);
                     self.game_accum -= period;
@@ -6264,6 +6329,7 @@ impl Engine {
                 // The normal frames and their audio are already consumed.
                 // Predicted video never advances the real saved/RA timeline.
                 let speculation_started = Instant::now();
+                session.set_port2(self.buttons2);
                 session.prepare_runahead(self.buttons, live.turbo,
                     profile.run_ahead_frames);
                 frame_phases.speculative_us = speculation_started.elapsed().as_micros() as u64;
@@ -6970,6 +7036,7 @@ mod ui_feedback_tests;
 mod link_hardware_tests;
 
 mod jni_exports;
+mod controls_ui;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use jni_exports::exercise_session_graphics_recovery;
 

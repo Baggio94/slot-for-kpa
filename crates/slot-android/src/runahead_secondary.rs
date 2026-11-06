@@ -84,11 +84,14 @@ pub fn open(spec: &Spec, battery: Option<&[u8]>) -> Result<Box<dyn RetroCore>, S
 /// Copy `state` (the real core, just after its committed frame) into the
 /// prediction copy and run one predicted frame per entry of `inputs`.
 /// Returns the predicted picture and its size; the copy's audio is discarded.
-pub fn predict<'a>(copy: &'a mut dyn RetroCore, state: &[u8], inputs: &[ButtonMask])
+pub fn predict<'a>(copy: &'a mut dyn RetroCore, state: &[u8],
+                   inputs: &[(ButtonMask, ButtonMask)])
     -> Result<(&'a [u8], (u32, u32)), String>
 {
     copy.unserialize(state).map_err(|e| e.to_string())?;
-    for &input in inputs {
+    // Each entry is (port 1, port 2): a second local player is predicted too.
+    for &(input, port2) in inputs {
+        copy.set_port2(port2);
         copy.run_speculative_frame(input);
         copy.discard_audio();
     }

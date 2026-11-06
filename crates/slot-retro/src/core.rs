@@ -102,6 +102,9 @@ pub trait RetroCore: Send {
     fn run_frame_linked(&mut self, p1: ButtonMask, _p2: ButtonMask) {
         self.run_frame(p1);
     }
+    /// A second local player's buttons, used by every following solo frame
+    /// (real or speculative) until changed. Cores with one player ignore it.
+    fn set_port2(&mut self, _input: ButtonMask) {}
     /// Reject incomplete native GB/GBC lockstep frames before advancing netplay.
     fn link_step_fault(&self) -> bool { false }
     fn set_option(&mut self, _key: &str, _value: &str) {}
