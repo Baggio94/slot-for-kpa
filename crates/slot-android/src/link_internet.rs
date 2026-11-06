@@ -28,7 +28,7 @@ pub fn relay_address(storage: Option<&Path>) -> Option<String> {
 pub fn share_text(code: &str, game: &str) -> String {
     let game = game.trim();
     let what = if game.is_empty() { String::new() } else { format!(" {game}") };
-    format!("Play{what} with me on slot.! Open the game, Multiplayer, R1 Internet, \
+    format!("Play{what} with me on slot.! Open the game, Multiplayer, R1 WAN, \
              Join, and enter the code {}", display_code(code))
 }
 
@@ -123,7 +123,7 @@ impl InternetUi {
             return Some(format!("Code {}", entry.text()));
         }
         // The picker keeps its stock Host/Join faces on both tabs: the
-        // legend's L1 Local / R1 Internet says which tab is selected.
+        // legend's L1 LAN / R1 WAN says which tab is selected.
         match menu {
             GameMenu::Working { role, since, .. } if self.session => Some(match role {
                 LinkRow::Host => match &self.room {

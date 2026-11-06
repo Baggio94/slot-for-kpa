@@ -464,7 +464,7 @@ impl Engine {
                     self.persist_controls();
                     set_message("Controls reset to default.".into());
                 }
-                97 => self.overlay = ShelfOverlay::Settings { row: 2 },
+                97 => self.overlay = ShelfOverlay::Settings { row: 4 },
                 108 => self.overlay = ShelfOverlay::None,
                 _ => {}
             },
