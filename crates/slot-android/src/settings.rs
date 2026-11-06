@@ -74,6 +74,25 @@ impl Appearance {
 }
 
 /// Original PR #2 by Its-TroyM: persisted optional 12/24-hour shelf clock.
+/// Frame Blending: each picture mixed with the one before, as the slow
+/// LCDs of the Game Boys showed sprites a game flickers every other frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Blending {
+    #[default]
+    Off,
+    Mix,
+    /// Mix plus the fading trail of an LCD.
+    Ghosting,
+}
+
+impl Blending {
+    pub fn step(self, right: bool) -> Blending {
+        const ALL: [Blending; 3] = [Blending::Off, Blending::Mix, Blending::Ghosting];
+        let at = ALL.iter().position(|b| *b == self).unwrap_or(0);
+        ALL[if right { (at + 1) % 3 } else { (at + 2) % 3 }]
+    }
+}
+
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TimeFormat {
     #[default]
@@ -361,6 +380,19 @@ pub struct Settings {
     /// One-time move of GB/GBC overlays left OFF to Watomsk's frames.
     #[serde(default)]
     pub gb_overlays_watomsk: bool,
+    /// Frame Blending of each system (Systems > [system] > Frame Blending).
+    #[serde(default)]
+    pub blending_gba: Blending,
+    #[serde(default)]
+    pub blending_gbc: Blending,
+    #[serde(default)]
+    pub blending_gb: Blending,
+    #[serde(default)]
+    pub blending_nes: Blending,
+    #[serde(default)]
+    pub blending_snes: Blending,
+    #[serde(default)]
+    pub blending_md: Blending,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -385,7 +417,9 @@ impl Default for Settings {
             status_opt_in_v2: true, wallpaper: WallpaperPick::Default,
             wallpaper_tint: WallpaperTint::Off, appearance: Appearance::Dark,
             show_recents: false, show_titles: false, home_bezel_three_two: false,
-            gb_palette_twb64: false, gb_overlays_watomsk: false }
+            gb_palette_twb64: false, gb_overlays_watomsk: false,
+            blending_gba: Blending::Off, blending_gbc: Blending::Off, blending_gb: Blending::Off,
+            blending_nes: Blending::Off, blending_snes: Blending::Off, blending_md: Blending::Off }
     }
 }
 impl Settings {
@@ -564,6 +598,28 @@ impl Settings {
             _=>false,
         }
     }
+    /// The Settings key of a system's Frame Blending row (60..=65).
+    pub fn blending_key(platform: slot_store::Platform) -> usize {
+        use slot_store::Platform::*;
+        match platform { Gba => 60, Gbc => 61, Gb => 62, Nes => 63, Snes => 64, Md => 65 }
+    }
+
+    fn blending_mut(&mut self, platform: slot_store::Platform) -> &mut Blending {
+        use slot_store::Platform::*;
+        match platform {
+            Gba => &mut self.blending_gba, Gbc => &mut self.blending_gbc, Gb => &mut self.blending_gb,
+            Nes => &mut self.blending_nes, Snes => &mut self.blending_snes, Md => &mut self.blending_md,
+        }
+    }
+
+    pub fn blending_for(&self, platform: slot_store::Platform) -> Blending {
+        use slot_store::Platform::*;
+        match platform {
+            Gba => self.blending_gba, Gbc => self.blending_gbc, Gb => self.blending_gb,
+            Nes => self.blending_nes, Snes => self.blending_snes, Md => self.blending_md,
+        }
+    }
+
     pub fn set_colour_for(&mut self,platform:slot_store::Platform,value:bool) {
         match platform {
             slot_store::Platform::Gba=>{
@@ -626,6 +682,12 @@ impl Settings {
             24 => self.set_colour_for(slot_store::Platform::Gb,
                 !self.colour_correction_gb),
             21 => self.shader_gbc=self.shader_gbc.step(&Shader::GB,right),
+            60..=65 => {
+                use slot_store::Platform::*;
+                let platform = [Gba, Gbc, Gb, Nes, Snes, Md][key - 60];
+                let blending = self.blending_mut(platform);
+                *blending = blending.step(right);
+            }
             25 => self.step_bezel(slot_store::Platform::Gba,right),
             26 => self.step_bezel(slot_store::Platform::Gbc,right),
             27 => self.step_bezel(slot_store::Platform::Gb,right),

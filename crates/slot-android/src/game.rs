@@ -319,6 +319,10 @@ pub struct GameSession {
     /// Each port's Controls (system, then game): which slot. button plays
     /// which console button. None: the X/Y Buttons setting alone, as before.
     layouts: [Option<crate::controls::Resolved>; 2],
+    /// Frame Blending as last given to the core (None: not yet), and the
+    /// mixing slot. does itself for cores without an option for it.
+    blending: Option<crate::settings::Blending>,
+    slot_blending: crate::frame_blend::Mode,
     pending_undo: Option<(Instant, PendingUndo)>,
     last_sram: Instant,
     // F7: owns at most one immutable periodic SRAM/RTC write per solo session.
@@ -934,6 +938,7 @@ impl GameSession {
             frame_count: 0, palette_live, core_kind: which,
             full_pad: matches!(platform, Platform::Snes | Platform::Md),
             second_player: !platform.handheld(), port2: 0, layouts: [None, None],
+            blending: None, slot_blending: crate::frame_blend::Mode::Off,
             runahead_video: Vec::new(), runahead_size: (0, 0), runahead_state: Vec::new(),
             // bsnes shows the frame before an unserialize on the first run
             // after it, so a predicted picture would be stale: no Run-Ahead.
@@ -1745,6 +1750,40 @@ impl GameSession {
         self.set_core_option("mgba_gb_colors_preset", if enabled { "0" } else { "1" });
         if enabled { self.set_core_option("mgba_gb_colors", name); }
     }
+
+    /// Frame Blending, as slot. original: the Game Boy cores mix frames
+    /// themselves (gpSP has no Ghosting: Mix instead); the others leave
+    /// it to slot. (slot_blending). Calls with an unchanged value cost nothing.
+    pub fn set_frame_blending(&mut self, blending: crate::settings::Blending) {
+        use crate::settings::Blending::{Ghosting, Mix, Off};
+        if self.blending == Some(blending) { return; }
+        self.blending = Some(blending);
+        let option = match (self.core_kind, blending) {
+            (Core::Mgba, Off) => Some(("mgba_interframe_blending", "OFF")),
+            (Core::Mgba, Mix) => Some(("mgba_interframe_blending", "mix")),
+            (Core::Mgba, Ghosting) => Some(("mgba_interframe_blending", "lcd_ghosting")),
+            (Core::Gambatte, Off) => Some(("gambatte_mix_frames", "disabled")),
+            (Core::Gambatte, Mix) => Some(("gambatte_mix_frames", "mix")),
+            (Core::Gambatte, Ghosting) => Some(("gambatte_mix_frames", "lcd_ghosting")),
+            (Core::Gpsp, Off) => Some(("gpsp_frame_mixing", "disabled")),
+            (Core::Gpsp, _) => Some(("gpsp_frame_mixing", "enabled")),
+            _ => None,
+        };
+        match option {
+            Some((key, value)) => {
+                self.slot_blending = crate::frame_blend::Mode::Off;
+                self.set_core_option(key, value);
+            }
+            None => self.slot_blending = match blending {
+                Off => crate::frame_blend::Mode::Off,
+                Mix => crate::frame_blend::Mode::Mix,
+                Ghosting => crate::frame_blend::Mode::Ghosting,
+            },
+        }
+    }
+
+    /// The mixing slot. does before the picture is drawn (NES, SNES, Mega Drive).
+    pub fn slot_blending(&self) -> crate::frame_blend::Mode { self.slot_blending }
 
     pub fn set_colour_correction(&mut self, enabled: bool) {
         let (key, value) = match self.core_kind {

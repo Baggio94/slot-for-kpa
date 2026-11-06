@@ -133,7 +133,7 @@ impl Engine {
     /// Where B leaves a system's (or the game's) Controls for.
     fn layout_exit(platform: Platform, game: bool) -> ShelfOverlay {
         if game { ShelfOverlay::PauseSettings { row: 3 } }
-        else { ShelfOverlay::ScreenSystemSettings { platform, row: Self::system_rows(platform).len() } }
+        else { ShelfOverlay::ScreenSystemSettings { platform, row: Self::system_page_rows(platform).len() - 1 } }
     }
 
     fn slot_bit(&mut self, mask: u16, pressed: bool) {
@@ -819,9 +819,10 @@ impl Engine {
 
     pub(super) fn draw_controls(&self, out: &mut Vec<Draw>) {
         let view = &self.controls_view;
-        out.push(Draw::Rect { x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32, colour: opening() });
         let shown = view.lines.len().saturating_sub(view.offset).min(controls::VISIBLE_ROWS);
         let top = settings_row_top(shown);
+        // Opaque on the shelf; the paused game and the slot in a game.
+        self.draw_menu_ground(top, out);
         let fade = slot_ui::ease((self.menu_opened.elapsed().as_secs_f32() / 0.16).clamp(0.0, 1.0));
         let cursor = if self.menu_cursor_y.is_finite() { self.menu_cursor_y }
             else { top + view.selected.saturating_sub(view.offset) as f32 * QUICK_PITCH };
@@ -865,10 +866,12 @@ impl Engine {
                     tex, alpha: fade });
             }
         }
-        // More rows above or below: the list's edges fade into the page.
-        out.push(Draw::Rect { x: 0.0, y: 420.0, w: width, h: 60.0, colour: opening() });
+        // The legend: under its own band on the shelf, in the slot in a game.
+        if self.game.is_none() {
+            out.push(Draw::Rect { x: 0.0, y: 420.0, w: width, h: 60.0, colour: opening() });
+        }
         for (tex, w, x) in centred_hints(&view.hints, LEGEND_GAP) {
-            out.push(Draw::Tex { x, y: 427.0, w: w as f32, h: HINT_H as f32, tex, alpha: fade });
+            out.push(Draw::Tex { x, y: self.legend_y(), w: w as f32, h: HINT_H as f32, tex, alpha: fade });
         }
     }
 }

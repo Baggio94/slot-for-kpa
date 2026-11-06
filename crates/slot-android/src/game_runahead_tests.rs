@@ -151,6 +151,8 @@ fn session(root: &Path, failure: Failure) -> (GameSession, Arc<Mutex<Calls>>) {
         second_player: false,
         port2: 0,
         layouts: [None, None],
+        blending: None,
+        slot_blending: crate::frame_blend::Mode::Off,
         runahead_video: vec![],
         runahead_size: (0, 0),
         runahead_state: vec![],

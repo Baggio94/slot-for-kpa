@@ -34,7 +34,7 @@ use slot_ui::{
     TURN_PAD,
     hint_face, arrows_hint_face, title_face, photo_face, Polaroids, Printed, HINT_H, HINT_EDGE, draw_slot_name, draw_platform_name, platform_name_face,
     icon_face, badge_face, menu_face, Icon, LinkBadge, BOLT_PX, HUD_INK,
-    Hud, HudKind, FfState, Toast, toast_face, QUICK_PITCH, opening, edge, centred_hints, LEGEND_GAP,
+    Hud, HudKind, FfState, Toast, toast_face, QUICK_PITCH, opening, edge, centred_hints, LEGEND_GAP, MOUTH_H,
     sticker_face_konkr, StickerFields, STICKER_W, STICKER_H, quick_caret_face,
     onboarding_instruction_face, onboarding_note_face,
 };
@@ -188,6 +188,8 @@ const EJECT_SOUND_DELAY_S: f32 = 0.040;
 const EJECT_SOUND_PROGRESS: f32 = 1.0 - EJECT_SOUND_DELAY_S / EJECT_S;
 const SELECT_CHORD_MS: u128 = 600;
 const SELECT_TAP_FRAMES: u8 = 3;
+/// slot. original's in-game menu: the paused game under this much black.
+const GAME_MENU_SCRIM: f32 = 0.65;
 /// The game menu waits this long for a second slot. tap (Save States).
 const MENU_REVEAL_MS: u64 = 150;
 /// A second slot. press this soon after a tap opens Save States.
@@ -476,7 +478,7 @@ enum ShelfOverlay {
     States,
 }
 
-const MENU_TEXT: [&str; 126] = [
+const MENU_TEXT: [&str; 127] = [
     "MENU",                             // 0
     "Library",                          // 1
     "Cart Studio",                      // 2
@@ -603,6 +605,7 @@ const MENU_TEXT: [&str; 126] = [
     "Mega Drive",                        // 123
     "Shader",                            // 124, NES / SNES / Mega Drive
     "Controls",                          // 125, Settings > Controls
+    "Frame Blending",                    // 126, Systems / in-game Screen
 ];
 
 /// Settings > Systems, top to bottom.
@@ -616,7 +619,7 @@ const RECENTS_RACK: usize = Platform::ALL.len();
 const FAVORITES_RACK: usize = RECENTS_RACK + 1;
 
 /// Every Settings value face, by index: setting_face gives these indices.
-const SETTING_VALUE_NAMES: [&str; 96] = ["2×", "3×", "4×", "6×", "ON", "OFF",
+const SETTING_VALUE_NAMES: [&str; 98] = ["2×", "3×", "4×", "6×", "ON", "OFF",
                               "LCD3x", "Grid", "Dot", "Simpletex",
                               "STANDARD", "RESPONSIVE", "1 FRAME", "2 FRAMES",
                               "DISPLAY SYNC", "TURBO A/B", "A/B",
@@ -639,7 +642,7 @@ const SETTING_VALUE_NAMES: [&str; 96] = ["2×", "3×", "4×", "6×", "ON", "OFF"
                                "SNES", "SNES ALT", "SNES SILVER", "SNES SILVER ALT",
                                "GENESIS CLASSIC", "GENESIS", "MEGA DRIVE",
                                "zfast-crt", "GDV Trinitron", "CRT Geom Deluxe", "crt-pi",
-                               "fakelottes", "crt-aperture"];
+                               "fakelottes", "crt-aperture", "MIX", "GHOSTING"];
 
 /// The value face (an index in SETTING_VALUE_NAMES) a Settings key shows,
 /// None for an action-only row. Every key a menu lists must have one: the
@@ -721,6 +724,15 @@ fn setting_face(key: usize, settings: &Settings, scoped: &Settings,
             {35}else{36},
         29..=31 | 41..=43 => core_value(Engine::core_key_platform(key)
             .map_or(Core::Mgba, |platform| cores[platform as usize])),
+        // Frame Blending is the system's, in game too.
+        60..=65 => {
+            use slot_store::Platform::*;
+            match settings.blending_for([Gba, Gbc, Gb, Nes, Snes, Md][key - 60]) {
+                crate::settings::Blending::Off => 5,
+                crate::settings::Blending::Mix => 96,
+                crate::settings::Blending::Ghosting => 97,
+            }
+        }
         _ => return None,
     })
 }
@@ -884,6 +896,9 @@ struct Engine {
     states_from_menu: bool,
     // The second press of a double tap opened Save States: its release is spent.
     mode_double_press: bool,
+    // The slot under the in-game menu: 0 down out of sight, 1 up.
+    footer: f32,
+    frame_blend: crate::frame_blend::FrameBlend,
     // Presses no core frame has read yet, and releases held back until one
     // has: a quick tap between two frames must still reach the game.
     unseen_presses: u16,
@@ -1493,6 +1508,8 @@ impl Engine {
             menu_reveal_at: None,
             states_from_menu: false,
             mode_double_press: false,
+            footer: 0.0,
+            frame_blend: Default::default(),
             unseen_presses: 0,
             held_releases: 0,
             ff_held: false,
@@ -3451,9 +3468,9 @@ impl Engine {
                             },
                             ShelfOverlay::PauseScreenSettings { row } => match code {
                                 19 | 20 => self.overlay = ShelfOverlay::PauseScreenSettings {
-                                    row: move_menu_row(row,code,self.pause_screen_rows().len()),
+                                    row: move_menu_row(row,code,self.pause_screen_page_rows().len()),
                                 },
-                                21 | 22 => if let Some(key)=self.pause_screen_key(row) {
+                                21 | 22 => if let Some(key)=self.pause_screen_page_key(row) {
                                     self.change_game_screen_or_gameplay(key,code==22);
                                 },
                                 97 => self.overlay = ShelfOverlay::PauseSettings { row: 0 },
@@ -3714,11 +3731,12 @@ impl Engine {
                             },
                             ShelfOverlay::ScreenSystemSettings { platform,row } => match code {
                                 19 | 20 => self.overlay=ShelfOverlay::ScreenSystemSettings {
-                                    platform,row:move_menu_row(row,code,Self::system_rows(platform).len()+1),
+                                    platform,row:move_menu_row(row,code,Self::system_page_rows(platform).len()),
                                 },
-                                96 if row==Self::system_rows(platform).len() =>
+                                96 if row+1==Self::system_page_rows(platform).len() =>
                                     self.overlay=Self::layout_entry(platform, false),
-                                21 | 22 | 96 => if let Some(key)=Self::system_keys(platform).get(row).copied(){
+                                21 | 22 | 96 => if let Some(key)=Self::system_page_keys(platform).get(row).copied()
+                                    .filter(|key| *key!=usize::MAX) {
                                     self.change_setting(key,code!=21);
                                 },
                                 97 => self.overlay=ShelfOverlay::ScreenSettings {
@@ -4459,6 +4477,29 @@ impl Engine {
     // Screen Size, then the screen rows a paused game of that system also
     // shows. A system whose shape the panel already has (GBA on the KONKR)
     // offers neither Screen Size nor a bezel (Siham 2026-11-02).
+    /// A system's page: its own rows, Frame Blending, then Controls (a page).
+    fn system_page_rows(platform: Platform) -> Vec<usize> {
+        let mut rows = Self::system_rows(platform).to_vec();
+        rows.extend([126, 125]);
+        rows
+    }
+    fn system_page_keys(platform: Platform) -> Vec<usize> {
+        let mut keys = Self::system_keys(platform).to_vec();
+        keys.extend([Settings::blending_key(platform), usize::MAX]);
+        keys
+    }
+    /// The in-game Screen page: its rows, then Frame Blending.
+    fn pause_screen_page_rows(&self) -> Vec<usize> {
+        let mut rows = self.pause_screen_rows().to_vec();
+        rows.push(126);
+        rows
+    }
+    fn pause_screen_page_key(&self, row: usize) -> Option<usize> {
+        let own = self.pause_screen_rows().len();
+        if row < own { self.pause_screen_key(row) }
+        else if row == own { Some(Settings::blending_key(self.current_cart_platform())) }
+        else { None }
+    }
     fn system_rows(platform: Platform)-> &'static [usize] {
         Self::system_rows_on(platform,panel_size())
     }
@@ -4665,6 +4706,11 @@ impl Engine {
         });
     }
     fn change_game_screen_or_gameplay(&mut self, key: usize, right: bool) {
+        // Frame Blending is the system's: the in-game row changes it.
+        if (60..=65).contains(&key) {
+            self.change_setting(key, right);
+            return;
+        }
         if key == SCREEN_SIZE_KEY {
             let mode = if right { self.video_mode.bigger() } else { self.video_mode.smaller() };
             if mode != self.video_mode {
@@ -5254,7 +5300,7 @@ impl Engine {
     }
 
     fn draw_setting_values(&self, row: usize, keys: &[usize], out: &mut Vec<Draw>) {
-        let top = settings_row_top(keys.len());
+        let top = self.menu_rows_top(keys.len());
         for (index, key) in keys.iter().copied().enumerate() {
             // Only action rows (usize::MAX) have no value: setting_face
             // answers every other key, so a new key can't go blank.
@@ -5298,17 +5344,89 @@ impl Engine {
                 });
             }
         }
-        // The original Back / Change physical keycap legend.
-        out.push(Draw::Rect {
-            x: 0.0, y: 420.0, w: out_w() as f32, h: 60.0,
-            colour: opening(),
-        });
+        // The original Back / Change physical keycap legend (in the slot
+        // during a game).
+        if self.game.is_none() {
+            out.push(Draw::Rect {
+                x: 0.0, y: 420.0, w: out_w() as f32, h: 60.0,
+                colour: opening(),
+            });
+        }
         for (tex, w, x) in centred_hints(&self.settings_hints, LEGEND_GAP) {
             out.push(Draw::Tex {
-                x, y: 427.0, w: w as f32, h: HINT_H as f32,
+                x, y: self.legend_y(), w: w as f32, h: HINT_H as f32,
                 tex, alpha: 1.0,
             });
         }
+    }
+
+    /// An in-game menu is up (once a double-tap wait is over).
+    fn in_game_menu_shown(&self) -> bool {
+        self.game.is_some() && match self.overlay {
+            ShelfOverlay::GameMenu { .. } => self.menu_reveal_at.is_none(),
+            ShelfOverlay::PauseSettings { .. } | ShelfOverlay::PauseScreenSettings { .. }
+            | ShelfOverlay::PauseGameplaySettings { .. } | ShelfOverlay::PauseEmulationSettings { .. }
+            | ShelfOverlay::LayoutPorts { game: true, .. } | ShelfOverlay::LayoutPort { game: true, .. } => true,
+            _ => false,
+        }
+    }
+
+    /// The in-game Screen page: rows above the slot, the game in view above.
+    fn screen_panel(&self) -> bool {
+        self.game.is_some() && matches!(self.overlay, ShelfOverlay::PauseScreenSettings { .. })
+    }
+
+    /// Where a menu's first row goes.
+    fn menu_rows_top(&self, count: usize) -> f32 {
+        if self.screen_panel() {
+            (OUT_H as f32 - MOUTH_H - 6.0 - QUICK_PITCH * count as f32).round()
+        } else { settings_row_top(count) }
+    }
+
+    /// How far the slot still is below its place (0 when up).
+    fn footer_dy(&self) -> f32 { (1.0 - slot_ui::ease(self.footer)) * MOUTH_H }
+
+    /// The legend's line: in the slot during a game, at the bottom otherwise.
+    fn legend_y(&self) -> f32 {
+        if self.game.is_some() {
+            OUT_H as f32 - MOUTH_H + ((MOUTH_H - HINT_H as f32) / 2.0).round() + self.footer_dy()
+        } else { 427.0 }
+    }
+
+    /// slot. original's seated slot: the slot with the playing cart in it,
+    /// rising from below with the in-game menu.
+    fn draw_game_footer(&self, out: &mut Vec<Draw>) {
+        if self.footer <= 0.0 || self.game.is_none() { return; }
+        let Some(shelf) = self.shelves.get(self.active) else { return };
+        let Some(cart) = shelf.carts.get(shelf.index) else { return };
+        let (rest, scale) = shelf.selected_at();
+        let start = out.len();
+        SlotChrome {
+            cart, face: shelf.face(shelf.index), rest, scale,
+            seat: 1.0, alert: None, dim: 0.0, screen: 0.0, game: false, over: true,
+            slot_faces: pick_slot_faces(self.slot_faces, self.home_slot_faces, Some(cart)),
+        }.draw_with_closer(out, [None, None], None,
+            pick_closer(self.slot_faces, self.home_closers, Some(cart)), false);
+        shift_down(&mut out[start..], self.footer_dy());
+    }
+
+    /// A menu's ground: opaque on the shelf; in a game, the paused game
+    /// under a scrim (only behind the rows on the Screen page), then the slot.
+    fn draw_menu_ground(&self, rows_top: f32, out: &mut Vec<Draw>) {
+        if self.game.is_none() {
+            out.push(Draw::Rect {
+                x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32,
+                colour: opening(),
+            });
+            return;
+        }
+        let y = if self.screen_panel() { rows_top - 8.0 } else { 0.0 };
+        let bottom = OUT_H as f32 - MOUTH_H + self.footer_dy();
+        out.push(Draw::Rect {
+            x: 0.0, y, w: out_w() as f32, h: (bottom - y).max(0.0),
+            colour: [0.0, 0.0, 0.0, GAME_MENU_SCRIM],
+        });
+        self.draw_game_footer(out);
     }
 
     fn draw_original_style_menu(&self, heading: usize, items: &[usize],
@@ -5316,11 +5434,8 @@ impl Engine {
         // The original Slot full-screen quick menu uses the housing palette,
         // full-width selected bar, 52px pitch, and centred physical keycaps.
         // Reuse those exact primitives for Android's library settings.
-        out.push(Draw::Rect {
-            x: 0.0, y: 0.0, w: out_w() as f32, h: OUT_H as f32,
-            colour: opening(),
-        });
-        let top = settings_row_top(items.len());
+        let top = self.menu_rows_top(items.len());
+        self.draw_menu_ground(top, out);
         let cursor = if self.menu_cursor_y.is_finite() { self.menu_cursor_y }
             else { top + selected as f32 * QUICK_PITCH };
         let intro = (self.menu_opened.elapsed().as_secs_f32() / 0.16).clamp(0.0, 1.0);
@@ -5330,7 +5445,10 @@ impl Engine {
             h: QUICK_PITCH - 8.0,
             colour: { let mut c = edge(); c[3] *= fade; c },
         });
-        self.text_fit(heading, 32.0, 33.0, out_w() as f32 - 70.0, 0.68 * fade, out);
+        // The in-game Screen page leaves the game in view above its rows.
+        if !self.screen_panel() {
+            self.text_fit(heading, 32.0, 33.0, out_w() as f32 - 70.0, 0.68 * fade, out);
+        }
         for (i, index) in items.iter().copied().enumerate() {
             let x = 37.0;
             let y = top + i as f32 * QUICK_PITCH + 8.0
@@ -5348,7 +5466,7 @@ impl Engine {
             } else { &self.game_menu_hints };
             for (tex, w, x) in centred_hints(hints, 15.0) {
                 out.push(Draw::Tex {
-                    x, y: 427.0, w: w as f32, h: HINT_H as f32,
+                    x, y: self.legend_y(), w: w as f32, h: HINT_H as f32,
                     tex, alpha: fade,
                 });
             }
@@ -5358,7 +5476,7 @@ impl Engine {
                 else { &self.menu_hints };
             for (tex, w, x) in centred_hints(hints, LEGEND_GAP) {
                 out.push(Draw::Tex {
-                    x, y: 427.0, w: w as f32, h: HINT_H as f32,
+                    x, y: self.legend_y(), w: w as f32, h: HINT_H as f32,
                     tex, alpha: fade,
                 });
             }
@@ -5562,11 +5680,8 @@ impl Engine {
                 self.draw_original_style_menu(117, &SYSTEM_TITLES, row, out);
             }
             ShelfOverlay::ScreenSystemSettings {platform,row} => {
-                // The system's own rows, then Controls (no value: a page).
-                let mut rows=Self::system_rows(platform).to_vec();
-                rows.push(125);
-                let mut keys=Self::system_keys(platform).to_vec();
-                keys.push(usize::MAX);
+                let rows=Self::system_page_rows(platform);
+                let keys=Self::system_page_keys(platform);
                 self.draw_original_style_menu(Self::screen_title(platform),&rows,row,out);
                 self.draw_setting_values(row,&keys,out);
             }
@@ -5658,10 +5773,10 @@ impl Engine {
                 self.draw_original_style_menu(26, self.pause_settings_rows(), row, out);
             }
             ShelfOverlay::PauseScreenSettings { row } => {
-                let items=self.pause_screen_rows();
-                self.draw_original_style_menu(32, items, row, out);
+                let items=self.pause_screen_page_rows();
+                self.draw_original_style_menu(32, &items, row, out);
                 let keys: Vec<usize>=(0..items.len())
-                    .filter_map(|index|self.pause_screen_key(index)).collect();
+                    .filter_map(|index|self.pause_screen_page_key(index)).collect();
                 self.draw_setting_values(row,&keys,out);
             }
             ShelfOverlay::PauseGameplaySettings { row } => {
@@ -6038,6 +6153,15 @@ impl Engine {
             self.menu_seen = 0; // the menu's own fade-in, now
         }
         if !matches!(self.overlay, ShelfOverlay::GameMenu { .. }) { self.menu_reveal_at = None; }
+        // slot. original: the slot rises with the in-game menu and slides
+        // back down as the game resumes, over a power-on's 220 ms.
+        if self.game.is_none() || matches!(self.overlay, ShelfOverlay::States | ShelfOverlay::Multiplayer) {
+            self.footer = 0.0;
+        } else {
+            let step = dt / SCREEN_POWER_ON_S;
+            self.footer = if self.in_game_menu_shown() { (self.footer + step).min(1.0) }
+                else { (self.footer - step).max(0.0) };
+        }
         self.prepare_controls();
         // Update full-screen menus and spring-smooth the selection bar.
         // Keep animation entirely in rendering: never delay controller input.
@@ -6049,7 +6173,7 @@ impl Engine {
                 self.game.as_ref().is_some_and(GameSession::requires_relaunch)).len()),
             ShelfOverlay::PauseSettings { row } => (13u8, row, self.pause_settings_rows().len()),
             ShelfOverlay::PauseScreenSettings { row } =>
-                (14u8, row, self.pause_screen_rows().len()),
+                (14u8, row, self.pause_screen_page_rows().len()),
             ShelfOverlay::PauseGameplaySettings { row } => (15u8, row, GAMEPLAY_KEYS.len()),
             ShelfOverlay::Multiplayer => (11u8, 0, 0usize),
             ShelfOverlay::Settings { row } => (4u8, row, SETTINGS_ROWS.len()),
@@ -6066,7 +6190,7 @@ impl Engine {
                 (9u8, row, self.pause_emulation_rows().len()),
             ShelfOverlay::ScreenSettings { row } => (5u8, row, SYSTEM_ORDER.len()),
             ShelfOverlay::ScreenSystemSettings { platform,row } =>
-                (16u8,row,Self::system_rows(platform).len()+1),
+                (16u8,row,Self::system_page_rows(platform).len()),
             ShelfOverlay::GameplaySettings { row } => (6u8, row, GAMEPLAY_KEYS.len()),
             _ => (0, 0, 0),
         };
@@ -6075,11 +6199,11 @@ impl Engine {
             self.menu_opened = now;
             if count > 0 {
                 self.menu_cursor_y = (if kind == 17 { about_row_top() }
-                    else { settings_row_top(count) }) + selected as f32 * QUICK_PITCH;
+                    else { self.menu_rows_top(count) }) + selected as f32 * QUICK_PITCH;
             }
         } else if count > 0 {
             let goal = (if kind == 17 { about_row_top() }
-                else { settings_row_top(count) }) + selected as f32 * QUICK_PITCH;
+                else { self.menu_rows_top(count) }) + selected as f32 * QUICK_PITCH;
             let response = 1.0 - (-dt * 24.0).exp();
             self.menu_cursor_y += (goal - self.menu_cursor_y) * response;
         }
@@ -6274,6 +6398,11 @@ impl Engine {
         let a12_native_started = Instant::now();
         let mut frame_phases = crate::frame_phases::FramePhaseSample::default();
         self.apply_layouts(live.turbo);
+        let blending = self.settings.blending_for(cart_platform);
+        if let Some(game) = self.game.as_mut() { game.set_frame_blending(blending); }
+        // The slot sliding back down over the game just resumed.
+        let mut footer_draws = Vec::new();
+        self.draw_game_footer(&mut footer_draws);
         if let Some(session) = self.game.as_mut() {
             // Resume only after the remote has also left its pause menu;
             // LinkPlay::frame holds either core while peer_paused is true.
@@ -6535,7 +6664,11 @@ impl Engine {
                 } else {
                     // Home consoles: the frame at its own size, fitted at
                     // the aspect the core reports (it may change mid-game).
-                    self.gpu.upload_game_sized(session.frame(), session.frame_size());
+                    // NES, SNES and Mega Drive Frame Blending: mixed here,
+                    // before any shader draws the picture.
+                    let size = session.frame_size();
+                    let picture = self.frame_blend.apply(session.slot_blending(), session.frame(), size);
+                    self.gpu.upload_game_sized(picture, size);
                     self.gpu.set_game_fit(video_mode::home_fit(cart_platform, self.video_mode,
                         session.display_aspect(), session.frame_size(), panel_size()));
                 }
@@ -6581,6 +6714,7 @@ impl Engine {
             if let Some((tex,[x,y,w,h]))=bezel {
                 commands.push(Draw::Tex { x,y,w,h,tex,alpha:1.0 });
             }
+            commands.extend_from_slice(&footer_draws);
             self.hud.draw(self.born.elapsed().as_millis() as u64, &mut commands);
             frame_phases.submit_build_us = build_started.elapsed().as_micros() as u64;
             let draw_started = Instant::now();
@@ -7140,6 +7274,17 @@ fn move_menu_row(row: usize, key: i32, count: usize) -> usize {
 }
 
 /// Match Slot's centred menu row layout on the 720x480 design canvas.
+/// Move draws down by `dy` (the slot rising with the in-game menu).
+fn shift_down(draws: &mut [Draw], dy: f32) {
+    if dy == 0.0 { return; }
+    for draw in draws {
+        match draw {
+            Draw::Rect { y, .. } | Draw::Tex { y, .. } | Draw::Turned { y, .. } => *y += dy,
+            Draw::Game | Draw::Shot { .. } => {}
+        }
+    }
+}
+
 fn settings_row_top(rows: usize) -> f32 {
     ((OUT_H as f32 - QUICK_PITCH * rows as f32) / 2.0).round()
 }
